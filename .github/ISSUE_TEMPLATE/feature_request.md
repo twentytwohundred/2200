@@ -1,7 +1,7 @@
 ---
 name: Feature request
 about: Propose a feature for 2200
-title: "[feature] "
+title: '[feature] '
 labels: enhancement
 ---
 
