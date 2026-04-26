@@ -43,10 +43,11 @@ describe('agent subcommand', () => {
     expect(subs).toEqual(['create', 'resume', 'start', 'status', 'stop'])
   })
 
-  it('agent create requires --identity', () => {
+  it('agent create takes <name> positional and requires --identity', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const create = findSubcommand(agent, 'create')!
+    expect(create.registeredArguments.map((a) => a.name())).toEqual(['name'])
     const identity = create.options.find((o) => o.long === '--identity')
     expect(identity).toBeDefined()
     expect(identity?.required).toBe(true)
@@ -101,11 +102,18 @@ describe('notification subcommand', () => {
   })
 })
 
-describe('init', () => {
-  it('accepts --state-dir', () => {
+describe('top-level options', () => {
+  it('accepts --state-dir on the top-level program', () => {
     const program = buildProgram()
-    const init = findSubcommand(program, 'init')!
-    const stateDir = init.options.find((o) => o.long === '--state-dir')
+    const stateDir = program.options.find((o) => o.long === '--state-dir')
     expect(stateDir).toBeDefined()
+  })
+})
+
+describe('init', () => {
+  it('exists', () => {
+    const program = buildProgram()
+    const init = findSubcommand(program, 'init')
+    expect(init).toBeDefined()
   })
 })

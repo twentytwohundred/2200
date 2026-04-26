@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'cli/main': 'src/cli/main.ts',
+    'runtime/agent/bootstrap': 'src/runtime/agent/bootstrap.ts',
   },
   format: ['esm'],
   dts: { entry: { index: 'src/index.ts' } },
