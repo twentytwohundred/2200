@@ -28,10 +28,19 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the four top-level commands from the Epic 2 spec', () => {
+  it('has the five top-level commands (init, daemon, agent, task, notification)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
-    expect(names).toEqual(['agent', 'init', 'notification', 'task'])
+    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'task'])
+  })
+})
+
+describe('daemon subcommand', () => {
+  it('has start, stop, status', () => {
+    const program = buildProgram()
+    const daemon = findSubcommand(program, 'daemon')!
+    const subs = daemon.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['start', 'status', 'stop'])
   })
 })
 

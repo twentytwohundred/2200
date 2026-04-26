@@ -106,3 +106,46 @@ describe('Supervisor over real UDS', () => {
     await expect(access(path)).rejects.toThrow()
   })
 })
+
+describe('CLI-facing RPC methods over real UDS', () => {
+  it('cli.agent.create registers an Agent record', async () => {
+    supervisor = await Supervisor.create({ stateDir })
+    await supervisor.start()
+    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    client = new JsonRpcClient(conn)
+
+    const result = await client.call('cli.agent.create', {
+      name: 'hobby',
+      identity_path: '/tmp/identity.md',
+    })
+    expect(result.ok).toBe(true)
+
+    const snap = await client.call('state.snapshot', {})
+    expect(snap.agents['hobby']?.identity_path).toBe('/tmp/identity.md')
+    expect(snap.agents['hobby']?.state).toBe('stopped')
+  })
+
+  it('cli.agent.create rejects a duplicate name', async () => {
+    supervisor = await Supervisor.create({ stateDir })
+    await supervisor.createAgent('hobby', '/tmp/a.md')
+    await supervisor.start()
+    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    client = new JsonRpcClient(conn)
+    await expect(
+      client.call('cli.agent.create', { name: 'hobby', identity_path: '/tmp/b.md' }),
+    ).rejects.toThrow(/already exists/)
+  })
+
+  it('cli.agent.stop on an unknown agent updates state to stopped', async () => {
+    supervisor = await Supervisor.create({ stateDir })
+    await supervisor.createAgent('hobby', '/tmp/identity.md')
+    await supervisor.start()
+    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    client = new JsonRpcClient(conn)
+    // hobby was never started; cli.agent.stop should still mark it stopped.
+    const result = await client.call('cli.agent.stop', { name: 'hobby', reason: 'test' })
+    expect(result.ok).toBe(true)
+    const snap = await client.call('state.snapshot', {})
+    expect(snap.agents['hobby']?.state).toBe('stopped')
+  })
+})
