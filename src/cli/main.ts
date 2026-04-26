@@ -40,6 +40,12 @@ async function resolveHomeFromOpts(program: Command): Promise<string> {
   return resolveHome(opts.home)
 }
 
+function firstLine(text: string): string {
+  const trimmed = text.trim()
+  const idx = trimmed.indexOf('\n')
+  return idx === -1 ? trimmed.slice(0, 80) : trimmed.slice(0, Math.min(idx, 80))
+}
+
 function notYetImplemented(command: string, lands: string): never {
   console.error(`2200 ${command}: not yet implemented.`)
   console.error('')
@@ -241,8 +247,25 @@ export function buildProgram(): Command {
   agent
     .command('resume <name>')
     .description('resume an Agent paused on a detector trip')
-    .action(() => {
-      notYetImplemented('agent resume', 'a future PR (loop and stuck-Agent detection)')
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `agent resume requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.agent.resume', { name })
+        if (result.resumed_task_id) {
+          console.log(`Agent "${name}" resumed (task ${result.resumed_task_id} re-queued).`)
+        } else {
+          console.log(`Agent "${name}" cleared (no blocked task to resume).`)
+        }
+      } finally {
+        await client.close()
+      }
     })
 
   agent
@@ -276,15 +299,82 @@ export function buildProgram(): Command {
   task
     .command('submit <agent> <task>')
     .description('submit a task to an Agent')
-    .action(() => {
-      notYetImplemented('task submit', 'a future PR (Agent loop + task state machine)')
-    })
+    .option('--title <title>', 'short task title (defaults to first line of <task>)')
+    .option('--idempotency <kind>', 'pure | checkpointed | destructive (default: pure)')
+    .option('--priority <n>', 'integer priority; higher wins (default: 0)', (v) => parseInt(v, 10))
+    .action(
+      async (
+        agentName: string,
+        taskBody: string,
+        opts: { title?: string; idempotency?: string; priority?: number },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (!client) {
+          console.error(
+            `task submit requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+          )
+          process.exit(1)
+        }
+        const title = opts.title ?? firstLine(taskBody)
+        const params: Parameters<typeof client.call<'cli.task.submit'>>[1] = {
+          agent: agentName,
+          title,
+          body: taskBody,
+        }
+        if (opts.idempotency) {
+          if (
+            opts.idempotency !== 'pure' &&
+            opts.idempotency !== 'checkpointed' &&
+            opts.idempotency !== 'destructive'
+          ) {
+            console.error(`--idempotency must be one of: pure, checkpointed, destructive`)
+            process.exit(1)
+          }
+          params.idempotency = opts.idempotency
+        }
+        if (opts.priority !== undefined) params.priority = opts.priority
+        try {
+          const result = await client.call('cli.task.submit', params)
+          console.log(`task ${result.task_id} submitted to "${agentName}".`)
+        } finally {
+          await client.close()
+        }
+      },
+    )
 
   task
     .command('list <agent>')
     .description('list tasks for an Agent')
-    .action(() => {
-      notYetImplemented('task list', 'a future PR (task state)')
+    .action(async (agentName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      // List works against the on-disk task store even with no daemon; only
+      // mutating commands strictly require the daemon. But for consistency
+      // with submit (and to avoid duplicating the Supervisor.create path),
+      // require the daemon here too. A future PR can add a "list works
+      // offline" mode if there is real demand.
+      if (!client) {
+        console.error(
+          `task list requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.task.list', { agent: agentName })
+        if (result.tasks.length === 0) {
+          console.log(`No tasks for "${agentName}".`)
+          return
+        }
+        for (const t of result.tasks) {
+          const blocked = t.detector_block_kind ? ` (${t.detector_block_kind})` : ''
+          console.log(
+            `${t.id}  ${t.state.padEnd(20)}${blocked}  prio=${String(t.priority).padStart(2)}  ${t.title}`,
+          )
+        }
+      } finally {
+        await client.close()
+      }
     })
 
   // ---------------------------------------------------------------------------

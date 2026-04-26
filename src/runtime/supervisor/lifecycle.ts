@@ -70,6 +70,9 @@ export interface SpawnAgentOptions {
   name: string
   identityPath: string
   socketPath: string
+  /** 2200_HOME root, propagated to the Agent process so its loop can
+   *  resolve virtual paths and read its task store. */
+  home: string
   /** Path to the Agent bootstrap script. Defaults to the bundled entrypoint. */
   bootstrapPath?: string
   /** Override the Node binary; defaults to `process.execPath`. */
@@ -93,6 +96,7 @@ export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): SpawnedAgent 
     TWENTYTWOHUNDRED_AGENT_NAME: opts.name,
     TWENTYTWOHUNDRED_IDENTITY_PATH: opts.identityPath,
     TWENTYTWOHUNDRED_SOCKET_PATH: opts.socketPath,
+    TWENTYTWOHUNDRED_HOME: opts.home,
   }
 
   const child = spawn(nodePath, [bootstrapPath], {
