@@ -22,6 +22,8 @@ import { createLogger, type Logger } from '../util/logger.js'
 import { AgentStateMachine } from './state-machine.js'
 import { loadIdentity } from '../identity/loader.js'
 import { composeModelId, type IdentityRecord } from '../identity/types.js'
+import { resolveProvider } from '../llm/registry.js'
+import type { LLMProvider } from '../llm/provider.js'
 
 const HEARTBEAT_INTERVAL_MS = 10_000
 
@@ -44,6 +46,7 @@ export class AgentProcess {
   private heartbeatTimer: NodeJS.Timeout | undefined
   private isShuttingDown = false
   private identity: IdentityRecord | undefined
+  private provider: LLMProvider | undefined
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -70,6 +73,21 @@ export class AgentProcess {
       model: composeModelId(this.identity.frontmatter.model),
       tier: this.identity.frontmatter.model.tier,
       extra_tools: this.identity.frontmatter.tools,
+    })
+
+    // Construct the LLM provider before contacting the supervisor. If the
+    // model binding is misconfigured (missing API key, unknown provider),
+    // fail loud here rather than after announcing ourselves.
+    this.provider = await resolveProvider({
+      providerName: this.identity.frontmatter.model.provider,
+      ...(this.identity.frontmatter.provider_secret
+        ? { secret: this.identity.frontmatter.provider_secret }
+        : {}),
+    })
+    this.log.info('LLM provider bound', {
+      provider: this.provider.name,
+      baseUrl: this.provider.baseUrl,
+      modelId: this.identity.frontmatter.model.model_id,
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
