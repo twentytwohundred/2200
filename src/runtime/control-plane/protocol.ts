@@ -193,6 +193,58 @@ export const CliAgentStopResultSchema = z.object({
 })
 export type CliAgentStopResult = z.infer<typeof CliAgentStopResultSchema>
 
+/** C->S: resume an Agent paused on a detector trip. */
+export const CliAgentResumeParamsSchema = z.object({
+  name: z.string().min(1),
+})
+export type CliAgentResumeParams = z.infer<typeof CliAgentResumeParamsSchema>
+
+export const CliAgentResumeResultSchema = z.object({
+  ok: z.literal(true),
+  resumed_task_id: z.string().nullable(),
+})
+export type CliAgentResumeResult = z.infer<typeof CliAgentResumeResultSchema>
+
+/** C->S: submit a task to an Agent. */
+export const CliTaskSubmitParamsSchema = z.object({
+  agent: z.string().min(1),
+  title: z.string().min(1),
+  body: z.string().min(1),
+  idempotency: TaskIdempotencySchema.optional(),
+  priority: z.number().int().optional(),
+})
+export type CliTaskSubmitParams = z.infer<typeof CliTaskSubmitParamsSchema>
+
+export const CliTaskSubmitResultSchema = z.object({
+  ok: z.literal(true),
+  task_id: z.string(),
+})
+export type CliTaskSubmitResult = z.infer<typeof CliTaskSubmitResultSchema>
+
+/** C->S: list tasks for an Agent. */
+export const CliTaskListParamsSchema = z.object({
+  agent: z.string().min(1),
+})
+export type CliTaskListParams = z.infer<typeof CliTaskListParamsSchema>
+
+export const TaskListEntrySchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  idempotency: TaskIdempotencySchema,
+  priority: z.number().int(),
+  title: z.string(),
+  created: z.string(),
+  detector_block_kind: DetectorKindSchema.nullable(),
+  detector_block_detail: z.string().nullable(),
+})
+export type TaskListEntry = z.infer<typeof TaskListEntrySchema>
+
+export const CliTaskListResultSchema = z.object({
+  agent: z.string(),
+  tasks: z.array(TaskListEntrySchema),
+})
+export type CliTaskListResult = z.infer<typeof CliTaskListResultSchema>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -235,6 +287,18 @@ export const METHODS = {
   'cli.agent.stop': {
     params: CliAgentStopParamsSchema,
     result: CliAgentStopResultSchema,
+  },
+  'cli.agent.resume': {
+    params: CliAgentResumeParamsSchema,
+    result: CliAgentResumeResultSchema,
+  },
+  'cli.task.submit': {
+    params: CliTaskSubmitParamsSchema,
+    result: CliTaskSubmitResultSchema,
+  },
+  'cli.task.list': {
+    params: CliTaskListParamsSchema,
+    result: CliTaskListResultSchema,
   },
 } as const
 

@@ -16,13 +16,15 @@ async function main(): Promise<void> {
   const name = process.env['TWENTYTWOHUNDRED_AGENT_NAME']
   const identityPath = process.env['TWENTYTWOHUNDRED_IDENTITY_PATH']
   const socketPath = process.env['TWENTYTWOHUNDRED_SOCKET_PATH']
+  const home = process.env['TWENTYTWOHUNDRED_HOME']
 
-  if (!name || !identityPath || !socketPath) {
+  if (!name || !identityPath || !socketPath || !home) {
     const log = createLogger('agent/bootstrap')
     log.error('missing required env vars', {
       hasName: !!name,
       hasIdentityPath: !!identityPath,
       hasSocketPath: !!socketPath,
+      hasHome: !!home,
     })
     process.exit(64) // EX_USAGE
   }
@@ -31,6 +33,7 @@ async function main(): Promise<void> {
     name,
     identityPath,
     socketPath,
+    home,
   })
 
   const onShutdown = (signal: string): void => {

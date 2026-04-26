@@ -21,6 +21,11 @@ import { loadIdentity } from '../identity/loader.js'
 import { homePaths, agentPaths } from '../storage/layout.js'
 import { initHome, initAgentDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
+import { TaskStore } from '../agent/task/store.js'
+import { newPendingTask } from '../agent/task/types.js'
+import { newTaskId } from '../util/id.js'
+import type { TaskListEntry } from '../control-plane/protocol.js'
+import { resetPulseToGreen } from '../agent/detectors/trip-record.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -189,6 +194,7 @@ export class Supervisor {
       name,
       identityPath: record.identity_path,
       socketPath,
+      home: this.state.home,
       ...(options.agentBootstrapPath ? { bootstrapPath: options.agentBootstrapPath } : {}),
     }
     const spawned = spawnAgent(spawnOpts, this.log.child('lifecycle'))
@@ -328,6 +334,74 @@ export class Supervisor {
       'cli.agent.stop': async (params) => {
         await this.stopAgent(params.name, params.reason ?? 'cli_request')
         return { ok: true as const }
+      },
+      'cli.agent.resume': async (params) => {
+        const record = this.state.agents[params.name]
+        if (!record) {
+          throw new Error(`no Agent record for ${params.name}`)
+        }
+        const store = new TaskStore(this.state.home, params.name)
+        // Find a task currently blocked_on_detector and flip it back to
+        // pending so the Agent's poll picks it up next tick. v1 is single-task,
+        // so at most one task is blocked at any time; if multiple are
+        // blocked (an unexpected state), resume the most recently blocked.
+        const all = await store.list()
+        const blocked = all.filter((t) => t.frontmatter.state === 'blocked_on_detector')
+        let resumedId: string | null = null
+        if (blocked[0]) {
+          const target = blocked[0]
+          await store.update(target.frontmatter.id, (fm) => ({
+            ...fm,
+            state: 'pending',
+            detector_block: null,
+          }))
+          resumedId = target.frontmatter.id
+        }
+        await resetPulseToGreen({ home: this.state.home, agentName: params.name })
+        await this.updateAgent(params.name, { state: 'running' })
+        this.log.info('Agent resumed', { name: params.name, resumed_task_id: resumedId })
+        return { ok: true as const, resumed_task_id: resumedId }
+      },
+      'cli.task.submit': async (params) => {
+        const record = this.state.agents[params.agent]
+        if (!record) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const store = new TaskStore(this.state.home, params.agent)
+        const task = newPendingTask({
+          id: newTaskId(),
+          agent: params.agent,
+          title: params.title,
+          body: params.body,
+          ...(params.idempotency ? { idempotency: params.idempotency } : {}),
+          ...(params.priority !== undefined ? { priority: params.priority } : {}),
+        })
+        await store.save(task)
+        this.log.info('task submitted', {
+          agent: params.agent,
+          task_id: task.frontmatter.id,
+          title: task.frontmatter.title,
+        })
+        return { ok: true as const, task_id: task.frontmatter.id }
+      },
+      'cli.task.list': async (params) => {
+        const record = this.state.agents[params.agent]
+        if (!record) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const store = new TaskStore(this.state.home, params.agent)
+        const tasks = await store.list()
+        const entries: TaskListEntry[] = tasks.map((t) => ({
+          id: t.frontmatter.id,
+          state: t.frontmatter.state,
+          idempotency: t.frontmatter.idempotency,
+          priority: t.frontmatter.priority,
+          title: t.frontmatter.title,
+          created: t.frontmatter.created,
+          detector_block_kind: t.frontmatter.detector_block?.kind ?? null,
+          detector_block_detail: t.frontmatter.detector_block?.detail ?? null,
+        }))
+        return { agent: params.agent, tasks: entries }
       },
     }
   }
