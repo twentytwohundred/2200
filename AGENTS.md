@@ -78,15 +78,15 @@ The wiki at `https://github.com/twentytwohundred/2200/wiki` is the project knowl
 
 ## Toolchain
 
-| Concern         | Pick                                                            |
-| --------------- | --------------------------------------------------------------- |
-| Language        | TypeScript 5.x (strict + type-aware ESLint)                     |
-| Build           | tsup (esbuild-based)                                            |
-| Test            | vitest                                                          |
-| Lint            | eslint flat config + typescript-eslint strictTypeChecked        |
-| Format          | prettier                                                        |
-| Package manager | pnpm 9+                                                         |
-| Node            | 22+ (pinned in `.nvmrc`)                                        |
+| Concern         | Pick                                                     |
+| --------------- | -------------------------------------------------------- |
+| Language        | TypeScript 5.x (strict + type-aware ESLint)              |
+| Build           | tsup (esbuild-based)                                     |
+| Test            | vitest                                                   |
+| Lint            | eslint flat config + typescript-eslint strictTypeChecked |
+| Format          | prettier                                                 |
+| Package manager | pnpm 9+                                                  |
+| Node            | 22+ (pinned in `.nvmrc`)                                 |
 
 Each pick is documented in `wiki/decisions/2026-04-26-toolchain-pick.md`. Bumping major versions of any toolchain pick gets a follow-up decision record.
 
