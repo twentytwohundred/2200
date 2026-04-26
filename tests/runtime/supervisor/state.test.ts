@@ -21,7 +21,7 @@ afterEach(async () => {
 describe('loadState', () => {
   it('returns an empty state when supervisor.json does not exist', async () => {
     const state = await loadState(dir)
-    expect(state.schema_version).toBe('0.1')
+    expect(state.schema_version).toBe(1)
     expect(state.state_dir).toBe(dir)
     expect(state.agents).toEqual({})
   })
@@ -53,7 +53,7 @@ describe('loadState', () => {
   it('throws on schema mismatch', async () => {
     await writeFile(
       stateFilePath(dir),
-      JSON.stringify({ schema_version: '0.1', state_dir: dir, agents: { bad: { wrong: true } } }),
+      JSON.stringify({ schema_version: 1, state_dir: dir, agents: { bad: { wrong: true } } }),
     )
     await expect(loadState(dir)).rejects.toThrow(/schema validation/)
   })

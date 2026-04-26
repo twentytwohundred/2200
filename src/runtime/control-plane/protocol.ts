@@ -120,12 +120,30 @@ export const AgentRecordSchema = z.object({
 })
 export type AgentRecord = z.infer<typeof AgentRecordSchema>
 
+/**
+ * Supervisor state shape. `schema_version` is an integer per
+ * [[2026-04-26-schema-version-format]]; bump to `2`, `3`, ... on breaking
+ * changes. Backwards-compatible field additions stay at version `1`.
+ */
 export const StateSnapshotResultSchema = z.object({
-  schema_version: z.literal('0.1'),
+  schema_version: z.literal(1),
   state_dir: z.string(),
   agents: z.record(z.string(), AgentRecordSchema),
 })
 export type StateSnapshotResult = z.infer<typeof StateSnapshotResultSchema>
+
+/**
+ * Model identifier format: `<provider>/<model_id>` per
+ * [[2026-04-26-model-field-format]]. Lowercase alphanumeric provider, slash,
+ * lowercase alphanumeric or dash model_id. Used by plan records and Identity
+ * model bindings. Not enforced on the supervisor RPC layer at v1 (no plan
+ * records yet); exported here so downstream layers (plan-record writer,
+ * Identity loader) share one source of truth.
+ */
+export const ModelIdSchema = z.string().regex(/^[a-z0-9]+\/[a-z0-9-]+$/, {
+  message: 'model identifier must be <provider>/<model_id>, e.g., "anthropic/claude-opus-4-7"',
+})
+export type ModelId = z.infer<typeof ModelIdSchema>
 
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)

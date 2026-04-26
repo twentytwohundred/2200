@@ -48,7 +48,7 @@ describe('Supervisor over real UDS', () => {
     const conn = await connectUds(Supervisor.socketPath(stateDir))
     client = new JsonRpcClient(conn)
     const snap = await client.call('state.snapshot', {})
-    expect(snap.schema_version).toBe('0.1')
+    expect(snap.schema_version).toBe(1)
     expect(snap.state_dir).toBe(stateDir)
     expect(snap.agents).toEqual({})
   })

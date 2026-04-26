@@ -71,7 +71,7 @@ export function buildProgram(): Command {
       const supervisor = await Supervisor.create({ stateDir })
       const snapshot = supervisor.snapshot()
       console.log(`Initialized 2200 state directory at ${snapshot.state_dir}`)
-      console.log(`Schema version: ${snapshot.schema_version}`)
+      console.log(`Schema version: ${String(snapshot.schema_version)}`)
       console.log(`Agents: ${String(Object.keys(snapshot.agents).length)}`)
     })
 

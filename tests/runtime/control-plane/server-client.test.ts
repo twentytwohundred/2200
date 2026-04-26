@@ -64,13 +64,13 @@ describe('JsonRpcServer + JsonRpcClient (happy path)', () => {
   it('returns state.snapshot result with the right schema', async () => {
     h = harness({
       'state.snapshot': () => ({
-        schema_version: '0.1' as const,
+        schema_version: 1 as const,
         state_dir: '/tmp/test',
         agents: {},
       }),
     })
     const snap = await h.client.call('state.snapshot', {})
-    expect(snap.schema_version).toBe('0.1')
+    expect(snap.schema_version).toBe(1)
     expect(snap.state_dir).toBe('/tmp/test')
     expect(snap.agents).toEqual({})
   })
