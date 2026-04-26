@@ -1,7 +1,7 @@
 ---
 name: Decision record proposal
 about: Surface an architectural question that needs a locked decision before code
-title: "[decision] "
+title: '[decision] '
 labels: needs-decision
 ---
 

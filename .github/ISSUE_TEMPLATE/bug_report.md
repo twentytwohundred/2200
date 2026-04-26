@@ -1,7 +1,7 @@
 ---
 name: Bug report
 about: Report a bug in 2200's runtime, tools, or wiki
-title: "[bug] "
+title: '[bug] '
 labels: bug
 ---
 

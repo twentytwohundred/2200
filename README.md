@@ -36,19 +36,56 @@ David is not on the seed team. David is the first Agent 2200 will spawn through 
 
 ## Repository contents
 
-| Path | Purpose |
-|---|---|
-| `LICENSE` | Elastic License v2 |
-| `README.md` | this file |
-| `AGENTS.md` | conventions for Agents working in this repository |
-| `SECURITY.md` | responsible disclosure |
-| `CONTRIBUTING.md` | contribution model (closed during seed-team build) |
-| `CHANGELOG.md` | release notes (populated when releases start) |
+| Path                     | Purpose                                                          |
+| ------------------------ | ---------------------------------------------------------------- |
+| `LICENSE`                | Elastic License v2                                               |
+| `README.md`              | this file                                                        |
+| `AGENTS.md`              | conventions for Agents working in this repository                |
+| `SECURITY.md`            | responsible disclosure                                           |
+| `CONTRIBUTING.md`        | contribution model (closed during seed-team build)               |
+| `CHANGELOG.md`           | release notes (populated when releases start)                    |
 | `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts (empty until something is lifted) |
-| `.github/` | issue templates, PR template, future workflow files |
-| `src/` | runtime code (added at Epic 2 build start) |
-| `tests/` | test code (added at Epic 2 build start) |
-| `scripts/` | build, deploy, sync, and ops scripts (added as needed) |
+| `.github/`               | issue templates, PR template, CI workflows                       |
+| `src/`                   | runtime code (Epic 2 in progress)                                |
+| `tests/`                 | test code                                                        |
+| `scripts/`               | build, deploy, sync, and ops scripts (added as needed)           |
+
+## Development
+
+This is a TypeScript project managed with pnpm. Node 22+ required (see [`.nvmrc`](.nvmrc)).
+
+```bash
+# install dependencies (one-time)
+pnpm install
+
+# common dev commands
+pnpm typecheck          # tsc --noEmit
+pnpm lint               # eslint . (flat config; type-aware rules enabled)
+pnpm lint:fix           # auto-fix what's auto-fixable
+pnpm format             # prettier --write .
+pnpm format:check       # prettier --check . (used by CI)
+pnpm test               # vitest run
+pnpm test:watch         # vitest in watch mode
+pnpm test:coverage      # vitest with v8 coverage
+pnpm build              # tsup -> dist/
+pnpm clean              # remove dist, coverage, .tscache
+
+# everything CI runs, in order
+pnpm verify
+```
+
+CI runs on every PR and on `main` pushes (see [.github/workflows/ci.yml](.github/workflows/ci.yml)). Type-check, lint, format check, test, build. All must pass before merge.
+
+### Toolchain
+
+Each pick is documented in `wiki/decisions/`:
+
+- **Language:** TypeScript with strict + type-aware ESLint rules
+- **Build:** [`tsup`](https://tsup.egoist.dev/) (esbuild-based, sensible defaults for CLIs and libraries)
+- **Test:** [`vitest`](https://vitest.dev/)
+- **Lint:** [`eslint`](https://eslint.org/) with [`typescript-eslint`](https://typescript-eslint.io/) flat config; `strictTypeChecked` + `stylisticTypeChecked` recommended sets
+- **Format:** [`prettier`](https://prettier.io/) (no semicolons, single quotes, trailing commas, 100-char width)
+- **Package manager:** [`pnpm`](https://pnpm.io/)
 
 ## License
 
