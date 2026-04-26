@@ -146,6 +146,46 @@ export const ModelIdSchema = z.string().regex(/^[a-z0-9]+\/[a-z0-9-]+$/, {
 export type ModelId = z.infer<typeof ModelIdSchema>
 
 // ---------------------------------------------------------------------------
+// cli.* methods (CLI -> supervisor; mutate state via the running daemon)
+// ---------------------------------------------------------------------------
+
+/** C->S: register a new Agent record. Mirrors `Supervisor.createAgent`. */
+export const CliAgentCreateParamsSchema = z.object({
+  name: z.string().min(1),
+  identity_path: z.string().min(1),
+})
+export type CliAgentCreateParams = z.infer<typeof CliAgentCreateParamsSchema>
+
+export const CliAgentCreateResultSchema = z.object({
+  ok: z.literal(true),
+})
+export type CliAgentCreateResult = z.infer<typeof CliAgentCreateResultSchema>
+
+/** C->S: spawn the Agent process for an existing record. */
+export const CliAgentStartParamsSchema = z.object({
+  name: z.string().min(1),
+})
+export type CliAgentStartParams = z.infer<typeof CliAgentStartParamsSchema>
+
+export const CliAgentStartResultSchema = z.object({
+  ok: z.literal(true),
+  pid: z.number().int().positive(),
+})
+export type CliAgentStartResult = z.infer<typeof CliAgentStartResultSchema>
+
+/** C->S: stop a running Agent process gracefully. */
+export const CliAgentStopParamsSchema = z.object({
+  name: z.string().min(1),
+  reason: z.string().optional(),
+})
+export type CliAgentStopParams = z.infer<typeof CliAgentStopParamsSchema>
+
+export const CliAgentStopResultSchema = z.object({
+  ok: z.literal(true),
+})
+export type CliAgentStopResult = z.infer<typeof CliAgentStopResultSchema>
+
+// ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
 
@@ -175,6 +215,18 @@ export const METHODS = {
   'state.snapshot': {
     params: StateSnapshotParamsSchema,
     result: StateSnapshotResultSchema,
+  },
+  'cli.agent.create': {
+    params: CliAgentCreateParamsSchema,
+    result: CliAgentCreateResultSchema,
+  },
+  'cli.agent.start': {
+    params: CliAgentStartParamsSchema,
+    result: CliAgentStartResultSchema,
+  },
+  'cli.agent.stop': {
+    params: CliAgentStopParamsSchema,
+    result: CliAgentStopResultSchema,
   },
 } as const
 

@@ -3,24 +3,21 @@
  * 2200 CLI entry point.
  *
  * Wires the supervisor and Agent lifecycle into the public CLI surface
- * locked in the Epic 2 spec. v1 implements: init, agent create, agent
- * start, agent stop, agent status. The remaining subcommands (agent
- * resume, task *, notification *) are stubs awaiting their respective
- * subsystems (detectors, task state, notification system) to land.
+ * locked in the Epic 2 spec. v1 implements: init, daemon (start/stop/
+ * status/foreground), agent create, agent start, agent stop, agent status.
+ * The remaining subcommands (agent resume, task *, notification *) are
+ * stubs awaiting their respective subsystems (detectors, task state,
+ * notification system) to land.
  *
  * Architecturally, the CLI is a thin client over the supervisor's JSON-RPC
- * API: read-only commands hit `state.snapshot`; write commands either
- * mutate state via the in-process Supervisor (when no supervisor process
- * is running) or fall back to spawning the supervisor on demand.
+ * API. When a daemon is running on the configured state directory, write
+ * commands route through it via UDS RPC so the daemon's in-memory state
+ * stays consistent. When no daemon is running, in-process operations are
+ * used for state-only commands (`init`, `agent create`, `agent status`),
+ * and process-spawning commands (`agent start`, `agent stop`) error with
+ * a clear "start the daemon first" message.
  *
- * For v1, the CLI runs the supervisor in-process for `init`, `agent create`,
- * `agent start`, `agent stop`, `agent status`. A long-running daemon mode
- * (`2200 daemon`) lands in a subsequent PR; until then, `agent start`
- * spawns the Agent and exits, leaving the Agent connected to a transient
- * in-process supervisor that exits with the CLI. The next PR introduces
- * the daemon and the durable supervisor process.
- *
- * See https://github.com/twentytwohundred/2200/wiki/02-agent-runtime-minimum
+ * See https://github.com/twentytwohundred/.github/wiki/02-agent-runtime-minimum
  * for the locked Epic 2 spec.
  */
 import { fileURLToPath } from 'node:url'
@@ -29,6 +26,11 @@ import { join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
+import { JsonRpcClient } from '../runtime/control-plane/client.js'
+import { connectUds } from '../runtime/control-plane/transport-uds.js'
+import type { StateSnapshotResult } from '../runtime/control-plane/protocol.js'
+import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
+import { readLivePid } from '../runtime/supervisor/pidfile.js'
 
 function defaultStateDir(): string {
   return process.env['TWENTYTWOHUNDRED_STATE_DIR'] ?? join(homedir(), '.2200')
@@ -39,9 +41,39 @@ function notYetImplemented(command: string, lands: string): never {
   console.error('')
   console.error(`This command lands in ${lands}.`)
   console.error(
-    'See https://github.com/twentytwohundred/2200/wiki/02-agent-runtime-minimum for the locked Epic 2 spec.',
+    'See https://github.com/twentytwohundred/.github/wiki/02-agent-runtime-minimum for the locked Epic 2 spec.',
   )
   process.exit(2)
+}
+
+/**
+ * Connect to a running supervisor daemon if one is live on `stateDir`.
+ * Returns null if no daemon is running. Throws on UDS connect failure
+ * even when the PID file says a daemon should be there (likely a stale
+ * socket or permissions issue).
+ */
+async function connectToDaemon(stateDir: string): Promise<JsonRpcClient | null> {
+  const pid = await readLivePid(stateDir)
+  if (pid === null) return null
+  const conn = await connectUds(Supervisor.socketPath(stateDir))
+  return new JsonRpcClient(conn)
+}
+
+/**
+ * Read the current state snapshot. If a daemon is running, RPC to it for
+ * the freshest in-memory view; otherwise read directly from disk.
+ */
+async function readSnapshot(stateDir: string): Promise<StateSnapshotResult> {
+  const client = await connectToDaemon(stateDir)
+  if (client) {
+    try {
+      return await client.call('state.snapshot', {})
+    } finally {
+      await client.close()
+    }
+  }
+  const supervisor = await Supervisor.create({ stateDir })
+  return supervisor.snapshot()
 }
 
 /**
@@ -76,6 +108,57 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 daemon <subcommand>
+  // ---------------------------------------------------------------------------
+
+  const daemon = program
+    .command('daemon')
+    .description('manage the long-running supervisor daemon (start, stop, status)')
+
+  daemon
+    .command('start')
+    .description('start the supervisor as a detached background daemon')
+    .action(async () => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const pid = await spawnDaemon({ stateDir })
+      console.log(`supervisor daemon started`)
+      console.log(`  pid:        ${String(pid)}`)
+      console.log(`  state dir:  ${stateDir}`)
+      console.log(`  log file:   ${logFilePath(stateDir)}`)
+      console.log(`  socket:     ${Supervisor.socketPath(stateDir)}`)
+    })
+
+  daemon
+    .command('stop')
+    .description('stop the running supervisor daemon (SIGTERM, then SIGKILL on timeout)')
+    .action(async () => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const stopped = await killDaemon(stateDir)
+      if (stopped) {
+        console.log('supervisor daemon stopped')
+      } else {
+        console.log('no supervisor daemon was running')
+      }
+    })
+
+  daemon
+    .command('status')
+    .description('show whether a supervisor daemon is running on the state directory')
+    .action(async () => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const pid = await readLivePid(stateDir)
+      if (pid === null) {
+        console.log(`supervisor daemon: not running (state dir: ${stateDir})`)
+        process.exit(1)
+      }
+      console.log(`supervisor daemon: running`)
+      console.log(`  pid:        ${String(pid)}`)
+      console.log(`  state dir:  ${stateDir}`)
+      console.log(`  log file:   ${logFilePath(stateDir)}`)
+      console.log(`  socket:     ${Supervisor.socketPath(stateDir)}`)
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 agent <subcommand>
   // ---------------------------------------------------------------------------
 
@@ -87,8 +170,17 @@ export function buildProgram(): Command {
     .requiredOption('--identity <path>', 'path to the Agent Identity markdown file')
     .action(async (name: string, opts: { identity: string }) => {
       const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const supervisor = await Supervisor.create({ stateDir })
-      await supervisor.createAgent(name, opts.identity)
+      const client = await connectToDaemon(stateDir)
+      if (client) {
+        try {
+          await client.call('cli.agent.create', { name, identity_path: opts.identity })
+        } finally {
+          await client.close()
+        }
+      } else {
+        const supervisor = await Supervisor.create({ stateDir })
+        await supervisor.createAgent(name, opts.identity)
+      }
       console.log(`Agent "${name}" created.`)
       console.log(`Identity: ${opts.identity}`)
       console.log(`Run "2200 agent start ${name}" to bring it up.`)
@@ -96,19 +188,42 @@ export function buildProgram(): Command {
 
   agent
     .command('start <name>')
-    .description('start an Agent process')
-    .action(() => {
-      notYetImplemented(
-        'agent start',
-        'the next PR (durable supervisor daemon + agent start wiring)',
-      )
+    .description('start an Agent process (requires a running daemon)')
+    .action(async (name: string) => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const client = await connectToDaemon(stateDir)
+      if (!client) {
+        console.error(
+          `agent start requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.agent.start', { name })
+        console.log(`Agent "${name}" started (pid ${String(result.pid)}).`)
+      } finally {
+        await client.close()
+      }
     })
 
   agent
     .command('stop <name>')
-    .description('stop an Agent process gracefully')
-    .action(() => {
-      notYetImplemented('agent stop', 'the next PR (durable supervisor daemon + agent stop wiring)')
+    .description('stop an Agent process gracefully (requires a running daemon)')
+    .action(async (name: string) => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const client = await connectToDaemon(stateDir)
+      if (!client) {
+        console.error(
+          `agent stop requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.agent.stop', { name })
+        console.log(`Agent "${name}" stopped.`)
+      } finally {
+        await client.close()
+      }
     })
 
   agent
@@ -123,8 +238,7 @@ export function buildProgram(): Command {
     .description('show the current state of an Agent (running, blocked, errored, ...)')
     .action(async (name: string) => {
       const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const supervisor = await Supervisor.create({ stateDir })
-      const snapshot = supervisor.snapshot()
+      const snapshot = await readSnapshot(stateDir)
       const record = snapshot.agents[name]
       if (!record) {
         console.error(`Agent "${name}" not found in ${snapshot.state_dir}`)

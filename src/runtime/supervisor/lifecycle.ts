@@ -11,6 +11,7 @@
  * updates on every state change.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createLogger, type Logger } from '../util/logger.js'
@@ -124,13 +125,28 @@ export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): SpawnedAgent 
 }
 
 /**
- * Resolve the path to the bundled Agent bootstrap script. When this module
- * is itself bundled (via tsup), the bootstrap lives next to it as
- * `dist/runtime/agent/bootstrap.js`.
+ * Resolve the path to the bundled Agent bootstrap script.
+ *
+ * tsup bundles imports into entry files, so this module's `import.meta.url`
+ * reports the entry file's URL (typically `dist/cli/main.js` when the CLI
+ * spawns an Agent in-process, or `dist/runtime/supervisor/bootstrap.js`
+ * when the supervisor daemon spawns one). Try the candidate paths in
+ * order; pick the first that exists.
  */
 function defaultBootstrapPath(): string {
   const here = dirname(fileURLToPath(import.meta.url))
-  // From src/runtime/supervisor/lifecycle.ts, the bootstrap is at
-  // ../agent/bootstrap.js (post-build, both files live under dist/).
-  return resolve(here, '..', 'agent', 'bootstrap.js')
+  const candidates = [
+    // From dist/runtime/supervisor/bootstrap.js: ../agent/bootstrap.js
+    resolve(here, '..', 'agent', 'bootstrap.js'),
+    // From dist/cli/main.js: ../runtime/agent/bootstrap.js
+    resolve(here, '..', 'runtime', 'agent', 'bootstrap.js'),
+    // Dist root sibling case
+    resolve(here, 'runtime', 'agent', 'bootstrap.js'),
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  const fallback = candidates[0]
+  if (!fallback) throw new Error('no Agent bootstrap path candidates configured')
+  return fallback
 }

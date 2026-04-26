@@ -274,6 +274,25 @@ export class Supervisor {
       'state.snapshot': () => {
         return this.snapshot()
       },
+      // CLI-facing methods: route mutations through the running daemon so its
+      // in-memory state stays consistent. Read-only commands can hit
+      // `state.snapshot`; write commands go here.
+      'cli.agent.create': async (params) => {
+        await this.createAgent(params.name, params.identity_path)
+        return { ok: true as const }
+      },
+      'cli.agent.start': async (params) => {
+        await this.startAgent(params.name)
+        const record = this.state.agents[params.name]
+        if (!record?.pid) {
+          throw new Error(`Agent ${params.name} started but no pid recorded`)
+        }
+        return { ok: true as const, pid: record.pid }
+      },
+      'cli.agent.stop': async (params) => {
+        await this.stopAgent(params.name, params.reason ?? 'cli_request')
+        return { ok: true as const }
+      },
     }
   }
 
