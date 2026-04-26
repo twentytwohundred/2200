@@ -55,25 +55,68 @@ OpenClaw is MIT (Copyright 2025 Peter Steinberger). Most other prior-art sources
 ├── CONTRIBUTING.md          contribution model
 ├── CHANGELOG.md             release notes
 ├── THIRD_PARTY_NOTICES.md   attribution for code-lifts
-├── .github/                 issue templates, PR template, workflow files
-├── src/                     runtime code (added at Epic 2 build start)
-├── tests/                   test code (added at Epic 2 build start)
-└── scripts/                 build, deploy, sync, and ops scripts
+├── .github/
+│   ├── workflows/           CI workflow files
+│   ├── ISSUE_TEMPLATE/      issue templates (bug, feature, decision-record)
+│   ├── pull_request_template.md
+│   └── dependabot.yml       weekly dep updates
+├── package.json             pnpm-managed; scripts: typecheck, lint, format, test, build, verify
+├── tsconfig.json            strict everything
+├── tsup.config.ts           build (esbuild-based)
+├── eslint.config.js         flat config + typescript-eslint strictTypeChecked
+├── .prettierrc.json         no semis, single quotes, trailing commas, 100-char width
+├── vitest.config.ts         test runner config
+├── .nvmrc                   pinned Node version
+├── src/                     runtime code (Epic 2 in progress)
+│   ├── index.ts             library entry
+│   └── cli/main.ts          CLI dispatch (commander-based)
+├── tests/                   vitest tests
+└── scripts/                 build, deploy, sync, and ops scripts (added as needed)
 ```
 
 The wiki at `https://github.com/twentytwohundred/2200/wiki` is the project knowledge base. It is sourced from a canonical local tree on the seed-team's machines and synced via `scripts/publish-wiki.sh`.
 
+## Toolchain
+
+| Concern         | Pick                                                     |
+| --------------- | -------------------------------------------------------- |
+| Language        | TypeScript 5.x (strict + type-aware ESLint)              |
+| Build           | tsup (esbuild-based)                                     |
+| Test            | vitest                                                   |
+| Lint            | eslint flat config + typescript-eslint strictTypeChecked |
+| Format          | prettier                                                 |
+| Package manager | pnpm 9+                                                  |
+| Node            | 22+ (pinned in `.nvmrc`)                                 |
+
+Each pick is documented in `wiki/decisions/2026-04-26-toolchain-pick.md`. Bumping major versions of any toolchain pick gets a follow-up decision record.
+
 ## How to do work
+
+### Dev loop
+
+```bash
+pnpm install            # one-time setup
+pnpm typecheck          # tsc --noEmit
+pnpm lint               # eslint . (type-aware)
+pnpm test:watch         # vitest in watch mode
+pnpm verify             # everything CI runs, in order
+```
+
+### Branching
+
+- `main`: protected. PRs only; CI must pass; no force-push; squash-merge with delete-branch-on-merge.
+- Feature branches: `<epic>/<short-description>` (e.g., `epic-2/supervisor`, `epic-2/identity-loader`, `wiki/architecture-update`).
+- **Stacked PRs** are supported when one piece of work depends on a previous unmerged PR. Branch the dependent PR from the previous branch, target it as base, rebase forward as the parent gets fixes. Once the parent merges, retarget to `main`.
 
 ### When opening a PR
 
-- Branch from `main`. Name the branch by the epic and a short description (`epic-2/supervisor-skeleton`, `wiki/architecture-update`).
 - Small focused commits with messages that explain WHY.
 - Include the co-author trailer for any work done with Claude assistance:
   ```
   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
   ```
-- PR description follows the template in `.github/pull_request_template.md`.
+- PR description follows the template in `.github/pull_request_template.md`. Fill the upgrade-readiness checklist for any change that touches persisted state, runtime processes, Extensions, credentials, internal APIs, or task handling.
+- Squash-merge once CI is green. The squash-merge commit message is the project's audit trail; treat it as documentation.
 
 ### When making a load-bearing decision
 

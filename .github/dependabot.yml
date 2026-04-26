@@ -1,0 +1,48 @@
+# Dependabot config for the 2200 runtime repo.
+#
+# Weekly updates so the toolchain stays current without flooding the PR
+# queue. Grouped updates reduce noise: one PR per ecosystem per week
+# instead of one PR per dependency.
+
+version: 2
+updates:
+  # Node / pnpm dependencies
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'America/Chicago'
+    open-pull-requests-limit: 5
+    labels:
+      - 'tooling'
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    groups:
+      # Group all minor and patch updates into one PR per week.
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - 'minor'
+          - 'patch'
+      # Major updates remain individual PRs (each may need a decision record).
+      major:
+        applies-to: version-updates
+        update-types:
+          - 'major'
+
+  # GitHub Actions in workflow files
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'America/Chicago'
+    open-pull-requests-limit: 3
+    labels:
+      - 'tooling'
+    commit-message:
+      prefix: 'ci'
