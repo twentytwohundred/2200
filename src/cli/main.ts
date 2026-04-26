@@ -2,23 +2,37 @@
 /**
  * 2200 CLI entry point.
  *
- * Stub at PR 2: every subcommand surfaces a "not yet implemented" message
- * pointing at the spec section that captures the eventual behavior. Real
- * implementations land on subsequent PRs as the supervisor, Agent loop,
- * Identity loader, MCP-native tool layer, plan/run/perm wrapping, and the
- * detectors ship.
+ * Wires the supervisor and Agent lifecycle into the public CLI surface
+ * locked in the Epic 2 spec. v1 implements: init, agent create, agent
+ * start, agent stop, agent status. The remaining subcommands (agent
+ * resume, task *, notification *) are stubs awaiting their respective
+ * subsystems (detectors, task state, notification system) to land.
  *
- * Why scaffold the dispatch shape now: the CLI surface is part of the public
- * contract per the Epic 2 spec. Locking the surface (command names, argument
- * shapes, help text) before the implementations land means the supervisor and
- * downstream PRs hook into a known shape rather than re-deriving it.
+ * Architecturally, the CLI is a thin client over the supervisor's JSON-RPC
+ * API: read-only commands hit `state.snapshot`; write commands either
+ * mutate state via the in-process Supervisor (when no supervisor process
+ * is running) or fall back to spawning the supervisor on demand.
+ *
+ * For v1, the CLI runs the supervisor in-process for `init`, `agent create`,
+ * `agent start`, `agent stop`, `agent status`. A long-running daemon mode
+ * (`2200 daemon`) lands in a subsequent PR; until then, `agent start`
+ * spawns the Agent and exits, leaving the Agent connected to a transient
+ * in-process supervisor that exits with the CLI. The next PR introduces
+ * the daemon and the durable supervisor process.
  *
  * See https://github.com/twentytwohundred/2200/wiki/02-agent-runtime-minimum
  * for the locked Epic 2 spec.
  */
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
+import { Supervisor } from '../runtime/supervisor/supervisor.js'
+
+function defaultStateDir(): string {
+  return process.env['TWENTYTWOHUNDRED_STATE_DIR'] ?? join(homedir(), '.2200')
+}
 
 function notYetImplemented(command: string, lands: string): never {
   console.error(`2200 ${command}: not yet implemented.`)
@@ -43,6 +57,7 @@ export function buildProgram(): Command {
     .description('A platform for hosting your fleet of always-on Agents.')
     .version(VERSION, '-v, --version', 'output the current version')
     .helpOption('-h, --help', 'display help for command')
+    .option('--state-dir <path>', 'override the default state directory (~/.2200 by default)')
 
   // ---------------------------------------------------------------------------
   // Top-level: init
@@ -51,9 +66,13 @@ export function buildProgram(): Command {
   program
     .command('init')
     .description('initialize the 2200 supervisor state directory')
-    .option('--state-dir <path>', 'override the default state directory')
-    .action(() => {
-      notYetImplemented('init', 'a future PR (supervisor + state-on-disk scaffold)')
+    .action(async () => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const supervisor = await Supervisor.create({ stateDir })
+      const snapshot = supervisor.snapshot()
+      console.log(`Initialized 2200 state directory at ${snapshot.state_dir}`)
+      console.log(`Schema version: ${snapshot.schema_version}`)
+      console.log(`Agents: ${String(Object.keys(snapshot.agents).length)}`)
     })
 
   // ---------------------------------------------------------------------------
@@ -63,25 +82,33 @@ export function buildProgram(): Command {
   const agent = program.command('agent').description('manage Agents (create, start, stop, status)')
 
   agent
-    .command('create')
+    .command('create <name>')
     .description('register a new Agent with the supervisor')
     .requiredOption('--identity <path>', 'path to the Agent Identity markdown file')
-    .action(() => {
-      notYetImplemented('agent create', 'a future PR (Identity loader + supervisor)')
+    .action(async (name: string, opts: { identity: string }) => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const supervisor = await Supervisor.create({ stateDir })
+      await supervisor.createAgent(name, opts.identity)
+      console.log(`Agent "${name}" created.`)
+      console.log(`Identity: ${opts.identity}`)
+      console.log(`Run "2200 agent start ${name}" to bring it up.`)
     })
 
   agent
     .command('start <name>')
     .description('start an Agent process')
     .action(() => {
-      notYetImplemented('agent start', 'a future PR (supervisor + Agent process model)')
+      notYetImplemented(
+        'agent start',
+        'the next PR (durable supervisor daemon + agent start wiring)',
+      )
     })
 
   agent
     .command('stop <name>')
     .description('stop an Agent process gracefully')
     .action(() => {
-      notYetImplemented('agent stop', 'a future PR (supervisor + Agent process model)')
+      notYetImplemented('agent stop', 'the next PR (durable supervisor daemon + agent stop wiring)')
     })
 
   agent
@@ -94,8 +121,24 @@ export function buildProgram(): Command {
   agent
     .command('status <name>')
     .description('show the current state of an Agent (running, blocked, errored, ...)')
-    .action(() => {
-      notYetImplemented('agent status', 'a future PR (supervisor)')
+    .action(async (name: string) => {
+      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
+      const supervisor = await Supervisor.create({ stateDir })
+      const snapshot = supervisor.snapshot()
+      const record = snapshot.agents[name]
+      if (!record) {
+        console.error(`Agent "${name}" not found in ${snapshot.state_dir}`)
+        process.exit(1)
+      }
+      console.log(`Name:           ${record.name}`)
+      console.log(`State:          ${record.state}`)
+      console.log(`Identity:       ${record.identity_path}`)
+      console.log(`PID:            ${record.pid === null ? '(none)' : String(record.pid)}`)
+      console.log(`Last heartbeat: ${record.last_heartbeat ?? '(none)'}`)
+      if (record.errored_at) {
+        console.log(`Errored at:     ${record.errored_at}`)
+        console.log(`Error reason:   ${record.errored_reason ?? '(none)'}`)
+      }
     })
 
   // ---------------------------------------------------------------------------
