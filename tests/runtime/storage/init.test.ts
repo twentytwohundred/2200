@@ -2,11 +2,16 @@
  * Tests for the 2200_HOME initializer.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
-import { homePaths, agentPaths } from '../../../src/runtime/storage/layout.js'
+import {
+  initHome,
+  initAgentDirs,
+  initPubDirs,
+  writePubMd,
+} from '../../../src/runtime/storage/init.js'
+import { homePaths, agentPaths, pubPaths } from '../../../src/runtime/storage/layout.js'
 
 let home: string
 
@@ -27,6 +32,7 @@ describe('initHome', () => {
       paths.commonsScratch,
       paths.agents,
       paths.stateNotifications,
+      paths.stateOpenpub,
       paths.config,
     ]) {
       const s = await stat(dir)
@@ -81,7 +87,51 @@ describe('initAgentDirs', () => {
     await mkdir(agentPaths(home, 'hobby').root, { recursive: true })
     await writeFile(canonical, 'preexisting')
     await initAgentDirs(home, 'hobby', canonical)
-    const { readFile } = await import('node:fs/promises')
     expect(await readFile(canonical, 'utf8')).toBe('preexisting')
+  })
+})
+
+describe('initPubDirs', () => {
+  it('creates the per-pub root + data dir', async () => {
+    await initHome(home)
+    await initPubDirs(home, 'ops', '---\nname: ops\n---\n')
+    const paths = pubPaths(home, 'ops')
+    expect((await stat(paths.root)).isDirectory()).toBe(true)
+    expect((await stat(paths.data)).isDirectory()).toBe(true)
+  })
+
+  it('writes PUB.md with the supplied content', async () => {
+    await initHome(home)
+    const content = '---\nname: ops\ndescription: ops pub\n---\n# ops\n'
+    await initPubDirs(home, 'ops', content)
+    const paths = pubPaths(home, 'ops')
+    expect(await readFile(paths.pubMd, 'utf8')).toBe(content)
+  })
+
+  it('refuses to silently overwrite an existing PUB.md', async () => {
+    await initHome(home)
+    await initPubDirs(home, 'ops', 'first')
+    await expect(initPubDirs(home, 'ops', 'second')).rejects.toThrow(/already exists/)
+    // First content unchanged.
+    expect(await readFile(pubPaths(home, 'ops').pubMd, 'utf8')).toBe('first')
+  })
+
+  it('rejects invalid pub names', async () => {
+    await initHome(home)
+    await expect(initPubDirs(home, 'Invalid Name', 'x')).rejects.toThrow(/invalid pub name/)
+  })
+})
+
+describe('writePubMd', () => {
+  it('atomically overwrites an existing PUB.md', async () => {
+    await initHome(home)
+    await initPubDirs(home, 'ops', 'first')
+    await writePubMd(home, 'ops', 'second')
+    expect(await readFile(pubPaths(home, 'ops').pubMd, 'utf8')).toBe('second')
+  })
+
+  it('rejects invalid pub names', async () => {
+    await initHome(home)
+    await expect(writePubMd(home, 'Bad', 'x')).rejects.toThrow(/invalid pub name/)
   })
 })

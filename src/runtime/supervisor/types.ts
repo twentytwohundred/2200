@@ -6,13 +6,13 @@
  * `StateSnapshotResult` from the control-plane protocol so the same
  * vocabulary travels across the wire and onto disk.
  */
-import type { AgentRecord, StateSnapshotResult } from '../control-plane/protocol.js'
+import type { AgentRecord, PubRecord, StateSnapshotResult } from '../control-plane/protocol.js'
 
 /** The on-disk shape of `<state-dir>/supervisor.json`. */
 export type SupervisorState = StateSnapshotResult
 
 /** Re-exported for callers in this directory. */
-export type { AgentRecord }
+export type { AgentRecord, PubRecord }
 
 /**
  * Make a fresh `SupervisorState` rooted at the given 2200_HOME with no
@@ -35,5 +35,6 @@ export function emptyState(home: string): SupervisorState {
     home,
     state_dir: join(home, 'state'),
     agents: {},
+    pubs: {},
   }
 }

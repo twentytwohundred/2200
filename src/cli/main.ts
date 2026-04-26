@@ -378,6 +378,154 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 pub <subcommand>  (Epic 3 PR A)
+  // ---------------------------------------------------------------------------
+
+  const pub = program
+    .command('pub')
+    .description('manage local OpenPub instances (create, list, start, stop, status)')
+
+  pub
+    .command('create <name>')
+    .description('create a new pub on this 2200 instance')
+    .option('--description <text>', 'human-readable pub description')
+    .option('--capacity <n>', 'max number of agents allowed in the pub', (v) => parseInt(v, 10))
+    .option('--port <n>', 'override the supervisor-allocated port', (v) => parseInt(v, 10))
+    .option('--issuer <mode>', 'identity issuer mode: local (default) | hub')
+    .option('--hub-url <url>', 'hub URL when --issuer hub')
+    .action(
+      async (
+        pubName: string,
+        opts: {
+          description?: string
+          capacity?: number
+          port?: number
+          issuer?: string
+          hubUrl?: string
+        },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (!client) {
+          console.error(
+            `pub create requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+          )
+          process.exit(1)
+        }
+        if (opts.issuer && opts.issuer !== 'local' && opts.issuer !== 'hub') {
+          console.error(`--issuer must be one of: local, hub`)
+          process.exit(1)
+        }
+        const params: Parameters<typeof client.call<'cli.pub.create'>>[1] = { name: pubName }
+        if (opts.description !== undefined) params.description = opts.description
+        if (opts.capacity !== undefined) params.capacity = opts.capacity
+        if (opts.port !== undefined) params.port = opts.port
+        if (opts.issuer === 'local' || opts.issuer === 'hub') params.issuer = opts.issuer
+        if (opts.hubUrl !== undefined) params.hub_url = opts.hubUrl
+        try {
+          const result = await client.call('cli.pub.create', params)
+          console.log(
+            `pub "${result.name}" created on port ${String(result.port)} (config at ${result.pub_md_path}).`,
+          )
+        } finally {
+          await client.close()
+        }
+      },
+    )
+
+  pub
+    .command('start <name>')
+    .description('start the pub-server process for an existing pub')
+    .action(async (pubName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `pub start requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.pub.start', { name: pubName })
+        console.log(
+          `pub "${pubName}" started (pid ${String(result.pid)}, port ${String(result.port)}).`,
+        )
+      } finally {
+        await client.close()
+      }
+    })
+
+  pub
+    .command('stop <name>')
+    .description('stop a running pub-server')
+    .action(async (pubName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `pub stop requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.pub.stop', { name: pubName })
+        console.log(`pub "${pubName}" stopped.`)
+      } finally {
+        await client.close()
+      }
+    })
+
+  pub
+    .command('list')
+    .description('list pubs known to the supervisor')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `pub list requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.pub.list', {})
+        if (result.pubs.length === 0) {
+          console.log('No pubs created. Run "2200 pub create <name>" to create one.')
+          return
+        }
+        for (const p of result.pubs) {
+          const pidStr = p.pid !== null ? String(p.pid) : '-'
+          const errStr = p.errored_reason ? ` errored=${p.errored_reason}` : ''
+          console.log(
+            `${p.name.padEnd(20)} ${p.state.padEnd(10)} port=${String(p.port).padStart(5)}  pid=${pidStr}${errStr}`,
+          )
+        }
+      } finally {
+        await client.close()
+      }
+    })
+
+  pub
+    .command('status <name>')
+    .description('detailed status for one pub')
+    .action(async (pubName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `pub status requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.pub.status', { name: pubName })
+        console.log(JSON.stringify(result, null, 2))
+      } finally {
+        await client.close()
+      }
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 notification <subcommand>
   // ---------------------------------------------------------------------------
 

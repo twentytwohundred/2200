@@ -121,6 +121,41 @@ export const AgentRecordSchema = z.object({
 export type AgentRecord = z.infer<typeof AgentRecordSchema>
 
 /**
+ * Pub lifecycle states. Mirrors `AgentStateSchema` but only the
+ * states a supervised pub-server can actually be in. v1: running,
+ * stopped, errored. No `waiting` (pub-server is always either up or
+ * down) and no `blocked_*` (pubs do not have a task pipe of their
+ * own; they relay messages).
+ */
+export const PubStateSchema = z.enum(['running', 'stopped', 'errored'])
+export type PubState = z.infer<typeof PubStateSchema>
+
+/**
+ * Per-pub record in the supervisor's state. One entry per supervised
+ * `openpub-server` process. `pub_md_path` is the absolute path to
+ * the per-pub `PUB.md` file (the openpub-server config). `port` is
+ * the supervisor-allocated local port the pub listens on.
+ *
+ * The pub-server child receives `PUB_MD_PATH` and `PORT` env vars on
+ * exec; everything else lives in PUB.md or is owned by openpub-server.
+ *
+ * Per Epic 3's "channel = pub" model from Poe's contract, a pub IS
+ * the conversation. There is no "channel" abstraction inside a pub;
+ * a multi-pub install runs N supervised pub-server children.
+ */
+export const PubRecordSchema = z.object({
+  name: z.string(),
+  pub_md_path: z.string(),
+  port: z.number().int().positive(),
+  state: PubStateSchema,
+  pid: z.number().int().positive().nullable(),
+  spawned_at: z.string().nullable(),
+  errored_at: z.string().nullable(),
+  errored_reason: z.string().nullable(),
+})
+export type PubRecord = z.infer<typeof PubRecordSchema>
+
+/**
  * Supervisor state shape. `schema_version` is an integer per
  * [[2026-04-26-schema-version-format]]; bump to `2`, `3`, ... on breaking
  * changes. Backwards-compatible field additions stay at version `1`.
@@ -131,12 +166,18 @@ export type AgentRecord = z.infer<typeof AgentRecordSchema>
  * UDS, the PID file, the log) live. Both are reported so callers can
  * derive other paths (commons/, agents/<name>/, etc.) from `home`
  * without hardcoding the layout.
+ *
+ * `pubs` is the supervisor's per-pub state, populated as the user
+ * runs `2200 pub create`. Empty on a fresh install. Backwards
+ * compatible with v1 supervisor.json files that predate Epic 3:
+ * the loader defaults `pubs` to `{}` if missing.
  */
 export const StateSnapshotResultSchema = z.object({
   schema_version: z.literal(1),
   home: z.string(),
   state_dir: z.string(),
   agents: z.record(z.string(), AgentRecordSchema),
+  pubs: z.record(z.string(), PubRecordSchema).default({}),
 })
 export type StateSnapshotResult = z.infer<typeof StateSnapshotResultSchema>
 
@@ -246,6 +287,91 @@ export const CliTaskListResultSchema = z.object({
 export type CliTaskListResult = z.infer<typeof CliTaskListResultSchema>
 
 // ---------------------------------------------------------------------------
+// cli.pub.* methods (CLI -> supervisor; supervised pub-server lifecycle)
+// ---------------------------------------------------------------------------
+//
+// Per Epic 3 spec v0.3 [[03-local-pub-integration]]: each pub is its own
+// `openpub-server` process, supervised alongside Agent processes. The
+// supervisor allocates a free local port on `cli.pub.create`, writes
+// PUB.md, and execs the configured pub-server binary with PUB_MD_PATH
+// + PORT env vars.
+
+/** C->S: create a new pub. Allocates a port, writes PUB.md, registers the supervised child. */
+export const CliPubCreateParamsSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  capacity: z.number().int().positive().optional(),
+  /** Override the port the supervisor would otherwise allocate. Useful for tests. */
+  port: z.number().int().positive().optional(),
+  /** Override the issuer mode written into PUB.md. Defaults to `local` per Doug's Flag B call. */
+  issuer: z.enum(['local', 'hub']).optional(),
+  /** Required when `issuer === 'hub'`; ignored otherwise. */
+  hub_url: z.url().optional(),
+})
+export type CliPubCreateParams = z.infer<typeof CliPubCreateParamsSchema>
+
+export const CliPubCreateResultSchema = z.object({
+  ok: z.literal(true),
+  name: z.string(),
+  port: z.number().int().positive(),
+  pub_md_path: z.string(),
+})
+export type CliPubCreateResult = z.infer<typeof CliPubCreateResultSchema>
+
+/** C->S: start a registered pub. Idempotent: starting an already-running pub returns its current pid. */
+export const CliPubStartParamsSchema = z.object({
+  name: z.string().min(1),
+})
+export type CliPubStartParams = z.infer<typeof CliPubStartParamsSchema>
+
+export const CliPubStartResultSchema = z.object({
+  ok: z.literal(true),
+  pid: z.number().int().positive(),
+  port: z.number().int().positive(),
+})
+export type CliPubStartResult = z.infer<typeof CliPubStartResultSchema>
+
+/** C->S: stop a running pub. Idempotent: stopping an already-stopped pub returns ok. */
+export const CliPubStopParamsSchema = z.object({
+  name: z.string().min(1),
+  reason: z.string().optional(),
+})
+export type CliPubStopParams = z.infer<typeof CliPubStopParamsSchema>
+
+export const CliPubStopResultSchema = z.object({
+  ok: z.literal(true),
+})
+export type CliPubStopResult = z.infer<typeof CliPubStopResultSchema>
+
+/** C->S: list pubs known to the supervisor. */
+export const CliPubListParamsSchema = z.object({}).strict()
+export type CliPubListParams = z.infer<typeof CliPubListParamsSchema>
+
+export const PubListEntrySchema = z.object({
+  name: z.string(),
+  state: PubStateSchema,
+  port: z.number().int().positive(),
+  pid: z.number().int().positive().nullable(),
+  spawned_at: z.string().nullable(),
+  errored_reason: z.string().nullable(),
+})
+export type PubListEntry = z.infer<typeof PubListEntrySchema>
+
+export const CliPubListResultSchema = z.object({
+  pubs: z.array(PubListEntrySchema),
+})
+export type CliPubListResult = z.infer<typeof CliPubListResultSchema>
+
+/** C->S: detailed status for one pub. */
+export const CliPubStatusParamsSchema = z.object({
+  name: z.string().min(1),
+})
+export type CliPubStatusParams = z.infer<typeof CliPubStatusParamsSchema>
+
+export const CliPubStatusResultSchema = PubRecordSchema
+export type CliPubStatusResult = z.infer<typeof CliPubStatusResultSchema>
+
+// ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
 
@@ -299,6 +425,26 @@ export const METHODS = {
   'cli.task.list': {
     params: CliTaskListParamsSchema,
     result: CliTaskListResultSchema,
+  },
+  'cli.pub.create': {
+    params: CliPubCreateParamsSchema,
+    result: CliPubCreateResultSchema,
+  },
+  'cli.pub.start': {
+    params: CliPubStartParamsSchema,
+    result: CliPubStartResultSchema,
+  },
+  'cli.pub.stop': {
+    params: CliPubStopParamsSchema,
+    result: CliPubStopResultSchema,
+  },
+  'cli.pub.list': {
+    params: CliPubListParamsSchema,
+    result: CliPubListResultSchema,
+  },
+  'cli.pub.status': {
+    params: CliPubStatusParamsSchema,
+    result: CliPubStatusResultSchema,
   },
 } as const
 

@@ -68,6 +68,7 @@ describe('JsonRpcServer + JsonRpcClient (happy path)', () => {
         home: '/tmp/test',
         state_dir: '/tmp/test/state',
         agents: {},
+        pubs: {},
       }),
     })
     const snap = await h.client.call('state.snapshot', {})
