@@ -11,7 +11,6 @@
  * the connection to the named Agent for the duration of that connection.
  * Reconnection (Agent crashes and is restarted) goes through register again.
  */
-import { join } from 'node:path'
 import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-plane/server.js'
 import { listenUds } from '../control-plane/transport-uds.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
@@ -19,13 +18,16 @@ import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord } from './types.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { loadIdentity } from '../identity/loader.js'
+import { homePaths, agentPaths } from '../storage/layout.js'
+import { initHome, initAgentDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
 export interface SupervisorOptions {
-  stateDir: string
+  /** 2200_HOME root per the commons-and-storage-root spec addendum. */
+  home: string
   /** Override the bootstrap script path (testing). */
   agentBootstrapPath?: string
-  /** Inject a listener (testing); defaults to a UDS listener at <state-dir>/supervisor.sock. */
+  /** Inject a listener (testing); defaults to a UDS listener at <home>/state/supervisor.sock. */
   listener?: Listener
   /** Inject a logger. */
   logger?: Logger
@@ -47,29 +49,33 @@ export class Supervisor {
     this.server = new JsonRpcServer(this.handlers(), this.log.child('rpc'))
   }
 
-  /** Construct and load state from disk. Does not start listening yet. */
+  /**
+   * Construct, ensure the 2200_HOME directory layout exists, and load
+   * state from disk. Does not start listening yet.
+   */
   static async create(options: SupervisorOptions): Promise<Supervisor> {
-    const state = await loadState(options.stateDir)
+    await initHome(options.home)
+    const state = await loadState(options.home)
     const sup = new Supervisor(state, options)
     await saveState(state)
     return sup
   }
 
-  /** Default UDS path inside the state directory. */
-  static socketPath(stateDir: string): string {
-    return join(stateDir, 'supervisor.sock')
+  /** UDS socket path under <home>/state/supervisor.sock. */
+  static socketPath(home: string): string {
+    return homePaths(home).stateSupervisorSock
   }
 
   /**
    * Start listening on the control-plane socket. Returns once the socket is
    * bound; does not wait for clients.
    */
-  async start(options: SupervisorOptions = { stateDir: this.state.state_dir }): Promise<void> {
+  async start(options: SupervisorOptions = { home: this.state.home }): Promise<void> {
     if (this.listener) return
-    this.listener =
-      options.listener ?? (await listenUds(Supervisor.socketPath(this.state.state_dir)))
+    this.listener = options.listener ?? (await listenUds(Supervisor.socketPath(this.state.home)))
     void this.acceptLoop()
     this.log.info('supervisor listening', {
+      home: this.state.home,
       stateDir: this.state.state_dir,
     })
   }
@@ -116,29 +122,39 @@ export class Supervisor {
   /**
    * Register a new Agent record. Used by the CLI's `2200 agent create`.
    * Throws if an Agent by that name already exists, or if the Identity
-   * file at `identityPath` fails validation.
+   * file at `sourceIdentityPath` fails validation.
    *
-   * Identity validation runs at create time so a bad Identity surfaces
-   * early (the Agent has not even tried to start yet) instead of at
-   * `agent start` when the cost of debugging is higher.
+   * Per [[2026-04-26-commons-and-storage-root]], the Identity file is
+   * copied into the canonical location at
+   * `<home>/agents/<name>/identity.md` on create. After this call the
+   * canonical location is the source of truth; the user can edit it
+   * there directly and the next `agent start` picks up the change.
+   *
+   * Identity validation runs against the user-provided source FIRST so a
+   * bad Identity surfaces before any directory creation or copy
+   * happens.
    */
-  async createAgent(name: string, identityPath: string): Promise<void> {
+  async createAgent(name: string, sourceIdentityPath: string): Promise<void> {
     if (this.state.agents[name]) {
       throw new Error(`Agent already exists: ${name}`)
     }
-    // Validate the Identity now. Surfaces malformed YAML, schema
-    // mismatches, or missing files immediately. The supervisor does
-    // not store the parsed Identity (the Agent process re-loads it on
-    // boot); only the path lives in supervisor.json.
-    const identity = await loadIdentity(identityPath)
+    // Validate the Identity at the source path FIRST. Surfaces malformed
+    // YAML, schema mismatches, or missing files before we touch the
+    // 2200_HOME directory layout.
+    const identity = await loadIdentity(sourceIdentityPath)
     if (identity.frontmatter.agent_name !== name) {
       throw new Error(
         `Identity at ${identity.source_path} declares agent_name "${identity.frontmatter.agent_name}" but you asked to create "${name}". Either rename the Agent or update the Identity.`,
       )
     }
+    // Create per-Agent directory layout and copy the Identity into the
+    // canonical location. After this, the canonical path is what the
+    // supervisor records and what the Agent process loads on start.
+    await initAgentDirs(this.state.home, name, identity.source_path)
+    const canonical = agentPaths(this.state.home, name).identity
     const record: AgentRecord = {
       name,
-      identity_path: identity.source_path,
+      identity_path: canonical,
       state: 'stopped',
       pid: null,
       spawned_at: null,
@@ -152,7 +168,11 @@ export class Supervisor {
       agents: { ...this.state.agents, [name]: record },
     }
     await saveState(this.state)
-    this.log.info('Agent record created', { name, identityPath: identity.source_path })
+    this.log.info('Agent record created', {
+      name,
+      sourceIdentityPath: identity.source_path,
+      canonicalIdentityPath: canonical,
+    })
   }
 
   /** Spawn the Agent process for an existing record. */
@@ -164,7 +184,7 @@ export class Supervisor {
     if (this.spawned.has(name)) {
       throw new Error(`Agent ${name} is already running`)
     }
-    const socketPath = Supervisor.socketPath(this.state.state_dir)
+    const socketPath = Supervisor.socketPath(this.state.home)
     const spawnOpts: SpawnAgentOptions = {
       name,
       identityPath: record.identity_path,

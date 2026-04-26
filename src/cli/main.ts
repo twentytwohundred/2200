@@ -21,8 +21,6 @@
  * for the locked Epic 2 spec.
  */
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
@@ -31,9 +29,15 @@ import { connectUds } from '../runtime/control-plane/transport-uds.js'
 import type { StateSnapshotResult } from '../runtime/control-plane/protocol.js'
 import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
+import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
 
-function defaultStateDir(): string {
-  return process.env['TWENTYTWOHUNDRED_STATE_DIR'] ?? join(homedir(), '.2200')
+interface TopLevelOpts {
+  home?: string
+}
+
+async function resolveHomeFromOpts(program: Command): Promise<string> {
+  const opts = program.opts<TopLevelOpts>()
+  return resolveHome(opts.home)
 }
 
 function notYetImplemented(command: string, lands: string): never {
@@ -47,15 +51,15 @@ function notYetImplemented(command: string, lands: string): never {
 }
 
 /**
- * Connect to a running supervisor daemon if one is live on `stateDir`.
- * Returns null if no daemon is running. Throws on UDS connect failure
- * even when the PID file says a daemon should be there (likely a stale
- * socket or permissions issue).
+ * Connect to a running supervisor daemon if one is live on the given
+ * 2200_HOME. Returns null if no daemon is running. Throws on UDS
+ * connect failure even when the PID file says a daemon should be there
+ * (likely a stale socket or permissions issue).
  */
-async function connectToDaemon(stateDir: string): Promise<JsonRpcClient | null> {
-  const pid = await readLivePid(stateDir)
+async function connectToDaemon(home: string): Promise<JsonRpcClient | null> {
+  const pid = await readLivePid(home)
   if (pid === null) return null
-  const conn = await connectUds(Supervisor.socketPath(stateDir))
+  const conn = await connectUds(Supervisor.socketPath(home))
   return new JsonRpcClient(conn)
 }
 
@@ -63,8 +67,8 @@ async function connectToDaemon(stateDir: string): Promise<JsonRpcClient | null> 
  * Read the current state snapshot. If a daemon is running, RPC to it for
  * the freshest in-memory view; otherwise read directly from disk.
  */
-async function readSnapshot(stateDir: string): Promise<StateSnapshotResult> {
-  const client = await connectToDaemon(stateDir)
+async function readSnapshot(home: string): Promise<StateSnapshotResult> {
+  const client = await connectToDaemon(home)
   if (client) {
     try {
       return await client.call('state.snapshot', {})
@@ -72,7 +76,7 @@ async function readSnapshot(stateDir: string): Promise<StateSnapshotResult> {
       await client.close()
     }
   }
-  const supervisor = await Supervisor.create({ stateDir })
+  const supervisor = await Supervisor.create({ home })
   return supervisor.snapshot()
 }
 
@@ -89,7 +93,10 @@ export function buildProgram(): Command {
     .description('A platform for hosting your fleet of always-on Agents.')
     .version(VERSION, '-v, --version', 'output the current version')
     .helpOption('-h, --help', 'display help for command')
-    .option('--state-dir <path>', 'override the default state directory (~/.2200 by default)')
+    .option(
+      '--home <path>',
+      'override 2200_HOME (defaults: $TWENTYTWOHUNDRED_HOME, then user config, then $XDG_DATA_HOME/2200/ -> ~/.local/share/2200/)',
+    )
 
   // ---------------------------------------------------------------------------
   // Top-level: init
@@ -97,14 +104,20 @@ export function buildProgram(): Command {
 
   program
     .command('init')
-    .description('initialize the 2200 supervisor state directory')
+    .description('initialize 2200_HOME (creates the directory layout and writes user config)')
     .action(async () => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const supervisor = await Supervisor.create({ stateDir })
+      const home = await resolveHomeFromOpts(program)
+      // Persist `home` to the user config so subsequent invocations
+      // resolve it without --home or env. Per the commons-and-storage-root
+      // spec addendum.
+      await saveUserConfig({ schema_version: 1, home })
+      const supervisor = await Supervisor.create({ home })
       const snapshot = supervisor.snapshot()
-      console.log(`Initialized 2200 state directory at ${snapshot.state_dir}`)
-      console.log(`Schema version: ${String(snapshot.schema_version)}`)
-      console.log(`Agents: ${String(Object.keys(snapshot.agents).length)}`)
+      console.log(`Initialized 2200_HOME at ${snapshot.home}`)
+      console.log(`  state dir:   ${snapshot.state_dir}`)
+      console.log(`  schema:      v${String(snapshot.schema_version)}`)
+      console.log(`  agents:      ${String(Object.keys(snapshot.agents).length)}`)
+      console.log(`Layout: commons/{reference,scratch}, agents/, state/, config/`)
     })
 
   // ---------------------------------------------------------------------------
@@ -119,21 +132,21 @@ export function buildProgram(): Command {
     .command('start')
     .description('start the supervisor as a detached background daemon')
     .action(async () => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const pid = await spawnDaemon({ stateDir })
+      const home = await resolveHomeFromOpts(program)
+      const pid = await spawnDaemon({ home })
       console.log(`supervisor daemon started`)
       console.log(`  pid:        ${String(pid)}`)
-      console.log(`  state dir:  ${stateDir}`)
-      console.log(`  log file:   ${logFilePath(stateDir)}`)
-      console.log(`  socket:     ${Supervisor.socketPath(stateDir)}`)
+      console.log(`  home:       ${home}`)
+      console.log(`  log file:   ${logFilePath(home)}`)
+      console.log(`  socket:     ${Supervisor.socketPath(home)}`)
     })
 
   daemon
     .command('stop')
     .description('stop the running supervisor daemon (SIGTERM, then SIGKILL on timeout)')
     .action(async () => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const stopped = await killDaemon(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const stopped = await killDaemon(home)
       if (stopped) {
         console.log('supervisor daemon stopped')
       } else {
@@ -143,19 +156,19 @@ export function buildProgram(): Command {
 
   daemon
     .command('status')
-    .description('show whether a supervisor daemon is running on the state directory')
+    .description('show whether a supervisor daemon is running on the configured 2200_HOME')
     .action(async () => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const pid = await readLivePid(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const pid = await readLivePid(home)
       if (pid === null) {
-        console.log(`supervisor daemon: not running (state dir: ${stateDir})`)
+        console.log(`supervisor daemon: not running (home: ${home})`)
         process.exit(1)
       }
       console.log(`supervisor daemon: running`)
       console.log(`  pid:        ${String(pid)}`)
-      console.log(`  state dir:  ${stateDir}`)
-      console.log(`  log file:   ${logFilePath(stateDir)}`)
-      console.log(`  socket:     ${Supervisor.socketPath(stateDir)}`)
+      console.log(`  home:       ${home}`)
+      console.log(`  log file:   ${logFilePath(home)}`)
+      console.log(`  socket:     ${Supervisor.socketPath(home)}`)
     })
 
   // ---------------------------------------------------------------------------
@@ -169,8 +182,8 @@ export function buildProgram(): Command {
     .description('register a new Agent with the supervisor')
     .requiredOption('--identity <path>', 'path to the Agent Identity markdown file')
     .action(async (name: string, opts: { identity: string }) => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const client = await connectToDaemon(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
       if (client) {
         try {
           await client.call('cli.agent.create', { name, identity_path: opts.identity })
@@ -178,11 +191,10 @@ export function buildProgram(): Command {
           await client.close()
         }
       } else {
-        const supervisor = await Supervisor.create({ stateDir })
+        const supervisor = await Supervisor.create({ home })
         await supervisor.createAgent(name, opts.identity)
       }
       console.log(`Agent "${name}" created.`)
-      console.log(`Identity: ${opts.identity}`)
       console.log(`Run "2200 agent start ${name}" to bring it up.`)
     })
 
@@ -190,8 +202,8 @@ export function buildProgram(): Command {
     .command('start <name>')
     .description('start an Agent process (requires a running daemon)')
     .action(async (name: string) => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const client = await connectToDaemon(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
       if (!client) {
         console.error(
           `agent start requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
@@ -210,8 +222,8 @@ export function buildProgram(): Command {
     .command('stop <name>')
     .description('stop an Agent process gracefully (requires a running daemon)')
     .action(async (name: string) => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const client = await connectToDaemon(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
       if (!client) {
         console.error(
           `agent stop requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
@@ -237,11 +249,11 @@ export function buildProgram(): Command {
     .command('status <name>')
     .description('show the current state of an Agent (running, blocked, errored, ...)')
     .action(async (name: string) => {
-      const stateDir = program.opts<{ stateDir?: string }>().stateDir ?? defaultStateDir()
-      const snapshot = await readSnapshot(stateDir)
+      const home = await resolveHomeFromOpts(program)
+      const snapshot = await readSnapshot(home)
       const record = snapshot.agents[name]
       if (!record) {
-        console.error(`Agent "${name}" not found in ${snapshot.state_dir}`)
+        console.error(`Agent "${name}" not found in ${snapshot.home}`)
         process.exit(1)
       }
       console.log(`Name:           ${record.name}`)

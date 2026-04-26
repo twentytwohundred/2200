@@ -46,12 +46,12 @@ Test agent body.
   return path
 }
 
-let stateDir: string
+let home: string
 let supervisor: Supervisor | undefined
 let client: JsonRpcClient | undefined
 
 beforeEach(async () => {
-  stateDir = await mkdtemp(join(tmpdir(), '2200-supervisor-uds-'))
+  home = await mkdtemp(join(tmpdir(), '2200-supervisor-uds-'))
 })
 
 afterEach(async () => {
@@ -67,28 +67,29 @@ afterEach(async () => {
     await supervisor.shutdown()
     supervisor = undefined
   }
-  await rm(stateDir, { recursive: true, force: true })
+  await rm(home, { recursive: true, force: true })
 })
 
 describe('Supervisor over real UDS', () => {
   it('responds to state.snapshot with the empty state on first boot', async () => {
-    supervisor = await Supervisor.create({ stateDir })
+    supervisor = await Supervisor.create({ home })
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     const snap = await client.call('state.snapshot', {})
     expect(snap.schema_version).toBe(1)
-    expect(snap.state_dir).toBe(stateDir)
+    expect(snap.home).toBe(home)
+    expect(snap.state_dir).toBe(join(home, 'state'))
     expect(snap.agents).toEqual({})
   })
 
   it('registers an Agent and updates its record', async () => {
-    supervisor = await Supervisor.create({ stateDir })
-    const identity = await writeIdentity(stateDir, 'hobby')
+    supervisor = await Supervisor.create({ home })
+    const identity = await writeIdentity(home, 'hobby')
     await supervisor.createAgent('hobby', identity)
     await supervisor.start()
 
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
 
     const reg = await client.call('agent.register', { name: 'hobby', pid: 9999 })
@@ -100,9 +101,9 @@ describe('Supervisor over real UDS', () => {
   })
 
   it('rejects registration of an unknown Agent', async () => {
-    supervisor = await Supervisor.create({ stateDir })
+    supervisor = await Supervisor.create({ home })
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     const reg = await client.call('agent.register', { name: 'ghost', pid: 1 })
     expect(reg.accepted).toBe(false)
@@ -110,12 +111,12 @@ describe('Supervisor over real UDS', () => {
   })
 
   it('updates state via agent.heartbeat', async () => {
-    supervisor = await Supervisor.create({ stateDir })
-    const identity = await writeIdentity(stateDir, 'hobby')
+    supervisor = await Supervisor.create({ home })
+    const identity = await writeIdentity(home, 'hobby')
     await supervisor.createAgent('hobby', identity)
     await supervisor.start()
 
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     await client.call('agent.register', { name: 'hobby', pid: 1234 })
 
@@ -128,9 +129,9 @@ describe('Supervisor over real UDS', () => {
   })
 
   it('shutdown removes the socket file', async () => {
-    supervisor = await Supervisor.create({ stateDir })
+    supervisor = await Supervisor.create({ home })
     await supervisor.start()
-    const path = Supervisor.socketPath(stateDir)
+    const path = Supervisor.socketPath(home)
     await access(path)
     await supervisor.shutdown()
     supervisor = undefined
@@ -140,12 +141,12 @@ describe('Supervisor over real UDS', () => {
 
 describe('CLI-facing RPC methods over real UDS', () => {
   it('cli.agent.create registers an Agent record', async () => {
-    supervisor = await Supervisor.create({ stateDir })
+    supervisor = await Supervisor.create({ home })
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
 
-    const identity = await writeIdentity(stateDir, 'hobby')
+    const identity = await writeIdentity(home, 'hobby')
     const result = await client.call('cli.agent.create', {
       name: 'hobby',
       identity_path: identity,
@@ -153,16 +154,19 @@ describe('CLI-facing RPC methods over real UDS', () => {
     expect(result.ok).toBe(true)
 
     const snap = await client.call('state.snapshot', {})
-    expect(snap.agents['hobby']?.identity_path).toBe(identity)
+    // After PR #8, the supervisor copies the Identity into the canonical
+    // location at <home>/agents/<name>/identity.md and stores THAT as
+    // identity_path; the source path is no longer the source of truth.
+    expect(snap.agents['hobby']?.identity_path).toBe(join(home, 'agents', 'hobby', 'identity.md'))
     expect(snap.agents['hobby']?.state).toBe('stopped')
   })
 
   it('cli.agent.create rejects a duplicate name', async () => {
-    supervisor = await Supervisor.create({ stateDir })
-    const identityA = await writeIdentity(stateDir, 'hobby')
+    supervisor = await Supervisor.create({ home })
+    const identityA = await writeIdentity(home, 'hobby')
     await supervisor.createAgent('hobby', identityA)
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     await expect(
       client.call('cli.agent.create', { name: 'hobby', identity_path: identityA }),
@@ -170,25 +174,25 @@ describe('CLI-facing RPC methods over real UDS', () => {
   })
 
   it('cli.agent.create rejects a malformed Identity', async () => {
-    supervisor = await Supervisor.create({ stateDir })
+    supervisor = await Supervisor.create({ home })
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     // Identity does not exist on disk
     await expect(
       client.call('cli.agent.create', {
         name: 'ghost',
-        identity_path: join(stateDir, 'nonexistent.identity.md'),
+        identity_path: join(home, 'nonexistent.identity.md'),
       }),
     ).rejects.toThrow(/could not read Identity/)
   })
 
   it('cli.agent.stop on an unknown agent updates state to stopped', async () => {
-    supervisor = await Supervisor.create({ stateDir })
-    const identity = await writeIdentity(stateDir, 'hobby')
+    supervisor = await Supervisor.create({ home })
+    const identity = await writeIdentity(home, 'hobby')
     await supervisor.createAgent('hobby', identity)
     await supervisor.start()
-    const conn = await connectUds(Supervisor.socketPath(stateDir))
+    const conn = await connectUds(Supervisor.socketPath(home))
     client = new JsonRpcClient(conn)
     // hobby was never started; cli.agent.stop should still mark it stopped.
     const result = await client.call('cli.agent.stop', { name: 'hobby', reason: 'test' })

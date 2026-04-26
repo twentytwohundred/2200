@@ -17,27 +17,27 @@ import { join } from 'node:path'
 import { killDaemon, logFilePath, spawnDaemon } from '../../../src/runtime/supervisor/daemon.js'
 import { pidFilePath, readLivePid, writePidFile } from '../../../src/runtime/supervisor/pidfile.js'
 
-let dir: string
+let home: string
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), '2200-daemon-test-'))
+  home = await mkdtemp(join(tmpdir(), '2200-daemon-test-'))
 })
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true })
+  await rm(home, { recursive: true, force: true })
 })
 
 describe('logFilePath', () => {
-  it('returns supervisor.log inside the state dir', () => {
-    expect(logFilePath(dir)).toBe(join(dir, 'supervisor.log'))
+  it('returns supervisor.log inside <home>/state', () => {
+    expect(logFilePath(home)).toBe(join(home, 'state', 'supervisor.log'))
   })
 })
 
 describe('spawnDaemon precondition', () => {
   it('refuses when a live daemon is already registered', async () => {
     // Use the current process PID as a guaranteed-alive sentinel.
-    await writePidFile(dir, process.pid)
-    await expect(spawnDaemon({ stateDir: dir })).rejects.toThrow(/already running/)
+    await writePidFile(home, process.pid)
+    await expect(spawnDaemon({ home })).rejects.toThrow(/already running/)
   })
 
   it('proceeds past the precondition when the registered PID is stale', async () => {
@@ -46,42 +46,34 @@ describe('spawnDaemon precondition', () => {
     // at a non-existent file so the spawn itself is deterministic and
     // does not actually fork a real supervisor; we only verify the
     // precondition gate lets us through.
-    //
-    // The spawn itself succeeds (Node's spawn does not validate the
-    // entry path; the error surfaces in the child). We then read the
-    // PID file to confirm it was written.
-    await writePidFile(dir, 2147483647)
+    await writePidFile(home, 2147483647)
     const result = await spawnDaemon({
-      stateDir: dir,
+      home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
     })
     expect(typeof result).toBe('number')
     expect(result).toBeGreaterThan(0)
-
-    // The pidfile got written with the spawned (and immediately-failing)
-    // child's PID. Clean up by removing it; the process is gone already.
-    // (The test's afterEach removes the temp dir which includes the
-    // PID file; nothing else to do.)
   })
 })
 
 describe('killDaemon', () => {
   it('returns false when no daemon is running', async () => {
-    expect(await killDaemon(dir)).toBe(false)
+    expect(await killDaemon(home)).toBe(false)
   })
 
   it('returns false when the PID file is stale', async () => {
-    await writePidFile(dir, 2147483647)
-    expect(await killDaemon(dir)).toBe(false)
+    await writePidFile(home, 2147483647)
+    expect(await killDaemon(home)).toBe(false)
   })
 
   it('does not crash when the PID file is malformed', async () => {
     // Writing a malformed PID file via the lower-level fs API since
     // writePidFile validates input. readLivePid returns null for
     // malformed content; killDaemon then returns false cleanly.
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(pidFilePath(dir), 'not-a-pid')
-    expect(await killDaemon(dir)).toBe(false)
-    expect(await readLivePid(dir)).toBeNull()
+    const { writeFile, mkdir } = await import('node:fs/promises')
+    await mkdir(join(home, 'state'), { recursive: true })
+    await writeFile(pidFilePath(home), 'not-a-pid')
+    expect(await killDaemon(home)).toBe(false)
+    expect(await readLivePid(home)).toBeNull()
   })
 })

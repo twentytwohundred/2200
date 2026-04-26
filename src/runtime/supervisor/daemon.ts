@@ -20,18 +20,19 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { open, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { writePidFile, readLivePid } from './pidfile.js'
+import { homePaths } from '../storage/layout.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
-const LOGFILE_NAME = 'supervisor.log'
-
-export function logFilePath(stateDir: string): string {
-  return join(stateDir, LOGFILE_NAME)
+/** Path to the daemon log file under <home>/state/supervisor.log. */
+export function logFilePath(home: string): string {
+  return homePaths(home).stateSupervisorLog
 }
 
 export interface SpawnDaemonOptions {
-  stateDir: string
+  /** 2200_HOME root. */
+  home: string
   /** Override the bootstrap script (testing). Defaults to bundled entry. */
   bootstrapPath?: string
   /** Override the Node binary. Defaults to `process.execPath`. */
@@ -46,22 +47,23 @@ export interface SpawnDaemonOptions {
  */
 export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
   const log = opts.logger ?? createLogger('daemon')
-  await mkdir(opts.stateDir, { recursive: true })
+  const paths = homePaths(opts.home)
+  await mkdir(paths.state, { recursive: true })
 
-  const existing = await readLivePid(opts.stateDir)
+  const existing = await readLivePid(opts.home)
   if (existing !== null) {
     throw new Error(`supervisor daemon already running with PID ${String(existing)}`)
   }
 
   const bootstrapPath = opts.bootstrapPath ?? defaultBootstrapPath()
   const nodePath = opts.nodePath ?? process.execPath
-  const logPath = logFilePath(opts.stateDir)
+  const logPath = logFilePath(opts.home)
 
   // Open the log file for append; the child process inherits the FD as
   // its stdout and stderr.
   const logHandle = await open(logPath, 'a')
   try {
-    const child = spawn(nodePath, [bootstrapPath, '--state-dir', opts.stateDir], {
+    const child = spawn(nodePath, [bootstrapPath, '--home', opts.home], {
       detached: true,
       stdio: ['ignore', logHandle.fd, logHandle.fd],
     })
@@ -74,11 +76,11 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
     // as a zombie.
     child.unref()
 
-    await writePidFile(opts.stateDir, child.pid)
+    await writePidFile(opts.home, child.pid)
 
     log.info('supervisor daemon spawned', {
       pid: child.pid,
-      stateDir: opts.stateDir,
+      home: opts.home,
       logPath,
     })
 
@@ -99,11 +101,11 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
  * 5000ms before falling back to SIGKILL.
  */
 export async function killDaemon(
-  stateDir: string,
+  home: string,
   options: { timeoutMs?: number; logger?: Logger } = {},
 ): Promise<boolean> {
   const log = options.logger ?? createLogger('daemon')
-  const pid = await readLivePid(stateDir)
+  const pid = await readLivePid(home)
   if (pid === null) {
     return false
   }
@@ -121,7 +123,7 @@ export async function killDaemon(
   const pollIntervalMs = 100
 
   while (Date.now() - start < timeoutMs) {
-    if ((await readLivePid(stateDir)) === null) {
+    if ((await readLivePid(home)) === null) {
       return true
     }
     await sleep(pollIntervalMs)
@@ -138,7 +140,7 @@ export async function killDaemon(
   // Wait briefly for the kernel to reap.
   const killStart = Date.now()
   while (Date.now() - killStart < 2000) {
-    if ((await readLivePid(stateDir)) === null) {
+    if ((await readLivePid(home)) === null) {
       return true
     }
     await sleep(pollIntervalMs)
