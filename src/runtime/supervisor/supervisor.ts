@@ -18,6 +18,7 @@ import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord } from './types.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
+import { loadIdentity } from '../identity/loader.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
 export interface SupervisorOptions {
@@ -114,15 +115,30 @@ export class Supervisor {
 
   /**
    * Register a new Agent record. Used by the CLI's `2200 agent create`.
-   * Throws if an Agent by that name already exists.
+   * Throws if an Agent by that name already exists, or if the Identity
+   * file at `identityPath` fails validation.
+   *
+   * Identity validation runs at create time so a bad Identity surfaces
+   * early (the Agent has not even tried to start yet) instead of at
+   * `agent start` when the cost of debugging is higher.
    */
   async createAgent(name: string, identityPath: string): Promise<void> {
     if (this.state.agents[name]) {
       throw new Error(`Agent already exists: ${name}`)
     }
+    // Validate the Identity now. Surfaces malformed YAML, schema
+    // mismatches, or missing files immediately. The supervisor does
+    // not store the parsed Identity (the Agent process re-loads it on
+    // boot); only the path lives in supervisor.json.
+    const identity = await loadIdentity(identityPath)
+    if (identity.frontmatter.agent_name !== name) {
+      throw new Error(
+        `Identity at ${identity.source_path} declares agent_name "${identity.frontmatter.agent_name}" but you asked to create "${name}". Either rename the Agent or update the Identity.`,
+      )
+    }
     const record: AgentRecord = {
       name,
-      identity_path: identityPath,
+      identity_path: identity.source_path,
       state: 'stopped',
       pid: null,
       spawned_at: null,
@@ -136,7 +152,7 @@ export class Supervisor {
       agents: { ...this.state.agents, [name]: record },
     }
     await saveState(this.state)
-    this.log.info('Agent record created', { name, identityPath })
+    this.log.info('Agent record created', { name, identityPath: identity.source_path })
   }
 
   /** Spawn the Agent process for an existing record. */

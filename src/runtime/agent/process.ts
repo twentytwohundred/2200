@@ -20,6 +20,8 @@ import { connectUds } from '../control-plane/transport-uds.js'
 import type { Connection } from '../control-plane/transport.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { AgentStateMachine } from './state-machine.js'
+import { loadIdentity } from '../identity/loader.js'
+import { composeModelId, type IdentityRecord } from '../identity/types.js'
 
 const HEARTBEAT_INTERVAL_MS = 10_000
 
@@ -41,6 +43,7 @@ export class AgentProcess {
   private client: JsonRpcClient | undefined
   private heartbeatTimer: NodeJS.Timeout | undefined
   private isShuttingDown = false
+  private identity: IdentityRecord | undefined
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -49,9 +52,26 @@ export class AgentProcess {
   /**
    * Connect to the supervisor, register, and start the heartbeat loop.
    * Resolves once the Agent is registered and idling. Rejects if the
-   * supervisor refuses registration.
+   * supervisor refuses registration or if the Identity fails to load.
    */
   async start(): Promise<void> {
+    // Load the Identity first. If it has drifted out of spec since
+    // create-time validation, fail loud here rather than after we have
+    // already announced ourselves to the supervisor.
+    this.identity = await loadIdentity(this.options.identityPath)
+    if (this.identity.frontmatter.agent_name !== this.options.name) {
+      throw new Error(
+        `Identity at ${this.identity.source_path} declares agent_name "${this.identity.frontmatter.agent_name}" but this process was launched as "${this.options.name}"`,
+      )
+    }
+    this.log.info('Identity loaded', {
+      name: this.identity.frontmatter.agent_name,
+      role: this.identity.frontmatter.agent_role,
+      model: composeModelId(this.identity.frontmatter.model),
+      tier: this.identity.frontmatter.model.tier,
+      extra_tools: this.identity.frontmatter.tools,
+    })
+
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
     this.client = new JsonRpcClient(conn, this.log.child('rpc'))
 
