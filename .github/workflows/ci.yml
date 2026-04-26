@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Trigger on every pull request regardless of base branch so stacked PRs
+  # (PRs whose base is another feature branch, not main) get CI coverage.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
