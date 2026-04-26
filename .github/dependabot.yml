@@ -27,11 +27,14 @@ updates:
         update-types:
           - 'minor'
           - 'patch'
-      # Major updates remain individual PRs (each may need a decision record).
-      major:
-        applies-to: version-updates
+      # Major updates are NOT grouped: dependabot opens one PR per package
+      # so each major bump can be evaluated and tested on its own merits.
+    ignore:
+      # @types/node tracks engines.node minimum (currently 22). Don't chase
+      # majors above the engines floor; bump deliberately when engines moves.
+      - dependency-name: '@types/node'
         update-types:
-          - 'major'
+          - 'version-update:semver-major'
 
   # GitHub Actions in workflow files
   - package-ecosystem: 'github-actions'
