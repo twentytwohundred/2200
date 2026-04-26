@@ -138,7 +138,7 @@ describe('spawnPub (using a fake binary)', () => {
       hubUrl: 'https://openpub.ai',
       env: { ECHO_HUB_URL: 'yes' },
     })
-    await new Promise((r) => setTimeout(r, 200))
+    await new Promise((r) => setTimeout(r, 500))
     await sp.stop()
     await sp.exited
 
