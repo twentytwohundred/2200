@@ -112,10 +112,10 @@ describe('notification subcommand', () => {
 })
 
 describe('top-level options', () => {
-  it('accepts --state-dir on the top-level program', () => {
+  it('accepts --home on the top-level program', () => {
     const program = buildProgram()
-    const stateDir = program.options.find((o) => o.long === '--state-dir')
-    expect(stateDir).toBeDefined()
+    const home = program.options.find((o) => o.long === '--home')
+    expect(home).toBeDefined()
   })
 })
 

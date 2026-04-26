@@ -11,23 +11,23 @@
  * process does not exist or is owned by a different user we cannot
  * signal.
  */
-import { readFile, unlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile, unlink, mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { atomicWriteFile } from '../util/atomic-write.js'
+import { homePaths } from '../storage/layout.js'
 
-const PIDFILE_NAME = 'supervisor.pid'
-
-export function pidFilePath(stateDir: string): string {
-  return join(stateDir, PIDFILE_NAME)
+/** Path to the PID file under <home>/state/supervisor.pid. */
+export function pidFilePath(home: string): string {
+  return homePaths(home).stateSupervisorPid
 }
 
 /**
- * Read the PID from the file at `<state-dir>/supervisor.pid`, or null if
- * the file does not exist or is malformed.
+ * Read the PID from the file at `<home>/state/supervisor.pid`, or null
+ * if the file does not exist or is malformed.
  */
-export async function readPidFile(stateDir: string): Promise<number | null> {
+export async function readPidFile(home: string): Promise<number | null> {
   try {
-    const raw = await readFile(pidFilePath(stateDir), 'utf8')
+    const raw = await readFile(pidFilePath(home), 'utf8')
     const pid = Number.parseInt(raw.trim(), 10)
     return Number.isInteger(pid) && pid > 0 ? pid : null
   } catch (err) {
@@ -36,15 +36,17 @@ export async function readPidFile(stateDir: string): Promise<number | null> {
   }
 }
 
-/** Atomically write the daemon's PID to `<state-dir>/supervisor.pid`. */
-export async function writePidFile(stateDir: string, pid: number): Promise<void> {
-  await atomicWriteFile(pidFilePath(stateDir), `${String(pid)}\n`)
+/** Atomically write the daemon's PID to `<home>/state/supervisor.pid`. */
+export async function writePidFile(home: string, pid: number): Promise<void> {
+  const path = pidFilePath(home)
+  await mkdir(dirname(path), { recursive: true })
+  await atomicWriteFile(path, `${String(pid)}\n`)
 }
 
 /** Remove the PID file if present. Idempotent. */
-export async function removePidFile(stateDir: string): Promise<void> {
+export async function removePidFile(home: string): Promise<void> {
   try {
-    await unlink(pidFilePath(stateDir))
+    await unlink(pidFilePath(home))
   } catch (err) {
     if (isNodeNotFoundError(err)) return
     throw err
@@ -69,11 +71,12 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Read the PID file and check liveness. Returns the live PID if present and
- * alive; null if no PID file, malformed PID file, or stale (process gone).
+ * Read the PID file and check liveness. Returns the live PID if present
+ * and alive; null if no PID file, malformed PID file, or stale (process
+ * gone).
  */
-export async function readLivePid(stateDir: string): Promise<number | null> {
-  const pid = await readPidFile(stateDir)
+export async function readLivePid(home: string): Promise<number | null> {
+  const pid = await readPidFile(home)
   if (pid === null) return null
   if (!isProcessAlive(pid)) return null
   return pid

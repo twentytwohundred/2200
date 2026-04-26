@@ -15,17 +15,25 @@ export type SupervisorState = StateSnapshotResult
 export type { AgentRecord }
 
 /**
- * Make a fresh `SupervisorState` rooted at `stateDir` with no Agents.
+ * Make a fresh `SupervisorState` rooted at the given 2200_HOME with no
+ * Agents.
+ *
+ * `home` is the user-chosen 2200_HOME root per
+ * https://github.com/twentytwohundred/.github/wiki/2026-04-26-commons-and-storage-root;
+ * `state_dir` is its `state/` subdirectory.
  *
  * `schema_version` is an integer per
  * https://github.com/twentytwohundred/.github/wiki/2026-04-26-schema-version-format;
  * v1 is `1`. Future shape changes bump the integer and ship a migrator
  * at `src/runtime/supervisor/migrators/<from>-to-<to>.ts`.
  */
-export function emptyState(stateDir: string): SupervisorState {
+import { join } from 'node:path'
+
+export function emptyState(home: string): SupervisorState {
   return {
     schema_version: 1,
-    state_dir: stateDir,
+    home,
+    state_dir: join(home, 'state'),
     agents: {},
   }
 }

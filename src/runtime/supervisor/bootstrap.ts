@@ -18,24 +18,24 @@ import { Supervisor } from './supervisor.js'
 import { writePidFile, removePidFile } from './pidfile.js'
 import { createLogger } from '../util/logger.js'
 
-function parseArgs(argv: string[]): { stateDir: string } {
-  let stateDir: string | undefined
+function parseArgs(argv: string[]): { home: string } {
+  let home: string | undefined
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--state-dir' && i + 1 < argv.length) {
-      stateDir = argv[i + 1]
+    if (argv[i] === '--home' && i + 1 < argv.length) {
+      home = argv[i + 1]
       i++
     }
   }
-  stateDir ??= process.env['TWENTYTWOHUNDRED_STATE_DIR']
-  if (!stateDir) {
-    throw new Error('--state-dir <path> required (or set TWENTYTWOHUNDRED_STATE_DIR)')
+  home ??= process.env['TWENTYTWOHUNDRED_HOME']
+  if (!home) {
+    throw new Error('--home <path> required (or set TWENTYTWOHUNDRED_HOME)')
   }
-  return { stateDir }
+  return { home }
 }
 
 async function main(): Promise<void> {
   const log = createLogger('supervisor/bootstrap')
-  let args: { stateDir: string }
+  let args: { home: string }
   try {
     args = parseArgs(process.argv.slice(2))
   } catch (err) {
@@ -43,11 +43,11 @@ async function main(): Promise<void> {
     process.exit(64) // EX_USAGE
   }
 
-  const supervisor = await Supervisor.create({ stateDir: args.stateDir })
+  const supervisor = await Supervisor.create({ home: args.home })
   await supervisor.start()
-  await writePidFile(args.stateDir, process.pid)
+  await writePidFile(args.home, process.pid)
 
-  log.info('supervisor daemon up', { pid: process.pid, stateDir: args.stateDir })
+  log.info('supervisor daemon up', { pid: process.pid, home: args.home })
 
   let shuttingDown = false
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     log.info('shutdown signal received', { signal })
     try {
       await supervisor.shutdown()
-      await removePidFile(args.stateDir)
+      await removePidFile(args.home)
     } catch (err) {
       log.error('error during shutdown', {
         error: err instanceof Error ? err.message : String(err),

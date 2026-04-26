@@ -124,9 +124,17 @@ export type AgentRecord = z.infer<typeof AgentRecordSchema>
  * Supervisor state shape. `schema_version` is an integer per
  * [[2026-04-26-schema-version-format]]; bump to `2`, `3`, ... on breaking
  * changes. Backwards-compatible field additions stay at version `1`.
+ *
+ * `home` is the user-chosen 2200_HOME root per
+ * [[2026-04-26-commons-and-storage-root]]; `state_dir` is its `state/`
+ * subdirectory where the supervisor's own files (this snapshot, the
+ * UDS, the PID file, the log) live. Both are reported so callers can
+ * derive other paths (commons/, agents/<name>/, etc.) from `home`
+ * without hardcoding the layout.
  */
 export const StateSnapshotResultSchema = z.object({
   schema_version: z.literal(1),
+  home: z.string(),
   state_dir: z.string(),
   agents: z.record(z.string(), AgentRecordSchema),
 })

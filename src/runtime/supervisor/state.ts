@@ -1,40 +1,39 @@
 /**
  * Supervisor state persistence.
  *
- * `loadState(stateDir)` reads `<state-dir>/supervisor.json` and validates it
- * against the schema. If the file does not exist, returns an empty state.
- * If the file exists but is malformed, throws (caller decides recovery).
+ * `loadState(home)` reads `<home>/state/supervisor.json` per the layout
+ * locked in [[2026-04-26-commons-and-storage-root]]. Returns an empty
+ * state when the file does not exist (first boot). Throws on JSON or
+ * schema-validation failure.
  *
- * `saveState(state)` writes atomically via the util's temp-and-rename, so
- * crashes mid-write never leave a torn file. Per upgrade-readiness #2.
+ * `saveState(state)` writes atomically via temp-and-rename, so crashes
+ * mid-write never leave a torn file. Per upgrade-readiness #2.
  */
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { readFile, mkdir } from 'node:fs/promises'
 import { StateSnapshotResultSchema } from '../control-plane/protocol.js'
 import { atomicWriteJson } from '../util/atomic-write.js'
+import { homePaths } from '../storage/layout.js'
 import { emptyState, type SupervisorState } from './types.js'
 
-const STATE_FILENAME = 'supervisor.json'
-
-export function stateFilePath(stateDir: string): string {
-  return join(stateDir, STATE_FILENAME)
+/** Path to the supervisor.json under a given 2200_HOME. */
+export function stateFilePath(home: string): string {
+  return homePaths(home).stateSupervisorJson
 }
 
 /**
- * Load supervisor state from `<state-dir>/supervisor.json`. Returns an empty
- * state when the file does not exist (first boot). Throws if the file
- * exists but cannot be parsed or fails schema validation; recovery from
- * corruption is the caller's call.
+ * Load supervisor state from `<home>/state/supervisor.json`. Returns an
+ * empty state when the file does not exist (first boot). Throws if the
+ * file exists but cannot be parsed or fails schema validation; recovery
+ * from corruption is the caller's call.
  */
-export async function loadState(stateDir: string): Promise<SupervisorState> {
-  const path = stateFilePath(stateDir)
+export async function loadState(home: string): Promise<SupervisorState> {
+  const path = stateFilePath(home)
   let raw: string
   try {
     raw = await readFile(path, 'utf8')
   } catch (err) {
     if (isNodeNotFoundError(err)) {
-      return emptyState(stateDir)
+      return emptyState(home)
     }
     throw err
   }
@@ -53,18 +52,20 @@ export async function loadState(stateDir: string): Promise<SupervisorState> {
     )
   }
 
-  // Pin the state_dir to the current path; if the user moves the state dir,
-  // the on-disk record is updated to match.
-  return { ...result.data, state_dir: stateDir }
+  // Pin home and state_dir to the current path; if the user moves the
+  // home directory, the on-disk record is updated to match on next save.
+  const paths = homePaths(home)
+  return { ...result.data, home, state_dir: paths.state }
 }
 
 /**
- * Persist supervisor state to `<state-dir>/supervisor.json` atomically.
- * Creates `<state-dir>` if it does not exist.
+ * Persist supervisor state to `<home>/state/supervisor.json` atomically.
+ * Creates `<home>/state/` if it does not exist.
  */
 export async function saveState(state: SupervisorState): Promise<void> {
-  await mkdir(state.state_dir, { recursive: true })
-  await atomicWriteJson(stateFilePath(state.state_dir), state)
+  const paths = homePaths(state.home)
+  await mkdir(paths.state, { recursive: true })
+  await atomicWriteJson(paths.stateSupervisorJson, state)
 }
 
 function isNodeNotFoundError(err: unknown): boolean {
