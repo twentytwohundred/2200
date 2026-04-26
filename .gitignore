@@ -1,0 +1,34 @@
+# Node / TypeScript (added at Epic 2 build start)
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.tscache/
+coverage/
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+secrets.*
+
+# OS / editor artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Test/runtime state
+state/
+brain_dir/
+*.log
