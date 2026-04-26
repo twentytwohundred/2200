@@ -28,10 +28,31 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the six top-level commands (init, daemon, agent, task, pub, notification)', () => {
+  it('has the seven top-level commands (init, daemon, agent, task, pub, user, notification)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
-    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'pub', 'task'])
+    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'pub', 'task', 'user'])
+  })
+})
+
+describe('user subcommand', () => {
+  it('has init', () => {
+    const program = buildProgram()
+    const user = findSubcommand(program, 'user')!
+    const subs = user.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['init'])
+  })
+
+  it('user init takes --display-name (required), --handle, --pub', () => {
+    const program = buildProgram()
+    const user = findSubcommand(program, 'user')!
+    const init = findSubcommand(user, 'init')!
+    const longs = init.options.map((o) => o.long)
+    expect(longs).toContain('--display-name')
+    expect(longs).toContain('--handle')
+    expect(longs).toContain('--pub')
+    const display = init.options.find((o) => o.long === '--display-name')
+    expect(display?.required).toBe(true)
   })
 })
 

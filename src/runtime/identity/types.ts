@@ -66,6 +66,47 @@ export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]
  *   provider's credential. v1 supports `env` (read from process env)
  *   and `file` (read from file). Future: `exec` (shell out to a helper).
  */
+/**
+ * Agent's pub identity block. Mirrors the user's pub block shape
+ * with two Agent-specific fields: `domains` (for the directed_to
+ * resolver's domain-match rule) and `member_of` (which pubs this
+ * Agent connects to on boot; defaults to "the single pub on the
+ * instance" when empty/absent at v1).
+ *
+ * Defined as a function returning the schema so the schema literal
+ * is constructed lazily; this dodges a TDZ issue when both this
+ * file and the user types file are loaded together.
+ */
+function AgentPubBlockSchemaForIdentity() {
+  return z.object({
+    /** UUID v7 from OpenPub. Empty string before first registration. */
+    identity: z.string(),
+    display_name: z.string().min(1),
+    handle: z.string().min(1),
+    credentials: z.object({
+      source: z.literal('file'),
+      id: z.string().min(1),
+    }),
+    key_version: z.number().int().positive().default(1),
+    issuer_url: z.string().min(1),
+    /**
+     * Optional domain rules for the directed_to resolver's rule 5
+     * per Epic 3 [[03-local-pub-integration]]. Free-form strings;
+     * the resolver matches against message content.
+     */
+    domains: z.array(z.string()).default([]),
+    /**
+     * Pubs this Agent connects to on boot. Empty/absent means "the
+     * single pub on this instance" (v1 typical install). Multi-pub
+     * connections list each pub by name.
+     */
+    member_of: z.array(z.string()).default([]),
+  })
+}
+
+/** Re-export the resolved Agent pub block type so consumers (loader, supervisor) can import it directly. */
+export type AgentPubBlock = z.infer<ReturnType<typeof AgentPubBlockSchemaForIdentity>>
+
 export const IdentityFrontmatterSchema = z.object({
   schema_version: z.literal(1),
   agent_name: z
@@ -89,6 +130,14 @@ export const IdentityFrontmatterSchema = z.object({
       id: z.string().min(1),
     })
     .optional(),
+  /**
+   * Pub identity block (Epic 3 PR B). Optional: Identity files
+   * created before Epic 3 land without it. The runtime treats an
+   * Agent without a `pub:` block as "not pub-aware" and skips
+   * the pub auto-connect. `2200 agent create` will write this
+   * block when minting a new Agent on an Epic-3-aware install.
+   */
+  pub: AgentPubBlockSchemaForIdentity().optional(),
 })
 export type IdentityFrontmatter = z.infer<typeof IdentityFrontmatterSchema>
 
