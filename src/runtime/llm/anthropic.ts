@@ -145,7 +145,7 @@ function toAnthropicMessages(
   const out: { role: 'user' | 'assistant'; content: string }[] = []
   const push = (role: 'user' | 'assistant', content: string) => {
     const last = out[out.length - 1]
-    if (last && last.role === role) {
+    if (last?.role === role) {
       last.content = `${last.content}\n\n${content}`
     } else {
       out.push({ role, content })
