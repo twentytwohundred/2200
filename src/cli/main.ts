@@ -378,6 +378,53 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 user <subcommand>  (Epic 3 PR B)
+  // ---------------------------------------------------------------------------
+
+  const user = program.command('user').description("manage the human user's pub identity (init)")
+
+  user
+    .command('init')
+    .description(
+      "initialize the user's pub identity (mints keypair, registers against the local pub if one is running)",
+    )
+    .requiredOption('--display-name <name>', 'display name shown to other Agents and the human')
+    .option('--handle <handle>', 'short handle (defaults to @<lowercased-display-name>)')
+    .option('--pub <name>', 'pub to register against (required when more than one pub exists)')
+    .action(async (opts: { displayName: string; handle?: string; pub?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `user init requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      const params: Parameters<typeof client.call<'cli.user.init'>>[1] = {
+        display_name: opts.displayName,
+      }
+      if (opts.handle !== undefined) params.handle = opts.handle
+      if (opts.pub !== undefined) params.pub = opts.pub
+      try {
+        const result = await client.call('cli.user.init', params)
+        console.log(`user identity initialized.`)
+        console.log(`  user.md:      ${result.user_md_path}`)
+        console.log(`  credentials:  ${result.credentials_path} (mode 0600)`)
+        if (result.agent_id) {
+          console.log(`  agent_id:     ${result.agent_id}`)
+          console.log(`  registered:   ${result.registered_against ?? '<none>'}`)
+        } else {
+          console.log(`  registration: deferred (no running pub at init time)`)
+          console.log(
+            `  next:         create + start a pub, then re-run "2200 user init" to register`,
+          )
+        }
+      } finally {
+        await client.close()
+      }
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 pub <subcommand>  (Epic 3 PR A)
   // ---------------------------------------------------------------------------
 

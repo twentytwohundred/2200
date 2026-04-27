@@ -372,6 +372,48 @@ export const CliPubStatusResultSchema = PubRecordSchema
 export type CliPubStatusResult = z.infer<typeof CliPubStatusResultSchema>
 
 // ---------------------------------------------------------------------------
+// cli.user.* methods (CLI -> supervisor; user identity provisioning)
+// Epic 3 PR B
+// ---------------------------------------------------------------------------
+
+/**
+ * C->S: initialize the user's pub identity. Generates an Ed25519
+ * keypair, persists the credential file at `<home>/config/user.pub.secret`
+ * (mode 0600), writes `<home>/config/user.md` with the user's identity
+ * frontmatter, and (if a pub is available and running) registers
+ * against it via the v0.3.2 LOCAL_TRUST endpoints.
+ *
+ * Idempotent on re-run with the same display_name; refuses with a
+ * clear error if user.md already exists with a different display_name.
+ */
+export const CliUserInitParamsSchema = z.object({
+  display_name: z.string().min(1),
+  /** Defaults to `@<lowercased display_name with spaces removed>`. */
+  handle: z.string().optional(),
+  /**
+   * Pick a specific pub to register against. Required only when more
+   * than one pub exists; with exactly one, the supervisor uses it.
+   */
+  pub: z.string().optional(),
+})
+export type CliUserInitParams = z.infer<typeof CliUserInitParamsSchema>
+
+export const CliUserInitResultSchema = z.object({
+  ok: z.literal(true),
+  user_md_path: z.string(),
+  credentials_path: z.string(),
+  /**
+   * Assigned agent_id from the pub-server, or null when no pub was
+   * available at init time. Re-run after creating + starting a pub to
+   * register.
+   */
+  agent_id: z.string().nullable(),
+  /** Pub the user was registered against (if any). */
+  registered_against: z.string().nullable(),
+})
+export type CliUserInitResult = z.infer<typeof CliUserInitResultSchema>
+
+// ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
 
@@ -445,6 +487,10 @@ export const METHODS = {
   'cli.pub.status': {
     params: CliPubStatusParamsSchema,
     result: CliPubStatusResultSchema,
+  },
+  'cli.user.init': {
+    params: CliUserInitParamsSchema,
+    result: CliUserInitResultSchema,
   },
 } as const
 

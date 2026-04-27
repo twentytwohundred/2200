@@ -28,6 +28,14 @@ import { newTaskId } from '../util/id.js'
 import { findFreePort } from '../util/free-port.js'
 import type { TaskListEntry, PubListEntry } from '../control-plane/protocol.js'
 import { resetPulseToGreen } from '../agent/detectors/trip-record.js'
+import { generateKeypair, writeCredentialFile, readCredentialFile } from '../pub/keypair.js'
+import {
+  createIdentityClient,
+  ensureRegistered,
+  type IdentityClient,
+} from '../pub/identity-client.js'
+import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
+import type { UserIdentityFrontmatter } from '../user/types.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -424,6 +432,121 @@ export class Supervisor {
   }
 
   // ---------------------------------------------------------------------------
+  // User identity (Epic 3 PR B)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Initialize the user's pub identity. Generates an Ed25519 keypair,
+   * persists the credential file at `<home>/config/user.pub.secret`
+   * (mode 0600), writes `<home>/config/user.md`, and (if a pub is
+   * available and running) registers against it via the v0.3.2
+   * LOCAL_TRUST endpoints.
+   *
+   * Idempotent on re-run with the same display_name; refuses if a
+   * different display_name is requested when user.md already exists
+   * (force-overwrite is a deliberate user action: delete the file
+   * by hand and re-run).
+   *
+   * `pickPub`: when zero pubs exist, registration is skipped and the
+   * result reports `agent_id: null`. When exactly one exists, that
+   * one is used. When multiple exist, the caller MUST pass a `pub`
+   * name; otherwise this throws.
+   */
+  async createUserIdentity(opts: {
+    display_name: string
+    handle?: string
+    pub?: string
+    /** Test injection: override the identity-client factory. */
+    identityClientFactory?: (baseUrl: string) => IdentityClient
+  }): Promise<{
+    user_md_path: string
+    credentials_path: string
+    agent_id: string | null
+    registered_against: string | null
+  }> {
+    const paths = homePaths(this.state.home)
+    const handle = opts.handle ?? defaultHandleFor(opts.display_name)
+
+    // If user.md already exists, refuse on display_name mismatch;
+    // otherwise treat as idempotent re-run.
+    const existing = await loadUserIdentityIfExists(paths.configUserMd)
+    if (existing && existing.frontmatter.display_name !== opts.display_name) {
+      throw new Error(
+        `user identity already exists with display_name "${existing.frontmatter.display_name}"; cannot change to "${opts.display_name}". Delete ${paths.configUserMd} to reset.`,
+      )
+    }
+
+    const targetPub = pickTargetPub(this.state.pubs, opts.pub)
+    if (opts.pub && !this.state.pubs[opts.pub]) {
+      throw new Error(`no pub record for "${opts.pub}"`)
+    }
+
+    // If user.md already exists, reuse the existing credential file
+    // (preserve the keypair on idempotent re-run). Otherwise mint a
+    // fresh one.
+    let cred
+    if (existing) {
+      cred = await readCredentialFile(paths.configUserPubSecret)
+    } else {
+      const issuerUrl = targetPub
+        ? `local://127.0.0.1:${String(targetPub.port)}`
+        : 'local://unregistered'
+      cred = generateKeypair({ display_name: opts.display_name, issuer_url: issuerUrl })
+      await writeCredentialFile(paths.configUserPubSecret, cred)
+    }
+
+    let agentId: string | null = cred.agent_id
+    let registeredAgainst: string | null = null
+    if (targetPub?.state === 'running') {
+      const baseUrl = `http://127.0.0.1:${String(targetPub.port)}`
+      const client = opts.identityClientFactory
+        ? opts.identityClientFactory(baseUrl)
+        : createIdentityClient({ baseUrl })
+      try {
+        const updated = await ensureRegistered(client, cred)
+        if (updated.agent_id) {
+          agentId = updated.agent_id
+          registeredAgainst = targetPub.name
+          // Persist the updated credential (now with agent_id) back to disk.
+          await writeCredentialFile(paths.configUserPubSecret, updated)
+        }
+      } catch (err) {
+        this.log.warn('user identity registration failed; will retry on next run', {
+          pub: targetPub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    const frontmatter: UserIdentityFrontmatter = {
+      schema_version: 1,
+      display_name: opts.display_name,
+      pub: {
+        identity: agentId ?? '',
+        handle,
+        credentials: { source: 'file', id: paths.configUserPubSecret },
+        key_version: cred.key_version,
+        issuer_url: cred.issuer_url,
+      },
+      scut: {},
+      created: existing?.frontmatter.created ?? today(),
+    }
+    await writeUserIdentity(paths.configUserMd, frontmatter, existing?.body ?? '')
+    this.log.info('User identity initialized', {
+      display_name: opts.display_name,
+      handle,
+      agent_id: agentId,
+      registered_against: registeredAgainst,
+    })
+    return {
+      user_md_path: paths.configUserMd,
+      credentials_path: paths.configUserPubSecret,
+      agent_id: agentId,
+      registered_against: registeredAgainst,
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal: connection accept loop and RPC handlers
   // ---------------------------------------------------------------------------
 
@@ -617,6 +740,20 @@ export class Supervisor {
       'cli.pub.status': (params) => {
         return this.pubStatus(params.name)
       },
+      'cli.user.init': async (params) => {
+        const out = await this.createUserIdentity({
+          display_name: params.display_name,
+          ...(params.handle !== undefined ? { handle: params.handle } : {}),
+          ...(params.pub !== undefined ? { pub: params.pub } : {}),
+        })
+        return {
+          ok: true as const,
+          user_md_path: out.user_md_path,
+          credentials_path: out.credentials_path,
+          agent_id: out.agent_id,
+          registered_against: out.registered_against,
+        }
+      },
     }
   }
 
@@ -704,4 +841,42 @@ export class Supervisor {
     }
     await saveState(this.state)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Module-private helpers (Epic 3 PR B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve which pub to register a new identity against. Rules:
+ *  - explicit `requested` name wins (caller is asserting)
+ *  - exactly one pub: use it
+ *  - zero pubs: return null (registration deferred)
+ *  - multiple pubs: throw (caller must specify)
+ *
+ * Returns the matching record or null. Throws on ambiguity.
+ */
+function pickTargetPub(
+  pubs: Readonly<Record<string, PubRecord>>,
+  requested: string | undefined,
+): PubRecord | null {
+  if (requested) {
+    return pubs[requested] ?? null
+  }
+  const all = Object.values(pubs)
+  if (all.length === 0) return null
+  if (all.length === 1) return all[0] ?? null
+  throw new Error(
+    `multiple pubs exist; please specify --pub <name> (available: ${all.map((p) => p.name).join(', ')})`,
+  )
+}
+
+/** Default handle: lowercase the display_name and strip whitespace. */
+function defaultHandleFor(displayName: string): string {
+  const base = displayName.toLowerCase().replace(/\s+/g, '')
+  return base.startsWith('@') ? base : `@${base}`
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
 }

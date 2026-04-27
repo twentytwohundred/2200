@@ -51,10 +51,15 @@ export interface HomePaths {
   readonly stateNotifications: string
   readonly stateOpenpub: string
   readonly config: string
+  /** User identity markdown (Epic 3 PR B). */
+  readonly configUserMd: string
+  /** User pub credential file (Epic 3 PR B). Mode 0600. */
+  readonly configUserPubSecret: string
 }
 
 export function homePaths(home: string): HomePaths {
   const state = join(home, 'state')
+  const config = join(home, 'config')
   return {
     home,
     commons: join(home, 'commons'),
@@ -68,7 +73,9 @@ export function homePaths(home: string): HomePaths {
     stateSupervisorLog: join(state, 'supervisor.log'),
     stateNotifications: join(state, 'notifications'),
     stateOpenpub: join(state, 'openpub'),
-    config: join(home, 'config'),
+    config,
+    configUserMd: join(config, 'user.md'),
+    configUserPubSecret: join(config, 'user.pub.secret'),
   }
 }
 
@@ -78,6 +85,8 @@ export interface AgentPaths {
   readonly project: string
   readonly brain: string
   readonly shared: string
+  /** Agent's pub credential file (Epic 3 PR B). Mode 0600. */
+  readonly pubSecret: string
 }
 
 export function agentPaths(home: string, agentName: string): AgentPaths {
@@ -88,6 +97,7 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     project: join(root, 'project'),
     brain: join(root, 'brain'),
     shared: join(root, 'shared'),
+    pubSecret: join(root, 'pub.secret'),
   }
 }
 
