@@ -22,6 +22,8 @@
  */
 import { fileURLToPath } from 'node:url'
 import * as readline from 'node:readline'
+import { readdir, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
@@ -36,6 +38,7 @@ import { loadUserIdentity } from '../runtime/user/loader.js'
 import { readCredentialFile } from '../runtime/pub/keypair.js'
 import { loadState } from '../runtime/supervisor/state.js'
 import { PubClient } from '../runtime/pub/client.js'
+import { readRoster } from '../runtime/pub/roster.js'
 
 interface TopLevelOpts {
   home?: string
@@ -717,6 +720,66 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
   )
   console.log('')
 
+  // Status bar state. Tracks who's "thinking" (has a pending/running
+  // task in their local task store). Updated on a fast spinner tick
+  // (visual animation) and a slower thinking-detection tick (filesystem
+  // reads).
+  const thinkingByAgentId = new Map<string, boolean>()
+  // agent_id → local agent_name; populated from the per-pub roster file
+  // (Epic 3.6 PR K). Cached so we don't re-read on every status tick.
+  let agentIdToLocalName = new Map<string, string>()
+  let spinnerPhase = 0
+  let statusLineRendered = false
+
+  const refreshAgentIdMap = async (): Promise<void> => {
+    try {
+      const roster = await readRoster(home, targetPub.name)
+      agentIdToLocalName = new Map(roster.agents.map((a) => [a.agent_id, a.agent_name]))
+    } catch {
+      // Roster missing or malformed... status bar still works for visible
+      // membership, just without thinking detection for those agents.
+    }
+  }
+  await refreshAgentIdMap()
+
+  const writeStatusBarAndPrompt = (): void => {
+    const room = client.roomState()
+    const present = room?.agents_present ?? []
+    const parts = present.map((a) => {
+      if (a.agent_id === userCred.agent_id) return `${a.display_name} (you)`
+      const thinking = thinkingByAgentId.get(a.agent_id) ?? false
+      const frame = SPINNER[spinnerPhase % SPINNER.length] ?? '·'
+      return thinking ? `${a.display_name} ${frame}` : a.display_name
+    })
+    const line =
+      parts.length > 0 ? `\x1b[2m─ in room: ${parts.join('  ·  ')}\x1b[0m` : `\x1b[2m─\x1b[0m`
+
+    if (statusLineRendered) {
+      // Move cursor up to the status line, clear it; then move down to
+      // the prompt line, clear it. Both are about to be rewritten.
+      process.stdout.write('\x1b[1A\r\x1b[K')
+    }
+    process.stdout.write(`${line}\n`)
+    process.stdout.write('\r\x1b[K') // clear prompt line
+    process.stdout.write(promptStr + rl.line)
+    statusLineRendered = true
+  }
+
+  const printIncomingWithStatus = (sender: string, content: string): void => {
+    // Clear status line + prompt line, then print message, then redraw
+    // status + prompt below it. Keeps the status bar pinned at the
+    // bottom even when messages stream in.
+    if (statusLineRendered) {
+      process.stdout.write('\x1b[1A\r\x1b[K') // up to status, clear
+      process.stdout.write('\r\x1b[K') // clear what was the prompt line (now status was cleared, this is prompt)
+    } else {
+      process.stdout.write('\r\x1b[K')
+    }
+    process.stdout.write(`[${sender}] ${content}\n`)
+    statusLineRendered = false
+    writeStatusBarAndPrompt()
+  }
+
   // Subscribe to incoming events.
   client.onEvent((event) => {
     if (event.type === 'message') {
@@ -724,24 +787,23 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       if (m.agent_id === userCred.agent_id) return // skip our own
       if (seenIds.has(m.message_id)) return
       seenIds.add(m.message_id)
-      printIncoming(m.display_name, m.content, promptStr)
+      printIncomingWithStatus(m.display_name, m.content)
     } else if (event.type === 'conversation_event') {
       const m = event.data
       if (m.from.agent_id === userCred.agent_id) return
       if (seenIds.has(m.message_id)) return
       seenIds.add(m.message_id)
-      // pub-server's conversation_event ships only a 100-char preview.
-      // The room_state broadcast has just landed in PubClient's cache
-      // with the full message, so look it up there. Fall back to the
-      // preview only if the cache doesn't have it (race-condition guard).
       const cached = client.roomState()?.conversation.find((msg) => msg.message_id === m.message_id)
-      printIncoming(m.from.display_name, cached?.content ?? m.preview, promptStr)
+      printIncomingWithStatus(m.from.display_name, cached?.content ?? m.preview)
     } else if (event.type === 'pub_reaction') {
       const r = event.data
       if (r.agent_id === userCred.agent_id) return
-      printIncoming(r.display_name, `(reacted ${r.emoji})`, promptStr)
+      printIncomingWithStatus(r.display_name, `(reacted ${r.emoji})`)
     } else if (event.type === 'error') {
-      printIncoming('!error', event.data.message, promptStr)
+      printIncomingWithStatus('!error', event.data.message)
+    } else if (event.type === 'room_state') {
+      // Membership changed; rerender status bar so new joiners appear.
+      writeStatusBarAndPrompt()
     }
   })
 
@@ -752,7 +814,43 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     prompt: promptStr,
   })
 
+  // Spinner tick: just animate the spinner phase. Cheap. Only redraws
+  // when at least one agent is thinking, so an idle room is silent.
+  const spinnerTimer = setInterval(() => {
+    spinnerPhase += 1
+    if ([...thinkingByAgentId.values()].some(Boolean)) {
+      writeStatusBarAndPrompt()
+    }
+  }, 150)
+  spinnerTimer.unref()
+
+  // Thinking detection tick: read each in-room agent's task store and
+  // determine whether they're processing. Done less often because each
+  // tick is several filesystem reads.
+  const thinkingTimer = setInterval(() => {
+    void (async () => {
+      const room = client.roomState()
+      if (!room) return
+      let changed = false
+      for (const a of room.agents_present) {
+        if (a.agent_id === userCred.agent_id) continue
+        const localName = agentIdToLocalName.get(a.agent_id)
+        if (!localName) continue
+        const wasThinking = thinkingByAgentId.get(a.agent_id) ?? false
+        const isThinking = await detectAgentThinking(home, localName)
+        if (wasThinking !== isThinking) {
+          thinkingByAgentId.set(a.agent_id, isThinking)
+          changed = true
+        }
+      }
+      if (changed) writeStatusBarAndPrompt()
+    })()
+  }, 500)
+  thinkingTimer.unref()
+
   const cleanup = async (): Promise<void> => {
+    clearInterval(spinnerTimer)
+    clearInterval(thinkingTimer)
     rl.close()
     try {
       await client.close()
@@ -761,7 +859,10 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     }
   }
 
-  rl.prompt()
+  // Initial render so the status line is on screen before the first
+  // prompt appears.
+  writeStatusBarAndPrompt()
+
   rl.on('line', (line) => {
     void (async () => {
       const trimmed = line.trim()
@@ -772,7 +873,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
         return
       }
       if (trimmed.length === 0) {
-        rl.prompt()
+        writeStatusBarAndPrompt()
         return
       }
       try {
@@ -780,7 +881,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       } catch (err) {
         console.error(`send failed: ${err instanceof Error ? err.message : String(err)}`)
       }
-      rl.prompt()
+      writeStatusBarAndPrompt()
     })()
   })
   rl.on('close', () => {
@@ -794,18 +895,40 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
   })
 }
 
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
 /**
- * Print an incoming message to stdout. Clears the current readline
- * prompt, prints the message on its own line, and re-prints the
- * prompt so the user's typing is not interrupted visually.
+ * Returns true if the named local Agent has any task in a non-terminal
+ * state (`pending` or `running`). Reads YAML frontmatter from up to the
+ * 5 most recent task files in the agent's task store; that's enough to
+ * cover the realistic in-flight set without a full directory scan.
+ *
+ * Returns false on any error (missing dir, parse failure)... a missing
+ * agent should render as not-thinking, not crash the chat.
  */
-function printIncoming(sender: string, content: string, prompt: string): void {
-  // Clear the current line (where the readline prompt sits) and write
-  // the message above it. Then re-write the prompt so the user's
-  // partial input remains visible.
-  process.stdout.write('\r\x1b[K')
-  process.stdout.write(`[${sender}] ${content}\n`)
-  process.stdout.write(prompt)
+async function detectAgentThinking(home: string, agentName: string): Promise<boolean> {
+  const tasksDir = join(home, 'agents', agentName, 'tasks')
+  let files: string[]
+  try {
+    files = await readdir(tasksDir)
+  } catch {
+    return false
+  }
+  const taskFiles = files
+    .filter((f) => f.endsWith('.md'))
+    .sort()
+    .reverse()
+    .slice(0, 5)
+  for (const f of taskFiles) {
+    try {
+      const content = await readFile(join(tasksDir, f), 'utf8')
+      const m = /^state:\s*(\S+)/m.exec(content)
+      if (m && (m[1] === 'pending' || m[1] === 'running')) return true
+    } catch {
+      // ignore parse / read failures for individual files
+    }
+  }
+  return false
 }
 
 /**
