@@ -130,16 +130,35 @@ function toAnthropicMessages(
   messages: Message[],
 ): { role: 'user' | 'assistant'; content: string }[] {
   // Anthropic's Messages API only accepts user/assistant in the messages
-  // array; system goes in the top-level `system` field. We treat any
-  // system or tool roles in the input as content prefixes on the
-  // following message at v1.
+  // array; system goes in the top-level `system` field.
+  //
+  // We use fenced ```tool blocks (not Anthropic's native tool_use API),
+  // so tool results come back to us as `role: 'tool'` messages from the
+  // loop. We surface them to Anthropic as `user` messages tagged
+  // `tool_result:` so the model can see what its previous tool call
+  // returned. Without this, multi-turn tool use is broken: the model
+  // sees its own call but never the result, and the next turn produces
+  // empty / confused output.
+  //
+  // Consecutive same-role messages (e.g. two tool results in a row) are
+  // merged into one because Anthropic rejects role repetitions.
   const out: { role: 'user' | 'assistant'; content: string }[] = []
+  const push = (role: 'user' | 'assistant', content: string) => {
+    const last = out[out.length - 1]
+    if (last?.role === role) {
+      last.content = `${last.content}\n\n${content}`
+    } else {
+      out.push({ role, content })
+    }
+  }
   for (const m of messages) {
     if (m.role === 'user' || m.role === 'assistant') {
-      out.push({ role: m.role, content: m.content })
+      push(m.role, m.content)
+    } else if (m.role === 'tool') {
+      push('user', `tool_result:\n${m.content}`)
     }
-    // system / tool messages: silently dropped at v1; the Agent loop
-    // will route these via systemPrompt or tool-call wiring later.
+    // system messages: silently dropped; system prompt is set via the
+    // top-level `system` field on the request.
   }
   return out
 }

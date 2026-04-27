@@ -68,7 +68,7 @@ describe('AnthropicProvider request shape', () => {
     expect(b['messages']).toEqual([{ role: 'user', content: 'hi' }])
   })
 
-  it('drops system/tool messages from the messages array (v1 only routes user/assistant)', async () => {
+  it('drops system messages from the messages array (system goes in the top-level system field)', async () => {
     let body: unknown
     const fetchImpl = mockFetch((_, init) => {
       body = JSON.parse(init.body as string)
@@ -88,6 +88,67 @@ describe('AnthropicProvider request shape', () => {
       ],
     })
     expect((body as Record<string, unknown>)['messages']).toEqual([{ role: 'user', content: 'hi' }])
+  })
+
+  it('forwards tool messages to Anthropic as user messages tagged tool_result:', async () => {
+    // Without this, multi-turn tool use is broken: the model sees its
+    // own tool call but never the result, and the next turn returns
+    // empty / confused output. This test pins the contract.
+    let body: unknown
+    const fetchImpl = mockFetch((_, init) => {
+      body = JSON.parse(init.body as string)
+      return jsonResponse({
+        id: 'msg_x',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+    })
+    const provider = new AnthropicProvider({ apiKey: 'sk', fetchImpl })
+    await provider.complete({
+      modelId: 'claude-opus-4-7',
+      messages: [
+        { role: 'user', content: 'fetch the notes' },
+        { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
+        { role: 'tool', content: '{"tool":"fs.read","ok":true,"output":"hi"}' },
+      ],
+    })
+    expect((body as Record<string, unknown>)['messages']).toEqual([
+      { role: 'user', content: 'fetch the notes' },
+      { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
+      { role: 'user', content: 'tool_result:\n{"tool":"fs.read","ok":true,"output":"hi"}' },
+    ])
+  })
+
+  it('merges consecutive same-role messages so Anthropic does not reject role repetitions', async () => {
+    let body: unknown
+    const fetchImpl = mockFetch((_, init) => {
+      body = JSON.parse(init.body as string)
+      return jsonResponse({
+        id: 'msg_x',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+    })
+    const provider = new AnthropicProvider({ apiKey: 'sk', fetchImpl })
+    await provider.complete({
+      modelId: 'claude-opus-4-7',
+      messages: [
+        { role: 'user', content: 'do two things' },
+        { role: 'assistant', content: 'calling two tools' },
+        { role: 'tool', content: '{"tool":"a","ok":true}' },
+        { role: 'tool', content: '{"tool":"b","ok":true}' },
+      ],
+    })
+    expect((body as Record<string, unknown>)['messages']).toEqual([
+      { role: 'user', content: 'do two things' },
+      { role: 'assistant', content: 'calling two tools' },
+      {
+        role: 'user',
+        content: 'tool_result:\n{"tool":"a","ok":true}\n\ntool_result:\n{"tool":"b","ok":true}',
+      },
+    ])
   })
 })
 
