@@ -742,9 +742,30 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
   }
   await refreshAgentIdMap()
 
+  // House-agent display names that openpub-server adds to room state
+  // but that aren't real Agents we care about for routing or status
+  // (e.g. the chat-room "Bartender" presence). We hide these from the
+  // status bar so it shows only the real participants.
+  const isRealParticipant = (display_name: string): boolean => display_name !== 'Bartender'
+
+  // Move cursor to the start of the status line and clear both the
+  // status line and the prompt line. Cursor ends at start of (was)
+  // status line. Idempotent on `statusLineRendered`. Used as the
+  // common prelude before redrawing or printing above the bar.
+  const clearStatusAndPrompt = (): void => {
+    if (!statusLineRendered) {
+      process.stdout.write('\r\x1b[2K')
+      return
+    }
+    // We were on prompt line; clear it, move up to status, clear that.
+    process.stdout.write('\r\x1b[2K') // clear prompt line
+    process.stdout.write('\x1b[1A\r\x1b[2K') // up 1, clear status line
+    statusLineRendered = false
+  }
+
   const writeStatusBarAndPrompt = (): void => {
     const room = client.roomState()
-    const present = room?.agents_present ?? []
+    const present = (room?.agents_present ?? []).filter((a) => isRealParticipant(a.display_name))
     const parts = present.map((a) => {
       if (a.agent_id === userCred.agent_id) return `${a.display_name} (you)`
       const thinking = thinkingByAgentId.get(a.agent_id) ?? false
@@ -754,29 +775,17 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     const line =
       parts.length > 0 ? `\x1b[2m─ in room: ${parts.join('  ·  ')}\x1b[0m` : `\x1b[2m─\x1b[0m`
 
-    if (statusLineRendered) {
-      // Move cursor up to the status line, clear it; then move down to
-      // the prompt line, clear it. Both are about to be rewritten.
-      process.stdout.write('\x1b[1A\r\x1b[K')
-    }
+    clearStatusAndPrompt()
+    // Cursor now at start of status line, both lines blank.
     process.stdout.write(`${line}\n`)
-    process.stdout.write('\r\x1b[K') // clear prompt line
     process.stdout.write(promptStr + rl.line)
     statusLineRendered = true
   }
 
   const printIncomingWithStatus = (sender: string, content: string): void => {
-    // Clear status line + prompt line, then print message, then redraw
-    // status + prompt below it. Keeps the status bar pinned at the
-    // bottom even when messages stream in.
-    if (statusLineRendered) {
-      process.stdout.write('\x1b[1A\r\x1b[K') // up to status, clear
-      process.stdout.write('\r\x1b[K') // clear what was the prompt line (now status was cleared, this is prompt)
-    } else {
-      process.stdout.write('\r\x1b[K')
-    }
+    clearStatusAndPrompt()
+    // Cursor at start of (was) status line, both lines blank.
     process.stdout.write(`[${sender}] ${content}\n`)
-    statusLineRendered = false
     writeStatusBarAndPrompt()
   }
 
@@ -825,8 +834,11 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
   spinnerTimer.unref()
 
   // Thinking detection tick: read each in-room agent's task store and
-  // determine whether they're processing. Done less often because each
-  // tick is several filesystem reads.
+  // determine whether they're processing. Polling cadence has to be
+  // tight enough to catch fast tasks (a single-iteration "ping" reply
+  // can finish in <500ms). 200ms is the sweet spot... noisy enough to
+  // catch sub-second work, cheap enough to be invisible (a few small
+  // file reads per tick per agent).
   const thinkingTimer = setInterval(() => {
     void (async () => {
       const room = client.roomState()
@@ -845,7 +857,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       }
       if (changed) writeStatusBarAndPrompt()
     })()
-  }, 500)
+  }, 200)
   thinkingTimer.unref()
 
   const cleanup = async (): Promise<void> => {
