@@ -18,7 +18,7 @@ import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
-import { loadIdentity } from '../identity/loader.js'
+import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
 import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
@@ -173,7 +173,21 @@ export class Supervisor {
    * bad Identity surfaces before any directory creation or copy
    * happens.
    */
-  async createAgent(name: string, sourceIdentityPath: string): Promise<void> {
+  async createAgent(
+    name: string,
+    sourceIdentityPath: string,
+    opts: {
+      /**
+       * Pick a specific pub to register the Agent against (when the
+       * Identity has a `pub:` block). Required only when more than
+       * one pub exists; with exactly one, the supervisor uses it.
+       * Ignored when the Identity has no `pub:` block.
+       */
+      pub?: string
+      /** Test injection: override the identity-client factory. */
+      identityClientFactory?: (baseUrl: string) => IdentityClient
+    } = {},
+  ): Promise<void> {
     if (this.state.agents[name]) {
       throw new Error(`Agent already exists: ${name}`)
     }
@@ -191,6 +205,23 @@ export class Supervisor {
     // supervisor records and what the Agent process loads on start.
     await initAgentDirs(this.state.home, name, identity.source_path)
     const canonical = agentPaths(this.state.home, name).identity
+
+    // Pub identity provisioning (Epic 3 PR B follow-up). If the source
+    // Identity declares a pub: block and the Agent has not been
+    // pre-provisioned (pub.identity is empty), mint a keypair, register
+    // against the picked pub if one is running, and patch the canonical
+    // identity.md to fill in pub.identity / pub.issuer_url. If pub:
+    // block is absent, skip entirely (non-pub Agent).
+    if (identity.frontmatter.pub) {
+      await this.provisionAgentPubIdentity({
+        agentName: name,
+        canonicalIdentityPath: canonical,
+        loadedIdentity: identity,
+        pickPub: opts.pub,
+        identityClientFactory: opts.identityClientFactory,
+      })
+    }
+
     const record: AgentRecord = {
       name,
       identity_path: canonical,
@@ -211,6 +242,108 @@ export class Supervisor {
       name,
       sourceIdentityPath: identity.source_path,
       canonicalIdentityPath: canonical,
+      pubProvisioned: !!identity.frontmatter.pub,
+    })
+  }
+
+  /**
+   * Mint, persist, and (best-effort) register the Agent's pub
+   * keypair, then patch the canonical identity.md with the
+   * resulting fields. Called by `createAgent` only when the source
+   * Identity declares a `pub:` block.
+   *
+   * Skip-mint path: if the source Identity already has a non-empty
+   * `pub.identity`, treat the Agent as pre-provisioned and only
+   * verify the credential file exists.
+   */
+  private async provisionAgentPubIdentity(args: {
+    agentName: string
+    canonicalIdentityPath: string
+    loadedIdentity: Awaited<ReturnType<typeof loadIdentity>>
+    pickPub: string | undefined
+    identityClientFactory: ((baseUrl: string) => IdentityClient) | undefined
+  }): Promise<void> {
+    const { agentName, canonicalIdentityPath, loadedIdentity, pickPub, identityClientFactory } =
+      args
+    const pubBlock = loadedIdentity.frontmatter.pub
+    if (!pubBlock) return // Should not happen; guard for type narrowing.
+
+    const canonicalCredPath = agentPaths(this.state.home, agentName).pubSecret
+
+    // Determine target pub. With zero pubs, deferred (write empty
+    // identity, register on next create-or-explicit-step). With one
+    // pub, use it. With multiple, require pickPub.
+    const targetPub = pickTargetPub(this.state.pubs, pickPub)
+    if (pickPub && !this.state.pubs[pickPub]) {
+      throw new Error(`no pub record for "${pickPub}"`)
+    }
+
+    // If the source Identity declares pub.identity already, treat as
+    // pre-provisioned: just verify credential file exists. Do not
+    // re-mint, do not re-register.
+    if (pubBlock.identity) {
+      try {
+        await readCredentialFile(pubBlock.credentials.id || canonicalCredPath)
+      } catch (err) {
+        throw new Error(
+          `Agent "${agentName}" Identity declares pub.identity="${pubBlock.identity}" but credential file is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      return
+    }
+
+    // Mint a fresh keypair.
+    const issuerUrl = targetPub
+      ? `local://127.0.0.1:${String(targetPub.port)}`
+      : 'local://unregistered'
+    const cred = generateKeypair({ display_name: pubBlock.display_name, issuer_url: issuerUrl })
+    await writeCredentialFile(canonicalCredPath, cred)
+
+    let agentId: string | null = null
+    let registeredIssuer = cred.issuer_url
+    if (targetPub?.state === 'running') {
+      const baseUrl = `http://127.0.0.1:${String(targetPub.port)}`
+      const client = identityClientFactory
+        ? identityClientFactory(baseUrl)
+        : createIdentityClient({ baseUrl })
+      try {
+        const updated = await ensureRegistered(client, cred)
+        if (updated.agent_id) {
+          agentId = updated.agent_id
+          registeredIssuer = updated.issuer_url
+          await writeCredentialFile(canonicalCredPath, updated)
+        }
+      } catch (err) {
+        this.log.warn('Agent pub identity registration failed; will retry on next create', {
+          agent: agentName,
+          pub: targetPub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    // Patch the canonical identity.md to fill in pub.identity,
+    // pub.issuer_url, pub.credentials.id (canonicalize). Other fields
+    // in pub block (display_name, handle, key_version, domains,
+    // member_of) are preserved from the source.
+    const patchedFrontmatter = {
+      ...loadedIdentity.frontmatter,
+      pub: {
+        ...pubBlock,
+        identity: agentId ?? pubBlock.identity,
+        issuer_url: registeredIssuer,
+        key_version: cred.key_version,
+        credentials: {
+          source: 'file' as const,
+          id: canonicalCredPath,
+        },
+      },
+    }
+    await writeIdentity(canonicalIdentityPath, patchedFrontmatter, loadedIdentity.body)
+    this.log.info('Agent pub identity provisioned', {
+      agent: agentName,
+      agent_id: agentId,
+      registered_against: targetPub?.state === 'running' ? targetPub.name : null,
     })
   }
 
@@ -626,7 +759,9 @@ export class Supervisor {
       // in-memory state stays consistent. Read-only commands can hit
       // `state.snapshot`; write commands go here.
       'cli.agent.create': async (params) => {
-        await this.createAgent(params.name, params.identity_path)
+        await this.createAgent(params.name, params.identity_path, {
+          ...(params.pub !== undefined ? { pub: params.pub } : {}),
+        })
         return { ok: true as const }
       },
       'cli.agent.start': async (params) => {

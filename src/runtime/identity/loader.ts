@@ -20,6 +20,7 @@ import {
   type IdentityRecord,
 } from './types.js'
 import { migrateToCurrent } from './migrators/index.js'
+import { atomicWriteFile } from '../util/atomic-write.js'
 
 /**
  * Load an Identity file. Throws `IdentityParseError` with a descriptive
@@ -89,6 +90,30 @@ export async function validateIdentity(path: string): Promise<string | null> {
   } catch (err) {
     return err instanceof Error ? err.message : String(err)
   }
+}
+
+/**
+ * Atomic write of an Identity file. Validates the frontmatter
+ * against the schema BEFORE writing so we never persist an invalid
+ * file. Composes the file as `---\n<yaml>---\n<body>` mirroring the
+ * format the reader splits on.
+ *
+ * Used by the supervisor to patch the canonical identity.md after
+ * provisioning a pub identity (Epic 3 PR B follow-up): the source
+ * identity.md may declare the pub block with empty `identity` and
+ * `issuer_url`; after register, those fields are filled in and the
+ * canonical file is rewritten.
+ */
+export async function writeIdentity(
+  path: string,
+  frontmatter: IdentityFrontmatter,
+  body = '',
+): Promise<void> {
+  const validated = IdentityFrontmatterSchema.parse(frontmatter)
+  const yaml = YAML.stringify(validated)
+  const trimmedBody = body.trimStart()
+  const content = `---\n${yaml}---\n${trimmedBody ? `\n${trimmedBody}\n` : ''}`
+  await atomicWriteFile(path, content)
 }
 
 /**
