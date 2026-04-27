@@ -494,6 +494,74 @@ describe('PubWakeSource', () => {
     await _third.client.close()
   })
 
+  it('skips the router when the message @-mentions other Agents but not this one', async () => {
+    // Diagnostic: Doug said "@simon, earlier I asked..." and Hobby
+    // still woke via router despite the explicit @simon target. The
+    // explicit address signal must override ambient routing.
+    pub = await startFakePub()
+    const alice = await setupAgent('alice') // human stand-in: NOT in roster
+    const _third = await setupAgent('charlie') // explicitly addressed
+    const bob = await setupAgent('bob') // listener that should NOT wake
+
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: bob.agentId,
+      agent_name: 'bob',
+      display_name: 'bob',
+      role_blurb: 'devops',
+    })
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: _third.agentId,
+      agent_name: 'charlie',
+      display_name: 'charlie',
+      role_blurb: 'product',
+    })
+
+    let routerCalls = 0
+    const router = new Router({
+      provider: {
+        name: 'fake',
+        baseUrl: 'fake://',
+        complete(): Promise<CompletionResponse> {
+          routerCalls += 1
+          return Promise.resolve({
+            text: `{"woken_agent_ids": ["${bob.agentId}"], "rationale": "would have woken"}`,
+            finishReason: 'stop',
+            costMetrics: { inputTokens: 1, outputTokens: 1 },
+            providerResponseId: 'fake',
+          })
+        },
+      },
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    // alice (human stand-in) explicitly @-mentions charlie. Bob is
+    // NOT mentioned. Router must not be consulted; bob must not wake.
+    await alice.client.send({
+      content: '@charlie give me the bullet points please',
+      mentions: [_third.agentId],
+    })
+    await new Promise((r) => setTimeout(r, 200))
+
+    expect(routerCalls).toBe(0)
+    expect((await bob.taskStore.list()).length).toBe(0)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
   it('still wakes on a direct @-mention from another Agent (the escape hatch survives)', async () => {
     pub = await startFakePub()
     const alice = await setupAgent('alice')
