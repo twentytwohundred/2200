@@ -720,50 +720,64 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
   )
   console.log('')
 
-  // Status bar state. Tracks who's "thinking" (has a pending/running
-  // task in their local task store). Updated on a fast spinner tick
-  // (visual animation) and a slower thinking-detection tick (filesystem
-  // reads).
+  // Status-bar state. Tracks who's "thinking" (has a pending/running
+  // task in their local task store) so the bar can render a spinner
+  // next to them.
   const thinkingByAgentId = new Map<string, boolean>()
-  // agent_id → local agent_name; populated from the per-pub roster file
-  // (Epic 3.6 PR K). Cached so we don't re-read on every status tick.
+  // agent_id → local agent_name; populated from the per-pub roster
+  // (Epic 3.6 PR K). Cached.
   let agentIdToLocalName = new Map<string, string>()
   let spinnerPhase = 0
-  let statusLineRendered = false
 
   const refreshAgentIdMap = async (): Promise<void> => {
     try {
       const roster = await readRoster(home, targetPub.name)
       agentIdToLocalName = new Map(roster.agents.map((a) => [a.agent_id, a.agent_name]))
     } catch {
-      // Roster missing or malformed... status bar still works for visible
+      // Roster missing or malformed... bar still works for visible
       // membership, just without thinking detection for those agents.
     }
   }
   await refreshAgentIdMap()
 
-  // House-agent display names that openpub-server adds to room state
-  // but that aren't real Agents we care about for routing or status
-  // (e.g. the chat-room "Bartender" presence). We hide these from the
-  // status bar so it shows only the real participants.
+  // openpub-server adds a "Bartender" house presence we don't want in
+  // the status bar.
   const isRealParticipant = (display_name: string): boolean => display_name !== 'Bartender'
 
-  // Move cursor to the start of the status line and clear both the
-  // status line and the prompt line. Cursor ends at start of (was)
-  // status line. Idempotent on `statusLineRendered`. Used as the
-  // common prelude before redrawing or printing above the bar.
-  const clearStatusAndPrompt = (): void => {
-    if (!statusLineRendered) {
-      process.stdout.write('\r\x1b[2K')
-      return
-    }
-    // We were on prompt line; clear it, move up to status, clear that.
-    process.stdout.write('\r\x1b[2K') // clear prompt line
-    process.stdout.write('\x1b[1A\r\x1b[2K') // up 1, clear status line
-    statusLineRendered = false
+  // -------------------------------------------------------------------------
+  // Status bar uses an ANSI scroll region: we reserve the bottom row of
+  // the terminal for the status line and constrain the scrolling area
+  // to rows 1..rows-1. All readline output, message prints, and Enter
+  // newlines stay inside the scroll area; the status line is pinned and
+  // never moves with cursor activity. This avoids the cursor-accounting
+  // bugs the previous version had (Enter advancing cursor invalidated
+  // the "go up 1 to clear status" math).
+  // -------------------------------------------------------------------------
+
+  const tty = process.stdout.isTTY ? process.stdout : null
+
+  const setupScrollRegion = (): void => {
+    if (!tty) return
+    const rows = tty.rows
+    if (!rows || rows < 4) return // tiny terminal; just skip the bar
+    // Reserve last row for status; scroll region = lines 1..rows-1.
+    process.stdout.write(`\x1b[1;${String(rows - 1)}r`)
+    // Park cursor inside the scroll area at the line just above the
+    // status row so the next print lands here.
+    process.stdout.write(`\x1b[${String(rows - 1)};1H`)
   }
 
-  const writeStatusBarAndPrompt = (): void => {
+  const teardownScrollRegion = (): void => {
+    if (!tty) return
+    // Reset scroll region to full screen, clear status line, restore cursor.
+    process.stdout.write('\x1b[r') // unset scroll region
+    if (tty.rows) {
+      process.stdout.write(`\x1b[${String(tty.rows)};1H\x1b[2K`) // clear status row
+    }
+  }
+
+  const renderStatusBar = (): void => {
+    if (!tty?.rows) return
     const room = client.roomState()
     const present = (room?.agents_present ?? []).filter((a) => isRealParticipant(a.display_name))
     const parts = present.map((a) => {
@@ -774,47 +788,52 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     })
     const line =
       parts.length > 0 ? `\x1b[2m─ in room: ${parts.join('  ·  ')}\x1b[0m` : `\x1b[2m─\x1b[0m`
-
-    clearStatusAndPrompt()
-    // Cursor now at start of status line, both lines blank.
-    process.stdout.write(`${line}\n`)
-    process.stdout.write(promptStr + rl.line)
-    statusLineRendered = true
+    // Save cursor, jump to status row, clear it, write status, restore cursor.
+    process.stdout.write(
+      `\x1b[s\x1b[${String(tty.rows)};1H\x1b[2K${line}\x1b[u`,
+    )
   }
 
-  const printIncomingWithStatus = (sender: string, content: string): void => {
-    clearStatusAndPrompt()
-    // Cursor at start of (was) status line, both lines blank.
-    process.stdout.write(`[${sender}] ${content}\n`)
-    writeStatusBarAndPrompt()
-  }
-
-  // Subscribe to incoming events.
+  // Subscribe to incoming events. With the scroll region set up,
+  // each printed message just goes through normal stdout → readline
+  // and lands inside the scroll area; the status row stays put.
   client.onEvent((event) => {
     if (event.type === 'message') {
       const m = event.data
       if (m.agent_id === userCred.agent_id) return // skip our own
       if (seenIds.has(m.message_id)) return
       seenIds.add(m.message_id)
-      printIncomingWithStatus(m.display_name, m.content)
+      printAboveBar(`[${m.display_name}] ${m.content}`)
     } else if (event.type === 'conversation_event') {
       const m = event.data
       if (m.from.agent_id === userCred.agent_id) return
       if (seenIds.has(m.message_id)) return
       seenIds.add(m.message_id)
       const cached = client.roomState()?.conversation.find((msg) => msg.message_id === m.message_id)
-      printIncomingWithStatus(m.from.display_name, cached?.content ?? m.preview)
+      printAboveBar(`[${m.from.display_name}] ${cached?.content ?? m.preview}`)
     } else if (event.type === 'pub_reaction') {
       const r = event.data
       if (r.agent_id === userCred.agent_id) return
-      printIncomingWithStatus(r.display_name, `(reacted ${r.emoji})`)
+      printAboveBar(`[${r.display_name}] (reacted ${r.emoji})`)
     } else if (event.type === 'error') {
-      printIncomingWithStatus('!error', event.data.message)
+      printAboveBar(`[!error] ${event.data.message}`)
     } else if (event.type === 'room_state') {
-      // Membership changed; rerender status bar so new joiners appear.
-      writeStatusBarAndPrompt()
+      renderStatusBar()
     }
   })
+
+  // Print a message above the prompt line without disturbing what
+  // the user is typing. Same pattern the previous chat client used:
+  // clear the line readline owns, write the message + newline, then
+  // reprint prompt + partial input.
+  const printAboveBar = (text: string): void => {
+    process.stdout.write('\r\x1b[2K')
+    process.stdout.write(`${text}\n`)
+    process.stdout.write(promptStr + rl.line)
+    // Status bar may have been pushed up out of the scroll region by
+    // long lines; redraw to be safe.
+    renderStatusBar()
+  }
 
   // Read stdin.
   const rl = readline.createInterface({
@@ -823,22 +842,19 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     prompt: promptStr,
   })
 
-  // Spinner tick: just animate the spinner phase. Cheap. Only redraws
-  // when at least one agent is thinking, so an idle room is silent.
+  // Spinner tick: animate the spinner phase. Cheap. Only repaints when
+  // at least one agent is thinking, so idle rooms are silent.
   const spinnerTimer = setInterval(() => {
     spinnerPhase += 1
     if ([...thinkingByAgentId.values()].some(Boolean)) {
-      writeStatusBarAndPrompt()
+      renderStatusBar()
     }
   }, 150)
   spinnerTimer.unref()
 
   // Thinking detection tick: read each in-room agent's task store and
-  // determine whether they're processing. Polling cadence has to be
-  // tight enough to catch fast tasks (a single-iteration "ping" reply
-  // can finish in <500ms). 200ms is the sweet spot... noisy enough to
-  // catch sub-second work, cheap enough to be invisible (a few small
-  // file reads per tick per agent).
+  // mark them thinking if any task is pending/running. 200ms cadence
+  // catches sub-second tasks (a single-iter ping reply finishes fast).
   const thinkingTimer = setInterval(() => {
     void (async () => {
       const room = client.roomState()
@@ -855,14 +871,24 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
           changed = true
         }
       }
-      if (changed) writeStatusBarAndPrompt()
+      if (changed) renderStatusBar()
     })()
   }, 200)
   thinkingTimer.unref()
 
+  // SIGWINCH: terminal was resized; rebuild the scroll region for the
+  // new geometry and redraw the bar.
+  const onResize = (): void => {
+    setupScrollRegion()
+    renderStatusBar()
+  }
+  process.stdout.on('resize', onResize)
+
   const cleanup = async (): Promise<void> => {
     clearInterval(spinnerTimer)
     clearInterval(thinkingTimer)
+    process.stdout.off('resize', onResize)
+    teardownScrollRegion()
     rl.close()
     try {
       await client.close()
@@ -871,9 +897,11 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     }
   }
 
-  // Initial render so the status line is on screen before the first
-  // prompt appears.
-  writeStatusBarAndPrompt()
+  // Now that everything is wired, set up the scroll region and draw
+  // the initial bar. Then prompt.
+  setupScrollRegion()
+  renderStatusBar()
+  rl.prompt()
 
   rl.on('line', (line) => {
     void (async () => {
@@ -885,7 +913,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
         return
       }
       if (trimmed.length === 0) {
-        writeStatusBarAndPrompt()
+        rl.prompt()
         return
       }
       try {
@@ -893,7 +921,11 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       } catch (err) {
         console.error(`send failed: ${err instanceof Error ? err.message : String(err)}`)
       }
-      writeStatusBarAndPrompt()
+      rl.prompt()
+      // After Enter, readline scrolled the area; the status row is
+      // outside the region so it's untouched, but a redraw is cheap
+      // insurance against terminals that handle scroll regions oddly.
+      renderStatusBar()
     })()
   })
   rl.on('close', () => {
