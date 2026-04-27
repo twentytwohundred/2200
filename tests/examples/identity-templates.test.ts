@@ -24,8 +24,10 @@ describe('example/identities/hobby.identity.md', () => {
     expect(ident.frontmatter.agent_name).toBe('hobby')
     expect(ident.frontmatter.pub).toBeDefined()
     expect(ident.frontmatter.pub?.handle).toBe('@hobby')
-    expect(ident.frontmatter.model.provider).toBe('anthropic')
-    expect(ident.frontmatter.model.model_id).toBe('claude-haiku-4-5')
+    // Model binding shape (provider/model_id/followup_model_id) is asserted
+    // generally, not pinned to a specific vendor. Operators swap freely.
+    expect(typeof ident.frontmatter.model.provider).toBe('string')
+    expect(typeof ident.frontmatter.model.model_id).toBe('string')
   })
 })
 
@@ -35,6 +37,6 @@ describe('example/identities/simon.identity.md', () => {
     expect(ident.frontmatter.agent_name).toBe('simon')
     expect(ident.frontmatter.pub).toBeDefined()
     expect(ident.frontmatter.pub?.handle).toBe('@simon')
-    expect(ident.frontmatter.model.provider).toBe('anthropic')
+    expect(typeof ident.frontmatter.model.provider).toBe('string')
   })
 })

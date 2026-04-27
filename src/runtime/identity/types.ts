@@ -41,6 +41,18 @@ export const ModelBindingSchema = z.object({
   tier: ModelTierSchema,
   provider: ModelProviderSchema,
   model_id: ModelIdComponentSchema,
+  /**
+   * Optional secondary model. When set, the AgentLoop uses
+   * `model_id` for iteration 1 of a task (cheap initial assessment)
+   * and switches to `followup_model_id` for iterations 2 and beyond
+   * (deeper reasoning, tool-call follow-ups). Same provider; the
+   * provider client is reused. Set to a reasoner-class model when
+   * the primary is a chat-class model... e.g.
+   *   model_id: deepseek-chat
+   *   followup_model_id: deepseek-reasoner
+   * If unset, all iterations use `model_id`.
+   */
+  followup_model_id: ModelIdComponentSchema.optional(),
 })
 export type ModelBinding = z.infer<typeof ModelBindingSchema>
 

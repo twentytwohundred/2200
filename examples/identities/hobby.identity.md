@@ -3,16 +3,17 @@ schema_version: 1
 agent_name: hobby
 agent_role: 'Primary build Agent for 2200; absorbs the architecture-lead role'
 model:
-  tier: fast
-  provider: anthropic
-  model_id: claude-haiku-4-5
+  tier: frontier
+  provider: deepseek
+  model_id: deepseek-chat
+  followup_model_id: deepseek-reasoner
 tools: []
 project_dir: /var/lib/2200/agents/hobby/project
 brain_dir: /var/lib/2200/agents/hobby/brain
 created: 2026-04-27
 provider_secret:
   source: env
-  id: ANTHROPIC_API_KEY
+  id: DEEPSEEK_API_KEY
 pub:
   identity: ''
   display_name: hobby
