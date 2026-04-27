@@ -36,6 +36,7 @@ import { getOrCreatePubClient } from '../pub/registry.js'
 import { PubWakeSource } from '../pub/wake-source.js'
 import type { PubClient } from '../pub/client.js'
 import { Router } from '../pub/router.js'
+import { upsertRosterEntry } from '../pub/roster.js'
 
 const HEARTBEAT_INTERVAL_MS = 10_000
 const TASK_POLL_INTERVAL_MS = 1_000
@@ -280,6 +281,30 @@ export class AgentProcess {
         continue
       }
       this.pubClients.push(client)
+
+      // Self-upsert into the per-pub roster so peer Agents' wake
+      // sources can identify us as an Agent (vs. a human user) and
+      // gate the router-fallback path correctly. Without this,
+      // Agents created before the roster module shipped never
+      // appear in the file, peers treat their messages as human-
+      // sent, and the politeness spiral guard misfires. Failures
+      // are logged and the wake source still attaches... worst
+      // case: this Agent doesn't appear as an ambient routing
+      // candidate to peers, but the human can still @-mention us.
+      try {
+        await upsertRosterEntry(this.options.home, pub.name, {
+          agent_id: cred.agent_id,
+          agent_name: this.options.name,
+          display_name: pubBlock.display_name,
+          role_blurb: this.identity.frontmatter.agent_role,
+        })
+      } catch (err) {
+        this.log.warn('roster self-upsert failed; peers may not classify us as an Agent', {
+          pub: pub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
       const wakeSource = new PubWakeSource({
         client,
         agentName: this.options.name,
