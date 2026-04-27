@@ -101,8 +101,7 @@ describe('OpenAIProvider request shape', () => {
     const provider = new OpenAIProvider({
       apiKey: 'sk',
       baseUrl: 'https://generativelanguage.googleapis.com',
-      endpointUrl:
-        'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      endpointUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
       providerName: 'gemini',
       fetchImpl,
     })
