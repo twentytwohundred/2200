@@ -160,6 +160,33 @@ describe('Router.route', () => {
     expect(decision.woken_agent_ids).toEqual([])
   })
 
+  it('forwards perspective_agent_id into the user prompt as "routing on behalf of"', async () => {
+    let captured = ''
+    const provider: LLMProvider = {
+      name: 'fake',
+      baseUrl: 'fake://',
+      complete(req: CompletionRequest): Promise<CompletionResponse> {
+        captured = req.messages[0]?.content ?? ''
+        return Promise.resolve({
+          text: '{"woken_agent_ids": []}',
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 1, outputTokens: 1 },
+          providerResponseId: 'x',
+        })
+      },
+    }
+    const router = new Router({ provider, modelId: 'fast' })
+    await router.route({
+      message_id: 'm-perspective',
+      sender_display_name: 'Doug',
+      content: 'both of you check in',
+      agents: [HOBBY, SIMON],
+      perspective_agent_id: HOBBY.agent_id,
+    })
+    expect(captured).toContain('routing on behalf of: hobby')
+    expect(captured).toContain('The roster IS the room')
+  })
+
   it('caches by message_id; second call does not re-invoke the provider', async () => {
     let calls = 0
     const provider: LLMProvider = {

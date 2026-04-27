@@ -237,15 +237,17 @@ export class PubWakeSource {
     let routerAgents: RouterAgent[] = []
     try {
       const roster = await readRoster(home, this.opts.pubName)
-      routerAgents = roster.agents
-        // Don't include self; the router only chooses among other Agents
-        // for this Agent's wake decision.
-        .filter((a) => a.agent_id !== this.opts.agent.agent_id)
-        .map((a) => ({
-          agent_id: a.agent_id,
-          display_name: a.display_name,
-          role_blurb: a.role_blurb,
-        }))
+      // Pass the COMPLETE roster (including self) with each agent's
+      // real role_blurb. Each per-Agent wake source therefore sends
+      // the same candidate list to the router; the difference is just
+      // the perspective_agent_id. This avoids the failure mode where
+      // self was labeled "(this Agent)" with no role and the router
+      // concluded "I'm the only one here."
+      routerAgents = roster.agents.map((a) => ({
+        agent_id: a.agent_id,
+        display_name: a.display_name,
+        role_blurb: a.role_blurb,
+      }))
     } catch (err) {
       this.log.warn('roster read failed; skipping router', {
         pub: this.opts.pubName,
@@ -254,21 +256,23 @@ export class PubWakeSource {
       return null
     }
 
-    // Always include self in the candidate list so the router can pick
-    // us. We filtered out self above to avoid a self-referential entry
-    // from the persisted roster (which only sees what was registered
-    // through `agent create`).
-    routerAgents.push({
-      agent_id: this.opts.agent.agent_id,
-      display_name: this.opts.agentName,
-      role_blurb: '(this Agent)',
-    })
+    // If self isn't in the persisted roster yet (race with the
+    // self-upsert at start), inject a minimal entry so we remain a
+    // valid candidate for routing.
+    if (!routerAgents.some((a) => a.agent_id === this.opts.agent.agent_id)) {
+      routerAgents.push({
+        agent_id: this.opts.agent.agent_id,
+        display_name: this.opts.agentName,
+        role_blurb: 'agent in pub',
+      })
+    }
 
     const decision = await router.route({
       message_id: args.message_id,
       sender_display_name: args.sender_display_name,
       content: args.content,
       agents: routerAgents,
+      perspective_agent_id: this.opts.agent.agent_id,
     })
     if (!decision.woken_agent_ids.includes(this.opts.agent.agent_id)) {
       return null
