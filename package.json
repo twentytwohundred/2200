@@ -56,5 +56,10 @@
     "ws": "^8.20.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@openpub-ai/pub-server@0.3.3": "patches/@openpub-ai__pub-server@0.3.3.patch"
+    }
   }
 }
