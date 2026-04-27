@@ -30,6 +30,11 @@ import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
 import { TaskStore } from './task/store.js'
 import { AgentLoop, type LoopResult } from './loop.js'
+import { loadState } from '../supervisor/state.js'
+import { readCredentialFile } from '../pub/keypair.js'
+import { getOrCreatePubClient } from '../pub/registry.js'
+import { PubWakeSource } from '../pub/wake-source.js'
+import type { PubClient } from '../pub/client.js'
 
 const HEARTBEAT_INTERVAL_MS = 10_000
 const TASK_POLL_INTERVAL_MS = 1_000
@@ -64,6 +69,8 @@ export class AgentProcess {
   private taskStore: TaskStore | undefined
   private loop: AgentLoop | undefined
   private taskInFlight = false
+  private readonly pubWakeSources: PubWakeSource[] = []
+  private readonly pubClients: PubClient[] = []
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -170,7 +177,93 @@ export class AgentProcess {
       this.taskPollTimer.unref()
     }
 
+    // Pub wake sources (Epic 3 PR D). If the Identity declares a `pub:`
+    // block, connect to each pub the Agent is a member of and attach a
+    // wake source. The wake source enqueues a synthetic `pub.handle`
+    // task whenever an incoming message is `directed_to` this Agent;
+    // the existing task-poll picks it up.
+    //
+    // Best-effort: errors at this stage are logged but do not prevent
+    // the Agent from registering. The Agent can still process
+    // CLI-submitted tasks; pub coordination is degraded until the
+    // pub becomes reachable.
+    if (this.identity.frontmatter.pub) {
+      try {
+        await this.attachPubWakeSources()
+      } catch (err) {
+        this.log.warn('failed to attach pub wake sources; pub coordination degraded', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
     this.log.info('Agent registered with supervisor', { name: this.options.name })
+  }
+
+  /**
+   * Connect to every pub this Agent participates in and attach a
+   * PubWakeSource. Pub membership comes from the Identity's
+   * `pub.member_of`; if empty/absent, defaults to "every running pub
+   * on the instance" (the v1 typical install with one pub).
+   */
+  private async attachPubWakeSources(): Promise<void> {
+    if (!this.identity?.frontmatter.pub || !this.taskStore) return
+    const pubBlock = this.identity.frontmatter.pub
+    if (!pubBlock.identity) {
+      this.log.info('Agent has pub block but no agent_id (unregistered); skipping wake source')
+      return
+    }
+    const cred = await readCredentialFile(
+      agentPaths(this.options.home, this.options.name).pubSecret,
+    )
+    if (!cred.agent_id) {
+      this.log.info('Agent credential file has no agent_id (unregistered); skipping wake source')
+      return
+    }
+
+    const supervisorState = await loadState(this.options.home)
+    const allRunning = Object.values(supervisorState.pubs).filter((p) => p.state === 'running')
+    const targetPubs =
+      pubBlock.member_of.length > 0
+        ? allRunning.filter((p) => pubBlock.member_of.includes(p.name))
+        : allRunning
+
+    if (targetPubs.length === 0) {
+      this.log.info('no running pubs to attach wake sources to', {
+        member_of: pubBlock.member_of,
+      })
+      return
+    }
+
+    for (const pub of targetPubs) {
+      const baseUrl = `http://127.0.0.1:${String(pub.port)}`
+      const client = getOrCreatePubClient(this.options.name, pub.name, { baseUrl, cred })
+      try {
+        await client.connect()
+      } catch (err) {
+        this.log.warn('failed to connect to pub; skipping wake source', {
+          pub: pub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        continue
+      }
+      this.pubClients.push(client)
+      const wakeSource = new PubWakeSource({
+        client,
+        agentName: this.options.name,
+        pubName: pub.name,
+        agent: {
+          agent_id: cred.agent_id,
+          handle: pubBlock.handle,
+          ...(pubBlock.domains.length > 0 ? { domains: [...pubBlock.domains] } : {}),
+        },
+        taskStore: this.taskStore,
+        logger: this.log.child(`wake/${pub.name}`),
+      })
+      wakeSource.start()
+      this.pubWakeSources.push(wakeSource)
+      this.log.info('pub wake source attached', { pub: pub.name, agent_id: cred.agent_id })
+    }
   }
 
   /**
@@ -295,6 +388,23 @@ export class AgentProcess {
       clearInterval(this.taskPollTimer)
       this.taskPollTimer = undefined
     }
+    // Stop pub wake sources and close their underlying clients.
+    for (const ws of this.pubWakeSources) {
+      try {
+        ws.stop()
+      } catch {
+        // best-effort
+      }
+    }
+    this.pubWakeSources.length = 0
+    for (const client of this.pubClients) {
+      try {
+        await client.close()
+      } catch {
+        // best-effort
+      }
+    }
+    this.pubClients.length = 0
     if (this.machine.state !== 'stopped') {
       try {
         this.machine.transition('stopped', reason)
