@@ -88,6 +88,62 @@ describe('OpenAIProvider request shape', () => {
     expect(provider.name).toBe('deepseek')
   })
 
+  it('forwards tool messages as user messages tagged tool_result: (we use fenced ```tool blocks, not native function calling)', async () => {
+    let body: unknown
+    const fetchImpl = mockFetch((_, init) => {
+      body = JSON.parse(init.body as string)
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({ apiKey: 'sk', fetchImpl })
+    await provider.complete({
+      modelId: 'gpt-5-4',
+      messages: [
+        { role: 'user', content: 'fetch the notes' },
+        { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
+        { role: 'tool', content: '{"tool":"fs.read","ok":true,"output":"hi"}' },
+      ],
+    })
+    expect((body as Record<string, unknown>)['messages']).toEqual([
+      { role: 'user', content: 'fetch the notes' },
+      { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
+      { role: 'user', content: 'tool_result:\n{"tool":"fs.read","ok":true,"output":"hi"}' },
+    ])
+  })
+
+  it('merges consecutive same-role messages (deepseek-reasoner requires strict alternation)', async () => {
+    let body: unknown
+    const fetchImpl = mockFetch((_, init) => {
+      body = JSON.parse(init.body as string)
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({ apiKey: 'sk', fetchImpl })
+    await provider.complete({
+      modelId: 'deepseek-reasoner',
+      messages: [
+        { role: 'user', content: 'do two things' },
+        { role: 'assistant', content: 'calling two tools' },
+        { role: 'tool', content: '{"tool":"a","ok":true}' },
+        { role: 'tool', content: '{"tool":"b","ok":true}' },
+      ],
+    })
+    expect((body as Record<string, unknown>)['messages']).toEqual([
+      { role: 'user', content: 'do two things' },
+      { role: 'assistant', content: 'calling two tools' },
+      {
+        role: 'user',
+        content: 'tool_result:\n{"tool":"a","ok":true}\n\ntool_result:\n{"tool":"b","ok":true}',
+      },
+    ])
+  })
+
   it('respects endpointUrl override (used for vendors with non-standard paths, e.g. Gemini)', async () => {
     let captured: { url: string; init: RequestInit } | undefined
     const fetchImpl = mockFetch((url, init) => {
