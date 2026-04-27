@@ -180,10 +180,7 @@ export class PubWakeSource {
       if (await this.isAgentSender(message.agent_id)) {
         return
       }
-      if (
-        message.mentions.length > 0 &&
-        !message.mentions.includes(this.opts.agent.agent_id)
-      ) {
+      if (message.mentions.length > 0 && !message.mentions.includes(this.opts.agent.agent_id)) {
         return
       }
       const routed = await this.tryRouter({
