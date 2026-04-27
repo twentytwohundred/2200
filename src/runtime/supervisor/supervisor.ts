@@ -37,6 +37,7 @@ import {
 import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
 import type { UserIdentityFrontmatter } from '../user/types.js'
 import { generatePubSecrets, readPubSecrets, writePubSecrets } from '../pub/secrets.js'
+import { upsertRosterEntry } from '../pub/roster.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -351,6 +352,28 @@ export class Supervisor {
       agent_id: agentId,
       registered_against: targetPub?.state === 'running' ? targetPub.name : null,
     })
+
+    // Append/update this Agent's entry in the per-pub roster so other
+    // Agents' wake sources can include it as a routing candidate.
+    // Failures here are non-fatal... ambient routing degrades to "this
+    // Agent isn't a candidate for the router," but the Agent still works
+    // for direct @-mentions and the rest of the deterministic rules.
+    if (targetPub && agentId) {
+      try {
+        await upsertRosterEntry(this.state.home, targetPub.name, {
+          agent_id: agentId,
+          agent_name: agentName,
+          display_name: pubBlock.display_name,
+          role_blurb: loadedIdentity.frontmatter.agent_role,
+        })
+      } catch (err) {
+        this.log.warn('roster upsert failed; ambient routing will not see this Agent', {
+          agent: agentName,
+          pub: targetPub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
   }
 
   /** Spawn the Agent process for an existing record. */

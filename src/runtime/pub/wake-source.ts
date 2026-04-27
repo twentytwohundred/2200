@@ -22,6 +22,8 @@ import type { Logger } from '../util/logger.js'
 import { createLogger } from '../util/logger.js'
 import { isDirectedTo, type ResolverAgentIdentity } from './directed-to.js'
 import type { PubClient, PubEvent } from './client.js'
+import type { Router, RouterAgent } from './router.js'
+import { readRoster } from './roster.js'
 
 export interface WakeSourceOptions {
   client: PubClient
@@ -36,6 +38,21 @@ export interface WakeSourceOptions {
   logger?: Logger
   /** Max sent message_ids to track. Defaults to 200; older are evicted FIFO. */
   maxSentTracked?: number
+  /**
+   * Optional router. When set, the wake source consults the router for
+   * messages that don't match any deterministic directed_to rule. This
+   * is the ambient-routing path (Epic 3.6). Without a router, the wake
+   * source falls through to silence on rule misses... existing
+   * deterministic behavior. Operators opt-in by configuring a cheap
+   * router model on the Agent.
+   */
+  router?: Router
+  /**
+   * 2200_HOME root, required only when `router` is set... used to load
+   * the per-pub roster file that supplies the router with peer Agents'
+   * role blurbs.
+   */
+  home?: string
 }
 
 const DEFAULT_MAX_SENT = 200
@@ -134,7 +151,28 @@ export class PubWakeSource {
       sentMessageIds: this.sentMessageIds,
     })
 
-    if (!verdict.matched) return
+    let rule: string
+    let detail: string | null
+
+    if (verdict.matched) {
+      rule = verdict.rule ?? 'unknown'
+      detail = verdict.detail
+    } else if (this.opts.router) {
+      // Ambient routing fallback: no deterministic rule fired; ask the
+      // router whether this Agent should respond. Router failures /
+      // empty decisions are handled inside Router.route... we just
+      // check whether our agent_id is in the returned set.
+      const routed = await this.tryRouter({
+        message_id: message.message_id,
+        sender_display_name: message.display_name,
+        content: message.content,
+      })
+      if (!routed) return
+      rule = 'router'
+      detail = routed.rationale ?? null
+    } else {
+      return
+    }
 
     try {
       await this.enqueueSyntheticTask({
@@ -142,14 +180,14 @@ export class PubWakeSource {
         sender_agent_id: message.agent_id,
         sender_display_name: message.display_name,
         sender_content: message.content,
-        rule: verdict.rule ?? 'unknown',
-        detail: verdict.detail,
+        rule,
+        detail,
         envelope: event.type,
       })
       this.log.info('wake fired; synthetic task enqueued', {
         pub: this.opts.pubName,
         message_id: message.message_id,
-        rule: verdict.rule,
+        rule,
       })
     } catch (err) {
       this.log.warn('failed to enqueue wake task', {
@@ -158,6 +196,63 @@ export class PubWakeSource {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  /**
+   * Consult the router. Returns the matching RouterDecision-shaped
+   * object if our agent_id was named, otherwise null. Loads the
+   * roster on every call... reads are cheap (small JSON file) and
+   * handle the case where new Agents joined the pub since last wake.
+   */
+  private async tryRouter(args: {
+    message_id: string
+    sender_display_name: string
+    content: string
+  }): Promise<{ rationale?: string } | null> {
+    const router = this.opts.router
+    const home = this.opts.home
+    if (!router || !home) return null
+
+    let routerAgents: RouterAgent[] = []
+    try {
+      const roster = await readRoster(home, this.opts.pubName)
+      routerAgents = roster.agents
+        // Don't include self; the router only chooses among other Agents
+        // for this Agent's wake decision.
+        .filter((a) => a.agent_id !== this.opts.agent.agent_id)
+        .map((a) => ({
+          agent_id: a.agent_id,
+          display_name: a.display_name,
+          role_blurb: a.role_blurb,
+        }))
+    } catch (err) {
+      this.log.warn('roster read failed; skipping router', {
+        pub: this.opts.pubName,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return null
+    }
+
+    // Always include self in the candidate list so the router can pick
+    // us. We filtered out self above to avoid a self-referential entry
+    // from the persisted roster (which only sees what was registered
+    // through `agent create`).
+    routerAgents.push({
+      agent_id: this.opts.agent.agent_id,
+      display_name: this.opts.agentName,
+      role_blurb: '(this Agent)',
+    })
+
+    const decision = await router.route({
+      message_id: args.message_id,
+      sender_display_name: args.sender_display_name,
+      content: args.content,
+      agents: routerAgents,
+    })
+    if (!decision.woken_agent_ids.includes(this.opts.agent.agent_id)) {
+      return null
+    }
+    return decision.rationale !== undefined ? { rationale: decision.rationale } : {}
   }
 
   private recordSent(message_id: string): void {

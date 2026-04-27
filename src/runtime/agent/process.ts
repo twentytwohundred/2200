@@ -35,6 +35,7 @@ import { readCredentialFile } from '../pub/keypair.js'
 import { getOrCreatePubClient } from '../pub/registry.js'
 import { PubWakeSource } from '../pub/wake-source.js'
 import type { PubClient } from '../pub/client.js'
+import { Router } from '../pub/router.js'
 
 const HEARTBEAT_INTERVAL_MS = 10_000
 const TASK_POLL_INTERVAL_MS = 1_000
@@ -235,6 +236,37 @@ export class AgentProcess {
       return
     }
 
+    // Build an optional ambient-routing Router from env. Operators
+    // opt-in by setting ROUTER_PROVIDER + ROUTER_MODEL_ID; without
+    // them the wake source falls back to deterministic rules only
+    // (pre-Epic-3.6 behavior).
+    const routerProvider = process.env['ROUTER_PROVIDER']
+    const routerModelId = process.env['ROUTER_MODEL_ID']
+    let router: Router | undefined
+    if (routerProvider && routerModelId) {
+      try {
+        const provider = await resolveProvider({ providerName: routerProvider })
+        router = new Router({
+          provider,
+          modelId: routerModelId,
+          logger: this.log.child(`router/${routerProvider}`),
+        })
+        this.log.info('ambient router enabled', {
+          provider: routerProvider,
+          model_id: routerModelId,
+        })
+      } catch (err) {
+        this.log.warn(
+          'ROUTER_PROVIDER/ROUTER_MODEL_ID set but provider build failed; running without router',
+          {
+            provider: routerProvider,
+            model_id: routerModelId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        )
+      }
+    }
+
     for (const pub of targetPubs) {
       const baseUrl = `http://127.0.0.1:${String(pub.port)}`
       const client = getOrCreatePubClient(this.options.name, pub.name, { baseUrl, cred })
@@ -259,6 +291,7 @@ export class AgentProcess {
         },
         taskStore: this.taskStore,
         logger: this.log.child(`wake/${pub.name}`),
+        ...(router ? { router, home: this.options.home } : {}),
       })
       wakeSource.start()
       this.pubWakeSources.push(wakeSource)
