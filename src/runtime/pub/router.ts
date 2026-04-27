@@ -180,7 +180,7 @@ export class Router {
       this.log.warn('router LLM call failed; defaulting to no-op decision', {
         message_id: input.message_id,
         error: err instanceof Error ? err.message : String(err),
-        ...(err instanceof LlmError ? { code: err.code, provider: err.provider } : {}),
+        ...(err instanceof LlmError ? { code: err.code, provider: err.providerName } : {}),
       })
       const fail: RouterDecision = { woken_agent_ids: [], cached: false }
       this.cache.set(input.message_id, fail)
