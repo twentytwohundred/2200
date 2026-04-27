@@ -71,13 +71,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const messages: OpenAIChatRequest['messages'] = []
-    if (request.systemPrompt !== undefined) {
-      messages.push({ role: 'system', content: request.systemPrompt })
-    }
-    for (const m of request.messages) {
-      messages.push(toOpenAIMessage(m))
-    }
+    const messages = toOpenAIMessages(request.messages, request.systemPrompt)
 
     const body: OpenAIChatRequest = {
       model: request.modelId,
@@ -153,9 +147,49 @@ export class OpenAIProvider implements LLMProvider {
   }
 }
 
-function toOpenAIMessage(m: Message): { role: string; content: string } {
-  // OpenAI accepts user/assistant/system/tool roles; pass through.
-  return { role: m.role, content: m.content }
+/**
+ * Build the OpenAI-compatible messages array.
+ *
+ * We use fenced ```tool blocks (not native function calling), so tool
+ * results come back to us as `role: 'tool'` messages from the loop.
+ * OpenAI-style APIs reject tool messages without a `tool_call_id`
+ * (we don't have one... not using their function-calling protocol),
+ * and stricter models like deepseek-reasoner reject them outright.
+ *
+ * Surface tool results as `user` messages tagged `tool_result:`. This
+ * mirrors what the AnthropicProvider does and is correct for our
+ * fenced-block tool protocol.
+ *
+ * Consecutive same-role messages are merged because reasoner-class
+ * models (deepseek-reasoner in particular) require strict
+ * user/assistant alternation.
+ */
+function toOpenAIMessages(
+  messages: Message[],
+  systemPrompt: string | undefined,
+): { role: string; content: string }[] {
+  const out: { role: string; content: string }[] = []
+  if (systemPrompt !== undefined) {
+    out.push({ role: 'system', content: systemPrompt })
+  }
+  const push = (role: 'user' | 'assistant', content: string) => {
+    const last = out[out.length - 1]
+    if (last?.role === role) {
+      last.content = `${last.content}\n\n${content}`
+    } else {
+      out.push({ role, content })
+    }
+  }
+  for (const m of messages) {
+    if (m.role === 'user' || m.role === 'assistant') {
+      push(m.role, m.content)
+    } else if (m.role === 'tool') {
+      push('user', `tool_result:\n${m.content}`)
+    }
+    // system messages from the loop are dropped; system goes in the
+    // top-level systemPrompt above.
+  }
+  return out
 }
 
 function isOpenAIResponse(value: unknown): value is OpenAIChatResponse {
@@ -221,7 +255,7 @@ function mapHttpError(
   }
   return new LlmError(
     'PROVIDER_ERROR',
-    `unexpected status ${String(status)}`,
+    `unexpected status ${String(status)}: ${bodyText.slice(0, 300)}`,
     providerName,
     modelId,
     { bodyText },
