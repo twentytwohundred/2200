@@ -16,8 +16,12 @@ import { PubClient } from '../../../src/runtime/pub/client.js'
 import { createIdentityClient, ensureRegistered } from '../../../src/runtime/pub/identity-client.js'
 import { generateKeypair } from '../../../src/runtime/pub/keypair.js'
 import { PubWakeSource } from '../../../src/runtime/pub/wake-source.js'
+import { Router } from '../../../src/runtime/pub/router.js'
+import { upsertRosterEntry } from '../../../src/runtime/pub/roster.js'
 import { TaskStore } from '../../../src/runtime/agent/task/store.js'
 import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
+import type { LLMProvider } from '../../../src/runtime/llm/provider.js'
+import type { CompletionResponse } from '../../../src/runtime/llm/types.js'
 
 let home: string
 let pub: FakePub | undefined
@@ -252,6 +256,167 @@ describe('PubWakeSource', () => {
     expect(tasks.length).toBe(0)
 
     wake.stop()
+    await bob.client.close()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Ambient routing (Epic 3.6 PR K)
+  // ---------------------------------------------------------------------------
+
+  function fakeProviderReturning(text: string): LLMProvider {
+    return {
+      name: 'fake',
+      baseUrl: 'fake://',
+      complete(): Promise<CompletionResponse> {
+        return Promise.resolve({
+          text,
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 1, outputTokens: 1 },
+          providerResponseId: 'fake',
+        })
+      },
+    }
+  }
+
+  it('falls back to the router when no deterministic rule fires and the router picks bob', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob')
+
+    // Persist a roster entry for bob so the router has a candidate.
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: bob.agentId,
+      agent_name: 'bob',
+      display_name: 'bob',
+      role_blurb: 'devops, hosts deploys',
+    })
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: _third.agentId,
+      agent_name: 'charlie',
+      display_name: 'charlie',
+      role_blurb: 'unrelated',
+    })
+
+    const router = new Router({
+      provider: fakeProviderReturning(
+        `{"woken_agent_ids": ["${bob.agentId}"], "rationale": "ops question"}`,
+      ),
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    // Generic chatter, no @-mention, no reply, > 2 members so
+    // sole_recipient does not match. With the router on, bob should
+    // wake because the router named him.
+    await alice.client.send({ content: 'who can talk to me about deploys?' })
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
+
+    const tasks = await bob.taskStore.list()
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]?.frontmatter.title).toContain('router')
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('does not wake when the router picks someone else', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob')
+
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: _third.agentId,
+      agent_name: 'charlie',
+      display_name: 'charlie',
+      role_blurb: 'unrelated',
+    })
+
+    const router = new Router({
+      provider: fakeProviderReturning(
+        `{"woken_agent_ids": ["${_third.agentId}"], "rationale": "for charlie"}`,
+      ),
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    await alice.client.send({ content: 'an unrelated message' })
+    await new Promise((r) => setTimeout(r, 200))
+
+    expect((await bob.taskStore.list()).length).toBe(0)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('skips the router entirely when a deterministic rule fires (no extra LLM cost)', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const bob = await setupAgent('bob')
+
+    let routerCalls = 0
+    const router = new Router({
+      provider: {
+        name: 'fake',
+        baseUrl: 'fake://',
+        complete(): Promise<CompletionResponse> {
+          routerCalls += 1
+          return Promise.resolve({
+            text: '{"woken_agent_ids": []}',
+            finishReason: 'stop',
+            costMetrics: { inputTokens: 1, outputTokens: 1 },
+            providerResponseId: 'fake',
+          })
+        },
+      },
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    // Direct mention fires rule 1; router must NOT be consulted.
+    await alice.client.send({ content: 'hey @bob ping', mentions: [bob.agentId] })
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
+
+    expect(routerCalls).toBe(0)
+    expect(await bob.taskStore.list()).toHaveLength(1)
+
+    wake.stop()
+    await alice.client.close()
     await bob.client.close()
   })
 })
