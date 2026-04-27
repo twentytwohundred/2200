@@ -159,6 +159,76 @@ describe('parseToolCalls', () => {
     expect(r.calls.length).toBe(0)
     expect(r.errors.length).toBe(0)
   })
+
+  it('falls back to <function_calls> XML with tool name in the invoke', () => {
+    // Native Anthropic-style: <invoke name="<actual tool>">.
+    const text = [
+      '<function_calls>',
+      '<invoke name="pub.read">',
+      '<parameter name="args">{"pub_name": "ops"}</parameter>',
+      '<parameter name="predicted_outcome">recent messages</parameter>',
+      '<parameter name="reason">need context</parameter>',
+      '</invoke>',
+      '</function_calls>',
+    ].join('\n')
+    const r = parseToolCalls(text)
+    expect(r.errors).toEqual([])
+    expect(r.calls).toHaveLength(1)
+    expect(r.calls[0]?.tool).toBe('pub.read')
+    expect(r.calls[0]?.args).toEqual({ pub_name: 'ops' })
+    expect(r.calls[0]?.predicted_outcome).toBe('recent messages')
+  })
+
+  it('falls back to <function_calls> XML with tool name in a "tool" parameter', () => {
+    // Claude-Code-trained Haiku reflex: <invoke name="tool_code"> with the
+    // real tool nested as a parameter.
+    const text = [
+      '<function_calls>',
+      '<invoke name="tool_code">',
+      '<parameter name="tool">pub.send</parameter>',
+      '<parameter name="args">{"pub_name": "ops", "content": "hi"}</parameter>',
+      '<parameter name="predicted_outcome">delivered</parameter>',
+      '<parameter name="reason">replying</parameter>',
+      '</invoke>',
+      '</function_calls>',
+    ].join('\n')
+    const r = parseToolCalls(text)
+    expect(r.errors).toEqual([])
+    expect(r.calls).toHaveLength(1)
+    expect(r.calls[0]?.tool).toBe('pub.send')
+    expect(r.calls[0]?.args).toEqual({ pub_name: 'ops', content: 'hi' })
+  })
+
+  it('parses both fenced and XML calls in the same response, fenced first', () => {
+    const text = [
+      '```tool',
+      '{"tool":"pub.read","args":{"pub_name":"ops"}}',
+      '```',
+      'Then I want to send:',
+      '<function_calls>',
+      '<invoke name="pub.send">',
+      '<parameter name="args">{"pub_name": "ops", "content": "hi"}</parameter>',
+      '</invoke>',
+      '</function_calls>',
+    ].join('\n')
+    const r = parseToolCalls(text)
+    expect(r.errors).toEqual([])
+    expect(r.calls.map((c) => c.tool)).toEqual(['pub.read', 'pub.send'])
+  })
+
+  it('reports errors on XML blocks with malformed args JSON', () => {
+    const text = [
+      '<function_calls>',
+      '<invoke name="pub.read">',
+      '<parameter name="args">not-json</parameter>',
+      '</invoke>',
+      '</function_calls>',
+    ].join('\n')
+    const r = parseToolCalls(text)
+    expect(r.calls).toHaveLength(0)
+    expect(r.errors).toHaveLength(1)
+    expect(r.errors[0]).toContain('xml tool block args JSON parse failed')
+  })
 })
 
 describe('hashArgs', () => {

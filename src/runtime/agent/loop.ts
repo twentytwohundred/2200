@@ -64,6 +64,17 @@ import { createLogger, type Logger } from '../util/logger.js'
 
 const TOOL_BLOCK_RE = /```tool\s*\n([\s\S]*?)\n```/g
 
+// Fallback for models (notably Claude Code-trained Haiku) that revert to
+// Anthropic's native function_calls XML shape despite the system prompt
+// asking for fenced ```tool blocks. We capture the inner <invoke>...</invoke>
+// then pull out <parameter name="...">...</parameter> children. Models
+// sometimes put the actual tool name in a "tool" parameter (with
+// <invoke name="tool_code">) and sometimes put it on the invoke itself
+// (<invoke name="pub.read">), so both shapes are accepted.
+const FUNCTION_CALLS_RE = /<function_calls>([\s\S]*?)<\/function_calls>/g
+const INVOKE_RE = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g
+const PARAMETER_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/g
+
 const ToolCallShape = z.object({
   tool: z.string().min(1),
   args: z.record(z.string(), z.unknown()),
@@ -81,10 +92,12 @@ export interface ParsedToolCall {
 }
 
 /**
- * Parse fenced ```tool blocks out of a model response. Order is preserved.
- * Malformed JSON or schema-invalid blocks are reported as errors so the
- * loop can surface them to the model in the next turn (rather than silently
- * dropping calls).
+ * Parse tool calls out of a model response. Tries the canonical fenced
+ * ```tool block format first, then falls back to the <function_calls>
+ * XML shape some models emit by reflex. Order is preserved within each
+ * format; fenced blocks are reported before any XML calls in the same
+ * response. Malformed blocks (in either format) are reported as errors so
+ * the loop can surface them to the model in the next turn.
  */
 export function parseToolCalls(text: string): {
   calls: ParsedToolCall[]
@@ -119,6 +132,65 @@ export function parseToolCalls(text: string): {
       precondition: parsed.data.precondition ?? null,
     })
   }
+
+  FUNCTION_CALLS_RE.lastIndex = 0
+  while ((match = FUNCTION_CALLS_RE.exec(text))) {
+    const inner = match[1] ?? ''
+    INVOKE_RE.lastIndex = 0
+    let invokeMatch: RegExpExecArray | null
+    while ((invokeMatch = INVOKE_RE.exec(inner))) {
+      const invokeName = invokeMatch[1] ?? ''
+      const invokeBody = invokeMatch[2] ?? ''
+      const params: Record<string, string> = {}
+      PARAMETER_RE.lastIndex = 0
+      let paramMatch: RegExpExecArray | null
+      while ((paramMatch = PARAMETER_RE.exec(invokeBody))) {
+        const k = paramMatch[1]
+        const v = paramMatch[2]
+        if (k !== undefined && v !== undefined) params[k] = v.trim()
+      }
+      // Tool name may be the invoke@name (when the model used the tool
+      // directly) or in a "tool" parameter (when it wrapped through
+      // tool_code or similar). Prefer the parameter when present.
+      const toolName = params['tool'] ?? invokeName
+      if (!toolName || toolName === 'tool_code') {
+        if (!params['tool']) {
+          errors.push('xml tool block missing tool name')
+          continue
+        }
+      }
+      const argsRaw = params['args'] ?? '{}'
+      let args: unknown
+      try {
+        args = JSON.parse(argsRaw)
+      } catch (err) {
+        errors.push(
+          `xml tool block args JSON parse failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        continue
+      }
+      const candidate = {
+        tool: params['tool'] ?? invokeName,
+        args,
+        predicted_outcome: params['predicted_outcome'] ?? '',
+        reason: params['reason'] ?? '',
+        precondition: params['precondition'] ?? null,
+      }
+      const parsed = ToolCallShape.safeParse(candidate)
+      if (!parsed.success) {
+        errors.push(`xml tool block schema invalid: ${JSON.stringify(parsed.error.issues)}`)
+        continue
+      }
+      calls.push({
+        tool: parsed.data.tool,
+        args: parsed.data.args,
+        predicted_outcome: parsed.data.predicted_outcome,
+        reason: parsed.data.reason,
+        precondition: parsed.data.precondition ?? null,
+      })
+    }
+  }
+
   return { calls, errors }
 }
 
@@ -391,6 +463,8 @@ export class AgentLoop {
       '```',
       '',
       'Multiple tool blocks in one response are dispatched sequentially. A response with no tool blocks is treated as your final answer and the task is marked done.',
+      '',
+      'IMPORTANT: this runtime parses fenced ```tool blocks. Do NOT use `<function_calls>` / `<invoke>` / `<parameter>` XML tags... they are recognized as a fallback but the fenced shape above is the canonical format and what you should emit.',
       '',
       `Available tools: ${tools}`,
       '',
