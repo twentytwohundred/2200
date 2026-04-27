@@ -88,7 +88,13 @@ function AgentPubBlockSchemaForIdentity() {
       id: z.string().min(1),
     }),
     key_version: z.number().int().positive().default(1),
-    issuer_url: z.string().min(1),
+    /**
+     * `local://<host>:<port>` for LOCAL_TRUST or the hub URL for
+     * HUB mode. Empty string is allowed and means "not yet
+     * provisioned" — the supervisor's `createAgent` extension fills
+     * this in when the Identity is first registered with a pub.
+     */
+    issuer_url: z.string(),
     /**
      * Optional domain rules for the directed_to resolver's rule 5
      * per Epic 3 [[03-local-pub-integration]]. Free-form strings;
