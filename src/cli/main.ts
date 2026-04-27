@@ -789,9 +789,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
     const line =
       parts.length > 0 ? `\x1b[2m─ in room: ${parts.join('  ·  ')}\x1b[0m` : `\x1b[2m─\x1b[0m`
     // Save cursor, jump to status row, clear it, write status, restore cursor.
-    process.stdout.write(
-      `\x1b[s\x1b[${String(tty.rows)};1H\x1b[2K${line}\x1b[u`,
-    )
+    process.stdout.write(`\x1b[s\x1b[${String(tty.rows)};1H\x1b[2K${line}\x1b[u`)
   }
 
   // Subscribe to incoming events. With the scroll region set up,
