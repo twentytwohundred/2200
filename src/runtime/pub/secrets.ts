@@ -97,7 +97,11 @@ export async function readPubSecrets(paths: {
     )
   }
   const s = (signing as Record<string, unknown> | null) ?? {}
-  if (s['schema_version'] !== 1 || typeof s['private_key'] !== 'string' || typeof s['public_key'] !== 'string') {
+  if (
+    s['schema_version'] !== 1 ||
+    typeof s['private_key'] !== 'string' ||
+    typeof s['public_key'] !== 'string'
+  ) {
     throw new Error(`pub signing key at ${paths.signingKey} has wrong shape`)
   }
   return {
