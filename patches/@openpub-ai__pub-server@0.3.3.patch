@@ -1,0 +1,18 @@
+diff --git a/dist/server.js b/dist/server.js
+index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..4e3811af600e44d342df0c887eef4889f701532e 100755
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -704,6 +704,13 @@ wss.on('connection', async (ws, req) => {
+         const presence = roomState.addAgent(agentId, claims);
+         // Register WebSocket connection
+         wsConnections.set(agentId, ws);
++        // 2200 patch: agent handler was missing the keepalive setup that the
++        // spectator handler has (lines 517-520). Without these two lines the
++        // server-side ping cycle marks isAlive=false, never resets it on
++        // pong, and terminates the connection ~30-60s later. See inbox to Poe
++        // with proposed upstream fix for v0.3.4.
++        ws.isAlive = true;
++        ws.on('pong', () => { ws.isAlive = true; });
+         // Send welcome event
+         const welcomeEvent = {
+             type: 'welcome',

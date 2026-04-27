@@ -4,13 +4,18 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@openpub-ai/pub-server@0.3.3':
+    hash: g6kc7p6nrpaxwwuvg5dcpigcry
+    path: patches/@openpub-ai__pub-server@0.3.3.patch
+
 importers:
 
   .:
     dependencies:
       '@openpub-ai/pub-server':
         specifier: 0.3.3
-        version: 0.3.3
+        version: 0.3.3(patch_hash=g6kc7p6nrpaxwwuvg5dcpigcry)
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -2075,7 +2080,7 @@ snapshots:
 
   '@noble/ed25519@2.3.0': {}
 
-  '@openpub-ai/pub-server@0.3.3':
+  '@openpub-ai/pub-server@0.3.3(patch_hash=g6kc7p6nrpaxwwuvg5dcpigcry)':
     dependencies:
       '@noble/ed25519': 2.3.0
       '@openpub-ai/types': 0.2.2
