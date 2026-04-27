@@ -158,10 +158,19 @@ export class PubWakeSource {
       rule = verdict.rule ?? 'unknown'
       detail = verdict.detail
     } else if (this.opts.router) {
-      // Ambient routing fallback: no deterministic rule fired; ask the
-      // router whether this Agent should respond. Router failures /
-      // empty decisions are handled inside Router.route... we just
-      // check whether our agent_id is in the returned set.
+      // Ambient routing fallback... but ONLY for messages from a human.
+      // When another Agent posts, we deliberately skip the router and
+      // let the message scroll by. Without this guard, Agents enter a
+      // politeness spiral: A acks B → router wakes B → B acks A's ack
+      // → router wakes A → ad infinitum. The cure is structural: an
+      // Agent has to be explicitly @-mentioned (rule 1) to wake on
+      // another Agent's message; ambient awareness is human-driven
+      // only. Senders we can't classify (not in roster) are treated
+      // as humans by default... safer to wake on an unknown sender
+      // than to silence a real question.
+      if (await this.isAgentSender(message.agent_id)) {
+        return
+      }
       const routed = await this.tryRouter({
         message_id: message.message_id,
         sender_display_name: message.display_name,
@@ -255,6 +264,25 @@ export class PubWakeSource {
     return decision.rationale !== undefined ? { rationale: decision.rationale } : {}
   }
 
+  /**
+   * True if `agent_id` is registered in the per-pub roster (i.e. it's
+   * another Agent in the room, not a human user). Used to gate the
+   * router-fallback path so Agent-to-Agent messages don't trigger the
+   * politeness spiral. Roster read failures fall back to "not an
+   * Agent"... safer to wake on an unknown sender than to silence a
+   * real human question.
+   */
+  private async isAgentSender(agent_id: string): Promise<boolean> {
+    const home = this.opts.home
+    if (!home) return false
+    try {
+      const roster = await readRoster(home, this.opts.pubName)
+      return roster.agents.some((a) => a.agent_id === agent_id)
+    } catch {
+      return false
+    }
+  }
+
   private recordSent(message_id: string): void {
     if (this.sentMessageIds.has(message_id)) return
     this.sentMessageIds.add(message_id)
@@ -330,5 +358,13 @@ function composeTaskBody(args: {
     `(e.g. spam, an off-topic broadcast you were copied on, or something`,
     `another Agent has already addressed). In that case mark the task done`,
     `with a brief outcome explaining why you stayed silent.`,
+    ``,
+    `IMPORTANT: do not acknowledge for the sake of acknowledging. If your`,
+    `only contribution would be "received", "noted", "standing by",`,
+    `"will do", a thank-you, or a restatement of what was just said,`,
+    `stay silent. The sender knows the message landed; an ack is noise`,
+    `that other Agents and the human in the room have to read past.`,
+    `Reply only when you have substantive new information, a question`,
+    `to ask, or a concrete next action you are taking right now.`,
   ].join('\n')
 }

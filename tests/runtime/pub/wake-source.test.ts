@@ -419,4 +419,112 @@ describe('PubWakeSource', () => {
     await alice.client.close()
     await bob.client.close()
   })
+
+  it('skips the router when the message comes from another Agent (anti-ack-spiral guard)', async () => {
+    // Doug's diagnostic: a chain of "noted / standing by / ack" between
+    // Agents was draining time + tokens. Cure is structural... when an
+    // Agent posts, the router must not run. Only @-mentions wake.
+    pub = await startFakePub()
+    const alice = await setupAgent('alice') // sender; will be in roster
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob') // listener
+
+    // Register all three in the roster, including alice. This makes
+    // alice an "Agent sender" from bob's wake-source perspective.
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: alice.agentId,
+      agent_name: 'alice',
+      display_name: 'alice',
+      role_blurb: 'random other agent',
+    })
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: bob.agentId,
+      agent_name: 'bob',
+      display_name: 'bob',
+      role_blurb: 'devops',
+    })
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: _third.agentId,
+      agent_name: 'charlie',
+      display_name: 'charlie',
+      role_blurb: 'unrelated',
+    })
+
+    let routerCalls = 0
+    const router = new Router({
+      provider: {
+        name: 'fake',
+        baseUrl: 'fake://',
+        complete(): Promise<CompletionResponse> {
+          routerCalls += 1
+          return Promise.resolve({
+            text: `{"woken_agent_ids": ["${bob.agentId}"], "rationale": "would have woken"}`,
+            finishReason: 'stop',
+            costMetrics: { inputTokens: 1, outputTokens: 1 },
+            providerResponseId: 'fake',
+          })
+        },
+      },
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    // alice (an Agent in the roster) posts a generic message bob would
+    // have woken on if it came from a human. Router must not be
+    // consulted; bob must not wake.
+    await alice.client.send({ content: 'noted, standing by' })
+    await new Promise((r) => setTimeout(r, 200))
+
+    expect(routerCalls).toBe(0)
+    expect((await bob.taskStore.list()).length).toBe(0)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('still wakes on a direct @-mention from another Agent (the escape hatch survives)', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const bob = await setupAgent('bob')
+
+    // alice is in the roster so she counts as an Agent sender.
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: alice.agentId,
+      agent_name: 'alice',
+      display_name: 'alice',
+      role_blurb: 'other agent',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      home,
+    })
+    wake.start()
+
+    // Direct @-mention from another Agent... rule 1 fires regardless.
+    await alice.client.send({ content: 'hey @bob ping', mentions: [bob.agentId] })
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
+
+    expect((await bob.taskStore.list()).length).toBe(1)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+  })
 })
