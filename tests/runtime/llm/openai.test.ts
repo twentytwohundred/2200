@@ -87,6 +87,35 @@ describe('OpenAIProvider request shape', () => {
     expect(captured?.url).toBe('https://api.deepseek.com/v1/chat/completions')
     expect(provider.name).toBe('deepseek')
   })
+
+  it('respects endpointUrl override (used for vendors with non-standard paths, e.g. Gemini)', async () => {
+    let captured: { url: string; init: RequestInit } | undefined
+    const fetchImpl = mockFetch((url, init) => {
+      captured = { url, init }
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({
+      apiKey: 'sk',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      endpointUrl:
+        'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      providerName: 'gemini',
+      fetchImpl,
+    })
+    await provider.complete({
+      modelId: 'gemini-2.5-flash',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    // endpointUrl wins; baseUrl-derived /v1/chat/completions is not used.
+    expect(captured?.url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    )
+    expect(provider.name).toBe('gemini')
+  })
 })
 
 describe('OpenAIProvider response parsing', () => {
