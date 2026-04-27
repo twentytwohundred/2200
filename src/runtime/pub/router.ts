@@ -49,8 +49,21 @@ export interface RouterInput {
   sender_display_name: string
   /** The message content the router is classifying. */
   content: string
-  /** All Agents the router can choose to wake. */
+  /**
+   * All Agents present in the room (the complete roster). The router
+   * sees this as the full set of candidates and can pick any subset
+   * (or none). Each per-Agent wake source passes the same roster so
+   * the router's view is consistent regardless of who's invoking.
+   */
   agents: RouterAgent[]
+  /**
+   * agent_id of the Agent on whose behalf this routing call is being
+   * made. Used only for prompt context ("you are routing on behalf of
+   * X") so the router knows which perspective to take. Does NOT
+   * influence which agent_ids the router can return... it's free to
+   * pick anyone in `agents`, including or excluding the asker.
+   */
+  perspective_agent_id?: string
 }
 
 export interface RouterDecision {
@@ -216,10 +229,22 @@ export class Router {
     const roster = input.agents
       .map((a) => `- ${a.display_name} (id ${a.agent_id}): ${a.role_blurb}`)
       .join('\n')
+    const perspective = input.perspective_agent_id
+      ? input.agents.find((a) => a.agent_id === input.perspective_agent_id)
+      : undefined
+    const perspectiveLine = perspective
+      ? [
+          ``,
+          `You are routing on behalf of: ${perspective.display_name} (id ${perspective.agent_id}).`,
+          `That Agent is one of the participants below... not a meta-observer.`,
+          `The roster IS the room. Every Agent listed is present and reachable.`,
+          ``,
+        ].join('\n')
+      : ''
     return [
       `Sender: ${input.sender_display_name}`,
       `Message: ${input.content}`,
-      ``,
+      perspectiveLine,
       `Agents in the room:`,
       roster,
     ].join('\n')
