@@ -730,7 +730,12 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       if (m.from.agent_id === userCred.agent_id) return
       if (seenIds.has(m.message_id)) return
       seenIds.add(m.message_id)
-      printIncoming(m.from.display_name, m.preview, promptStr)
+      // pub-server's conversation_event ships only a 100-char preview.
+      // The room_state broadcast has just landed in PubClient's cache
+      // with the full message, so look it up there. Fall back to the
+      // preview only if the cache doesn't have it (race-condition guard).
+      const cached = client.roomState()?.conversation.find((msg) => msg.message_id === m.message_id)
+      printIncoming(m.from.display_name, cached?.content ?? m.preview, promptStr)
     } else if (event.type === 'pub_reaction') {
       const r = event.data
       if (r.agent_id === userCred.agent_id) return

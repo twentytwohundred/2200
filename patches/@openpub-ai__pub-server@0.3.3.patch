@@ -1,8 +1,47 @@
 diff --git a/dist/server.js b/dist/server.js
-index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..4e3811af600e44d342df0c887eef4889f701532e 100755
+index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..9dbe990503981f1e934efa2ae564a5d078a78934 100755
 --- a/dist/server.js
 +++ b/dist/server.js
-@@ -704,6 +704,13 @@ wss.on('connection', async (ws, req) => {
+@@ -345,6 +345,13 @@ fastify.post('/admin/register-agent', async (request, reply) => {
+  * bartender's system prompt.
+  */
+ async function triggerBartenderResponse(context) {
++    // 2200 patch: short-circuit when no LLM_API_KEY is configured. Without
++    // this guard the bartender fires on every join and every Nth message,
++    // gets back a 401, and the resulting failed broadcasts (esp. memory
++    // fragments) destabilize user WebSocket connections. This guard makes
++    // the bartender a no-op when there's no key — defensive behavior that
++    // belongs upstream.
++    if (!process.env['LLM_API_KEY']) return;
+     if (bartenderResponding)
+         return;
+     bartenderResponding = true;
+@@ -382,6 +389,24 @@ async function triggerBartenderResponse(context) {
+  * Uses the LLM adapter + Ed25519 signing.
+  */
+ async function generateFragment(agentId, prefetchedPresence, prefetchedConversation) {
++    // 2200 patch: short-circuit when no LLM_API_KEY is configured. Returning
++    // a minimal valid fragment (no LLM content) so the callers' .data
++    // dereferences keep working. Without this guard the fragment generation
++    // fires on every checkout and idle event, hits a 401, and the resulting
++    // broadcast attempts contribute to user WebSocket instability.
++    if (!process.env['LLM_API_KEY']) {
++        return {
++            type: 'memory_fragment',
++            data: {
++                fragment_id: (0, uuid_1.v4)(),
++                pub_id: pubId,
++                agent_id: agentId,
++                content: '',
++                signature: '',
++                timestamp: new Date().toISOString(),
++            },
++        };
++    }
+     const presence = prefetchedPresence || roomState.getAllPresence().find((p) => p.agent_id === agentId);
+     const conversation = prefetchedConversation || roomState.getConversation();
+     if (!presence) {
+@@ -704,6 +729,13 @@ wss.on('connection', async (ws, req) => {
          const presence = roomState.addAgent(agentId, claims);
          // Register WebSocket connection
          wsConnections.set(agentId, ws);
