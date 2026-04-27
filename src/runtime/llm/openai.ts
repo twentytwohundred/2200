@@ -21,9 +21,18 @@ export interface OpenAIProviderOptions {
   /**
    * Override base URL. Defaults to https://api.openai.com. Use this for
    * OpenAI-compatible endpoints: pass the vendor's URL (e.g.,
-   * `https://api.deepseek.com`) and use the same provider class.
+   * `https://api.deepseek.com`) and use the same provider class. The
+   * provider appends `/v1/chat/completions` to this base unless
+   * `endpointUrl` is set.
    */
   baseUrl?: string
+  /**
+   * Full chat-completions URL override. When set, the provider hits this
+   * URL directly and ignores `baseUrl`. Useful for vendors whose
+   * OpenAI-compatible endpoint sits at a non-standard path (e.g. Gemini's
+   * `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`).
+   */
+  endpointUrl?: string
   /** Provider name override; defaults to "openai". Useful for openai-compatible vendors. */
   providerName?: string
   /** Inject a fetch implementation (testing). Defaults to global fetch. */
@@ -49,12 +58,14 @@ interface OpenAIChatResponse {
 export class OpenAIProvider implements LLMProvider {
   readonly name: string
   readonly baseUrl: string
+  readonly endpointUrl: string
   private readonly apiKey: string
   private readonly fetchImpl: typeof fetch
 
   constructor(opts: OpenAIProviderOptions) {
     this.apiKey = opts.apiKey
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
+    this.endpointUrl = opts.endpointUrl ?? `${this.baseUrl}/v1/chat/completions`
     this.name = opts.providerName ?? 'openai'
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
@@ -77,7 +88,7 @@ export class OpenAIProvider implements LLMProvider {
 
     let response: Response
     try {
-      response = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
+      response = await this.fetchImpl(this.endpointUrl, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${this.apiKey}`,

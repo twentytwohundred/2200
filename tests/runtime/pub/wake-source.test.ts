@@ -22,6 +22,23 @@ import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
 let home: string
 let pub: FakePub | undefined
 
+/**
+ * Poll until `predicate` returns true or the deadline elapses. Used in
+ * place of fixed setTimeout waits so the suite is robust to slow CI
+ * scheduling; locally it returns in ~10-30ms vs the old 100ms wait.
+ */
+async function waitFor(
+  predicate: () => Promise<boolean> | boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error(`waitFor: condition not satisfied within ${String(timeoutMs)}ms`)
+}
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), '2200-wake-'))
   await initHome(home)
@@ -140,11 +157,10 @@ describe('PubWakeSource', () => {
     // Bob sends a message; the wake source records its message_id locally
     // (because bob.client also receives the broadcast of his own send).
     const sent = await bob.client.send({ content: 'first' })
-    await new Promise((r) => setTimeout(r, 100))
 
     // Alice replies to it. Even without an @bob mention, rule 2 should fire.
     await alice.client.send({ content: 'thanks', in_reply_to: sent.message_id })
-    await new Promise((r) => setTimeout(r, 100))
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
 
     const tasks = await bob.taskStore.list()
     expect(tasks.length).toBe(1)
@@ -177,7 +193,7 @@ describe('PubWakeSource', () => {
     wake.start()
 
     await alice.client.send({ content: 'New WEATHER ARB tonight, KORD METAR coming up' })
-    await new Promise((r) => setTimeout(r, 100))
+    await waitFor(async () => (await carl.taskStore.list()).length >= 1)
 
     const tasks = await carl.taskStore.list()
     expect(tasks.length).toBe(1)
