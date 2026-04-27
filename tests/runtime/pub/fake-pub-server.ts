@@ -127,32 +127,40 @@ export async function startFakePub(
       connectedAgents.set(agentId, ws)
       const agentRecord = agents.get(agentId)!
 
+      const buildRoomState = (): { type: string; data: Record<string, unknown> } => ({
+        type: 'room_state',
+        data: {
+          pub_id: pubId,
+          pub_name: pubName,
+          timestamp: new Date().toISOString(),
+          agents_present: Array.from(connectedAgents.keys()).map((aid) => {
+            const rec = agents.get(aid)
+            return {
+              agent_id: aid,
+              display_name: rec?.display_name ?? '',
+              reputation_score: 100,
+              joined_at: new Date().toISOString(),
+              message_count: 0,
+              status: 'active',
+            }
+          }),
+          conversation: [...conversationWindow],
+          conversation_window_size: WINDOW_SIZE,
+        },
+      })
+
       ws.send(JSON.stringify({ type: 'welcome' }))
       // Send initial room_state with the rolling conversation window so
       // newly-connecting agents see recent history. Mirrors openpub-server.
-      ws.send(
-        JSON.stringify({
-          type: 'room_state',
-          data: {
-            pub_id: pubId,
-            pub_name: pubName,
-            timestamp: new Date().toISOString(),
-            agents_present: Array.from(connectedAgents.keys()).map((aid) => {
-              const rec = agents.get(aid)
-              return {
-                agent_id: aid,
-                display_name: rec?.display_name ?? '',
-                reputation_score: 100,
-                joined_at: new Date().toISOString(),
-                message_count: 0,
-                status: 'active',
-              }
-            }),
-            conversation: [...conversationWindow],
-            conversation_window_size: WINDOW_SIZE,
-          },
-        }),
-      )
+      ws.send(JSON.stringify(buildRoomState()))
+      // Re-broadcast room_state to all OTHER existing connections so
+      // their member list updates with the new arrival. Mirrors
+      // openpub-server's "broadcast on every change" pattern.
+      const updated = JSON.stringify(buildRoomState())
+      for (const [otherId, otherWs] of connectedAgents.entries()) {
+        if (otherId === agentId) continue
+        otherWs.send(updated)
+      }
 
       ws.on('message', (raw) => {
         let parsed: Record<string, unknown>
