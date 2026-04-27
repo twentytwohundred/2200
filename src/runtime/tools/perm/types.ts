@@ -29,6 +29,7 @@ export type CheckType =
   | 'command_pattern'
   | 'commons_scope'
   | 'shared_scope'
+  | 'pub_scope'
 
 export type CheckResult = 'pass' | 'fail' | 'not_applicable'
 

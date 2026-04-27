@@ -30,6 +30,7 @@ import { idempotencyCompatible } from './checks/idempotency-compatible.js'
 import { commandPattern } from './checks/command-pattern.js'
 import { commonsScope } from './checks/commons-scope.js'
 import { sharedScope } from './checks/shared-scope.js'
+import { pubScope } from './checks/pub-scope.js'
 
 const ACTIVE_CHECKS: CheckImpl[] = [
   toolInSet,
@@ -37,6 +38,7 @@ const ACTIVE_CHECKS: CheckImpl[] = [
   commandPattern,
   commonsScope,
   sharedScope,
+  pubScope,
 ]
 
 const INACTIVE_PLACEHOLDERS: CheckOutcome[] = [
