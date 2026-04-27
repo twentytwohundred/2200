@@ -202,6 +202,13 @@ export type ModelId = z.infer<typeof ModelIdSchema>
 export const CliAgentCreateParamsSchema = z.object({
   name: z.string().min(1),
   identity_path: z.string().min(1),
+  /**
+   * Pick a specific pub to register the Agent against (when the
+   * Identity has a `pub:` block). Required only when more than one
+   * pub exists; with exactly one, the supervisor uses it. Ignored
+   * when the Identity has no `pub:` block.
+   */
+  pub: z.string().optional(),
 })
 export type CliAgentCreateParams = z.infer<typeof CliAgentCreateParamsSchema>
 

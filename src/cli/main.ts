@@ -187,18 +187,29 @@ export function buildProgram(): Command {
     .command('create <name>')
     .description('register a new Agent with the supervisor')
     .requiredOption('--identity <path>', 'path to the Agent Identity markdown file')
-    .action(async (name: string, opts: { identity: string }) => {
+    .option(
+      '--pub <name>',
+      'pub to register the Agent against (when the Identity has a pub: block; required only with multiple pubs)',
+    )
+    .action(async (name: string, opts: { identity: string; pub?: string }) => {
       const home = await resolveHomeFromOpts(program)
       const client = await connectToDaemon(home)
       if (client) {
         try {
-          await client.call('cli.agent.create', { name, identity_path: opts.identity })
+          const params: Parameters<typeof client.call<'cli.agent.create'>>[1] = {
+            name,
+            identity_path: opts.identity,
+          }
+          if (opts.pub !== undefined) params.pub = opts.pub
+          await client.call('cli.agent.create', params)
         } finally {
           await client.close()
         }
       } else {
         const supervisor = await Supervisor.create({ home })
-        await supervisor.createAgent(name, opts.identity)
+        await supervisor.createAgent(name, opts.identity, {
+          ...(opts.pub !== undefined ? { pub: opts.pub } : {}),
+        })
       }
       console.log(`Agent "${name}" created.`)
       console.log(`Run "2200 agent start ${name}" to bring it up.`)
