@@ -81,14 +81,14 @@ export async function startFakePub(
         res.end(JSON.stringify({ agent_id }))
         return
       }
-      // POST /agents/auth
+      // POST /agents/auth (v0.3.3 OAuth2-style response)
       if (req.method === 'POST' && url.pathname === '/agents/auth') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(
           JSON.stringify({
             access_token: 'access-' + randomUUID(),
-            refresh_token: 'refresh-' + randomUUID(),
-            access_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+            token_type: 'Bearer',
+            expires_in: 3600,
           }),
         )
         return

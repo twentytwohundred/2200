@@ -48,16 +48,18 @@ export interface IdentityClient {
    * Register a new keypair as an agent. Returns the assigned UUID v7.
    *
    * In LOCAL_TRUST mode, this hits `POST /admin/register-agent` on
-   * the pub-server. In HUB mode, the pub-server proxies to the hub's
-   * `POST /agents/register`. Either way, the consumer-side request
-   * shape is the same.
+   * the pub-server with the `X-OpenPub-Admin-Secret` header set to
+   * `adminSecret`. The supervisor knows the per-pub admin secret
+   * because it generated it at `cli.pub.create` time. In HUB mode,
+   * the pub-server proxies to the hub's `POST /agents/register`
+   * (admin secret not used).
    *
    * The `display_name` from the credential is sent verbatim. Pub-server
    * returns 409 if the display name is taken; the client surfaces this
    * as a `RegisterAgentConflict` so the caller can prompt the user
    * for a different name.
    */
-  registerAgent(cred: PubCredential): Promise<{ agent_id: string }>
+  registerAgent(cred: PubCredential, adminSecret?: string): Promise<{ agent_id: string }>
 
   /**
    * Mint a fresh JWT pair from a signed timestamp. Used at boot and
@@ -75,9 +77,9 @@ export interface AgentRecord {
 
 export interface TokenPair {
   access_token: string
-  refresh_token: string
-  /** ISO 8601 expiry on the access token. */
-  access_expires_at: string
+  token_type: string
+  /** Seconds until access_token expires (per pub-server v0.3.3 OAuth2-style). */
+  expires_in: number
 }
 
 /**
@@ -145,15 +147,20 @@ export function createIdentityClient(opts: {
     return parseAgentRecord(body)
   }
 
-  async function registerAgent(cred: PubCredential): Promise<{ agent_id: string }> {
+  async function registerAgent(
+    cred: PubCredential,
+    adminSecret?: string,
+  ): Promise<{ agent_id: string }> {
     const payload = {
       display_name: cred.display_name,
       public_key: cred.public_key,
       key_version: cred.key_version,
     }
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (adminSecret) headers['X-OpenPub-Admin-Secret'] = adminSecret
     const res = await fetchImpl(`${baseUrl}/admin/register-agent`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     })
     if (res.status === 409) {
@@ -199,15 +206,17 @@ export function createIdentityClient(opts: {
     const body = await res.json()
     const r = (body as Record<string, unknown> | null) ?? {}
     const access = r['access_token']
-    const refresh = r['refresh_token']
-    const exp = r['access_expires_at']
-    if (typeof access !== 'string' || typeof refresh !== 'string' || typeof exp !== 'string') {
-      throw new IdentityClientError('mintToken response missing required fields')
+    const tokenType = r['token_type'] ?? 'Bearer'
+    const expiresIn = r['expires_in']
+    if (typeof access !== 'string' || typeof expiresIn !== 'number') {
+      throw new IdentityClientError(
+        'mintToken response missing required fields (expected access_token + expires_in)',
+      )
     }
     return {
       access_token: access,
-      refresh_token: refresh,
-      access_expires_at: exp,
+      token_type: typeof tokenType === 'string' ? tokenType : 'Bearer',
+      expires_in: expiresIn,
     }
   }
 
@@ -219,10 +228,16 @@ export function createIdentityClient(opts: {
  * has an `agent_id` and `getMe` confirms it, return the existing
  * record (idempotent re-boot). Otherwise register and return the
  * newly-assigned agent_id (and update the credential in place).
+ *
+ * `adminSecret` is required when targeting a LOCAL_TRUST pub-server
+ * (it gates POST /admin/register-agent via the X-OpenPub-Admin-Secret
+ * header). The supervisor reads it from the per-pub state and passes
+ * it through.
  */
 export async function ensureRegistered(
   client: IdentityClient,
   cred: PubCredential,
+  adminSecret?: string,
 ): Promise<PubCredential> {
   // Conditional flow per Poe's contract: GET /agents/me first; if 404,
   // register. Avoids the 409 from re-registering a known keypair.
@@ -236,7 +251,7 @@ export async function ensureRegistered(
     }
     return cred
   }
-  const { agent_id } = await client.registerAgent(cred)
+  const { agent_id } = await client.registerAgent(cred, adminSecret)
   return { ...cred, agent_id }
 }
 

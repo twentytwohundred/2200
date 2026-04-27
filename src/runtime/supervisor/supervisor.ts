@@ -36,6 +36,7 @@ import {
 } from '../pub/identity-client.js'
 import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
 import type { UserIdentityFrontmatter } from '../user/types.js'
+import { generatePubSecrets, readPubSecrets, writePubSecrets } from '../pub/secrets.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -307,7 +308,12 @@ export class Supervisor {
         ? identityClientFactory(baseUrl)
         : createIdentityClient({ baseUrl })
       try {
-        const updated = await ensureRegistered(client, cred)
+        const targetPubPaths = pubPaths(this.state.home, targetPub.name)
+        const pubSecrets = await readPubSecrets({
+          adminSecret: targetPubPaths.adminSecret,
+          signingKey: targetPubPaths.signingKey,
+        })
+        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret)
         if (updated.agent_id) {
           agentId = updated.agent_id
           registeredIssuer = updated.issuer_url
@@ -444,6 +450,11 @@ export class Supervisor {
     })
     await initPubDirs(this.state.home, name, pubMd)
     const paths = pubPaths(this.state.home, name)
+    // Per-pub secret material (Epic 3 PR F): generate the admin secret
+    // and signing keypair pub-server v0.3.3 requires in LOCAL_TRUST mode.
+    // Persist mode 0600. Loaded into env on every cli.pub.start.
+    const secrets = generatePubSecrets()
+    await writePubSecrets({ adminSecret: paths.adminSecret, signingKey: paths.signingKey }, secrets)
     const record: PubRecord = {
       name,
       pub_md_path: paths.pubMd,
@@ -489,11 +500,19 @@ export class Supervisor {
     if (existing) {
       return { pid: existing.pid, port: record.port }
     }
+    const paths = pubPaths(this.state.home, name)
+    const secrets = await readPubSecrets({
+      adminSecret: paths.adminSecret,
+      signingKey: paths.signingKey,
+    })
     const spawned = spawnPub(
       {
         name,
         home: this.state.home,
         port: record.port,
+        adminSecret: secrets.adminSecret,
+        signingPrivateKey: secrets.signingPrivateKey,
+        signingPublicKey: secrets.signingPublicKey,
         ...(opts.issuer !== undefined ? { issuer: opts.issuer } : {}),
         ...(opts.hub_url !== undefined ? { hubUrl: opts.hub_url } : {}),
         ...(opts.executablePath !== undefined ? { executablePath: opts.executablePath } : {}),
@@ -636,7 +655,12 @@ export class Supervisor {
         ? opts.identityClientFactory(baseUrl)
         : createIdentityClient({ baseUrl })
       try {
-        const updated = await ensureRegistered(client, cred)
+        const targetPubPaths = pubPaths(this.state.home, targetPub.name)
+        const pubSecrets = await readPubSecrets({
+          adminSecret: targetPubPaths.adminSecret,
+          signingKey: targetPubPaths.signingKey,
+        })
+        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret)
         if (updated.agent_id) {
           agentId = updated.agent_id
           registeredAgainst = targetPub.name

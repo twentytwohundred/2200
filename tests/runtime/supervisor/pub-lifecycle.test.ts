@@ -55,22 +55,30 @@ setInterval(() => {}, 1_000_000)`
 }
 
 describe('composePubMd', () => {
-  it('composes minimal PUB.md with just a name', () => {
+  it('composes a v0.3-compatible PUB.md (PR F: matches openpub-server@0.3.3 schema)', () => {
     const md = composePubMd({ name: 'ops' })
-    expect(md).toMatch(/^---\nschema_version: 1\nname: ops\nentry: open\n---/)
+    expect(md.startsWith('---\n')).toBe(true)
+    // Required by pub-server v0.3.x: version, name, description, owner, model, capacity, entry.
+    expect(md).toContain('version: "0.3"')
+    expect(md).toContain('name: ops')
+    expect(md).toContain('description: "ops pub"')
+    expect(md).toContain('owner: doug')
+    expect(md).toContain('model:')
+    expect(md).toContain('capacity: 10')
+    expect(md).toContain('entry: open')
     expect(md).toContain('# ops')
   })
 
   it('includes optional fields when provided', () => {
     const md = composePubMd({
-      name: 'carl-monday-callsheet',
-      description: 'Carl Monday call review',
-      capacity: 10,
+      name: 'pub-name',
+      description: 'A pub for the team',
+      capacity: 5,
       owner: '01919c4f-7e3a-7000-8000-d4a984f2c1b3',
     })
-    expect(md).toContain('name: carl-monday-callsheet')
-    expect(md).toContain('description: "Carl Monday call review"')
-    expect(md).toContain('capacity: 10')
+    expect(md).toContain('name: pub-name')
+    expect(md).toContain('description: "A pub for the team"')
+    expect(md).toContain('capacity: 5')
     // UUIDs are pure slug characters (alphanumeric + dashes) so the
     // composer leaves them unquoted. quoteIfNeeded only quotes when
     // the value contains characters YAML would otherwise interpret.
@@ -95,6 +103,16 @@ describe('composePubMd', () => {
 })
 
 describe('spawnPub (using a fake binary)', () => {
+  // Test stub for the v0.3.3 required secret material. Real values are
+  // generated and persisted by Supervisor.createPub at runtime; the
+  // unit test for the pub-lifecycle just needs SOME values to satisfy
+  // the contract guard in spawnPub.
+  const REQUIRED_SECRETS = {
+    adminSecret: 'test-admin-secret',
+    signingPrivateKey: 'test-priv-key',
+    signingPublicKey: 'test-pub-key',
+  } as const
+
   beforeEach(async () => {
     await initHome(home)
     fakeBin = ''
@@ -109,6 +127,7 @@ describe('spawnPub (using a fake binary)', () => {
       home,
       port,
       executablePath: fakeBin,
+      ...REQUIRED_SECRETS,
     })
     expect(sp.pid).toBeGreaterThan(0)
     expect(sp.name).toBe('ops')
@@ -137,6 +156,7 @@ describe('spawnPub (using a fake binary)', () => {
       issuer: 'hub',
       hubUrl: 'https://openpub.ai',
       env: { ECHO_HUB_URL: 'yes' },
+      ...REQUIRED_SECRETS,
     })
     await new Promise((r) => setTimeout(r, 500))
     await sp.stop()
@@ -150,7 +170,13 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-clean')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({ name: 'ops', home, port, executablePath: fakeBin })
+    const sp = spawnPub({
+      name: 'ops',
+      home,
+      port,
+      executablePath: fakeBin,
+      ...REQUIRED_SECRETS,
+    })
     await sp.exited
     // Should resolve quickly without throwing.
     await sp.stop()
@@ -160,7 +186,13 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-bad')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({ name: 'ops', home, port, executablePath: fakeBin })
+    const sp = spawnPub({
+      name: 'ops',
+      home,
+      port,
+      executablePath: fakeBin,
+      ...REQUIRED_SECRETS,
+    })
     const result = await sp.exited
     expect(result.code).toBe(7)
     expect(result.signal).toBeNull()
@@ -170,10 +202,47 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-clean')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({ name: 'ops', home, port, executablePath: fakeBin })
+    const sp = spawnPub({
+      name: 'ops',
+      home,
+      port,
+      executablePath: fakeBin,
+      ...REQUIRED_SECRETS,
+    })
     await sp.exited
     const logPath = pubPaths(home, 'ops').log
     const s = await stat(logPath)
     expect(s.isFile()).toBe(true)
+  })
+
+  it('throws when adminSecret is missing in LOCAL mode', async () => {
+    fakeBin = await writeFakeBinary('sleep')
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    const port = await findFreePort()
+    expect(() =>
+      spawnPub({
+        name: 'ops',
+        home,
+        port,
+        executablePath: fakeBin,
+        signingPrivateKey: 'k',
+        signingPublicKey: 'k',
+      }),
+    ).toThrow(/adminSecret is required/)
+  })
+
+  it('throws when signing keypair is missing', async () => {
+    fakeBin = await writeFakeBinary('sleep')
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    const port = await findFreePort()
+    expect(() =>
+      spawnPub({
+        name: 'ops',
+        home,
+        port,
+        executablePath: fakeBin,
+        adminSecret: 's',
+      }),
+    ).toThrow(/signingPrivateKey/)
   })
 })

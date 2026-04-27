@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@openpub-ai/pub-server':
-        specifier: 0.3.1
-        version: 0.3.1
+        specifier: 0.3.3
+        version: 0.3.3
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -472,8 +472,8 @@ packages:
   '@noble/ed25519@2.3.0':
     resolution: {integrity: sha512-M7dvXL2B92/M7dw9+gzuydL8qn/jiqNHaoR3Q+cb1q1GHV7uwE17WCyFMG+Y+TZb5izcaXk5TdJRrDUxHXL78A==}
 
-  '@openpub-ai/pub-server@0.3.1':
-    resolution: {integrity: sha512-k0c/2n3/VOmwVtaocoZVEvl8EJr97WYPUTScVDVBdxSeO7Z7Yt5no1a6IzrYMiBMO1FKmNSUW18CcO1Vhfi5uQ==}
+  '@openpub-ai/pub-server@0.3.3':
+    resolution: {integrity: sha512-qNrsifF5bboAAIgDqxcStmswD3KJ+esaQzpP0QISSC+RTNHw+e88qWifVU6WTBAuashzEviOyfcrY//GI9cmug==}
     hasBin: true
 
   '@openpub-ai/types@0.2.2':
@@ -2075,7 +2075,7 @@ snapshots:
 
   '@noble/ed25519@2.3.0': {}
 
-  '@openpub-ai/pub-server@0.3.1':
+  '@openpub-ai/pub-server@0.3.3':
     dependencies:
       '@noble/ed25519': 2.3.0
       '@openpub-ai/types': 0.2.2

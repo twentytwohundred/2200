@@ -120,6 +120,10 @@ export interface PubPaths {
   readonly log: string
   readonly pid: string
   readonly data: string
+  /** Per-pub admin secret (mode 0600). Required by pub-server v0.3.3 in LOCAL mode. */
+  readonly adminSecret: string
+  /** Per-pub Ed25519 signing keypair (mode 0600). Required by pub-server v0.3.3. */
+  readonly signingKey: string
 }
 
 export function pubPaths(home: string, pubName: string): PubPaths {
@@ -130,6 +134,8 @@ export function pubPaths(home: string, pubName: string): PubPaths {
     log: join(root, 'pub.log'),
     pid: join(root, 'pub.pid'),
     data: join(root, 'data'),
+    adminSecret: join(root, 'admin.secret'),
+    signingKey: join(root, 'signing.key.json'),
   }
 }
 

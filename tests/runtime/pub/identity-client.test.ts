@@ -89,8 +89,8 @@ async function startFakePub(opts: { conflictDisplayName?: string } = {}): Promis
         res.end(
           JSON.stringify({
             access_token: 'access-' + randomUUID(),
-            refresh_token: 'refresh-' + randomUUID(),
-            access_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+            token_type: 'Bearer',
+            expires_in: 3600,
           }),
         )
         return
@@ -223,8 +223,8 @@ describe('mintToken', () => {
     const { agent_id } = await client.registerAgent(cred)
     const tokens = await client.mintToken({ ...cred, agent_id })
     expect(tokens.access_token).toMatch(/^access-/)
-    expect(tokens.refresh_token).toMatch(/^refresh-/)
-    expect(tokens.access_expires_at).toMatch(/Z$/)
+    expect(tokens.token_type).toBe('Bearer')
+    expect(tokens.expires_in).toBe(3600)
   })
 
   it('rejects when keypair has no agent_id', async () => {

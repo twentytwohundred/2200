@@ -86,6 +86,13 @@ export interface SpawnPubOptions {
   issuer?: 'local' | 'hub'
   /** Hub URL when `issuer === 'hub'`. Ignored otherwise. */
   hubUrl?: string
+  /** Admin secret used to gate POST /admin/register-agent in LOCAL mode. Required when issuer is 'local'. */
+  adminSecret?: string
+  /** Pub's own signing keypair (Ed25519, base64url scalars). Required by openpub-server v0.3.x. */
+  signingPrivateKey?: string
+  signingPublicKey?: string
+  /** Pre-assigned pub_id (UUID v7). Optional; pub-server derives one from the pub name when absent. */
+  pubId?: string
   /** Override the openpub-server executable path. Defaults to looking up `openpub-server` on PATH or the local `node_modules/.bin`. */
   executablePath?: string
   /** Extra env vars to merge into the pub-server process env. */
@@ -106,21 +113,42 @@ export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
   const executable = opts.executablePath ?? defaultPubServerExecutable()
   const paths = pubPaths(opts.home, opts.name)
 
-  // Pub-server reads its config from PUB_MD_PATH and listens on PORT.
-  // OPENPUB_TRUST_MODE selects the local vs hub trust mode per
-  // @openpub-ai/pub-server v0.3.2's pluggable-issuer contract; 'local'
-  // is the default per Doug's call (Flag B, 2026-04-26). OPENPUB_HUB_URL
-  // is only consulted when trust mode is 'hub'. v0.3.1 ignores
-  // OPENPUB_TRUST_MODE entirely (always hub-mediated); the variable is
-  // forward-compatible with v0.3.2.
+  // Pub-server v0.3.3 contract (read from inspecting the binary, not
+  // documented elsewhere):
+  //   PUB_MD_PATH               — required; path to the pub's PUB.md config
+  //   PORT                      — required; HTTP+WS listen port
+  //   OPENPUB_TRUST_MODE        — 'local' | 'hub' (default 'hub')
+  //   OPENPUB_STATE_DIR         — where pub-server keeps its issuer key + agents.json (LOCAL mode)
+  //   OPENPUB_ADMIN_SECRET      — required in LOCAL mode; gates /admin/register-agent
+  //   PUB_SIGNING_PRIVATE_KEY   — required; the pub's own Ed25519 signing key (base64url)
+  //   PUB_SIGNING_PUBLIC_KEY    — required; the pub's own public key
+  //   PUB_ID                    — optional; deterministic hash of pub name when omitted
+  //   HUB_URL                   — only used in HUB mode
+  //
+  // Per Doug's Flag B call (2026-04-26), 'local' is the default. The
+  // supervisor generates the admin secret + signing keypair at
+  // cli.pub.create time and persists them into the pub's state dir.
+  const issuer = opts.issuer ?? 'local'
+  if (issuer === 'local' && !opts.adminSecret) {
+    throw new Error(`spawnPub: adminSecret is required when issuer === 'local' (pub: ${opts.name})`)
+  }
+  if (!opts.signingPrivateKey || !opts.signingPublicKey) {
+    throw new Error(
+      `spawnPub: signingPrivateKey and signingPublicKey are required (pub: ${opts.name})`,
+    )
+  }
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...opts.env,
     PUB_MD_PATH: paths.pubMd,
     PORT: String(opts.port),
-    OPENPUB_TRUST_MODE: opts.issuer ?? 'local',
-    ...(opts.issuer === 'hub' && opts.hubUrl ? { OPENPUB_HUB_URL: opts.hubUrl } : {}),
-    OPENPUB_DATA_DIR: paths.data,
+    OPENPUB_TRUST_MODE: issuer,
+    OPENPUB_STATE_DIR: paths.data,
+    PUB_SIGNING_PRIVATE_KEY: opts.signingPrivateKey,
+    PUB_SIGNING_PUBLIC_KEY: opts.signingPublicKey,
+    ...(opts.adminSecret ? { OPENPUB_ADMIN_SECRET: opts.adminSecret } : {}),
+    ...(opts.pubId ? { PUB_ID: opts.pubId } : {}),
+    ...(issuer === 'hub' && opts.hubUrl ? { HUB_URL: opts.hubUrl } : {}),
   }
 
   const child = spawn(executable, [], {
@@ -207,43 +235,50 @@ export interface PubMdOptions {
   capacity?: number
   /** Owner identifier. Per Epic 3 spec: the user's pub identity at v1. */
   owner?: string
+  /** Bartender LLM model (`<provider>/<model_id>` per the locked format). */
+  model?: string
 }
 
 /**
  * Compose the PUB.md content for a new pub. Format mirrors what
- * `@openpub-ai/pub-server` reads from PUB_MD_PATH: YAML frontmatter
- * with the pub's identity and config, then optional human-readable
- * body.
+ * `@openpub-ai/pub-server@0.3.x` reads from PUB_MD_PATH (validated
+ * by `PubMdFrontmatter` from `@openpub-ai/types`).
  *
- * Per [[2026-04-26-schema-version-format]], `schema_version` is an
- * integer. Per Poe's contract reply (April 26), the canonical
- * source of truth for pub-server's PUB.md format is the Zod schema
- * in `@openpub-ai/types`; this composer writes a v0.3-compatible
- * shape and will adjust as Poe ships v0.3.1.x with the
- * pluggable-issuer changes.
+ * Required fields per the v0.3.3 schema: version, name, description,
+ * owner, model, capacity, entry. The composer fills in sensible
+ * defaults for any field the caller does not provide so the resulting
+ * PUB.md always passes pub-server's validation. Note that `version`
+ * here refers to PUB.md's schema version (e.g., '0.3'), NOT 2200's
+ * internal `schema_version` integer.
+ *
+ * The bartender model defaults to `anthropic/claude-haiku-4-5`. The
+ * bartender is pub-server's friendly conversational presence (an
+ * LLM that responds at natural intervals); 2200 doesn't drive it,
+ * but pub-server requires the field and may exercise it in real
+ * conversations. Tests can override via the `model` opt to point at
+ * a stub or unused model.
  */
 export function composePubMd(opts: PubMdOptions): string {
+  const description = opts.description ?? `${opts.name} pub`
+  const owner = opts.owner ?? 'doug'
+  const capacity = opts.capacity ?? 10
   const lines: string[] = ['---']
-  lines.push('schema_version: 1')
+  // pub-server's PUB.md format version, NOT 2200's schema_version.
+  lines.push('version: "0.3"')
   lines.push(`name: ${quoteIfNeeded(opts.name)}`)
-  if (opts.description) {
-    lines.push(`description: ${quoteIfNeeded(opts.description)}`)
-  }
-  if (opts.capacity !== undefined) {
-    lines.push(`capacity: ${String(opts.capacity)}`)
-  }
-  if (opts.owner) {
-    lines.push(`owner: ${quoteIfNeeded(opts.owner)}`)
-  }
+  lines.push(`description: ${quoteIfNeeded(description)}`)
+  lines.push(`owner: ${quoteIfNeeded(owner)}`)
+  // Bartender model. Default to a small, cheap Anthropic model. Users
+  // who care about the bartender's voice can edit PUB.md after create.
+  lines.push(`model: ${quoteIfNeeded(opts.model ?? 'anthropic/claude-haiku-4-5')}`)
+  lines.push(`capacity: ${String(capacity)}`)
   lines.push('entry: open')
   lines.push('---')
   lines.push('')
   lines.push(`# ${opts.name}`)
   lines.push('')
-  if (opts.description) {
-    lines.push(opts.description)
-    lines.push('')
-  }
+  lines.push(description)
+  lines.push('')
   return lines.join('\n')
 }
 
