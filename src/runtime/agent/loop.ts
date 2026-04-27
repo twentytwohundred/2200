@@ -38,7 +38,6 @@ import { z } from 'zod'
 import type { LLMProvider } from '../llm/provider.js'
 import type { CompletionResponse, Message } from '../llm/types.js'
 import type { IdentityRecord } from '../identity/types.js'
-import { composeModelId } from '../identity/types.js'
 import {
   ToolDeniedError,
   type DispatchInput,
@@ -260,13 +259,24 @@ export class AgentLoop {
 
   /** Run a task to completion or to a detector trip. Pure; does not block. */
   async run(task: TaskRecord): Promise<LoopResult> {
-    const modelLabel = composeModelId(this.opts.identity.frontmatter.model)
     const systemPrompt = this.buildSystemPrompt()
     this.history.length = 0
     this.history.push({ role: 'user', content: task.body })
 
     while (this.iteration < this.maxIterations) {
       this.iteration += 1
+
+      // Iteration 1 uses the primary model_id (cheap initial pass).
+      // Iterations 2+ use followup_model_id when the Identity declared
+      // one... lets operators pair a chat-class initial model with a
+      // reasoner-class followup (e.g. deepseek-chat → deepseek-reasoner).
+      // Without followup_model_id, all iterations use model_id.
+      const modelBinding = this.opts.identity.frontmatter.model
+      const activeModelId =
+        this.iteration > 1 && modelBinding.followup_model_id
+          ? modelBinding.followup_model_id
+          : modelBinding.model_id
+      const modelLabel = `${modelBinding.provider}/${activeModelId}`
 
       let response: CompletionResponse
       try {
@@ -278,7 +288,7 @@ export class AgentLoop {
         }
         this.pushEvent(callStart)
         response = await this.opts.provider.complete({
-          modelId: this.opts.identity.frontmatter.model.model_id,
+          modelId: activeModelId,
           systemPrompt,
           messages: this.history,
         })

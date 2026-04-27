@@ -3,16 +3,17 @@ schema_version: 1
 agent_name: simon
 agent_role: 'DevOps Agent for 2200; owns hosting, deployment, DNS, TLS, backups'
 model:
-  tier: fast
-  provider: anthropic
-  model_id: claude-haiku-4-5
+  tier: frontier
+  provider: deepseek
+  model_id: deepseek-chat
+  followup_model_id: deepseek-reasoner
 tools: []
 project_dir: /var/lib/2200/agents/simon/project
 brain_dir: /var/lib/2200/agents/simon/brain
 created: 2026-04-27
 provider_secret:
   source: env
-  id: ANTHROPIC_API_KEY
+  id: DEEPSEEK_API_KEY
 pub:
   identity: ''
   display_name: simon

@@ -245,6 +245,109 @@ describe('hashArgs', () => {
   })
 })
 
+describe('AgentLoop model selection (followup_model_id)', () => {
+  class CapturingProvider implements LLMProvider {
+    readonly name = 'fake'
+    readonly baseUrl = 'http://fake'
+    readonly modelIdsSeen: string[] = []
+    private idx = 0
+    constructor(private readonly script: CompletionResponse[]) {}
+    complete(req: { modelId: string }): Promise<CompletionResponse> {
+      this.modelIdsSeen.push(req.modelId)
+      const r = this.script[this.idx]
+      if (!r) throw new Error('script exhausted')
+      this.idx += 1
+      return Promise.resolve(r)
+    }
+  }
+
+  it('uses model_id for iteration 1 and followup_model_id for iterations 2+', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    await mkdir(ap.project, { recursive: true })
+
+    const provider = new CapturingProvider([
+      fakeResponse(
+        '```tool\n{"tool":"fs.write","args":{"path":"/project/x.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+      ),
+      fakeResponse(
+        '```tool\n{"tool":"fs.write","args":{"path":"/project/y.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+      ),
+      fakeResponse('Done.'),
+    ])
+
+    const identity = fakeIdentity()
+    identity.frontmatter.model = {
+      tier: 'frontier',
+      provider: 'deepseek',
+      model_id: 'deepseek-chat',
+      followup_model_id: 'deepseek-reasoner',
+    }
+    const loop = new AgentLoop({
+      identity,
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'do work',
+      idempotency: 'checkpointed',
+      priority: 0,
+    })
+
+    await loop.run(task)
+    expect(provider.modelIdsSeen).toEqual([
+      'deepseek-chat',
+      'deepseek-reasoner',
+      'deepseek-reasoner',
+    ])
+  })
+
+  it('falls back to model_id for all iterations when followup_model_id is not set', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    await mkdir(ap.project, { recursive: true })
+
+    const provider = new CapturingProvider([
+      fakeResponse(
+        '```tool\n{"tool":"fs.write","args":{"path":"/project/a.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+      ),
+      fakeResponse('Done.'),
+    ])
+
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'do work',
+      idempotency: 'checkpointed',
+      priority: 0,
+    })
+
+    await loop.run(task)
+    expect(provider.modelIdsSeen).toEqual(['claude-opus-4-7', 'claude-opus-4-7'])
+  })
+})
+
 describe('AgentLoop happy path', () => {
   it('runs a task that uses fs.write and then a final answer', async () => {
     const { dispatcher } = makeDispatcher()
