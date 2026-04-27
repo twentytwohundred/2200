@@ -158,17 +158,29 @@ export class PubWakeSource {
       rule = verdict.rule ?? 'unknown'
       detail = verdict.detail
     } else if (this.opts.router) {
-      // Ambient routing fallback... but ONLY for messages from a human.
-      // When another Agent posts, we deliberately skip the router and
-      // let the message scroll by. Without this guard, Agents enter a
-      // politeness spiral: A acks B → router wakes B → B acks A's ack
-      // → router wakes A → ad infinitum. The cure is structural: an
-      // Agent has to be explicitly @-mentioned (rule 1) to wake on
-      // another Agent's message; ambient awareness is human-driven
-      // only. Senders we can't classify (not in roster) are treated
-      // as humans by default... safer to wake on an unknown sender
+      // Ambient routing fallback... but only when the structural
+      // signals don't already say "not for me." Two early-outs:
+      //
+      //  (1) Sender is another Agent. Without this guard, Agents
+      //      enter a politeness spiral. The cure is structural:
+      //      Agents only wake on other Agents via explicit @-mention
+      //      (rule 1). Ambient awareness is human-driven only.
+      //
+      //  (2) Message has explicit @-mentions for OTHER Agents but
+      //      not us. The human picked their target(s); the router
+      //      should not second-guess the explicit address. Catches
+      //      the case where Doug says "@simon, here is a question"
+      //      and the router would otherwise decide hobby should
+      //      chime in too. Pre-Epic-3.8 hotfix this was the most
+      //      visible source of unwanted Agent chatter.
+      //
+      // Senders we can't classify (not in roster) are treated as
+      // humans by default... safer to wake on an unknown sender
       // than to silence a real question.
       if (await this.isAgentSender(message.agent_id)) {
+        return
+      }
+      if (message.mentions.length > 0 && !message.mentions.includes(this.opts.agent.agent_id)) {
         return
       }
       const routed = await this.tryRouter({
