@@ -279,21 +279,39 @@ export class PubClient {
     }
     if (input.client_message_id) payload['client_message_id'] = input.client_message_id
 
-    // Subscribe to the next 'message' event whose content matches what
-    // we sent and whose agent_id is ours. Pub-server broadcasts the
-    // message back to all members (including us), so this echo is the
-    // confirmation. Timeout after 10s.
+    // Pub-server (v0.3.x) does NOT echo the sender with a `'message'`
+    // event. The message is added to the conversation and a fresh
+    // `room_state` is broadcast to ALL members (including the sender).
+    // Wait for a room_state whose conversation contains a new message
+    // authored by us with matching content; return its message_id.
+    // Timeout after 10s.
     const echo = await new Promise<{ message_id: string; timestamp: string }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unsubscribe()
-        reject(new PubClientError('timed out waiting for send echo (10s)'))
+        reject(new PubClientError('timed out waiting for send confirmation (10s)'))
       }, 10_000)
       const unsubscribe = this.onEvent((event) => {
-        if (
+        if (event.type === 'room_state') {
+          // Find the most recent message authored by us with matching
+          // content. The conversation is a rolling window so even if
+          // multiple sends are in flight, the matching pair stays
+          // attributable.
+          const ours = event.data.conversation
+            .slice()
+            .reverse()
+            .find((m) => m.agent_id === this.cred.agent_id && m.content === input.content)
+          if (ours) {
+            clearTimeout(timeout)
+            unsubscribe()
+            resolve({ message_id: ours.message_id, timestamp: ours.timestamp })
+          }
+        } else if (
           event.type === 'message' &&
           event.data.agent_id === this.cred.agent_id &&
           event.data.content === input.content
         ) {
+          // Some configurations DO echo via the `message` envelope (the
+          // fake-pub-server originally did this). Honor either pattern.
           clearTimeout(timeout)
           unsubscribe()
           resolve({ message_id: event.data.message_id, timestamp: event.data.timestamp })

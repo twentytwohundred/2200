@@ -13,6 +13,11 @@ coverage/
 *.key
 *.crt
 secrets.*
+# Source modules named secrets.* are part of the codebase; the rule
+# above is meant for runtime-generated secret files (admin.secret,
+# foo.secrets.json, etc.). Exempt explicit module paths.
+!src/**/secrets.ts
+!tests/**/secrets.ts
 
 # OS / editor artifacts
 .DS_Store
