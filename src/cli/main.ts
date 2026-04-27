@@ -734,9 +734,7 @@ async function runChat(home: string, pubArg: string | undefined): Promise<void> 
       // The room_state broadcast has just landed in PubClient's cache
       // with the full message, so look it up there. Fall back to the
       // preview only if the cache doesn't have it (race-condition guard).
-      const cached = client
-        .roomState()
-        ?.conversation.find((msg) => msg.message_id === m.message_id)
+      const cached = client.roomState()?.conversation.find((msg) => msg.message_id === m.message_id)
       printIncoming(m.from.display_name, cached?.content ?? m.preview, promptStr)
     } else if (event.type === 'pub_reaction') {
       const r = event.data
