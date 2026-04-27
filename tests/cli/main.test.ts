@@ -28,10 +28,36 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the seven top-level commands (init, daemon, agent, task, pub, user, notification)', () => {
+  it('has the eight top-level commands (init, daemon, agent, task, pub, user, chat, notification)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
-    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'pub', 'task', 'user'])
+    expect(names).toEqual([
+      'agent',
+      'chat',
+      'daemon',
+      'init',
+      'notification',
+      'pub',
+      'task',
+      'user',
+    ])
+  })
+})
+
+describe('chat command (Epic 3.5)', () => {
+  it('exists as a top-level command', () => {
+    const program = buildProgram()
+    const chat = findSubcommand(program, 'chat')
+    expect(chat).toBeDefined()
+  })
+
+  it('takes an optional [pub] positional', () => {
+    const program = buildProgram()
+    const chat = findSubcommand(program, 'chat')!
+    const args = chat.registeredArguments
+    expect(args).toHaveLength(1)
+    expect(args[0]?.name()).toBe('pub')
+    expect(args[0]?.required).toBe(false)
   })
 })
 

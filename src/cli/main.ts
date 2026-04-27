@@ -21,6 +21,7 @@
  * for the locked Epic 2 spec.
  */
 import { fileURLToPath } from 'node:url'
+import * as readline from 'node:readline'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
@@ -30,6 +31,11 @@ import type { StateSnapshotResult } from '../runtime/control-plane/protocol.js'
 import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
+import { homePaths } from '../runtime/storage/layout.js'
+import { loadUserIdentity } from '../runtime/user/loader.js'
+import { readCredentialFile } from '../runtime/pub/keypair.js'
+import { loadState } from '../runtime/supervisor/state.js'
+import { PubClient } from '../runtime/pub/client.js'
 
 interface TopLevelOpts {
   home?: string
@@ -584,6 +590,21 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 chat <pub>  (Epic 3.5)
+  // ---------------------------------------------------------------------------
+
+  program
+    .command('chat')
+    .description(
+      'open an interactive chat session in a pub — your stdin posts as the user, incoming messages stream to stdout (Epic 3.5)',
+    )
+    .argument('[pub]', 'pub name; defaults to the single running pub on the instance')
+    .action(async (pubArg: string | undefined) => {
+      const home = await resolveHomeFromOpts(program)
+      await runChat(home, pubArg)
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 notification <subcommand>
   // ---------------------------------------------------------------------------
 
@@ -612,6 +633,174 @@ export function buildProgram(): Command {
     })
 
   return program
+}
+
+/**
+ * Run an interactive chat session in a pub (Epic 3.5).
+ *
+ * Loads the user's pub credential, opens a `PubClient` against the
+ * resolved pub, prints incoming messages to stdout with sender
+ * attribution, reads stdin via readline (each line becomes a
+ * `pub.send`), exits cleanly on `/quit` / `/exit` / Ctrl+C.
+ *
+ * The user's own messages echo back via the pub's `room_state`
+ * broadcast; we filter them out so the user does not see their
+ * typing twice.
+ */
+async function runChat(home: string, pubArg: string | undefined): Promise<void> {
+  // Load user identity + credential.
+  const userMdPath = homePaths(home).configUserMd
+  const userIdent = await loadUserIdentity(userMdPath).catch((err: unknown) => {
+    console.error(`chat: cannot read user identity at ${userMdPath}.`)
+    console.error(`Run "2200 user init --display-name <name>" first.`)
+    console.error(`(${err instanceof Error ? err.message : String(err)})`)
+    process.exit(1)
+  })
+  const userCred = await readCredentialFile(homePaths(home).configUserPubSecret)
+  if (!userCred.agent_id) {
+    console.error(
+      'chat: user identity exists but has no agent_id (not yet registered against a pub).',
+    )
+    console.error(
+      'Run "2200 pub start <pub>" then re-run "2200 user init --display-name <name>" to register.',
+    )
+    process.exit(1)
+  }
+
+  // Resolve target pub.
+  const supervisorState = await loadState(home)
+  const allRunning = Object.values(supervisorState.pubs).filter((p) => p.state === 'running')
+  let targetPub
+  if (pubArg !== undefined) {
+    targetPub = supervisorState.pubs[pubArg]
+    if (!targetPub) {
+      console.error(`chat: no pub named "${pubArg}" on this instance.`)
+      process.exit(1)
+    }
+    if (targetPub.state !== 'running') {
+      console.error(`chat: pub "${pubArg}" exists but is not running (state: ${targetPub.state}).`)
+      console.error(`Run "2200 pub start ${pubArg}" first.`)
+      process.exit(1)
+    }
+  } else if (allRunning.length === 0) {
+    console.error('chat: no running pubs on this instance.')
+    console.error('Run "2200 pub create <name>" then "2200 pub start <name>" first.')
+    process.exit(1)
+  } else if (allRunning.length === 1 && allRunning[0]) {
+    targetPub = allRunning[0]
+  } else {
+    console.error(
+      `chat: multiple running pubs (${allRunning.map((p) => p.name).join(', ')}); specify which.`,
+    )
+    console.error('Run "2200 chat <pub>" with a name.')
+    process.exit(1)
+  }
+
+  // Open the pub client.
+  const baseUrl = `http://127.0.0.1:${String(targetPub.port)}`
+  const client = new PubClient({ baseUrl, cred: userCred })
+  try {
+    await client.connect()
+  } catch (err) {
+    console.error(`chat: failed to connect to pub "${targetPub.name}" at ${baseUrl}.`)
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  }
+
+  const userDisplayName = userIdent.frontmatter.display_name
+  const seenIds = new Set<string>()
+  const promptStr = `[${userDisplayName}] `
+
+  console.log(`Connected to pub "${targetPub.name}" as ${userDisplayName}.`)
+  console.log(
+    `Type a message and Enter to post. Use "@<handle>" to direct it. /quit or Ctrl+C to leave.`,
+  )
+  console.log('')
+
+  // Subscribe to incoming events.
+  client.onEvent((event) => {
+    if (event.type === 'message') {
+      const m = event.data
+      if (m.agent_id === userCred.agent_id) return // skip our own
+      if (seenIds.has(m.message_id)) return
+      seenIds.add(m.message_id)
+      printIncoming(m.display_name, m.content, promptStr)
+    } else if (event.type === 'conversation_event') {
+      const m = event.data
+      if (m.from.agent_id === userCred.agent_id) return
+      if (seenIds.has(m.message_id)) return
+      seenIds.add(m.message_id)
+      printIncoming(m.from.display_name, m.preview, promptStr)
+    } else if (event.type === 'pub_reaction') {
+      const r = event.data
+      if (r.agent_id === userCred.agent_id) return
+      printIncoming(r.display_name, `(reacted ${r.emoji})`, promptStr)
+    } else if (event.type === 'error') {
+      printIncoming('!error', event.data.message, promptStr)
+    }
+  })
+
+  // Read stdin.
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: promptStr,
+  })
+
+  const cleanup = async (): Promise<void> => {
+    rl.close()
+    try {
+      await client.close()
+    } catch {
+      // best-effort
+    }
+  }
+
+  rl.prompt()
+  rl.on('line', (line) => {
+    void (async () => {
+      const trimmed = line.trim()
+      if (trimmed === '/quit' || trimmed === '/exit') {
+        console.log('leaving the pub.')
+        await cleanup()
+        process.exit(0)
+        return
+      }
+      if (trimmed.length === 0) {
+        rl.prompt()
+        return
+      }
+      try {
+        await client.send({ content: trimmed })
+      } catch (err) {
+        console.error(`send failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      rl.prompt()
+    })()
+  })
+  rl.on('close', () => {
+    void cleanup().then(() => process.exit(0))
+  })
+
+  // Handle SIGINT (Ctrl+C) — readline catches it but we want a graceful close.
+  process.on('SIGINT', () => {
+    console.log('\nleaving the pub.')
+    void cleanup().then(() => process.exit(0))
+  })
+}
+
+/**
+ * Print an incoming message to stdout. Clears the current readline
+ * prompt, prints the message on its own line, and re-prints the
+ * prompt so the user's typing is not interrupted visually.
+ */
+function printIncoming(sender: string, content: string, prompt: string): void {
+  // Clear the current line (where the readline prompt sits) and write
+  // the message above it. Then re-write the prompt so the user's
+  // partial input remains visible.
+  process.stdout.write('\r\x1b[K')
+  process.stdout.write(`[${sender}] ${content}\n`)
+  process.stdout.write(prompt)
 }
 
 /**
