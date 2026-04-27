@@ -28,10 +28,10 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the five top-level commands (init, daemon, agent, task, notification)', () => {
+  it('has the six top-level commands (init, daemon, agent, task, pub, notification)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
-    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'task'])
+    expect(names).toEqual(['agent', 'daemon', 'init', 'notification', 'pub', 'task'])
   })
 })
 
@@ -92,6 +92,48 @@ describe('task subcommand', () => {
     const task = findSubcommand(program, 'task')!
     const list = findSubcommand(task, 'list')!
     expect(list.registeredArguments.map((a) => a.name())).toEqual(['agent'])
+  })
+})
+
+describe('pub subcommand', () => {
+  it('has create, list, start, stop, status', () => {
+    const program = buildProgram()
+    const pub = findSubcommand(program, 'pub')!
+    const subs = pub.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['create', 'list', 'start', 'status', 'stop'])
+  })
+
+  it('pub create takes <name> positional', () => {
+    const program = buildProgram()
+    const pub = findSubcommand(program, 'pub')!
+    const create = findSubcommand(pub, 'create')!
+    expect(create.registeredArguments.map((a) => a.name())).toEqual(['name'])
+  })
+
+  it('pub create exposes --description, --capacity, --port, --issuer, --hub-url', () => {
+    const program = buildProgram()
+    const pub = findSubcommand(program, 'pub')!
+    const create = findSubcommand(pub, 'create')!
+    const longs = create.options.map((o) => o.long)
+    for (const flag of ['--description', '--capacity', '--port', '--issuer', '--hub-url']) {
+      expect(longs).toContain(flag)
+    }
+  })
+
+  it('pub start, stop, status take <name>', () => {
+    const program = buildProgram()
+    const pub = findSubcommand(program, 'pub')!
+    for (const subname of ['start', 'stop', 'status']) {
+      const sub = findSubcommand(pub, subname)!
+      expect(sub.registeredArguments.map((a) => a.name())).toEqual(['name'])
+    }
+  })
+
+  it('pub list takes no positional args', () => {
+    const program = buildProgram()
+    const pub = findSubcommand(program, 'pub')!
+    const list = findSubcommand(pub, 'list')!
+    expect(list.registeredArguments).toEqual([])
   })
 })
 

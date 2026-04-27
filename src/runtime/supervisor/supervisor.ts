@@ -15,16 +15,18 @@ import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-pl
 import { listenUds } from '../control-plane/transport-uds.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
-import { type SupervisorState, type AgentRecord } from './types.js'
+import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
+import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity } from '../identity/loader.js'
-import { homePaths, agentPaths } from '../storage/layout.js'
-import { initHome, initAgentDirs } from '../storage/init.js'
+import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
+import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
-import type { TaskListEntry } from '../control-plane/protocol.js'
+import { findFreePort } from '../util/free-port.js'
+import type { TaskListEntry, PubListEntry } from '../control-plane/protocol.js'
 import { resetPulseToGreen } from '../agent/detectors/trip-record.js'
 
 export interface SupervisorOptions {
@@ -45,6 +47,18 @@ export class Supervisor {
   private readonly connections = new Set<Connection>()
   private readonly agentByConnection = new WeakMap<Connection, string>()
   private readonly spawned = new Map<string, SpawnedAgent>()
+  private readonly spawnedPubs = new Map<string, SpawnedPub>()
+  /**
+   * Pubs whose exit was initiated by the supervisor (via `stopPub` or
+   * `shutdown`). Distinguishes user-initiated exit (final state =
+   * 'stopped') from a crash (final state = 'errored'). Cleared when
+   * the exit handler observes the entry.
+   *
+   * Without this flag, `handlePubExit` cannot tell whether a child
+   * exit was unsolicited or requested, since `state.pubs[name].state`
+   * is `'stopped'` in both cases (initial-create or stop-requested).
+   */
+  private readonly pubStopRequested = new Set<string>()
   private readonly log: Logger
   private isShuttingDown = false
 
@@ -107,7 +121,19 @@ export class Supervisor {
         })
       }
     })
-    await Promise.all(stops)
+    const pubStops = Array.from(this.spawnedPubs.values()).map(async (sp) => {
+      // Mark intent so `handlePubExit` routes to 'stopped', not 'errored'.
+      this.pubStopRequested.add(sp.name)
+      try {
+        await sp.stop(timeoutMs)
+      } catch (err) {
+        this.log.warn('error stopping pub', {
+          name: sp.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+    await Promise.all([...stops, ...pubStops])
     for (const conn of this.connections) {
       try {
         await conn.close()
@@ -238,6 +264,163 @@ export class Supervisor {
     await spawned.stop()
     await this.updateAgent(name, { state: 'stopped', pid: null })
     this.log.info('Agent stopped', { name, reason })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pub lifecycle (Epic 3 PR A)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a new pub. Allocates a free local port, writes PUB.md,
+   * adds the supervised child entry to state. Does NOT start the
+   * pub-server process; callers run `startPub` after.
+   *
+   * Two-step (create then start) mirrors `createAgent` + `startAgent`
+   * and lets the user inspect or edit PUB.md between create and first
+   * start. Idempotency: throws if a pub by that name already exists.
+   */
+  async createPub(
+    name: string,
+    opts: {
+      description?: string
+      capacity?: number
+      port?: number
+      issuer?: 'local' | 'hub'
+      hub_url?: string
+      owner?: string
+    } = {},
+  ): Promise<{ port: number; pub_md_path: string }> {
+    assertPubName(name)
+    if (this.state.pubs[name]) {
+      throw new Error(`Pub already exists: ${name}`)
+    }
+    const port = opts.port ?? (await findFreePort())
+    const pubMd = composePubMd({
+      name,
+      ...(opts.description !== undefined ? { description: opts.description } : {}),
+      ...(opts.capacity !== undefined ? { capacity: opts.capacity } : {}),
+      ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
+    })
+    await initPubDirs(this.state.home, name, pubMd)
+    const paths = pubPaths(this.state.home, name)
+    const record: PubRecord = {
+      name,
+      pub_md_path: paths.pubMd,
+      port,
+      state: 'stopped',
+      pid: null,
+      spawned_at: null,
+      errored_at: null,
+      errored_reason: null,
+    }
+    this.state = {
+      ...this.state,
+      pubs: { ...this.state.pubs, [name]: record },
+    }
+    await saveState(this.state)
+    this.log.info('Pub record created', {
+      name,
+      port,
+      pubMdPath: paths.pubMd,
+      issuer: opts.issuer ?? 'local',
+    })
+    return { port, pub_md_path: paths.pubMd }
+  }
+
+  /**
+   * Spawn the pub-server process for an existing pub record.
+   * Idempotent: starting an already-running pub returns the current
+   * pid without re-spawning.
+   */
+  async startPub(
+    name: string,
+    opts: {
+      issuer?: 'local' | 'hub'
+      hub_url?: string
+      executablePath?: string
+    } = {},
+  ): Promise<{ pid: number; port: number }> {
+    const record = this.state.pubs[name]
+    if (!record) {
+      throw new Error(`no pub record for ${name}`)
+    }
+    const existing = this.spawnedPubs.get(name)
+    if (existing) {
+      return { pid: existing.pid, port: record.port }
+    }
+    const spawned = spawnPub(
+      {
+        name,
+        home: this.state.home,
+        port: record.port,
+        ...(opts.issuer !== undefined ? { issuer: opts.issuer } : {}),
+        ...(opts.hub_url !== undefined ? { hubUrl: opts.hub_url } : {}),
+        ...(opts.executablePath !== undefined ? { executablePath: opts.executablePath } : {}),
+      },
+      this.log.child('pub-lifecycle'),
+    )
+    this.spawnedPubs.set(name, spawned)
+    // Order of operations matters here. Persist `state: 'running'`
+    // FIRST and only THEN attach the exit handler. If we attach the
+    // handler before awaiting the disk write, an immediate-exit child
+    // (the abnormal-exit case) can fire the exit handler during the
+    // running-update's await window, and the running-update would
+    // race-overwrite the errored state. By attaching the handler
+    // after the running-update settles, the exit handler always sees
+    // the correct prior state. If the child has already exited by
+    // the time we attach the handler, .then on the resolved promise
+    // queues a microtask that runs immediately after this turn,
+    // which is exactly what we want.
+    await this.updatePub(name, {
+      pid: spawned.pid,
+      spawned_at: new Date().toISOString(),
+      state: 'running',
+    })
+    void spawned.exited.then(({ code, signal }) => {
+      void this.handlePubExit(name, code, signal)
+    })
+    return { pid: spawned.pid, port: record.port }
+  }
+
+  /**
+   * Stop a running pub-server. Idempotent: stopping an already-stopped
+   * pub records the state change but is otherwise a no-op.
+   */
+  async stopPub(name: string, reason = 'user_requested'): Promise<void> {
+    const spawned = this.spawnedPubs.get(name)
+    if (!spawned) {
+      await this.updatePub(name, { state: 'stopped', pid: null })
+      return
+    }
+    // Mark intent BEFORE awaiting the actual stop so the exit handler
+    // (which may race with us) sees the flag and routes to 'stopped'
+    // rather than 'errored'.
+    this.pubStopRequested.add(name)
+    await spawned.stop()
+    this.spawnedPubs.delete(name)
+    await this.updatePub(name, { state: 'stopped', pid: null })
+    this.log.info('Pub stopped', { name, reason })
+  }
+
+  /** Read-only enumeration of pubs known to the supervisor. */
+  listPubs(): PubListEntry[] {
+    return Object.values(this.state.pubs).map((p) => ({
+      name: p.name,
+      state: p.state,
+      port: p.port,
+      pid: p.pid,
+      spawned_at: p.spawned_at,
+      errored_reason: p.errored_reason,
+    }))
+  }
+
+  /** Detailed status for one pub. Throws if the pub doesn't exist. */
+  pubStatus(name: string): PubRecord {
+    const record = this.state.pubs[name]
+    if (!record) {
+      throw new Error(`no pub record for ${name}`)
+    }
+    return record
   }
 
   // ---------------------------------------------------------------------------
@@ -403,6 +586,37 @@ export class Supervisor {
         }))
         return { agent: params.agent, tasks: entries }
       },
+      // Pub lifecycle (Epic 3 PR A). Routes through the running daemon
+      // so in-memory state and on-disk state stay consistent.
+      'cli.pub.create': async (params) => {
+        const out = await this.createPub(params.name, {
+          ...(params.description !== undefined ? { description: params.description } : {}),
+          ...(params.capacity !== undefined ? { capacity: params.capacity } : {}),
+          ...(params.port !== undefined ? { port: params.port } : {}),
+          ...(params.issuer !== undefined ? { issuer: params.issuer } : {}),
+          ...(params.hub_url !== undefined ? { hub_url: params.hub_url } : {}),
+        })
+        return {
+          ok: true as const,
+          name: params.name,
+          port: out.port,
+          pub_md_path: out.pub_md_path,
+        }
+      },
+      'cli.pub.start': async (params) => {
+        const out = await this.startPub(params.name)
+        return { ok: true as const, pid: out.pid, port: out.port }
+      },
+      'cli.pub.stop': async (params) => {
+        await this.stopPub(params.name, params.reason ?? 'cli_request')
+        return { ok: true as const }
+      },
+      'cli.pub.list': () => {
+        return { pubs: this.listPubs() }
+      },
+      'cli.pub.status': (params) => {
+        return this.pubStatus(params.name)
+      },
     }
   }
 
@@ -445,6 +659,48 @@ export class Supervisor {
     this.state = {
       ...this.state,
       agents: { ...this.state.agents, [name]: next },
+    }
+    await saveState(this.state)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: pub lifecycle helpers (Epic 3 PR A)
+  // ---------------------------------------------------------------------------
+
+  private async handlePubExit(
+    name: string,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): Promise<void> {
+    this.spawnedPubs.delete(name)
+    const record = this.state.pubs[name]
+    if (!record) return
+    const wasRequested = this.pubStopRequested.delete(name)
+    if (wasRequested) {
+      // The supervisor (via stopPub or shutdown) initiated the exit;
+      // the eventual `updatePub({state: 'stopped'})` call in stopPub
+      // is the one that should determine final state. No-op here.
+      return
+    }
+    // Unsolicited exit. The pub-server is supposed to keep running
+    // until stopPub asks it to stop, so any exit not driven by us is
+    // an error condition regardless of the exit code.
+    await this.updatePub(name, {
+      state: 'errored',
+      pid: null,
+      errored_at: new Date().toISOString(),
+      errored_reason: `pub-server exited code=${String(code)} signal=${String(signal)}`,
+    })
+    this.log.warn('Pub process exited unexpectedly', { name, code, signal })
+  }
+
+  private async updatePub(name: string, patch: Partial<PubRecord>): Promise<void> {
+    const existing = this.state.pubs[name]
+    if (!existing) return
+    const next: PubRecord = { ...existing, ...patch }
+    this.state = {
+      ...this.state,
+      pubs: { ...this.state.pubs, [name]: next },
     }
     await saveState(this.state)
   }
