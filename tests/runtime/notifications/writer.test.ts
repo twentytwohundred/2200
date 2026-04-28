@@ -3,20 +3,21 @@
  * (Epic 7 PR D).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   emitNotification,
   waitForResponse,
   NotificationDismissedError,
+  NotificationPolicyViolationError,
 } from '../../../src/runtime/notifications/writer.js'
 import {
   markAnswered,
   markDismissed,
   readNotification,
 } from '../../../src/runtime/notifications/reader.js'
-import { initHome } from '../../../src/runtime/storage/init.js'
+import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
 
 let home: string
 
@@ -181,5 +182,86 @@ describe('waitForResponse', () => {
     await expect(waitForResponse(home, r.id, { pollIntervalMs: 5 })).rejects.toThrow(
       NotificationDismissedError,
     )
+  })
+})
+
+describe('emitNotification policy enforcement (Epic 7 PR E)', () => {
+  // Seed a real Identity file with the default tier policy so
+  // emitNotification can load it when enforcePolicy: true.
+  async function seedIdentity(allowedTiers: string[]): Promise<void> {
+    const idSrc = join(home, '_seed_identity.md')
+    await writeFile(
+      idSrc,
+      `---
+schema_version: 4
+agent_name: hobby
+agent_role: build agent
+model:
+  tier: frontier
+  provider: anthropic
+  model_id: claude-opus-4-7
+tools: []
+project_dir: /unused
+brain_dir: /unused
+created: 2026-04-26
+notification_policy:
+  tiers_allowed: [${allowedTiers.join(', ')}]
+---
+
+# Identity
+hobby
+`,
+    )
+    await initAgentDirs(home, 'hobby', idSrc)
+  }
+
+  it('rejects a tier outside tiers_allowed when enforcePolicy: true', async () => {
+    await seedIdentity(['passive', 'normal', 'important'])
+    await expect(
+      emitNotification({
+        home,
+        agentName: 'hobby',
+        tier: 'critical',
+        kind: 'agent_ask',
+        enforcePolicy: true,
+      }),
+    ).rejects.toBeInstanceOf(NotificationPolicyViolationError)
+  })
+
+  it('allows a tier inside tiers_allowed when enforcePolicy: true', async () => {
+    await seedIdentity(['passive', 'normal', 'important'])
+    const r = await emitNotification({
+      home,
+      agentName: 'hobby',
+      tier: 'important',
+      kind: 'agent_ask',
+      enforcePolicy: true,
+    })
+    expect(r.id).toBeDefined()
+  })
+
+  it('skips the policy check when enforcePolicy is omitted (supervisor-driven path)', async () => {
+    await seedIdentity(['passive']) // tighter than the supervisor will need
+    const r = await emitNotification({
+      home,
+      agentName: 'hobby',
+      tier: 'critical',
+      kind: 'budget_block',
+      // enforcePolicy omitted: supervisor's BudgetTracker writes critical
+      // because the action type warrants it.
+    })
+    expect(r.id).toBeDefined()
+  })
+
+  it('respects an opt-in critical tier in the Identity', async () => {
+    await seedIdentity(['passive', 'normal', 'important', 'critical'])
+    const r = await emitNotification({
+      home,
+      agentName: 'hobby',
+      tier: 'critical',
+      kind: 'agent_ask',
+      enforcePolicy: true,
+    })
+    expect(r.id).toBeDefined()
   })
 })

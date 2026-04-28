@@ -27,8 +27,9 @@ import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { stringify as stringifyYaml } from 'yaml'
 import { atomicWriteFile } from '../util/atomic-write.js'
-import { homePaths } from '../storage/layout.js'
+import { homePaths, agentPaths } from '../storage/layout.js'
 import { newNotificationId } from '../util/id.js'
+import { loadIdentity } from '../identity/loader.js'
 import {
   notificationPath,
   readNotification,
@@ -52,6 +53,30 @@ export interface EmitNotificationArgs {
   id?: string
   /** Override the timestamp (testing). */
   ts?: string
+  /**
+   * When true, validate the requested tier against the Agent's
+   * `notification_policy.tiers_allowed` and refuse tiers outside it.
+   * Set this for Agent-driven writes (e.g., the `notification.ask`
+   * tool) so Agents cannot escalate their own priority per CLAUDE.md
+   * "Notification tier gating". Supervisor-driven emitters
+   * (BudgetTracker, ProvisioningPipeline, detector trips) leave this
+   * false: the supervisor's policy code chooses the tier from the
+   * action type, not from the Agent's judgment.
+   */
+  enforcePolicy?: boolean
+}
+
+export class NotificationPolicyViolationError extends Error {
+  constructor(
+    public readonly agentName: string,
+    public readonly requestedTier: NotificationTier,
+    public readonly allowed: readonly NotificationTier[],
+  ) {
+    super(
+      `Agent "${agentName}" cannot emit a "${requestedTier}" notification; notification_policy.tiers_allowed = [${allowed.join(', ')}]. To allow it, edit the Identity file. Agents cannot escalate their own priority.`,
+    )
+    this.name = 'NotificationPolicyViolationError'
+  }
 }
 
 export interface EmitNotificationResult {
@@ -68,6 +93,13 @@ export interface EmitNotificationResult {
 export async function emitNotification(
   args: EmitNotificationArgs,
 ): Promise<EmitNotificationResult> {
+  if (args.enforcePolicy === true) {
+    const identity = await loadIdentity(agentPaths(args.home, args.agentName).identity)
+    const allowed = identity.frontmatter.notification_policy.tiers_allowed
+    if (!allowed.includes(args.tier)) {
+      throw new NotificationPolicyViolationError(args.agentName, args.tier, allowed)
+    }
+  }
   const id = args.id ?? newNotificationId()
   const ts = args.ts ?? new Date().toISOString()
   const fm: Record<string, unknown> = {
