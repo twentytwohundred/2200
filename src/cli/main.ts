@@ -60,16 +60,6 @@ function firstLine(text: string): string {
   return idx === -1 ? trimmed.slice(0, 80) : trimmed.slice(0, Math.min(idx, 80))
 }
 
-function notYetImplemented(command: string, lands: string): never {
-  console.error(`2200 ${command}: not yet implemented.`)
-  console.error('')
-  console.error(`This command lands in ${lands}.`)
-  console.error(
-    'See https://github.com/twentytwohundred/.github/wiki/02-agent-runtime-minimum for the locked Epic 2 spec.',
-  )
-  process.exit(2)
-}
-
 /**
  * Connect to a running supervisor daemon if one is live on the given
  * 2200_HOME. Returns null if no daemon is running. Throws on UDS
@@ -996,26 +986,167 @@ export function buildProgram(): Command {
 
   const notification = program
     .command('notification')
-    .description('manage pending notifications from Agents (list, respond)')
+    .description('manage notifications from Agents (list, show, respond, dismiss, follow)')
 
   notification
     .command('list')
-    .description('list pending notifications across all Agents')
-    .action(() => {
-      notYetImplemented(
-        'notification list',
-        'a future PR (notification system at v1; Epic 7 owns the full tier system)',
-      )
+    .description('list notifications (default: pending only)')
+    .option('--all', 'include answered and dismissed (default: pending only)')
+    .option('--asks', 'only notifications requiring a response')
+    .option('--tier <tier>', 'filter by tier: passive | normal | important | critical')
+    .option('--agent <name>', 'filter to one Agent')
+    .option('--json', 'machine-readable output')
+    .action(
+      async (opts: {
+        all?: boolean
+        asks?: boolean
+        tier?: string
+        agent?: string
+        json?: boolean
+      }) => {
+        const home = await resolveHomeFromOpts(program)
+        const { listNotifications } = await import('../runtime/notifications/reader.js')
+        const filters: Parameters<typeof listNotifications>[1] = {}
+        if (!opts.all) filters.state = 'pending'
+        if (opts.asks) filters.asksOnly = true
+        if (opts.tier !== undefined) {
+          filters.tier = opts.tier as 'passive' | 'normal' | 'important' | 'critical'
+        }
+        if (opts.agent !== undefined) filters.agent = opts.agent
+        const list = await listNotifications(home, filters)
+        if (opts.json) {
+          console.log(JSON.stringify(list, null, 2))
+          return
+        }
+        if (list.length === 0) {
+          console.log('No notifications match.')
+          return
+        }
+        for (const r of list) {
+          const fm = r.frontmatter
+          const ask = fm.requires_response ? '?' : ' '
+          const stateMarker = fm.state === 'pending' ? '·' : fm.state === 'answered' ? '✓' : '✗'
+          console.log(
+            `${stateMarker} ${ask} [${fm.tier.padEnd(9)}] ${fm.agent.padEnd(8)} ${fm.kind.padEnd(28)} ${fm.id}`,
+          )
+        }
+      },
+    )
+
+  notification
+    .command('show <id>')
+    .description('show a notification with body and emitter-specific fields')
+    .action(async (id: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { readNotification } = await import('../runtime/notifications/reader.js')
+      try {
+        const r = await readNotification(home, id)
+        const fm = r.frontmatter
+        console.log(`Notification ${fm.id}`)
+        console.log(`  ts:                  ${fm.ts}`)
+        console.log(`  tier:                ${fm.tier}`)
+        console.log(`  agent:               ${fm.agent}`)
+        console.log(`  kind:                ${fm.kind}`)
+        console.log(`  state:               ${fm.state}`)
+        if (fm.requires_response) console.log(`  requires_response:   yes`)
+        if (fm.response !== undefined) console.log(`  response:            ${fm.response}`)
+        if (fm.resolved_at !== undefined) console.log(`  resolved_at:         ${fm.resolved_at}`)
+        const extraKeys = Object.keys(r.extras)
+        if (extraKeys.length > 0) {
+          console.log(`  extras:`)
+          for (const k of extraKeys) {
+            console.log(`    ${k}: ${String(r.extras[k])}`)
+          }
+        }
+        if (r.body.trim().length > 0) {
+          console.log('')
+          console.log(r.body.trim())
+        }
+      } catch (err) {
+        console.error(
+          `Notification "${id}" not found or unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        process.exit(1)
+      }
     })
 
   notification
     .command('respond <id> <response>')
-    .description('respond to a pending notification, unblocking the Agent')
-    .action(() => {
-      notYetImplemented(
-        'notification respond',
-        'a future PR (notification system + loop wake on response)',
-      )
+    .description('answer a pending notification (unblocks the Agent if it was an Ask)')
+    .action(async (id: string, response: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { markAnswered } = await import('../runtime/notifications/reader.js')
+      try {
+        await markAnswered(home, id, response)
+        console.log(`Notification ${id} answered.`)
+      } catch (err) {
+        console.error(`Cannot answer: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      }
+    })
+
+  notification
+    .command('dismiss <id>')
+    .description('dismiss a pending notification without answering')
+    .action(async (id: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { markDismissed } = await import('../runtime/notifications/reader.js')
+      try {
+        await markDismissed(home, id)
+        console.log(`Notification ${id} dismissed.`)
+      } catch (err) {
+        console.error(`Cannot dismiss: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      }
+    })
+
+  notification
+    .command('follow')
+    .description('tail-follow notifications as they arrive (Ctrl-C to stop)')
+    .option('--asks', 'only notifications requiring a response')
+    .option('--tier <tier>', 'filter by tier')
+    .option('--agent <name>', 'filter to one Agent')
+    .action(async (opts: { asks?: boolean; tier?: string; agent?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { listNotifications } = await import('../runtime/notifications/reader.js')
+      const { homePaths } = await import('../runtime/storage/layout.js')
+      const { watch } = await import('node:fs/promises')
+      const seen = new Set<string>()
+      // Print existing pending entries first (so the user has context).
+      const filters: Parameters<typeof listNotifications>[1] = { state: 'pending' }
+      if (opts.asks) filters.asksOnly = true
+      if (opts.tier !== undefined) {
+        filters.tier = opts.tier as 'passive' | 'normal' | 'important' | 'critical'
+      }
+      if (opts.agent !== undefined) filters.agent = opts.agent
+      const initial = await listNotifications(home, filters)
+      for (const r of initial) {
+        seen.add(r.frontmatter.id)
+        printOne(r)
+      }
+      // Watch the dir for new files. Each fs event triggers a fresh
+      // list call; we filter via the seen set so each id prints once.
+      const dir = homePaths(home).stateNotifications
+      try {
+        for await (const _event of watch(dir)) {
+          const list = await listNotifications(home, filters)
+          for (const r of list) {
+            if (seen.has(r.frontmatter.id)) continue
+            seen.add(r.frontmatter.id)
+            printOne(r)
+          }
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ABORT_ERR') throw err
+      }
+
+      function printOne(r: Awaited<ReturnType<typeof listNotifications>>[number]): void {
+        const fm = r.frontmatter
+        const ask = fm.requires_response ? '?' : ' '
+        console.log(
+          `· ${ask} [${fm.tier.padEnd(9)}] ${fm.agent.padEnd(8)} ${fm.kind.padEnd(28)} ${fm.id}`,
+        )
+      }
     })
 
   return program
