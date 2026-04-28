@@ -120,9 +120,10 @@ export type CostCaps = z.infer<typeof CostCapsSchema>
 /**
  * The Identity frontmatter schema.
  *
- * - `schema_version: 3` per the locked integer convention.
+ * - `schema_version: 4` per the locked integer convention.
  *   v2 (Epic 4.5) added `cost_caps`. v3 (Epic 4 Phase A) added the
- *   optional `scut` block. The migrator chain bumps older files.
+ *   optional `scut` block. v4 (Epic 7) added `notification_policy`.
+ *   The migrator chain bumps older files.
  * - `tools: []` is the default; entries are ADDITIONS to the baseline
  *   tool set (NOT the full set). The runtime composes baseline + this
  *   array at boot.
@@ -242,8 +243,51 @@ export const ScutIdentityBlockSchema = z.object({
 })
 export type ScutIdentityBlock = z.infer<typeof ScutIdentityBlockSchema>
 
+/**
+ * Notification tier (Epic 7). Controls which surfaces an outbound
+ * notification can interrupt:
+ *
+ *   - `passive`:   badge / digest only. The dot pulse turns yellow.
+ *                  Default home for cost-velocity warnings, low-stakes
+ *                  status updates, model-availability nudges.
+ *   - `normal`:    standard push. "I finished a task," "I have a
+ *                  draft for you to look at." User expected to
+ *                  respond within hours.
+ *   - `important`: breaks through silencing but not Do-Not-Disturb.
+ *                  "I'm blocked and need an answer to proceed,"
+ *                  "approaching daily cost cap."
+ *   - `critical`:  breaks through DND, rings like a phone call.
+ *                  Reserved for 2FA handoff, irreversible-action
+ *                  confirmation, explicit emergencies. Triggered
+ *                  ONLY by named action types in the supervisor's
+ *                  policy code, never by an Agent's own judgment.
+ */
+export const NotificationTierSchema = z.enum(['passive', 'normal', 'important', 'critical'])
+export type NotificationTier = z.infer<typeof NotificationTierSchema>
+
+/**
+ * Per-Agent notification policy (Epic 7). The `tiers_allowed` list
+ * defines which tiers an Agent's notifications can use; tiers
+ * outside this list are clamped down or dropped at the write layer.
+ *
+ * The default omits `critical` deliberately. Per CLAUDE.md "Notification
+ * tier gating": Agents cannot escalate their own priority. The tier
+ * comes from the action type, not the Agent's judgment. To allow
+ * critical-tier from a specific Agent, the user explicitly opts in
+ * by adding `critical` to that Agent's tiers_allowed.
+ */
+export const NotificationPolicySchema = z.object({
+  /** Tiers this Agent's notifications are allowed to use. */
+  tiers_allowed: z.array(NotificationTierSchema).default(['passive', 'normal', 'important']),
+})
+export type NotificationPolicy = z.infer<typeof NotificationPolicySchema>
+
+const NOTIFICATION_POLICY_DEFAULT: NotificationPolicy = {
+  tiers_allowed: ['passive', 'normal', 'important'],
+}
+
 export const IdentityFrontmatterSchema = z.object({
-  schema_version: z.literal(3),
+  schema_version: z.literal(4),
   agent_name: z
     .string()
     .min(1)
@@ -260,6 +304,13 @@ export const IdentityFrontmatterSchema = z.object({
     message: 'created must be a date in YYYY-MM-DD form',
   }),
   cost_caps: CostCapsSchema.default(COST_CAPS_DEFAULT),
+  /**
+   * Per-Agent notification tier policy (Epic 7). Restricts which
+   * notification tiers this Agent can emit. Default forbids
+   * `critical` — only the supervisor's policy code (reacting to
+   * specific action types) can promote to critical.
+   */
+  notification_policy: NotificationPolicySchema.default(NOTIFICATION_POLICY_DEFAULT),
   /**
    * SCUT identity block (Epic 4 Phase A). Optional: filled in after
    * the supervisor's provisioning pipeline mints + updates the
