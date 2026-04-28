@@ -93,11 +93,11 @@ describe('daemon subcommand', () => {
 })
 
 describe('agent subcommand', () => {
-  it('has create, start, stop, resume, status, budget', () => {
+  it('has create, start, stop, resume, status, budget, identity', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const subs = agent.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['budget', 'create', 'resume', 'start', 'status', 'stop'])
+    expect(subs).toEqual(['budget', 'create', 'identity', 'resume', 'start', 'status', 'stop'])
   })
 
   it('agent budget has override and status subcommands', () => {
@@ -106,6 +106,14 @@ describe('agent subcommand', () => {
     const budget = findSubcommand(agent, 'budget')!
     const subs = budget.commands.map((c) => c.name()).sort()
     expect(subs).toEqual(['override', 'status'])
+  })
+
+  it('agent identity has provision, status, show, retry, wallet-status subcommands', () => {
+    const program = buildProgram()
+    const agent = findSubcommand(program, 'agent')!
+    const identity = findSubcommand(agent, 'identity')!
+    const subs = identity.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['provision', 'retry', 'show', 'status', 'wallet-status'])
   })
 
   it('agent budget override takes <name> and accepts --for-hours, --reason, --clear', () => {

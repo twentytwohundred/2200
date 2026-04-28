@@ -49,6 +49,11 @@ async function resolveHomeFromOpts(program: Command): Promise<string> {
   return resolveHome(opts.home)
 }
 
+function truncateUri(s: string, max: number): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max - 3)}...`
+}
+
 function firstLine(text: string): string {
   const trimmed = text.trim()
   const idx = trimmed.indexOf('\n')
@@ -405,6 +410,177 @@ export function buildProgram(): Command {
       } else {
         console.log(`  override:     (none)`)
       }
+    })
+
+  // ---------------------------------------------------------------------------
+  // 2200 agent identity <subcommand>
+  // ---------------------------------------------------------------------------
+
+  const agentIdentity = agent
+    .command('identity')
+    .description('manage Agent SCUT identities (provision, status, show, retry, wallet-status)')
+
+  agentIdentity
+    .command('provision <name>')
+    .description("provision (or resume provisioning) an Agent's SCUT identity on Base")
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { runIdentityProvisionFromConfig } =
+        await import('../runtime/identity/provision-runner.js')
+      try {
+        const result = await runIdentityProvisionFromConfig({ home, agentName: name })
+        console.log(`Agent "${name}" provisioned.`)
+        console.log(`  scut uri:   ${result.uri}`)
+        console.log(`  token id:   ${result.tokenId}`)
+        console.log(`  mint tx:    ${result.mintTx}`)
+        console.log(`  update tx:  ${result.updateTx}`)
+      } catch (err) {
+        console.error(`Provisioning failed: ${err instanceof Error ? err.message : String(err)}`)
+        console.error(`Inspect with: 2200 agent identity status ${name}`)
+        process.exit(1)
+      }
+    })
+
+  agentIdentity
+    .command('status <name>')
+    .description('show the current provisioning state for an Agent')
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { agentIdentityPaths } = await import('../runtime/storage/layout.js')
+      const path = agentIdentityPaths(home, name).provisionState
+      try {
+        const raw = await readFile(path, 'utf8')
+        interface ProvisionStateRead {
+          state?: string
+          updated_at?: string
+          token_id?: string
+          mint_tx_hash?: string
+          update_tx_hash?: string
+          error?: { at_state?: string; class?: string; message?: string }
+        }
+        const state = JSON.parse(raw) as ProvisionStateRead
+        console.log(`Agent "${name}" identity:`)
+        console.log(`  state:        ${state.state ?? '(unknown)'}`)
+        console.log(`  updated_at:   ${state.updated_at ?? '(unknown)'}`)
+        if (state.token_id) console.log(`  token_id:     ${state.token_id}`)
+        if (state.mint_tx_hash) console.log(`  mint_tx:      ${state.mint_tx_hash}`)
+        if (state.update_tx_hash) console.log(`  update_tx:    ${state.update_tx_hash}`)
+        if (state.error) {
+          console.log(`  error:`)
+          console.log(`    at_state:   ${state.error.at_state ?? '(unknown)'}`)
+          console.log(`    class:      ${state.error.class ?? '(unknown)'}`)
+          console.log(`    message:    ${state.error.message ?? '(unknown)'}`)
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          console.log(`Agent "${name}" has not been provisioned.`)
+          process.exit(1)
+        }
+        throw err
+      }
+    })
+
+  agentIdentity
+    .command('show <name>')
+    .description("print an Agent's scut block from the Identity file")
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { loadIdentity } = await import('../runtime/identity/loader.js')
+      const { agentPaths } = await import('../runtime/storage/layout.js')
+      const id = await loadIdentity(agentPaths(home, name).identity)
+      if (!id.frontmatter.scut) {
+        console.log(`Agent "${name}" has no scut block (not yet provisioned).`)
+        process.exit(1)
+      }
+      const s = id.frontmatter.scut
+      console.log(`Agent "${name}" SCUT identity:`)
+      console.log(`  uri:                 ${s.uri}`)
+      console.log(`  chain id:            ${String(s.chain_id)}`)
+      console.log(`  contract:            ${s.contract}`)
+      console.log(`  token id:            ${s.token_id}`)
+      console.log(`  identity_doc_uri:    ${truncateUri(s.identity_doc_uri, 60)}`)
+      console.log(`  ed25519 (b64):       ${s.public_keys.ed25519}`)
+      console.log(`  x25519 (b64):        ${s.public_keys.x25519}`)
+      console.log(`  registered_at:       ${s.registered_at}`)
+      console.log(`  mint tx:             ${s.mint_tx}`)
+      console.log(`  update tx:           ${s.update_tx}`)
+    })
+
+  agentIdentity
+    .command('retry <name>')
+    .description('clear an errored provisioning state and re-run from the last good checkpoint')
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { agentIdentityPaths } = await import('../runtime/storage/layout.js')
+      const { atomicWriteJson } = await import('../runtime/util/atomic-write.js')
+      const path = agentIdentityPaths(home, name).provisionState
+      let state: Record<string, unknown>
+      try {
+        state = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          console.error(`Agent "${name}" has no provision state to retry.`)
+          process.exit(1)
+        }
+        throw err
+      }
+      if (state['state'] !== 'errored') {
+        console.error(
+          `Agent "${name}" is in state "${String(state['state'])}", not "errored". Use \`2200 agent identity provision\` to advance from a non-errored state.`,
+        )
+        process.exit(1)
+      }
+      const errBlock = state['error'] as Record<string, unknown> | undefined
+      const recoverFrom = (errBlock?.['at_state'] as string | undefined) ?? 'pending'
+      delete state['error']
+      state['state'] = recoverFrom
+      state['updated_at'] = new Date().toISOString()
+      await atomicWriteJson(path, state)
+      console.log(`Cleared error; re-running provisioning from state "${recoverFrom}".`)
+      const { runIdentityProvisionFromConfig } =
+        await import('../runtime/identity/provision-runner.js')
+      try {
+        const result = await runIdentityProvisionFromConfig({ home, agentName: name })
+        console.log(`Agent "${name}" provisioned.`)
+        console.log(`  scut uri:   ${result.uri}`)
+      } catch (err) {
+        console.error(`Retry failed: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      }
+    })
+
+  agentIdentity
+    .command('wallet-status')
+    .description('show the seed-team SCUT wallet balance and registration runway')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { loadScutConfig, resolveSecret } = await import('../runtime/identity/scut-config.js')
+      const { createScutOnChain } = await import('../runtime/identity/onchain.js')
+      const config = await loadScutConfig(home)
+      const privateKey = await resolveSecret(config.wallet_private_key)
+      const onChain = createScutOnChain({
+        rpcUrl: config.rpc_url,
+        privateKey,
+        contractAddress: config.contract_address,
+      })
+      if (onChain.walletAddress.toLowerCase() !== config.wallet_address.toLowerCase()) {
+        console.error(
+          `wallet_address in config (${config.wallet_address}) does not match the address derived from the configured private key (${onChain.walletAddress}). Refusing to print balance.`,
+        )
+        process.exit(1)
+      }
+      const balanceWei = await onChain.getWalletBalance()
+      const balanceEth = Number(balanceWei) / 1e18
+      // Practical per-spawn cost (steady-state Base + data-URI two-tx pipeline)
+      // is ~$0.020 (~0.000008 ETH at $2500/ETH). Assume 0.000008 ETH per spawn
+      // for the runway estimate; operators tune via direct telemetry over time.
+      const ethPerSpawn = 0.000008
+      const spawnsLeft = Math.floor(balanceEth / ethPerSpawn)
+      console.log(`SCUT wallet:    ${config.wallet_address}`)
+      console.log(`  balance:      ${balanceEth.toFixed(6)} ETH (${balanceWei.toString()} wei)`)
+      console.log(`  spawns left:  ~${String(spawnsLeft)} (at ~0.000008 ETH per spawn)`)
+      console.log(`  rpc:          ${config.rpc_url}`)
+      console.log(`  contract:     ${config.contract_address}`)
     })
 
   // ---------------------------------------------------------------------------
