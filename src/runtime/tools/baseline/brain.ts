@@ -1,196 +1,183 @@
 /**
- * brain.* baseline tools (read, write, search, links).
+ * brain.* baseline tools — Epic 8 Phase A PR C.
  *
- * Per the Epic 2 spec yellow flag: "v1 behavior is the Brain's
- * behavior until Epic 8. Consumers should treat the v1 API as stable;
- * the implementation underneath swaps in Epic 8 (FTS5 index, real
- * graph store, semantic embedding option) without breaking the
- * contract."
+ * Slug-based, frontmatter-aware. Each tool routes through the
+ * per-Agent BrainStore (markdown files) and BrainIndex (SQLite
+ * FTS5 over those files). The BrainIndex registry caches one
+ * open DB handle per Agent for the life of the process.
+ *
+ * Phase A scope: own brain only. The dispatcher already resolves
+ * the calling Agent via ToolContext.callingAgent, so each tool
+ * targets that Agent's brain dir / index unambiguously. No path
+ * args, no pub-style scope arg.
  *
  * Idempotency:
- *   brain.read, brain.search, brain.links -> pure
- *   brain.write                            -> checkpointed
- *
- * Files live under <home>/agents/<name>/brain/, accessed via the
- * /brain/ virtual prefix the dispatcher resolves before calling
- * execute(). Each note is markdown with optional YAML frontmatter; we
- * preserve user-friendly extraction of `[[wiki-style]]` backlinks.
+ *   brain.read, brain.search, brain.list   → pure
+ *   brain.write                            → checkpointed (re-runs are safe)
+ *   brain.delete                           → destructive
  */
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
 import { z } from 'zod'
-import { atomicWriteFile } from '../../util/atomic-write.js'
 import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
-
-// ---------------------------------------------------------------------------
-// brain.read
-// ---------------------------------------------------------------------------
-
-const BrainReadArgsSchema = z.object({
-  path: z.string().min(1),
-})
-
-export const brainRead = defineTool({
-  name: 'brain.read',
-  description: 'Read a Brain note. Returns its UTF-8 contents.',
-  idempotency: 'pure',
-  argsSchema: BrainReadArgsSchema,
-  pathArgs: [{ argName: 'path', operation: 'read' }],
-  execute: async (args) => {
-    const content = await readFile(args.path, 'utf8')
-    return { content }
-  },
-})
+import { getOrOpenBrain } from '../../brain/registry.js'
 
 // ---------------------------------------------------------------------------
 // brain.write
 // ---------------------------------------------------------------------------
 
 const BrainWriteArgsSchema = z.object({
-  path: z.string().min(1),
-  content: z.string(),
+  title: z.string().min(1),
+  body: z.string(),
+  /** Free-form note type. See [[08-agent-brain]] for conventional values. */
+  type: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  /** Pin the slug. Otherwise derived from title with collision suffix. */
+  slug: z.string().optional(),
 })
 
 export const brainWrite = defineTool({
   name: 'brain.write',
-  description: 'Write a Brain note. Atomic via temp+rename. Creates parent dirs.',
+  description: 'Write a brain note (slug-based; frontmatter+body). Upsert-style.',
   idempotency: 'checkpointed',
   argsSchema: BrainWriteArgsSchema,
-  pathArgs: [{ argName: 'path', operation: 'write' }],
-  execute: async (args) => {
-    await mkdir(dirname(args.path), { recursive: true })
-    await atomicWriteFile(args.path, args.content)
-    return { bytes_written: Buffer.byteLength(args.content, 'utf8') }
+  execute: async (args, ctx) => {
+    const { store } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    const result = await store.write({
+      title: args.title,
+      body: args.body,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.tags !== undefined ? { tags: args.tags } : {}),
+      ...(args.slug !== undefined ? { slug: args.slug } : {}),
+    })
+    // Re-read to get the canonical frontmatter (created/updated/links).
+    const note = await store.read(result.slug)
+    const { index } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    index.upsert(note)
+    return {
+      slug: result.slug,
+      created_or_updated: result.created ? 'created' : 'updated',
+      path: result.path,
+    }
   },
 })
 
 // ---------------------------------------------------------------------------
-// brain.search (grep-based at v1; FTS5 lands in Epic 8)
+// brain.read
+// ---------------------------------------------------------------------------
+
+const BrainReadArgsSchema = z.object({
+  slug: z.string().min(1),
+})
+
+export const brainRead = defineTool({
+  name: 'brain.read',
+  description: 'Read a brain note by slug. Returns frontmatter + body.',
+  idempotency: 'pure',
+  argsSchema: BrainReadArgsSchema,
+  execute: async (args, ctx) => {
+    const { store } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    const note = await store.read(args.slug)
+    return {
+      slug: note.slug,
+      title: note.frontmatter.title,
+      type: note.frontmatter.type,
+      tags: note.frontmatter.tags,
+      created: note.frontmatter.created,
+      updated: note.frontmatter.updated,
+      links: note.frontmatter.links,
+      body: note.body,
+    }
+  },
+})
+
+// ---------------------------------------------------------------------------
+// brain.search
 // ---------------------------------------------------------------------------
 
 const BrainSearchArgsSchema = z.object({
   query: z.string().min(1),
-  /** Where to search. Defaults to the Agent's brain root. */
-  scope: z.string().default('/brain'),
-  max_results: z.number().int().positive().max(100).default(20),
-  case_sensitive: z.boolean().default(false),
+  /** Cap on results. Default 20, max 100. */
+  limit: z.number().int().positive().max(100).default(20),
+  /** Optional filter: only these note types. */
+  types: z.array(z.string()).optional(),
+  /** Optional filter: results must include at least one of these tags. */
+  any_tag: z.array(z.string()).optional(),
 })
 
 export const brainSearch = defineTool({
   name: 'brain.search',
-  description: 'Full-text search Brain notes (v1: grep-style; Epic 8 swaps in FTS5).',
+  description: "Full-text search this Agent's brain via SQLite FTS5.",
   idempotency: 'pure',
   argsSchema: BrainSearchArgsSchema,
-  pathArgs: [{ argName: 'scope', operation: 'read' }],
-  execute: async (args) => {
-    const results = await grepDirectory({
-      root: args.scope,
-      query: args.query,
-      caseSensitive: args.case_sensitive,
-      maxResults: args.max_results,
+  execute: async (args, ctx) => {
+    const { index } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    const hits = index.search(args.query, {
+      limit: args.limit,
+      ...(args.types !== undefined ? { types: args.types } : {}),
+      ...(args.any_tag !== undefined ? { anyTag: args.any_tag } : {}),
     })
-    return { results, query: args.query }
+    return { query: args.query, hits }
   },
 })
 
-interface GrepArgs {
-  root: string
-  query: string
-  caseSensitive: boolean
-  maxResults: number
-}
-
-interface GrepHit {
-  path: string
-  line: number
-  preview: string
-}
-
-async function grepDirectory(args: GrepArgs): Promise<GrepHit[]> {
-  const hits: GrepHit[] = []
-  const needle = args.caseSensitive ? args.query : args.query.toLowerCase()
-  const visit = async (dir: string): Promise<void> => {
-    let entries
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      if (hits.length >= args.maxResults) return
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith('.')) continue
-        await visit(full)
-        continue
-      }
-      if (!entry.isFile()) continue
-      let text: string
-      try {
-        text = await readFile(full, 'utf8')
-      } catch {
-        continue
-      }
-      const lines = text.split('\n')
-      for (let i = 0; i < lines.length; i++) {
-        if (hits.length >= args.maxResults) return
-        const haystack = args.caseSensitive ? (lines[i] ?? '') : (lines[i] ?? '').toLowerCase()
-        if (haystack.includes(needle)) {
-          hits.push({
-            path: relative(args.root, full),
-            line: i + 1,
-            preview: (lines[i] ?? '').slice(0, 200),
-          })
-        }
-      }
-    }
-  }
-
-  const rootStat = await stat(args.root).catch(() => null)
-  if (!rootStat) return []
-  if (rootStat.isFile()) {
-    // Single-file scope: grep that file directly.
-    const text = await readFile(args.root, 'utf8')
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length && hits.length < args.maxResults; i++) {
-      const haystack = args.caseSensitive ? (lines[i] ?? '') : (lines[i] ?? '').toLowerCase()
-      if (haystack.includes(needle)) {
-        hits.push({
-          path: '',
-          line: i + 1,
-          preview: (lines[i] ?? '').slice(0, 200),
-        })
-      }
-    }
-    return hits
-  }
-  await visit(args.root)
-  return hits
-}
-
 // ---------------------------------------------------------------------------
-// brain.links
+// brain.list
 // ---------------------------------------------------------------------------
 
-const BrainLinksArgsSchema = z.object({
-  path: z.string().min(1),
+const BrainListArgsSchema = z.object({
+  type: z.string().optional(),
+  tag: z.string().optional(),
+  limit: z.number().int().positive().max(500).default(50),
 })
 
-export const brainLinks = defineTool({
-  name: 'brain.links',
-  description: 'Extract `[[wiki-style]]` backlinks from a Brain note.',
+export const brainList = defineTool({
+  name: 'brain.list',
+  description: "Enumerate this Agent's brain notes, sorted by updated descending.",
   idempotency: 'pure',
-  argsSchema: BrainLinksArgsSchema,
-  pathArgs: [{ argName: 'path', operation: 'read' }],
-  execute: async (args) => {
-    const content = await readFile(args.path, 'utf8')
-    const matches = content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)
-    const links = new Set<string>()
-    for (const m of matches) {
-      if (m[1]) links.add(m[1].trim())
+  argsSchema: BrainListArgsSchema,
+  execute: async (args, ctx) => {
+    const { store } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    const notes = await store.list({
+      limit: args.limit,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.tag !== undefined ? { tag: args.tag } : {}),
+    })
+    return {
+      notes: notes.map((n) => ({
+        slug: n.slug,
+        title: n.frontmatter.title,
+        type: n.frontmatter.type,
+        tags: n.frontmatter.tags,
+        updated: n.frontmatter.updated,
+      })),
     }
-    return { links: Array.from(links).sort() }
   },
 })
 
-export const brainTools: ToolDefinition[] = [brainRead, brainWrite, brainSearch, brainLinks]
+// ---------------------------------------------------------------------------
+// brain.delete
+// ---------------------------------------------------------------------------
+
+const BrainDeleteArgsSchema = z.object({
+  slug: z.string().min(1),
+})
+
+export const brainDelete = defineTool({
+  name: 'brain.delete',
+  description: 'Delete a brain note by slug. Idempotent on missing.',
+  idempotency: 'destructive',
+  argsSchema: BrainDeleteArgsSchema,
+  execute: async (args, ctx) => {
+    const { store, index } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+    await store.delete(args.slug)
+    index.delete(args.slug)
+    return { slug: args.slug, deleted: true }
+  },
+})
+
+export const brainTools: ToolDefinition[] = [
+  brainWrite,
+  brainRead,
+  brainSearch,
+  brainList,
+  brainDelete,
+]
