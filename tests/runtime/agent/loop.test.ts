@@ -82,7 +82,7 @@ function fakeIdentity(): IdentityRecord {
   return {
     source_path: '/unused-at-test',
     frontmatter: {
-      schema_version: 2,
+      schema_version: 3,
       agent_name: 'hobby',
       agent_role: 'build agent',
       model: {

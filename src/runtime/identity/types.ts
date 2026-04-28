@@ -120,13 +120,15 @@ export type CostCaps = z.infer<typeof CostCapsSchema>
 /**
  * The Identity frontmatter schema.
  *
- * - `schema_version: 2` per the locked integer convention.
- *   v2 (Epic 4.5) added `cost_caps`. The migrator chain bumps older files.
+ * - `schema_version: 3` per the locked integer convention.
+ *   v2 (Epic 4.5) added `cost_caps`. v3 (Epic 4 Phase A) added the
+ *   optional `scut` block. The migrator chain bumps older files.
  * - `tools: []` is the default; entries are ADDITIONS to the baseline
  *   tool set (NOT the full set). The runtime composes baseline + this
  *   array at boot.
  * - `cost_caps.daily_usd` is the per-Agent daily spend ceiling; missing
  *   blocks default to $10/day per `DEFAULT_DAILY_USD_CAP`.
+ * - `scut` is optional; filled in by the identity-provisioning pipeline.
  * - `provider_secret` is an optional SecretRef pointer for the LLM
  *   provider's credential. v1 supports `env` (read from process env)
  *   and `file` (read from file). Future: `exec` (shell out to a helper).
@@ -178,8 +180,70 @@ function AgentPubBlockSchemaForIdentity() {
 /** Re-export the resolved Agent pub block type so consumers (loader, supervisor) can import it directly. */
 export type AgentPubBlock = z.infer<ReturnType<typeof AgentPubBlockSchemaForIdentity>>
 
+/**
+ * Agent's SCUT identity block (Epic 4 Phase A). Filled in by the
+ * supervisor's identity-provisioning pipeline after the on-chain
+ * mint+update completes. Identity files written before Phase A land
+ * without this block; the runtime treats an Agent without a `scut`
+ * block as "not yet SCUT-provisioned" and skips identity-dependent
+ * code paths (resolver lookups, future cross-instance messaging).
+ *
+ * Private keys are NOT in this block. They live encrypted at
+ * `<home>/state/identities/<agent_name>/keys/` and are loaded by
+ * the supervisor on Agent start, never persisted to the Identity
+ * file in plaintext.
+ *
+ * `chain_id: 8453` and `contract: 0x199b48...` are the locked Base
+ * mainnet values per the Phase A spec (v0.3). v1 supports a single
+ * canonical contract per instance.
+ */
+export const ScutIdentityBlockSchema = z.object({
+  /**
+   * Full SCUT URI: `scut://<chainId>/<contract>/<tokenId>`. Canonical
+   * agent address. Used as the `from` field on outbound SCUT messages
+   * and as the lookup key into the resolver cache.
+   */
+  uri: z.string().regex(/^scut:\/\/\d+\/0x[a-fA-F0-9]{40}\/\d+$/, {
+    message: 'scut.uri must match scut://<chainId>/<contract>/<tokenId>',
+  }),
+  /** Numeric chain id (8453 for Base mainnet at v1). */
+  chain_id: z.number().int().positive(),
+  /** SII contract address, 0x-prefixed hex. */
+  contract: z.string().regex(/^0x[a-fA-F0-9]{40}$/, {
+    message: 'scut.contract must be a 0x-prefixed 40-hex-char address',
+  }),
+  /** Minted tokenId. Stored as a string to dodge JS number-precision issues. */
+  token_id: z.string().regex(/^\d+$/, {
+    message: 'scut.token_id must be a non-negative decimal integer string',
+  }),
+  /**
+   * On-chain identity URI. v1 always a `data:application/json;base64,...`
+   * URI carrying the full SII document inline. The runtime accepts
+   * other schemes (`ipfs://`, `https://`) for future flexibility.
+   */
+  identity_doc_uri: z.string().min(1),
+  /** Public keys derived from the private keys persisted under state/. */
+  public_keys: z.object({
+    /** Base64-encoded 32-byte Ed25519 public key (signing). */
+    ed25519: z.string().min(1),
+    /** Base64-encoded 32-byte X25519 public key (encryption). */
+    x25519: z.string().min(1),
+  }),
+  /** ISO timestamp when provisioning completed (TX2 confirmed). */
+  registered_at: z.string().min(1),
+  /** Mint transaction hash (TX1). */
+  mint_tx: z.string().regex(/^0x[a-fA-F0-9]{64}$/, {
+    message: 'scut.mint_tx must be a 0x-prefixed 64-hex-char tx hash',
+  }),
+  /** updateIdentityURI transaction hash (TX2). */
+  update_tx: z.string().regex(/^0x[a-fA-F0-9]{64}$/, {
+    message: 'scut.update_tx must be a 0x-prefixed 64-hex-char tx hash',
+  }),
+})
+export type ScutIdentityBlock = z.infer<typeof ScutIdentityBlockSchema>
+
 export const IdentityFrontmatterSchema = z.object({
-  schema_version: z.literal(2),
+  schema_version: z.literal(3),
   agent_name: z
     .string()
     .min(1)
@@ -196,6 +260,13 @@ export const IdentityFrontmatterSchema = z.object({
     message: 'created must be a date in YYYY-MM-DD form',
   }),
   cost_caps: CostCapsSchema.default(COST_CAPS_DEFAULT),
+  /**
+   * SCUT identity block (Epic 4 Phase A). Optional: filled in after
+   * the supervisor's provisioning pipeline mints + updates the
+   * on-chain tokenId. Identity files created before Phase A land
+   * without it; the runtime treats them as "not yet SCUT-provisioned."
+   */
+  scut: ScutIdentityBlockSchema.optional(),
   provider_secret: z
     .object({
       source: z.enum(['env', 'file']),
