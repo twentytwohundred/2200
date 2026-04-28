@@ -34,6 +34,9 @@ import type {
   StateSnapshotResult,
 } from '../runtime/control-plane/protocol.js'
 import { parseDurationSeconds } from '../runtime/util/duration.js'
+import { BrainStore } from '../runtime/brain/store.js'
+import { BrainIndex } from '../runtime/brain/index-db.js'
+import { importFromDir } from '../runtime/brain/import.js'
 import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
@@ -818,6 +821,104 @@ export function buildProgram(): Command {
         }
       } finally {
         await client.close()
+      }
+    })
+
+  // ---------------------------------------------------------------------------
+  // 2200 brain <subcommand>  (Epic 8 Phase A PR D)
+  // ---------------------------------------------------------------------------
+
+  const brain = program
+    .command('brain')
+    .description("manage an Agent's brain (list, show, rebuild, import)")
+
+  brain
+    .command('list <agent>')
+    .description("list an Agent's brain notes (sorted by updated, descending)")
+    .option('--type <type>', 'filter by note type (feedback, project, ...)')
+    .option('--tag <tag>', 'filter by tag')
+    .option('--limit <n>', 'cap on results (default 50)', (v) => parseInt(v, 10))
+    .action(async (agentName: string, opts: { type?: string; tag?: string; limit?: number }) => {
+      const home = await resolveHomeFromOpts(program)
+      const store = new BrainStore(home, agentName)
+      const notes = await store.list({
+        ...(opts.type !== undefined ? { type: opts.type } : {}),
+        ...(opts.tag !== undefined ? { tag: opts.tag } : {}),
+        limit: opts.limit ?? 50,
+      })
+      if (notes.length === 0) {
+        console.log(`No brain notes for "${agentName}".`)
+        return
+      }
+      for (const n of notes) {
+        const tagsStr = n.frontmatter.tags.length > 0 ? ` [${n.frontmatter.tags.join(', ')}]` : ''
+        console.log(
+          `${n.slug.padEnd(40)}  ${n.frontmatter.type.padEnd(10)}  ${n.frontmatter.updated}  ${n.frontmatter.title}${tagsStr}`,
+        )
+      }
+    })
+
+  brain
+    .command('show <agent> <slug>')
+    .description('print the contents of a brain note')
+    .action(async (agentName: string, slug: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const store = new BrainStore(home, agentName)
+      const note = await store.read(slug)
+      console.log(`# ${note.frontmatter.title}`)
+      console.log(`slug:    ${note.slug}`)
+      console.log(`type:    ${note.frontmatter.type}`)
+      if (note.frontmatter.tags.length > 0) {
+        console.log(`tags:    ${note.frontmatter.tags.join(', ')}`)
+      }
+      console.log(`created: ${note.frontmatter.created}`)
+      console.log(`updated: ${note.frontmatter.updated}`)
+      if (note.frontmatter.links.length > 0) {
+        console.log(`links:   ${note.frontmatter.links.join(', ')}`)
+      }
+      console.log(`path:    ${note.path}`)
+      console.log()
+      console.log(note.body)
+    })
+
+  brain
+    .command('rebuild <agent>')
+    .description("rebuild the FTS5 index from disk for an Agent's brain")
+    .action(async (agentName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const store = new BrainStore(home, agentName)
+      const notes = await store.list({ limit: 100_000 })
+      const index = BrainIndex.open(home, agentName)
+      try {
+        index.rebuildFrom(notes)
+      } finally {
+        index.close()
+      }
+      console.log(`brain index rebuilt for "${agentName}": ${String(notes.length)} note(s).`)
+    })
+
+  brain
+    .command('import <agent> <source-dir>')
+    .description("bulk-import a directory of markdown files into an Agent's brain")
+    .option('--dry-run', 'parse + map but do not write')
+    .action(async (agentName: string, sourceDir: string, opts: { dryRun?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const result = await importFromDir({
+        home,
+        agentName,
+        sourceDir,
+        dryRun: opts.dryRun ?? false,
+      })
+      const verb = opts.dryRun ? 'would import' : 'imported'
+      console.log(`${verb} ${String(result.imported.length)} note(s) into "${agentName}".`)
+      for (const e of result.imported) {
+        console.log(`  ${e.slug.padEnd(40)}  ${e.type.padEnd(10)}  ${e.title}`)
+      }
+      if (result.skipped.length > 0) {
+        console.log(`\nskipped ${String(result.skipped.length)} file(s):`)
+        for (const s of result.skipped) {
+          console.log(`  ${s.sourcePath}: ${s.reason}`)
+        }
       }
     })
 

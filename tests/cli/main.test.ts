@@ -28,11 +28,12 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the ten top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage, schedule)', () => {
+  it('has the eleven top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage, schedule, brain)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
     expect(names).toEqual([
       'agent',
+      'brain',
       'chat',
       'daemon',
       'init',
@@ -81,6 +82,35 @@ describe('user subcommand', () => {
     expect(longs).toContain('--pub')
     const display = init.options.find((o) => o.long === '--display-name')
     expect(display?.required).toBe(true)
+  })
+})
+
+describe('brain subcommand', () => {
+  it('has list, show, rebuild, import', () => {
+    const program = buildProgram()
+    const brain = findSubcommand(program, 'brain')!
+    const subs = brain.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['import', 'list', 'rebuild', 'show'])
+  })
+
+  it('brain list takes <agent> and accepts --type, --tag, --limit', () => {
+    const program = buildProgram()
+    const brain = findSubcommand(program, 'brain')!
+    const list = findSubcommand(brain, 'list')!
+    expect(list.registeredArguments.map((a) => a.name())).toEqual(['agent'])
+    const longs = list.options.map((o) => o.long)
+    expect(longs).toContain('--type')
+    expect(longs).toContain('--tag')
+    expect(longs).toContain('--limit')
+  })
+
+  it('brain import takes <agent> and <source-dir> with --dry-run', () => {
+    const program = buildProgram()
+    const brain = findSubcommand(program, 'brain')!
+    const imp = findSubcommand(brain, 'import')!
+    expect(imp.registeredArguments.map((a) => a.name())).toEqual(['agent', 'source-dir'])
+    const longs = imp.options.map((o) => o.long)
+    expect(longs).toContain('--dry-run')
   })
 })
 
