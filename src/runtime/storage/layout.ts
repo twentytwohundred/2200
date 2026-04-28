@@ -124,6 +124,17 @@ export function agentBudgetDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Agent brain index database (Epic 8 PR B). SQLite FTS5
+ * over the markdown files at `<home>/agents/<name>/brain/`.
+ * Rebuildable; the file substrate at agentPaths(name).brain
+ * is the source of truth.
+ *   <home>/state/brain/<agent_name>/brain.db
+ */
+export function agentBrainIndexPath(home: string, agentName: string): string {
+  return join(home, 'state', 'brain', agentName, 'brain.db')
+}
+
+/**
  * Per-Agent schedules directory (Epic 6). One JSON file per
  * schedule entry:
  *   <home>/state/agents/<agent_name>/schedules/<schedule_id>.json
