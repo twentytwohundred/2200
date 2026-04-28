@@ -82,7 +82,7 @@ function fakeIdentity(): IdentityRecord {
   return {
     source_path: '/unused-at-test',
     frontmatter: {
-      schema_version: 3,
+      schema_version: 4,
       agent_name: 'hobby',
       agent_role: 'build agent',
       model: {
@@ -99,6 +99,9 @@ function fakeIdentity(): IdentityRecord {
         warn_at_pct: 80,
         reset_at: '00:00 UTC',
         on_breach: 'block_new_tasks',
+      },
+      notification_policy: {
+        tiers_allowed: ['passive', 'normal', 'important'],
       },
     },
     body: 'You are hobby, the test agent.',

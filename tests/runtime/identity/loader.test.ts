@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 const VALID = `---
-schema_version: 3
+schema_version: 4
 agent_name: hobby
 agent_role: "primary build agent for 2200"
 model:
@@ -65,7 +65,7 @@ describe('loadIdentity (happy path)', () => {
     const path = await writeAt('hobby.md', VALID)
     const id = await loadIdentity(path)
     expect(id.frontmatter.agent_name).toBe('hobby')
-    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.schema_version).toBe(4)
     expect(id.frontmatter.model.provider).toBe('anthropic')
     expect(id.frontmatter.model.model_id).toBe('claude-opus-4-7')
     expect(id.frontmatter.tools).toEqual([])
@@ -127,13 +127,13 @@ describe('loadIdentity (error paths)', () => {
   it('tolerates string schema_version on read (parsed to int and migrated forward)', async () => {
     // schema_version='1' as YAML string is the historical-document case;
     // the migrator chain parses it as 1, migrates 1->2, and the loader returns
-    // a typed record with schema_version: 3.
+    // a typed record with schema_version: 4.
     const path = await writeAt(
       'string-version.md',
-      VALID.replace('schema_version: 3', "schema_version: '1'"),
+      VALID.replace('schema_version: 4', "schema_version: '1'"),
     )
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.schema_version).toBe(4)
   })
 
   it('rejects an agent_name with invalid characters', async () => {
@@ -188,7 +188,7 @@ describe('validateIdentity', () => {
 describe('validateFrontmatter', () => {
   it('parses an in-memory object', () => {
     const fm = validateFrontmatter({
-      schema_version: 3,
+      schema_version: 4,
       agent_name: 'hobby',
       agent_role: 'test',
       model: { tier: 'frontier', provider: 'anthropic', model_id: 'claude-opus-4-7' },
@@ -201,39 +201,60 @@ describe('validateFrontmatter', () => {
   })
 
   it('rejects missing required fields', () => {
-    expect(() => validateFrontmatter({ schema_version: 3 })).toThrow()
+    expect(() => validateFrontmatter({ schema_version: 4 })).toThrow()
   })
 })
 
 describe('migrator chain', () => {
   it('a v0 document (missing schema_version) is upgraded all the way to current on read', async () => {
-    const path = await writeAt('v0.md', VALID.replace('schema_version: 3\n', ''))
+    const path = await writeAt('v0.md', VALID.replace('schema_version: 4\n', ''))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.schema_version).toBe(4)
   })
 
-  it('a v1 document is upgraded all the way to v3 with default cost_caps and no scut block', async () => {
-    const path = await writeAt('v1.md', VALID.replace('schema_version: 3', 'schema_version: 1'))
+  it('a v1 document is upgraded all the way to v4 with defaults applied', async () => {
+    const path = await writeAt('v1.md', VALID.replace('schema_version: 4', 'schema_version: 1'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.schema_version).toBe(4)
     expect(id.frontmatter.cost_caps.daily_usd).toBe(10)
     expect(id.frontmatter.cost_caps.warn_at_pct).toBe(80)
     expect(id.frontmatter.cost_caps.reset_at).toBe('00:00 UTC')
     expect(id.frontmatter.cost_caps.on_breach).toBe('block_new_tasks')
     expect(id.frontmatter.scut).toBeUndefined()
+    expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
+      'passive',
+      'normal',
+      'important',
+    ])
   })
 
-  it('a v2 document is upgraded to v3 with no scut block (provisioning fills it later)', async () => {
-    const path = await writeAt('v2.md', VALID.replace('schema_version: 3', 'schema_version: 2'))
+  it('a v2 document is upgraded to v4 with no scut block and the default notification policy', async () => {
+    const path = await writeAt('v2.md', VALID.replace('schema_version: 4', 'schema_version: 2'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.schema_version).toBe(4)
     expect(id.frontmatter.scut).toBeUndefined()
+    expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
+      'passive',
+      'normal',
+      'important',
+    ])
+  })
+
+  it('a v3 document is upgraded to v4 with the default notification policy', async () => {
+    const path = await writeAt('v3.md', VALID.replace('schema_version: 4', 'schema_version: 3'))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
+      'passive',
+      'normal',
+      'important',
+    ])
   })
 
   it('a future schema_version (newer than the loader) is rejected', async () => {
     const path = await writeAt(
       'future.md',
-      VALID.replace('schema_version: 3', 'schema_version: 99'),
+      VALID.replace('schema_version: 4', 'schema_version: 99'),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/newer than this loader supports/)
   })
@@ -384,5 +405,52 @@ scut:
     )
     const path = await writeAt('bad-mintx.md', VALID.replace('created: 2026-04-26', bad))
     await expect(loadIdentity(path)).rejects.toThrow(/scut\.mint_tx/)
+  })
+})
+
+describe('notification_policy block (Epic 7)', () => {
+  it('absent block defaults to [passive, normal, important] (no critical)', async () => {
+    const path = await writeAt('default-policy.md', VALID)
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
+      'passive',
+      'normal',
+      'important',
+    ])
+  })
+
+  it('explicit policy with critical opted in is preserved', async () => {
+    const path = await writeAt(
+      'critical-policy.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\nnotification_policy:\n  tiers_allowed: [passive, normal, important, critical]',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.notification_policy.tiers_allowed).toContain('critical')
+  })
+
+  it('explicit policy can narrow tiers (e.g., evangelist Agents limited to passive)', async () => {
+    const path = await writeAt(
+      'narrow-policy.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\nnotification_policy:\n  tiers_allowed: [passive]',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.notification_policy.tiers_allowed).toEqual(['passive'])
+  })
+
+  it('rejects an unknown tier value', async () => {
+    const path = await writeAt(
+      'bad-tier.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\nnotification_policy:\n  tiers_allowed: [passive, urgent]',
+      ),
+    )
+    await expect(loadIdentity(path)).rejects.toThrow(/tiers_allowed/)
   })
 })

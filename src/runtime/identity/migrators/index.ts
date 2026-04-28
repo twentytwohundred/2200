@@ -6,16 +6,18 @@
  * running the registered migrators in sequence. Each migrator is a pure
  * function `(prev) => next` named `<from>-to-<to>.ts`.
  *
- * The current version is `3`.
+ * The current version is `4`.
  *  - `0-to-1.ts` is a stub from the original schema; no real v0 ever shipped.
  *  - `1-to-2.ts` introduces the `cost_caps` block (Epic 4.5).
  *  - `2-to-3.ts` introduces the optional `scut` block (Epic 4 Phase A).
+ *  - `3-to-4.ts` introduces the `notification_policy` block (Epic 7).
  */
 import { migrate0To1 } from './0-to-1.js'
 import { migrate1To2 } from './1-to-2.js'
 import { migrate2To3 } from './2-to-3.js'
+import { migrate3To4 } from './3-to-4.js'
 
-const CURRENT_VERSION = 3
+const CURRENT_VERSION = 4
 
 /** Pull a `schema_version` from a parsed YAML object, defaulting to 0. */
 function detectVersion(value: unknown): number {
@@ -60,6 +62,11 @@ export function migrateToCurrent(value: unknown): unknown {
     if (v === 2) {
       current = migrate2To3(current)
       v = 3
+      continue
+    }
+    if (v === 3) {
+      current = migrate3To4(current)
+      v = 4
       continue
     }
     throw new Error(`no migrator registered for Identity v${String(v)} -> v${String(v + 1)}`)
