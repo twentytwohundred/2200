@@ -28,7 +28,8 @@
  * block manually; midnight UTC reset clears it automatically by writing
  * a fresh state file for the new day.
  */
-import { mkdir, readFile, readdir } from 'node:fs/promises'
+import { mkdir, readFile, readdir, unlink } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { agentBudgetDir, agentTelemetryDir, homePaths } from '../storage/layout.js'
 import { atomicWriteFile, atomicWriteJson } from '../util/atomic-write.js'
@@ -36,7 +37,17 @@ import { newNotificationId } from '../util/id.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { stringify } from 'yaml'
 
+function readFileSyncSafe(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
 export const BUDGET_STATE_SCHEMA_VERSION = 1
+export const BUDGET_OVERRIDE_SCHEMA_VERSION = 1
 export const BUDGET_NOTIFICATION_KIND_WARN = 'budget_warn' as const
 export const BUDGET_NOTIFICATION_KIND_BLOCK = 'budget_block' as const
 
@@ -53,6 +64,23 @@ export interface BudgetState {
   blocked: boolean
   /** ISO timestamp of the most recent record, useful for the dashboard. */
   last_recorded_at: string | null
+}
+
+/**
+ * Persisted budget override (PR E). When present and unexpired, the
+ * BudgetTracker's `isBlocked()` returns false even if the cap has been
+ * crossed. Lifts the block manually for a user-chosen window without
+ * resetting the cumulative... the spend keeps accumulating, but new
+ * tasks are not refused until the override expires.
+ */
+export interface BudgetOverride {
+  schema_version: 1
+  /** When the override was set. */
+  set_at: string
+  /** ISO timestamp at which the override expires. */
+  until: string
+  /** Free-form note for audit. */
+  reason: string
 }
 
 export interface BudgetTrackerOptions {
@@ -181,10 +209,46 @@ export class BudgetTracker {
 
   /**
    * The loop calls this before starting a new task. Returns true when
-   * the agent is over its daily cap and should refuse new work.
+   * the agent is over its daily cap and there is no unexpired
+   * override. The override file is read each call so a CLI-set override
+   * takes effect immediately without a process restart.
    */
   isBlocked(): boolean {
-    return this.blocked
+    if (!this.blocked) return false
+    const override = this.loadOverrideSync()
+    if (override === null) return true
+    const now = this.nowFn().getTime()
+    const until = Date.parse(override.until)
+    if (Number.isNaN(until)) return true
+    return until <= now
+  }
+
+  /**
+   * Read the override file for the current Agent if present. Returns
+   * null when the file does not exist, is malformed, or has the wrong
+   * schema_version. Synchronous (uses readFileSync) because
+   * `isBlocked()` is on the hot path of the loop and must not be
+   * async-tainted upstream.
+   */
+  private loadOverrideSync(): BudgetOverride | null {
+    try {
+      const raw = readFileSyncSafe(this.overridePath())
+      if (raw === null) return null
+      const parsed = JSON.parse(raw) as Partial<BudgetOverride>
+      if (
+        parsed.schema_version !== BUDGET_OVERRIDE_SCHEMA_VERSION ||
+        typeof parsed.until !== 'string'
+      ) {
+        return null
+      }
+      return parsed as BudgetOverride
+    } catch {
+      return null
+    }
+  }
+
+  overridePath(): string {
+    return join(agentBudgetDir(this.home, this.agentName), 'override.json')
   }
 
   /** Current cumulative spend for today, USD. */
@@ -331,5 +395,66 @@ export class BudgetTracker {
       `Adjust permanently with: \`2200 agent identity edit ${this.agentName} cost_caps.daily_usd\``,
       ``,
     ].join('\n')
+  }
+}
+
+/**
+ * Helper for the CLI's `2200 agent budget override <name>` command
+ * (Epic 4.5 PR E). Writes the override file atomically so the next
+ * `BudgetTracker.isBlocked()` call observes it immediately. The
+ * caller resolves `until` against `now()` and the user-chosen
+ * duration.
+ */
+export async function writeBudgetOverride(
+  home: string,
+  agentName: string,
+  override: { until: string; reason: string; setAt?: string },
+): Promise<string> {
+  const dir = agentBudgetDir(home, agentName)
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, 'override.json')
+  const payload: BudgetOverride = {
+    schema_version: BUDGET_OVERRIDE_SCHEMA_VERSION,
+    set_at: override.setAt ?? new Date().toISOString(),
+    until: override.until,
+    reason: override.reason,
+  }
+  await atomicWriteJson(path, payload)
+  return path
+}
+
+/**
+ * Helper for `2200 agent budget override <name> --clear`. Removes the
+ * override file if present; no-op if absent.
+ */
+export async function clearBudgetOverride(home: string, agentName: string): Promise<void> {
+  const path = join(agentBudgetDir(home, agentName), 'override.json')
+  try {
+    await unlink(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+}
+
+/**
+ * Read the current override (sync) for inspection by CLI status
+ * commands. Returns null when no override is set or when the file is
+ * malformed.
+ */
+export function readBudgetOverrideSync(home: string, agentName: string): BudgetOverride | null {
+  const path = join(agentBudgetDir(home, agentName), 'override.json')
+  const raw = readFileSyncSafe(path)
+  if (raw === null) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<BudgetOverride>
+    if (
+      parsed.schema_version !== BUDGET_OVERRIDE_SCHEMA_VERSION ||
+      typeof parsed.until !== 'string'
+    ) {
+      return null
+    }
+    return parsed as BudgetOverride
+  } catch {
+    return null
   }
 }
