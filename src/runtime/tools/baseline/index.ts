@@ -18,11 +18,12 @@ import { webTools } from './web.js'
 import { brainTools } from './brain.js'
 import { timeTools } from './time.js'
 import { pubTools } from './pub.js'
+import { notificationTools } from './notification.js'
 
 /**
- * All 18 baseline tool names. Used by tool-in-set perm checks and
- * Identity validation. Bumped from 14 → 18 in Epic 3 PR C with the
- * addition of pub.send / pub.read / pub.list_pubs / pub.react.
+ * All 19 baseline tool names. Used by tool-in-set perm checks and
+ * Identity validation. Bumped 14 → 18 in Epic 3 PR C (pub.* tools);
+ * bumped 18 → 19 in Epic 7 PR D (notification.ask).
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
   'fs.read',
@@ -43,9 +44,10 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'pub.read',
   'pub.list_pubs',
   'pub.react',
+  'notification.ask',
 ]
 
-/** Build the six baseline MCP servers. */
+/** Build the seven baseline MCP servers. */
 export function baselineServers(): McpServer[] {
   return [
     createInProcessServer('fs', fsTools),
@@ -54,5 +56,6 @@ export function baselineServers(): McpServer[] {
     createInProcessServer('brain', brainTools),
     createInProcessServer('time', timeTools),
     createInProcessServer('pub', pubTools),
+    createInProcessServer('notification', notificationTools),
   ]
 }
