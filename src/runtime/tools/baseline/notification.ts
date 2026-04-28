@@ -22,8 +22,6 @@ import {
   NotificationDismissedError,
 } from '../../notifications/writer.js'
 import { NotificationTierSchema } from '../../notifications/reader.js'
-import { loadIdentity } from '../../identity/loader.js'
-import { agentPaths } from '../../storage/layout.js'
 
 const NotificationAskArgsSchema = z.object({
   /**
@@ -51,18 +49,12 @@ export const notificationAsk = defineTool({
   idempotency: 'destructive',
   argsSchema: NotificationAskArgsSchema,
   execute: async (args, ctx) => {
-    // Tier-policy enforcement: refuse tiers outside the calling
-    // Agent's allowed list. The schema (Identity v4) carries
-    // notification_policy.tiers_allowed which excludes 'critical'
-    // by default; opting in is an explicit Identity-file edit.
-    const id = await loadIdentity(agentPaths(ctx.home, ctx.callingAgent).identity)
-    const allowed = id.frontmatter.notification_policy.tiers_allowed
-    if (!allowed.includes(args.tier)) {
-      throw new Error(
-        `notification.ask: tier "${args.tier}" is not in this Agent's notification_policy.tiers_allowed (${allowed.join(', ')}). Edit the Identity file to add it; Agents cannot escalate their own priority.`,
-      )
-    }
-
+    // Tier-policy enforcement happens inside emitNotification when
+    // enforcePolicy: true is set (Epic 7 PR E). The check refuses
+    // tiers outside notification_policy.tiers_allowed per CLAUDE.md
+    // "Agents cannot escalate their own priority". Supervisor-driven
+    // emitters (BudgetTracker, ProvisioningPipeline) leave the flag
+    // off because their tier comes from the action type, not the Agent.
     const emit = await emitNotification({
       home: ctx.home,
       agentName: ctx.callingAgent,
@@ -70,6 +62,7 @@ export const notificationAsk = defineTool({
       kind: args.kind,
       body: args.body,
       requiresResponse: true,
+      enforcePolicy: true,
       ...(ctx.taskId !== null ? { extras: { task_id: ctx.taskId } } : {}),
     })
 
