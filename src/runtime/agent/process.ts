@@ -26,6 +26,7 @@ import { resolveProvider } from '../llm/registry.js'
 import type { LLMProvider } from '../llm/provider.js'
 import { agentPaths } from '../storage/layout.js'
 import { TelemetryWriter } from '../telemetry/writer.js'
+import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
@@ -142,6 +143,16 @@ export class AgentProcess {
     })
     this.taskStore = new TaskStore(this.options.home, this.options.name)
     const telemetryWriter = new TelemetryWriter(this.options.home, this.options.name)
+    const budgetTracker = new BudgetTracker({
+      agentName: this.options.name,
+      home: this.options.home,
+      capUsd: this.identity.frontmatter.cost_caps.daily_usd,
+      warnAtPct: this.identity.frontmatter.cost_caps.warn_at_pct,
+      logger: this.log.child('budget'),
+    })
+    // Replay today's telemetry to recompute cumulative spend before the
+    // first task runs. Restart-safe per [[upgrade-readiness]] discipline 3.
+    await budgetTracker.init()
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -152,6 +163,7 @@ export class AgentProcess {
       availableToolNames: [...BASELINE_TOOL_NAMES, ...this.identity.frontmatter.tools],
       logger: this.log.child('loop'),
       telemetryWriter,
+      budgetTracker,
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))

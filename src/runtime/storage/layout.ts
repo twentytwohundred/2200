@@ -114,6 +114,16 @@ export function agentTelemetryDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Agent budget state directory. One file per UTC day:
+ *   <home>/state/budget/<agent_name>/YYYY-MM-DD.json
+ * Plus a sticky `override.json` (PR E) that, when present, suppresses
+ * the budget block until its `until` timestamp passes.
+ */
+export function agentBudgetDir(home: string, agentName: string): string {
+  return join(home, 'state', 'budget', agentName)
+}
+
+/**
  * Per-pub directory layout.
  *
  * Each pub on a 2200 instance is its own `openpub-server` process
