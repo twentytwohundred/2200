@@ -124,6 +124,16 @@ export function agentBudgetDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Agent schedules directory (Epic 6). One JSON file per
+ * schedule entry:
+ *   <home>/state/agents/<agent_name>/schedules/<schedule_id>.json
+ * Created lazily on first `2200 schedule add`.
+ */
+export function agentSchedulesDir(home: string, agentName: string): string {
+  return join(home, 'state', 'agents', agentName, 'schedules')
+}
+
+/**
  * Per-Agent SCUT identity directory (Epic 4 Phase A). Layout:
  *   <home>/state/identities/<agent_name>/
  *   ├── keys/

@@ -21,6 +21,7 @@ export type RunId = `run_${string}` & { readonly __brand: 'RunId' }
 export type PermId = `perm_${string}` & { readonly __brand: 'PermId' }
 export type NotificationId = `notif_${string}` & { readonly __brand: 'NotificationId' }
 export type DetectorTripId = `trip_${string}` & { readonly __brand: 'DetectorTripId' }
+export type ScheduleId = `sched_${string}` & { readonly __brand: 'ScheduleId' }
 
 function makeId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`
@@ -34,3 +35,4 @@ export const newRunId = (): RunId => makeId('run') as RunId
 export const newPermId = (): PermId => makeId('perm') as PermId
 export const newNotificationId = (): NotificationId => makeId('notif') as NotificationId
 export const newDetectorTripId = (): DetectorTripId => makeId('trip') as DetectorTripId
+export const newScheduleId = (): ScheduleId => makeId('sched') as ScheduleId
