@@ -199,35 +199,67 @@ export function buildProgram(): Command {
 
   agent
     .command('create <name>')
-    .description('register a new Agent with the supervisor')
+    .description(
+      'register a new Agent with the supervisor (auto-provisions a SCUT identity by default)',
+    )
     .requiredOption('--identity <path>', 'path to the Agent Identity markdown file')
     .option(
       '--pub <name>',
       'pub to register the Agent against (when the Identity has a pub: block; required only with multiple pubs)',
     )
-    .action(async (name: string, opts: { identity: string; pub?: string }) => {
-      const home = await resolveHomeFromOpts(program)
-      const client = await connectToDaemon(home)
-      if (client) {
-        try {
-          const params: Parameters<typeof client.call<'cli.agent.create'>>[1] = {
-            name,
-            identity_path: opts.identity,
+    .option(
+      '--skip-provision',
+      'skip the SCUT identity provisioning step. The Agent is created without an on-chain identity; provision later with `2200 agent identity provision`',
+    )
+    .action(
+      async (name: string, opts: { identity: string; pub?: string; skipProvision?: boolean }) => {
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (client) {
+          try {
+            const params: Parameters<typeof client.call<'cli.agent.create'>>[1] = {
+              name,
+              identity_path: opts.identity,
+            }
+            if (opts.pub !== undefined) params.pub = opts.pub
+            await client.call('cli.agent.create', params)
+          } finally {
+            await client.close()
           }
-          if (opts.pub !== undefined) params.pub = opts.pub
-          await client.call('cli.agent.create', params)
-        } finally {
-          await client.close()
+        } else {
+          const supervisor = await Supervisor.create({ home })
+          await supervisor.createAgent(name, opts.identity, {
+            ...(opts.pub !== undefined ? { pub: opts.pub } : {}),
+          })
         }
-      } else {
-        const supervisor = await Supervisor.create({ home })
-        await supervisor.createAgent(name, opts.identity, {
-          ...(opts.pub !== undefined ? { pub: opts.pub } : {}),
-        })
-      }
-      console.log(`Agent "${name}" created.`)
-      console.log(`Run "2200 agent start ${name}" to bring it up.`)
-    })
+        console.log(`Agent "${name}" created.`)
+
+        // Auto-provision the SCUT identity unless --skip-provision was passed.
+        if (opts.skipProvision) {
+          console.log(
+            `Skipping SCUT identity provisioning (--skip-provision). Run "2200 agent identity provision ${name}" later.`,
+          )
+          console.log(`Run "2200 agent start ${name}" to bring it up.`)
+          return
+        }
+        try {
+          const { runIdentityProvisionFromConfig } =
+            await import('../runtime/identity/provision-runner.js')
+          const result = await runIdentityProvisionFromConfig({ home, agentName: name })
+          console.log(`SCUT identity provisioned: ${result.uri}`)
+        } catch (err) {
+          console.error(
+            `Identity provisioning failed (the Agent is created but has no SCUT identity): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+          console.error(
+            `Recover with: 2200 agent identity retry ${name} (after fixing the underlying cause).`,
+          )
+        }
+        console.log(`Run "2200 agent start ${name}" to bring it up.`)
+      },
+    )
 
   agent
     .command('start <name>')
