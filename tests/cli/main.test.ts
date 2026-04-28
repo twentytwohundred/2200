@@ -28,7 +28,7 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the nine top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage)', () => {
+  it('has the ten top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage, schedule)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
     expect(names).toEqual([
@@ -38,6 +38,7 @@ describe('CLI program', () => {
       'init',
       'notification',
       'pub',
+      'schedule',
       'task',
       'usage',
       'user',
@@ -80,6 +81,26 @@ describe('user subcommand', () => {
     expect(longs).toContain('--pub')
     const display = init.options.find((o) => o.long === '--display-name')
     expect(display?.required).toBe(true)
+  })
+})
+
+describe('schedule subcommand', () => {
+  it('has add, list, remove, enable, disable, run-once', () => {
+    const program = buildProgram()
+    const schedule = findSubcommand(program, 'schedule')!
+    const subs = schedule.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['add', 'disable', 'enable', 'list', 'remove', 'run-once'])
+  })
+
+  it('schedule add accepts --every | --cron, --tz, --description', () => {
+    const program = buildProgram()
+    const schedule = findSubcommand(program, 'schedule')!
+    const add = findSubcommand(schedule, 'add')!
+    const longs = add.options.map((o) => o.long)
+    expect(longs).toContain('--every')
+    expect(longs).toContain('--cron')
+    expect(longs).toContain('--tz')
+    expect(longs).toContain('--description')
   })
 })
 
