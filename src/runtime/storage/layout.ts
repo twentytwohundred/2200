@@ -124,6 +124,55 @@ export function agentBudgetDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Agent SCUT identity directory (Epic 4 Phase A). Layout:
+ *   <home>/state/identities/<agent_name>/
+ *   ├── keys/
+ *   │   ├── signing.ed25519       wrapped private key (JSON: iv/ct/tag)
+ *   │   ├── encryption.x25519     wrapped private key (JSON: iv/ct/tag)
+ *   │   └── salt                  per-Agent HKDF salt (32 raw bytes)
+ *   └── provision-state.json      pipeline state (PR E in this stack)
+ *
+ * Per-Agent wrapping key is derived from the per-instance master key
+ * (`<home>/state/master.key`) via HKDF-SHA256 with the per-Agent salt
+ * and an info string. Compromise of one Agent's keys does not reveal
+ * the master.
+ */
+export function agentIdentityDir(home: string, agentName: string): string {
+  return join(home, 'state', 'identities', agentName)
+}
+
+export interface AgentIdentityPaths {
+  readonly root: string
+  readonly keysDir: string
+  readonly signingKey: string
+  readonly encryptionKey: string
+  readonly salt: string
+  readonly provisionState: string
+}
+
+export function agentIdentityPaths(home: string, agentName: string): AgentIdentityPaths {
+  const root = agentIdentityDir(home, agentName)
+  const keysDir = join(root, 'keys')
+  return {
+    root,
+    keysDir,
+    signingKey: join(keysDir, 'signing.ed25519'),
+    encryptionKey: join(keysDir, 'encryption.x25519'),
+    salt: join(keysDir, 'salt'),
+    provisionState: join(root, 'provision-state.json'),
+  }
+}
+
+/**
+ * Per-instance master key path. 32 random bytes, mode 0600. Generated
+ * on supervisor first boot. Used to derive per-Agent wrapping keys
+ * via HKDF-SHA256.
+ */
+export function masterKeyPath(home: string): string {
+  return join(home, 'state', 'master.key')
+}
+
+/**
  * Per-pub directory layout.
  *
  * Each pub on a 2200 instance is its own `openpub-server` process
