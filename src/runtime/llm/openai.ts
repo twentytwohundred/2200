@@ -52,7 +52,21 @@ interface OpenAIChatResponse {
     message: { role: string; content: string | null }
     finish_reason: string | null
   }[]
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    /**
+     * DeepSeek-style cache hit count. DeepSeek returns this top-level on
+     * `usage`. Other OpenAI-compatible vendors may not populate it.
+     */
+    prompt_cache_hit_tokens?: number
+    /**
+     * OpenAI-native style: cache hit nested under `prompt_tokens_details`.
+     * The provider populates `cachedTokens` from whichever shape arrives.
+     */
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
 }
 
 export class OpenAIProvider implements LLMProvider {
@@ -135,16 +149,48 @@ export class OpenAIProvider implements LLMProvider {
       )
     }
 
+    // OpenAI-compatible vendors report `prompt_tokens` as the TOTAL
+    // (cache hits + uncached). Anthropic's convention (which our
+    // CostMetrics shape follows) is that `inputTokens` is the
+    // uncached portion only and `cachedTokens` is the cache hits.
+    // Normalize here by subtracting the cached count from the total.
+    // Vendors that do not report cached counts (Kimi, OpenRouter
+    // pass-through) leave `cachedTokens` undefined and `inputTokens`
+    // is the full prompt_tokens.
+    const cached = readCachedTokens(parsed.usage)
+    const inputUncached =
+      cached !== undefined
+        ? Math.max(0, parsed.usage.prompt_tokens - cached)
+        : parsed.usage.prompt_tokens
+    const costMetrics: CompletionResponse['costMetrics'] = {
+      inputTokens: inputUncached,
+      outputTokens: parsed.usage.completion_tokens,
+    }
+    if (cached !== undefined) {
+      costMetrics.cachedTokens = cached
+    }
     return {
       text: firstChoice.message.content ?? '',
       finishReason: mapOpenAIFinishReason(firstChoice.finish_reason),
-      costMetrics: {
-        inputTokens: parsed.usage.prompt_tokens,
-        outputTokens: parsed.usage.completion_tokens,
-      },
+      costMetrics,
       providerResponseId: parsed.id,
     }
   }
+}
+
+/**
+ * Pull cached-token count from whichever shape the OpenAI-compatible
+ * vendor returns: top-level `prompt_cache_hit_tokens` (DeepSeek) or
+ * nested `prompt_tokens_details.cached_tokens` (OpenAI). Returns
+ * undefined when neither is present (e.g., Kimi, OpenRouter pass-through).
+ */
+function readCachedTokens(usage: OpenAIChatResponse['usage']): number | undefined {
+  if (typeof usage.prompt_cache_hit_tokens === 'number') {
+    return usage.prompt_cache_hit_tokens
+  }
+  const nested = usage.prompt_tokens_details?.cached_tokens
+  if (typeof nested === 'number') return nested
+  return undefined
 }
 
 /**

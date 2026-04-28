@@ -39,7 +39,14 @@ interface AnthropicMessagesResponse {
   id: string
   content: { type: string; text?: string }[]
   stop_reason: string | null
-  usage: { input_tokens: number; output_tokens: number }
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    /** Cached input from a prior cache hit. Optional in the response. */
+    cache_read_input_tokens?: number
+    /** Tokens used to populate a new cache entry; billed at the cache-creation rate. v1 ignores this in cost calcs and treats it as input. */
+    cache_creation_input_tokens?: number
+  }
 }
 
 export class AnthropicProvider implements LLMProvider {
@@ -114,13 +121,17 @@ export class AnthropicProvider implements LLMProvider {
       .map((block) => block.text ?? '')
       .join('')
 
+    const costMetrics: CompletionResponse['costMetrics'] = {
+      inputTokens: parsed.usage.input_tokens,
+      outputTokens: parsed.usage.output_tokens,
+    }
+    if (typeof parsed.usage.cache_read_input_tokens === 'number') {
+      costMetrics.cachedTokens = parsed.usage.cache_read_input_tokens
+    }
     return {
       text,
       finishReason: mapAnthropicStopReason(parsed.stop_reason),
-      costMetrics: {
-        inputTokens: parsed.usage.input_tokens,
-        outputTokens: parsed.usage.output_tokens,
-      },
+      costMetrics,
       providerResponseId: parsed.id,
     }
   }
