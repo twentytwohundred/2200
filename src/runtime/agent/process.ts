@@ -25,6 +25,7 @@ import { composeModelId, type IdentityRecord } from '../identity/types.js'
 import { resolveProvider } from '../llm/registry.js'
 import type { LLMProvider } from '../llm/provider.js'
 import { agentPaths } from '../storage/layout.js'
+import { TelemetryWriter } from '../telemetry/writer.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
@@ -140,6 +141,7 @@ export class AgentProcess {
       logger: this.log.child('dispatcher'),
     })
     this.taskStore = new TaskStore(this.options.home, this.options.name)
+    const telemetryWriter = new TelemetryWriter(this.options.home, this.options.name)
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -149,6 +151,7 @@ export class AgentProcess {
       brainDir: ap.brain,
       availableToolNames: [...BASELINE_TOOL_NAMES, ...this.identity.frontmatter.tools],
       logger: this.log.child('loop'),
+      telemetryWriter,
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))

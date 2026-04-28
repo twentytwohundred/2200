@@ -50,6 +50,8 @@ export interface HomePaths {
   readonly stateSupervisorLog: string
   readonly stateNotifications: string
   readonly stateOpenpub: string
+  /** Per-Agent JSONL telemetry root (Epic 4.5). One subdir per Agent name. */
+  readonly stateTelemetry: string
   readonly config: string
   /** User identity markdown (Epic 3 PR B). */
   readonly configUserMd: string
@@ -73,6 +75,7 @@ export function homePaths(home: string): HomePaths {
     stateSupervisorLog: join(state, 'supervisor.log'),
     stateNotifications: join(state, 'notifications'),
     stateOpenpub: join(state, 'openpub'),
+    stateTelemetry: join(state, 'telemetry'),
     config,
     configUserMd: join(config, 'user.md'),
     configUserPubSecret: join(config, 'user.pub.secret'),
@@ -99,6 +102,15 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     shared: join(root, 'shared'),
     pubSecret: join(root, 'pub.secret'),
   }
+}
+
+/**
+ * Per-Agent telemetry directory. One file per UTC day at the leaf:
+ *   <home>/state/telemetry/<agent_name>/YYYY-MM-DD.jsonl
+ * Created lazily by the TelemetryWriter on first record.
+ */
+export function agentTelemetryDir(home: string, agentName: string): string {
+  return join(home, 'state', 'telemetry', agentName)
 }
 
 /**

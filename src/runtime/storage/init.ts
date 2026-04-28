@@ -25,6 +25,7 @@ export async function initHome(home: string): Promise<void> {
     paths.agents,
     paths.stateNotifications,
     paths.stateOpenpub,
+    paths.stateTelemetry,
     paths.config,
   ]
   for (const dir of dirs) {
