@@ -22,8 +22,12 @@ import {
   brainRead,
   brainWrite,
   brainSearch,
-  brainLinks,
+  brainList,
+  brainDelete,
 } from '../../../src/runtime/tools/baseline/brain.js'
+import { closeAllBrains } from '../../../src/runtime/brain/registry.js'
+import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
+import { writeFile as fsWriteFile } from 'node:fs/promises'
 import { timeNow, timeSleep } from '../../../src/runtime/tools/baseline/time.js'
 import { webSearch } from '../../../src/runtime/tools/baseline/web.js'
 import { baselineServers, BASELINE_TOOL_NAMES } from '../../../src/runtime/tools/baseline/index.js'
@@ -50,8 +54,8 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 19 tools (14 from Epic 2 + 4 pub tools from Epic 3 PR C + notification.ask from Epic 7 PR D)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(19)
+  it('exports exactly 20 tools (14 from Epic 2 + 4 pub tools from Epic 3 PR C + notification.ask from Epic 7 PR D + brain.* reshape in Epic 8 PR C)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(20)
   })
 
   it('baselineServers() builds seven servers (incl. notification from Epic 7 PR D)', () => {
@@ -166,37 +170,83 @@ describe('shell.run', () => {
 })
 
 describe('brain tools', () => {
+  // The Epic 8 brain.* tools route through the per-Agent BrainStore +
+  // BrainIndex registry, which expects an initialized home dir.
+  let home: string
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), '2200-brain-tools-'))
+    await initHome(home)
+    const idPath = join(home, 'hobby.identity.md')
+    await fsWriteFile(
+      idPath,
+      `---
+schema_version: 1
+agent_name: hobby
+agent_role: test
+model:
+  tier: frontier
+  provider: anthropic
+  model_id: claude-opus-4-7
+tools: []
+project_dir: /tmp/hobby/project
+brain_dir: /tmp/hobby/brain
+created: 2026-04-26
+---
+
+# Identity
+`,
+    )
+    await initAgentDirs(home, 'hobby', idPath)
+  })
+  afterEach(async () => {
+    closeAllBrains()
+    await rm(home, { recursive: true, force: true })
+  })
+
+  function brainCtx(): ToolContext {
+    return ctx({ home, callingAgent: 'hobby' })
+  }
+
   it('brain.write then brain.read round-trip', async () => {
-    const path = join(dir, 'note.md')
-    await brainWrite.execute({ path, content: '# title\nbody\n' }, ctx())
-    const r = await brainRead.execute({ path }, ctx())
-    expect(r.content).toBe('# title\nbody\n')
+    const w = await brainWrite.execute({ title: 'My note', body: 'hello world' }, brainCtx())
+    expect(w.slug).toBe('my-note')
+    expect(w.created_or_updated).toBe('created')
+    const r = await brainRead.execute({ slug: 'my-note' }, brainCtx())
+    expect(r.title).toBe('My note')
+    expect(r.body.trim()).toBe('hello world')
+    expect(r.type).toBe('freeform')
   })
 
-  it('brain.search finds substrings (case-insensitive default)', async () => {
-    await writeFile(join(dir, 'a.md'), 'Hello World\nfoo bar')
-    await writeFile(join(dir, 'b.md'), 'world peace')
-    const result = await brainSearch.execute(
-      { query: 'world', scope: dir, max_results: 10, case_sensitive: false },
-      ctx(),
-    )
-    expect(result.results.length).toBe(2)
+  it('brain.search finds notes via FTS5', async () => {
+    await brainWrite.execute({ title: 'first', body: 'apple banana' }, brainCtx())
+    await brainWrite.execute({ title: 'second', body: 'cherry date' }, brainCtx())
+    const r = await brainSearch.execute({ query: 'apple', limit: 10 }, brainCtx())
+    expect(r.hits.map((h) => h.slug)).toEqual(['first'])
   })
 
-  it('brain.search respects case_sensitive: true', async () => {
-    await writeFile(join(dir, 'a.md'), 'Hello world')
-    const result = await brainSearch.execute(
-      { query: 'World', scope: dir, max_results: 10, case_sensitive: true },
-      ctx(),
-    )
-    expect(result.results.length).toBe(0)
+  it('brain.list filters by type', async () => {
+    await brainWrite.execute({ title: 'fb', body: 'x', type: 'feedback' }, brainCtx())
+    await brainWrite.execute({ title: 'pj', body: 'x', type: 'project' }, brainCtx())
+    const r = await brainList.execute({ type: 'feedback', limit: 10 }, brainCtx())
+    expect(r.notes.map((n) => n.slug)).toEqual(['fb'])
   })
 
-  it('brain.links extracts [[wiki-style]] backlinks', async () => {
-    const path = join(dir, 'note.md')
-    await writeFile(path, 'See [[foo]] and [[bar|display label]]. Also [[bar]] again.')
-    const result = await brainLinks.execute({ path }, ctx())
-    expect(result.links).toEqual(['bar', 'foo'])
+  it('brain.delete removes both file and index entry', async () => {
+    await brainWrite.execute({ title: 'goner', body: 'apple' }, brainCtx())
+    const before = await brainSearch.execute({ query: 'apple', limit: 10 }, brainCtx())
+    expect(before.hits).toHaveLength(1)
+    await brainDelete.execute({ slug: 'goner' }, brainCtx())
+    const after = await brainSearch.execute({ query: 'apple', limit: 10 }, brainCtx())
+    expect(after.hits).toHaveLength(0)
+  })
+
+  it('brain.write upsert preserves created and bumps updated', async () => {
+    const w1 = await brainWrite.execute({ title: 't', body: 'a', slug: 'pinned' }, brainCtx())
+    expect(w1.created_or_updated).toBe('created')
+    const w2 = await brainWrite.execute({ title: 't', body: 'b', slug: 'pinned' }, brainCtx())
+    expect(w2.created_or_updated).toBe('updated')
+    const r = await brainRead.execute({ slug: 'pinned' }, brainCtx())
+    expect(r.body.trim()).toBe('b')
   })
 })
 
