@@ -311,6 +311,103 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 agent budget <subcommand>
+  // ---------------------------------------------------------------------------
+
+  const agentBudget = agent
+    .command('budget')
+    .description('per-Agent daily cost cap controls (override, status, clear)')
+
+  agentBudget
+    .command('override <name>')
+    .description("lift today's cost-cap block for an Agent")
+    .option(
+      '--for-today',
+      'until 00:00 UTC (default behavior; equivalent to --for-hours <hours-until-midnight>)',
+    )
+    .option('--for-hours <n>', 'override for the next N hours (default: until 00:00 UTC)', (v) =>
+      parseFloat(v),
+    )
+    .option('--reason <text>', 'free-form note for the audit trail')
+    .option('--clear', 'remove the current override (re-block if cap is still hit)')
+    .action(
+      async (
+        name: string,
+        opts: { forToday?: boolean; forHours?: number; reason?: string; clear?: boolean },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const { writeBudgetOverride, clearBudgetOverride } =
+          await import('../runtime/agent/budget-tracker.js')
+        if (opts.clear) {
+          await clearBudgetOverride(home, name)
+          console.log(`Override cleared for "${name}".`)
+          return
+        }
+        const now = new Date()
+        let until: Date
+        if (typeof opts.forHours === 'number' && Number.isFinite(opts.forHours)) {
+          until = new Date(now.getTime() + opts.forHours * 60 * 60 * 1000)
+        } else {
+          // --for-today (default): until next 00:00 UTC.
+          until = new Date(
+            Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0),
+          )
+        }
+        const reason =
+          opts.reason ?? `user override at ${now.toISOString()} until ${until.toISOString()}`
+        const path = await writeBudgetOverride(home, name, {
+          until: until.toISOString(),
+          reason,
+          setAt: now.toISOString(),
+        })
+        console.log(`Override set for "${name}" until ${until.toISOString()}.`)
+        console.log(`Wrote: ${path}`)
+      },
+    )
+
+  agentBudget
+    .command('status <name>')
+    .description("show today's cumulative spend, cap, and any active override")
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { readBudgetOverrideSync } = await import('../runtime/agent/budget-tracker.js')
+      const day = new Date().toISOString().slice(0, 10)
+      const statePath = join(home, 'state', 'budget', name, `${day}.json`)
+      interface BudgetStateOnDisk {
+        cumulative_usd: number
+        cap_usd: number
+        blocked: boolean
+      }
+      let state: BudgetStateOnDisk | null = null
+      try {
+        state = JSON.parse(await readFile(statePath, 'utf8')) as BudgetStateOnDisk
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      }
+      if (state === null) {
+        console.log(`Agent "${name}": no spend recorded today.`)
+      } else {
+        const pct = state.cap_usd > 0 ? (state.cumulative_usd / state.cap_usd) * 100 : 0
+        console.log(`Agent "${name}":`)
+        console.log(
+          `  spend today:  $${state.cumulative_usd.toFixed(2)} of $${state.cap_usd.toFixed(2)} (${pct.toFixed(0)}%)`,
+        )
+        console.log(`  blocked:      ${state.blocked ? 'yes' : 'no'}`)
+      }
+      const override = readBudgetOverrideSync(home, name)
+      if (override) {
+        const expired = Date.parse(override.until) <= Date.now()
+        console.log(
+          `  override:     ${expired ? 'expired' : 'active'}, until ${override.until}${
+            override.reason ? ` (${override.reason})` : ''
+          }`,
+        )
+      } else {
+        console.log(`  override:     (none)`)
+      }
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 task <subcommand>
   // ---------------------------------------------------------------------------
 

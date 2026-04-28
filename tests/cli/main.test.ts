@@ -92,11 +92,31 @@ describe('daemon subcommand', () => {
 })
 
 describe('agent subcommand', () => {
-  it('has create, start, stop, resume, status', () => {
+  it('has create, start, stop, resume, status, budget', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const subs = agent.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['create', 'resume', 'start', 'status', 'stop'])
+    expect(subs).toEqual(['budget', 'create', 'resume', 'start', 'status', 'stop'])
+  })
+
+  it('agent budget has override and status subcommands', () => {
+    const program = buildProgram()
+    const agent = findSubcommand(program, 'agent')!
+    const budget = findSubcommand(agent, 'budget')!
+    const subs = budget.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['override', 'status'])
+  })
+
+  it('agent budget override takes <name> and accepts --for-hours, --reason, --clear', () => {
+    const program = buildProgram()
+    const agent = findSubcommand(program, 'agent')!
+    const budget = findSubcommand(agent, 'budget')!
+    const override = findSubcommand(budget, 'override')!
+    expect(override.registeredArguments.map((a) => a.name())).toEqual(['name'])
+    const longs = override.options.map((o) => o.long)
+    expect(longs).toContain('--for-hours')
+    expect(longs).toContain('--reason')
+    expect(longs).toContain('--clear')
   })
 
   it('agent create takes <name> positional and requires --identity', () => {
