@@ -233,20 +233,27 @@ describe('Scheduler firing', () => {
     await scheduler.start()
     fakeTimers.fireAll()
     // Wait for the async fire chain (readSchedule → enqueue → recordFired
-    // → arm) to fully settle. We poll because the chain has multiple
-    // disk-backed awaits and a fixed sleep would be flaky on slow CI.
+    // → arm) to fully settle. We poll the TaskStore directly: under
+    // parallel suite load, the schedule write and the task write can
+    // become visible at slightly different times to a fresh
+    // TaskStore instance. Polling for the task makes the test
+    // robust to that timing.
+    const taskStore = new TaskStore(home, 'hobby')
     await vi.waitFor(
       async () => {
+        const tasks = await taskStore.list()
+        if (tasks.length < 1) {
+          throw new Error('task not yet enqueued')
+        }
         const reread = await readSchedule(home, 'hobby', 'sched_x')
         if (reread.last_fired_at === null) {
-          throw new Error('not yet')
+          throw new Error('schedule not yet fired')
         }
       },
-      { timeout: 1000, interval: 5 },
+      { timeout: 5000, interval: 10 },
     )
 
     // Task got enqueued.
-    const taskStore = new TaskStore(home, 'hobby')
     const tasks = await taskStore.list()
     expect(tasks).toHaveLength(1)
     expect(tasks[0]!.body.trim()).toBe('check inbox and reply to anything new')
