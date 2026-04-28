@@ -214,11 +214,21 @@ describe('pub subcommand', () => {
 })
 
 describe('notification subcommand', () => {
-  it('has list and respond', () => {
+  it('has list, show, respond, dismiss, follow', () => {
     const program = buildProgram()
     const notification = findSubcommand(program, 'notification')!
     const subs = notification.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['list', 'respond'])
+    expect(subs).toEqual(['dismiss', 'follow', 'list', 'respond', 'show'])
+  })
+
+  it('notification list accepts --all, --asks, --tier, --agent, --json', () => {
+    const program = buildProgram()
+    const notification = findSubcommand(program, 'notification')!
+    const list = findSubcommand(notification, 'list')!
+    const longs = list.options.map((o) => o.long)
+    for (const flag of ['--all', '--asks', '--tier', '--agent', '--json']) {
+      expect(longs).toContain(flag)
+    }
   })
 
   it('notification respond takes <id> and <response> arguments', () => {
