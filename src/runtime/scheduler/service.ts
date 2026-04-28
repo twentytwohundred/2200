@@ -113,6 +113,21 @@ export class Scheduler {
     return this.timers.size
   }
 
+  /**
+   * Manually trigger a schedule's firing right now. Reads the entry,
+   * enqueues a synthetic task into the Agent's TaskStore, and returns
+   * the new task's id. Does NOT update `last_fired_at` or
+   * `next_fire_at`: a manual run-once is independent of the schedule
+   * cadence (the next automatic firing happens at its originally
+   * computed time).
+   *
+   * Used by `2200 schedule run-once` (PR C) for testing/debug.
+   */
+  async runOnce(agentName: string, scheduleId: string): Promise<string> {
+    const entry = await readSchedule(this.home, agentName, scheduleId)
+    return this.enqueueSyntheticTask(entry)
+  }
+
   // --- internals -----------------------------------------------------------
 
   private async scanAll(): Promise<ScheduleEntry[]> {
@@ -206,8 +221,8 @@ export class Scheduler {
     }
   }
 
-  /** Write a synthetic task into the Agent's TaskStore. */
-  private async enqueueSyntheticTask(entry: ScheduleEntry): Promise<void> {
+  /** Write a synthetic task into the Agent's TaskStore; returns its id. */
+  private async enqueueSyntheticTask(entry: ScheduleEntry): Promise<string> {
     const store = new TaskStore(this.home, entry.agent)
     const taskId = newTaskId()
     const title = entry.description.length > 0 ? entry.description : `scheduled: ${entry.id}`
@@ -231,5 +246,6 @@ export class Scheduler {
       agent: entry.agent,
       task_id: taskId,
     })
+    return taskId
   }
 }

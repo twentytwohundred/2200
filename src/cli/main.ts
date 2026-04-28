@@ -29,7 +29,11 @@ import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../runtime/control-plane/client.js'
 import { connectUds } from '../runtime/control-plane/transport-uds.js'
-import type { StateSnapshotResult } from '../runtime/control-plane/protocol.js'
+import type {
+  CliScheduleAddParams,
+  StateSnapshotResult,
+} from '../runtime/control-plane/protocol.js'
+import { parseDurationSeconds } from '../runtime/util/duration.js'
 import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
@@ -812,6 +816,203 @@ export function buildProgram(): Command {
             `  next:         create + start a pub, then re-run "2200 user init" to register`,
           )
         }
+      } finally {
+        await client.close()
+      }
+    })
+
+  // ---------------------------------------------------------------------------
+  // 2200 schedule <subcommand>  (Epic 6 PR C)
+  // ---------------------------------------------------------------------------
+
+  const schedule = program
+    .command('schedule')
+    .description(
+      'manage recurring/timed Agent tasks (add, list, remove, enable, disable, run-once)',
+    )
+
+  schedule
+    .command('add <agent> <prompt>')
+    .description('add a recurring task that fires for <agent>')
+    .option('--every <duration>', 'fire every N seconds/minutes/hours/days, e.g. "5m", "1h"')
+    .option('--cron <expr>', 'standard 5-field cron expression')
+    .option('--tz <zone>', 'IANA timezone for --cron (default: UTC)')
+    .option('--description <text>', 'short label shown in `schedule list`')
+    .action(
+      async (
+        agentName: string,
+        prompt: string,
+        opts: { every?: string; cron?: string; tz?: string; description?: string },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (!client) {
+          console.error(
+            `schedule add requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+          )
+          process.exit(1)
+        }
+        if ((opts.every && opts.cron) || (!opts.every && !opts.cron)) {
+          console.error(`schedule add requires exactly one of --every <duration> or --cron <expr>.`)
+          process.exit(1)
+        }
+        let timing: CliScheduleAddParams['timing']
+        if (opts.cron) {
+          timing = {
+            kind: 'cron',
+            expression: opts.cron,
+            timezone: opts.tz ?? 'UTC',
+          }
+        } else {
+          let seconds: number
+          try {
+            seconds = parseDurationSeconds(opts.every ?? '')
+          } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err))
+            process.exit(1)
+          }
+          timing = { kind: 'interval', interval_seconds: seconds }
+        }
+        const params: CliScheduleAddParams = {
+          agent: agentName,
+          prompt,
+          timing,
+        }
+        if (opts.description !== undefined) params.description = opts.description
+        try {
+          const result = await client.call('cli.schedule.add', params)
+          console.log(`schedule ${result.id} added for "${agentName}".`)
+          if (result.next_fire_at) {
+            console.log(`  next fire: ${result.next_fire_at}`)
+          }
+        } finally {
+          await client.close()
+        }
+      },
+    )
+
+  schedule
+    .command('list')
+    .description('list schedules across all Agents (or one with --agent)')
+    .option('--agent <name>', 'restrict to one Agent')
+    .action(async (opts: { agent?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `schedule list requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      const params: Parameters<typeof client.call<'cli.schedule.list'>>[1] = {}
+      if (opts.agent !== undefined) params.agent = opts.agent
+      try {
+        const result = await client.call('cli.schedule.list', params)
+        if (result.entries.length === 0) {
+          console.log(opts.agent ? `No schedules for "${opts.agent}".` : `No schedules.`)
+          return
+        }
+        for (const e of result.entries) {
+          const onoff = e.enabled ? 'on ' : 'off'
+          const cadence =
+            e.timing.kind === 'interval'
+              ? `every ${String(e.timing.interval_seconds)}s`
+              : `cron "${e.timing.expression}" (${e.timing.timezone})`
+          const desc = e.description ? ` ${e.description}` : ''
+          const next = e.next_fire_at ?? '<none>'
+          console.log(`${e.id}  ${onoff}  agent=${e.agent}  ${cadence}  next=${next}${desc}`)
+        }
+      } finally {
+        await client.close()
+      }
+    })
+
+  schedule
+    .command('remove <agent> <id>')
+    .description('delete a schedule')
+    .action(async (agentName: string, scheduleId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `schedule remove requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.schedule.remove', { agent: agentName, id: scheduleId })
+        console.log(`schedule ${scheduleId} removed.`)
+      } finally {
+        await client.close()
+      }
+    })
+
+  schedule
+    .command('enable <agent> <id>')
+    .description('enable a previously disabled schedule')
+    .action(async (agentName: string, scheduleId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `schedule enable requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const r = await client.call('cli.schedule.set-enabled', {
+          agent: agentName,
+          id: scheduleId,
+          enabled: true,
+        })
+        console.log(`schedule ${scheduleId} enabled. next fire: ${r.next_fire_at ?? '<none>'}`)
+      } finally {
+        await client.close()
+      }
+    })
+
+  schedule
+    .command('disable <agent> <id>')
+    .description('disable a schedule without deleting it')
+    .action(async (agentName: string, scheduleId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `schedule disable requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.schedule.set-enabled', {
+          agent: agentName,
+          id: scheduleId,
+          enabled: false,
+        })
+        console.log(`schedule ${scheduleId} disabled.`)
+      } finally {
+        await client.close()
+      }
+    })
+
+  schedule
+    .command('run-once <agent> <id>')
+    .description('manually fire a schedule right now (does not affect next_fire_at)')
+    .action(async (agentName: string, scheduleId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          `schedule run-once requires a running supervisor daemon. Start one with "2200 daemon start" first.`,
+        )
+        process.exit(1)
+      }
+      try {
+        const r = await client.call('cli.schedule.run-once', {
+          agent: agentName,
+          id: scheduleId,
+        })
+        console.log(`schedule ${scheduleId} fired manually; task ${r.task_id} enqueued.`)
       } finally {
         await client.close()
       }

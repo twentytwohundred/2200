@@ -38,6 +38,15 @@ import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
 import type { UserIdentityFrontmatter } from '../user/types.js'
 import { generatePubSecrets, readPubSecrets, writePubSecrets } from '../pub/secrets.js'
 import { upsertRosterEntry } from '../pub/roster.js'
+import {
+  createSchedule as persistCreateSchedule,
+  deleteSchedule as persistDeleteSchedule,
+  listSchedules as persistListSchedules,
+  setScheduleEnabled as persistSetScheduleEnabled,
+  type ScheduleEntry,
+} from '../scheduler/schedule.js'
+import { Scheduler } from '../scheduler/service.js'
+import type { ScheduleListEntry } from '../control-plane/protocol.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -71,11 +80,16 @@ export class Supervisor {
   private readonly pubStopRequested = new Set<string>()
   private readonly log: Logger
   private isShuttingDown = false
+  private readonly scheduler: Scheduler
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
     this.state = state
     this.log = options.logger ?? createLogger('supervisor')
     this.server = new JsonRpcServer(this.handlers(), this.log.child('rpc'))
+    this.scheduler = new Scheduler({
+      home: state.home,
+      logger: this.log.child('scheduler'),
+    })
   }
 
   /**
@@ -103,6 +117,7 @@ export class Supervisor {
     if (this.listener) return
     this.listener = options.listener ?? (await listenUds(Supervisor.socketPath(this.state.home)))
     void this.acceptLoop()
+    await this.scheduler.start()
     this.log.info('supervisor listening', {
       home: this.state.home,
       stateDir: this.state.state_dir,
@@ -121,6 +136,7 @@ export class Supervisor {
       await this.listener.close()
       this.listener = undefined
     }
+    this.scheduler.stop()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
       try {
         await sa.stop(timeoutMs)
@@ -936,6 +952,87 @@ export class Supervisor {
           registered_against: out.registered_against,
         }
       },
+
+      // Schedules (Epic 6 PR C). Mutations write to disk first, then
+      // ask the running Scheduler to reload so a live daemon picks up
+      // changes without a restart.
+      'cli.schedule.add': async (params) => {
+        if (!this.state.agents[params.agent]) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const entry = await persistCreateSchedule({
+          home: this.state.home,
+          agentName: params.agent,
+          prompt: params.prompt,
+          ...(params.description !== undefined ? { description: params.description } : {}),
+          timing: params.timing,
+        })
+        await this.scheduler.reload()
+        this.log.info('schedule added', {
+          agent: params.agent,
+          id: entry.id,
+          next_fire_at: entry.next_fire_at,
+        })
+        return { ok: true as const, id: entry.id, next_fire_at: entry.next_fire_at }
+      },
+
+      'cli.schedule.list': async (params) => {
+        const targets = params.agent ? [params.agent] : Object.keys(this.state.agents)
+        if (params.agent && !this.state.agents[params.agent]) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const entries: ScheduleListEntry[] = []
+        for (const name of targets) {
+          const list = await persistListSchedules(this.state.home, name)
+          for (const e of list) {
+            entries.push(toListEntry(e))
+          }
+        }
+        entries.sort((a, b) => a.created_at.localeCompare(b.created_at))
+        return { entries }
+      },
+
+      'cli.schedule.remove': async (params) => {
+        if (!this.state.agents[params.agent]) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        await persistDeleteSchedule(this.state.home, params.agent, params.id)
+        await this.scheduler.reload()
+        this.log.info('schedule removed', { agent: params.agent, id: params.id })
+        return { ok: true as const }
+      },
+
+      'cli.schedule.set-enabled': async (params) => {
+        if (!this.state.agents[params.agent]) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const updated = await persistSetScheduleEnabled(
+          this.state.home,
+          params.agent,
+          params.id,
+          params.enabled,
+        )
+        await this.scheduler.reload()
+        this.log.info('schedule set-enabled', {
+          agent: params.agent,
+          id: params.id,
+          enabled: params.enabled,
+        })
+        return { ok: true as const, next_fire_at: updated.next_fire_at }
+      },
+
+      'cli.schedule.run-once': async (params) => {
+        if (!this.state.agents[params.agent]) {
+          throw new Error(`no Agent record for ${params.agent}`)
+        }
+        const taskId = await this.scheduler.runOnce(params.agent, params.id)
+        this.log.info('schedule run-once', {
+          agent: params.agent,
+          id: params.id,
+          task_id: taskId,
+        })
+        return { ok: true as const, task_id: taskId }
+      },
     }
   }
 
@@ -1061,4 +1158,18 @@ function defaultHandleFor(displayName: string): string {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function toListEntry(e: ScheduleEntry): ScheduleListEntry {
+  return {
+    id: e.id,
+    agent: e.agent,
+    description: e.description,
+    prompt: e.prompt,
+    timing: e.timing,
+    enabled: e.enabled,
+    created_at: e.created_at,
+    last_fired_at: e.last_fired_at,
+    next_fire_at: e.next_fire_at,
+  }
 }

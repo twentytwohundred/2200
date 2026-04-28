@@ -421,6 +421,107 @@ export const CliUserInitResultSchema = z.object({
 export type CliUserInitResult = z.infer<typeof CliUserInitResultSchema>
 
 // ---------------------------------------------------------------------------
+// cli.schedule.* methods (CLI -> supervisor; recurring/timed task scheduling)
+// Epic 6 PR C
+// ---------------------------------------------------------------------------
+//
+// Schedules live at <home>/state/agents/<agent>/schedules/<id>.json
+// (see PR A). The supervisor owns a Scheduler service (PR B) that arms
+// timers from those files and enqueues synthetic tasks on fire. The
+// CLI mutates files via these RPCs; the supervisor calls
+// scheduler.reload() after each mutation so a running daemon picks
+// changes up without a restart.
+
+const ScheduleAddCronSchema = z.object({
+  kind: z.literal('cron'),
+  expression: z.string().min(1),
+  timezone: z.string().default('UTC'),
+})
+const ScheduleAddIntervalSchema = z.object({
+  kind: z.literal('interval'),
+  interval_seconds: z.number().int().min(5),
+})
+const ScheduleAddTimingSchema = z.discriminatedUnion('kind', [
+  ScheduleAddCronSchema,
+  ScheduleAddIntervalSchema,
+])
+
+export const CliScheduleAddParamsSchema = z.object({
+  agent: z.string().min(1),
+  prompt: z.string().min(1),
+  description: z.string().optional(),
+  timing: ScheduleAddTimingSchema,
+})
+export type CliScheduleAddParams = z.infer<typeof CliScheduleAddParamsSchema>
+
+export const CliScheduleAddResultSchema = z.object({
+  ok: z.literal(true),
+  id: z.string(),
+  next_fire_at: z.string().nullable(),
+})
+export type CliScheduleAddResult = z.infer<typeof CliScheduleAddResultSchema>
+
+export const CliScheduleListParamsSchema = z.object({
+  /** Restrict to one Agent. Omit for all Agents. */
+  agent: z.string().optional(),
+})
+export type CliScheduleListParams = z.infer<typeof CliScheduleListParamsSchema>
+
+export const ScheduleListEntrySchema = z.object({
+  id: z.string(),
+  agent: z.string(),
+  description: z.string(),
+  prompt: z.string(),
+  timing: ScheduleAddTimingSchema,
+  enabled: z.boolean(),
+  created_at: z.string(),
+  last_fired_at: z.string().nullable(),
+  next_fire_at: z.string().nullable(),
+})
+export type ScheduleListEntry = z.infer<typeof ScheduleListEntrySchema>
+
+export const CliScheduleListResultSchema = z.object({
+  entries: z.array(ScheduleListEntrySchema),
+})
+export type CliScheduleListResult = z.infer<typeof CliScheduleListResultSchema>
+
+export const CliScheduleRemoveParamsSchema = z.object({
+  agent: z.string().min(1),
+  id: z.string().min(1),
+})
+export type CliScheduleRemoveParams = z.infer<typeof CliScheduleRemoveParamsSchema>
+
+export const CliScheduleRemoveResultSchema = z.object({
+  ok: z.literal(true),
+})
+export type CliScheduleRemoveResult = z.infer<typeof CliScheduleRemoveResultSchema>
+
+export const CliScheduleSetEnabledParamsSchema = z.object({
+  agent: z.string().min(1),
+  id: z.string().min(1),
+  enabled: z.boolean(),
+})
+export type CliScheduleSetEnabledParams = z.infer<typeof CliScheduleSetEnabledParamsSchema>
+
+export const CliScheduleSetEnabledResultSchema = z.object({
+  ok: z.literal(true),
+  next_fire_at: z.string().nullable(),
+})
+export type CliScheduleSetEnabledResult = z.infer<typeof CliScheduleSetEnabledResultSchema>
+
+export const CliScheduleRunOnceParamsSchema = z.object({
+  agent: z.string().min(1),
+  id: z.string().min(1),
+})
+export type CliScheduleRunOnceParams = z.infer<typeof CliScheduleRunOnceParamsSchema>
+
+export const CliScheduleRunOnceResultSchema = z.object({
+  ok: z.literal(true),
+  task_id: z.string(),
+})
+export type CliScheduleRunOnceResult = z.infer<typeof CliScheduleRunOnceResultSchema>
+
+// ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
 
@@ -498,6 +599,26 @@ export const METHODS = {
   'cli.user.init': {
     params: CliUserInitParamsSchema,
     result: CliUserInitResultSchema,
+  },
+  'cli.schedule.add': {
+    params: CliScheduleAddParamsSchema,
+    result: CliScheduleAddResultSchema,
+  },
+  'cli.schedule.list': {
+    params: CliScheduleListParamsSchema,
+    result: CliScheduleListResultSchema,
+  },
+  'cli.schedule.remove': {
+    params: CliScheduleRemoveParamsSchema,
+    result: CliScheduleRemoveResultSchema,
+  },
+  'cli.schedule.set-enabled': {
+    params: CliScheduleSetEnabledParamsSchema,
+    result: CliScheduleSetEnabledResultSchema,
+  },
+  'cli.schedule.run-once': {
+    params: CliScheduleRunOnceParamsSchema,
+    result: CliScheduleRunOnceResultSchema,
   },
 } as const
 
