@@ -2,7 +2,7 @@
 
 This file lists code lifted into 2200 from external projects, along with the upstream license and the portions covered.
 
-Empty for now. As [the licensing rule](https://github.com/twentytwohundred/2200/wiki/feedback_track_licensing) requires, every code-lift gets recorded here with:
+Empty for now. Per the [License posture section in AGENTS.md](AGENTS.md#license-posture), every code-lift gets recorded here with:
 
 - Source project, URL, and license
 - Specific files or functions lifted
