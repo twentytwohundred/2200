@@ -56,7 +56,6 @@
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "cron-parser": "^5.5.0",
-    "ethers": "^6.16.0",
     "ws": "^8.20.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"

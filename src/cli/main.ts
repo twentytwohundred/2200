@@ -580,36 +580,35 @@ export function buildProgram(): Command {
 
   agentIdentity
     .command('wallet-status')
-    .description('show the seed-team SCUT wallet balance and registration runway')
-    .action(async () => {
-      const home = await resolveHomeFromOpts(program)
-      const { loadScutConfig, resolveSecret } = await import('../runtime/identity/scut-config.js')
-      const { createScutOnChain } = await import('../runtime/identity/onchain.js')
-      const config = await loadScutConfig(home)
-      const privateKey = await resolveSecret(config.wallet_private_key)
-      const onChain = createScutOnChain({
-        rpcUrl: config.rpc_url,
-        privateKey,
-        contractAddress: config.contract_address,
-      })
-      if (onChain.walletAddress.toLowerCase() !== config.wallet_address.toLowerCase()) {
+    .description("show OpenSCUT's register-service wallet runway (GET /scut/v1/health)")
+    .option('--register-url <url>', 'override the OpenSCUT register URL', String)
+    .action(async (opts: { registerUrl?: string }) => {
+      const { createRegisterClient, DEFAULT_REGISTER_BASE_URL } =
+        await import('../runtime/identity/register-client.js')
+      const baseUrl =
+        opts.registerUrl ?? process.env['OPENSCUT_REGISTER_URL'] ?? DEFAULT_REGISTER_BASE_URL
+      const client = createRegisterClient({ baseUrl })
+      try {
+        const h = await client.health()
+        console.log(`OpenSCUT register service: ${h.status} (v${h.version})`)
+        console.log(`  url:                ${baseUrl}`)
+        console.log(`  wallet:             ${h.wallet.address}`)
+        console.log(`  balance:            ${h.wallet.balanceEth} ETH (${h.wallet.balanceWei} wei)`)
+        console.log(`  registrations:      ${String(h.registrationsCount)} so far`)
+        console.log(
+          `  runway:             ~${String(h.runway.registrationsAtConservativeGas)} more (at ${h.runway.gasPerRegistrationEstimate} gas / registration)`,
+        )
+        if (h.status !== 'ok') {
+          console.log(`  error:              ${h.error ?? '(unknown)'}`)
+          if (h.detail) console.log(`  detail:             ${h.detail}`)
+          process.exit(1)
+        }
+      } catch (err) {
         console.error(
-          `wallet_address in config (${config.wallet_address}) does not match the address derived from the configured private key (${onChain.walletAddress}). Refusing to print balance.`,
+          `register-service health check failed: ${err instanceof Error ? err.message : String(err)}`,
         )
         process.exit(1)
       }
-      const balanceWei = await onChain.getWalletBalance()
-      const balanceEth = Number(balanceWei) / 1e18
-      // Practical per-spawn cost (steady-state Base + data-URI two-tx pipeline)
-      // is ~$0.020 (~0.000008 ETH at $2500/ETH). Assume 0.000008 ETH per spawn
-      // for the runway estimate; operators tune via direct telemetry over time.
-      const ethPerSpawn = 0.000008
-      const spawnsLeft = Math.floor(balanceEth / ethPerSpawn)
-      console.log(`SCUT wallet:    ${config.wallet_address}`)
-      console.log(`  balance:      ${balanceEth.toFixed(6)} ETH (${balanceWei.toString()} wei)`)
-      console.log(`  spawns left:  ~${String(spawnsLeft)} (at ~0.000008 ETH per spawn)`)
-      console.log(`  rpc:          ${config.rpc_url}`)
-      console.log(`  contract:     ${config.contract_address}`)
     })
 
   // ---------------------------------------------------------------------------

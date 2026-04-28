@@ -1,35 +1,31 @@
 /**
- * SCUT identity provisioning pipeline (Epic 4 Phase A PR E).
+ * SCUT identity provisioning pipeline (Epic 4 Phase A v0.4).
  *
- * Five-state checkpointed orchestrator that takes a freshly created
- * Agent and produces a registered SCUT identity, persisting each
- * transition atomically so a crash mid-run is recoverable.
+ * Three-state checkpointed orchestrator that takes a freshly created
+ * Agent and produces a registered SCUT identity by POSTing the
+ * Agent's public keys to OpenSCUT's hosted register service. The
+ * on-chain mint+update happens server-side at OpenSCUT; 2200 sees
+ * one HTTPS round-trip per provisioning.
  *
  * State machine:
  *
- *   pending → keys_generated → token_minted → registered
+ *   pending → keys_generated → registered
  *
  * Plus an `errored` sink that any state can transition to.
  *
- * The spec v0.3 sketches an eight-state machine (`mint_submitted`,
- * `doc_encoded`, `update_submitted` between the persistent points
- * above). v1 of the implementation collapses those into the
- * adjacent persistent states because:
- *   - encode is pure compute; no I/O to checkpoint between.
- *   - submit-and-confirm runs as a single ethers `wait()` call;
- *     splitting it would require restructuring the on-chain client
- *     and adds little safety. A crash between submit and confirm
- *     re-runs from `keys_generated` and either succeeds or surfaces
- *     a manual-recovery notification (v1 doesn't auto-detect an
- *     orphaned mint).
- *
- * The pipeline is dependency-injected: keystore generators,
- * on-chain client, and Identity-file writer are passed in so tests
- * can swap fakes without touching the network or the disk.
+ * Each state checkpoints atomically before the next runs, so a
+ * crash mid-provision is recoverable. Resume from `keys_generated`
+ * re-POSTs the same public keys; OpenSCUT's response is
+ * deterministic given the inputs (modulo the per-displayName daily
+ * rate limit, which is reported as an explicit operator-visible
+ * failure rather than retried).
  *
  * Notifications fire on:
  *   - registered: passive ("X provisioned")
  *   - errored:    important ("X provisioning failed at <state>")
+ *                 with rate-limit failures specifically called out
+ *                 because the remediation (rename or wait) is
+ *                 user-actionable.
  */
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -39,22 +35,19 @@ import { agentIdentityPaths, homePaths } from '../storage/layout.js'
 import { newNotificationId } from '../util/id.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import {
-  buildSiiDocument,
-  composeScutUri,
-  encodeAsDataUri,
-  SII_PLACEHOLDER_DATA_URI,
-} from './sii-document.js'
+  RegisterRateLimitError,
+  RegisterOnChainError,
+  RegisterServiceUnavailableError,
+  type RegisterClient,
+  type RegisterRequest,
+  type RegisterResponse,
+} from './register-client.js'
 
 export const PROVISION_STATE_SCHEMA_VERSION = 1
 
 const FRONTMATTER_DELIM = '---'
 
-export type ProvisionStateName =
-  | 'pending'
-  | 'keys_generated'
-  | 'token_minted'
-  | 'registered'
-  | 'errored'
+export type ProvisionStateName = 'pending' | 'keys_generated' | 'registered' | 'errored'
 
 export interface ProvisionState {
   schema_version: 1
@@ -62,23 +55,22 @@ export interface ProvisionState {
   state: ProvisionStateName
   /** When the state was last updated. */
   updated_at: string
-  /** Set on transition to `keys_generated`. */
+  /** Set on transition to `keys_generated`. Base64-encoded 32-byte public keys. */
   public_keys_b64?: { ed25519: string; x25519: string }
-  /** Set on transition to `token_minted` (TX1 confirmed). Decimal string. */
+  /** Set on transition to `registered`. Decimal string. */
   token_id?: string
-  /** Set on transition to `token_minted`. */
+  /** Set on transition to `registered`. Canonical scut:// URI from OpenSCUT. */
+  scut_uri?: string
+  /** Set on transition to `registered`. Numeric chain id. */
+  chain_id?: number
+  /** Set on transition to `registered`. SII contract address. */
+  contract?: string
+  /** Set on transition to `registered`. Mint tx (TX1) hash from OpenSCUT. */
   mint_tx_hash?: string
-  /** Set on transition to `registered` (TX2 confirmed). */
+  /** Set on transition to `registered`. Update tx (TX2) hash from OpenSCUT. */
   update_tx_hash?: string
   /** Set on transition to `errored`. */
   error?: { class: string; message: string; at_state: ProvisionStateName }
-}
-
-export interface OnChainClient {
-  walletAddress: string
-  mintWithPlaceholder(uri: string): Promise<{ tokenId: bigint; txHash: string }>
-  waitForOwnerOfReadable(tokenId: bigint): Promise<void>
-  updateIdentityUri(tokenId: bigint, uri: string): Promise<{ txHash: string }>
 }
 
 export interface KeyStoreFns {
@@ -118,10 +110,10 @@ export type IdentityWriter = (args: {
 export interface ProvisioningPipelineOptions {
   home: string
   agentName: string
-  chainId: number
-  contractAddress: string
+  /** Display name posted to OpenSCUT. Defaults to agentName. */
+  displayName?: string
   masterKey: Buffer
-  onChain: OnChainClient
+  registerClient: RegisterClient
   keyStore: KeyStoreFns
   writeIdentity: IdentityWriter
   /** Injected for tests. */
@@ -164,7 +156,7 @@ export class ProvisioningPipeline {
           },
         }
         await this.persist(errored)
-        await this.fireNotification('error', errored)
+        await this.fireNotification('error', errored, err)
         this.log.error('provision failed', {
           at_state: state.state,
           error: err instanceof Error ? err.message : String(err),
@@ -174,7 +166,7 @@ export class ProvisioningPipeline {
     }
 
     if (state.state === 'registered') {
-      await this.fireNotification('success', state)
+      await this.fireNotification('success', state, null)
     }
     return state
   }
@@ -184,8 +176,6 @@ export class ProvisioningPipeline {
       case 'pending':
         return this.advanceToKeysGenerated(state)
       case 'keys_generated':
-        return this.advanceToTokenMinted(state)
-      case 'token_minted':
         return this.advanceToRegistered(state)
       case 'registered':
       case 'errored':
@@ -212,67 +202,55 @@ export class ProvisioningPipeline {
     return next
   }
 
-  /** TX1: mint with placeholder URI; wait for ownerOf consistency; persist tokenId + tx hash. */
-  private async advanceToTokenMinted(state: ProvisionState): Promise<ProvisionState> {
-    const result = await this.opts.onChain.mintWithPlaceholder(SII_PLACEHOLDER_DATA_URI)
-    await this.opts.onChain.waitForOwnerOfReadable(result.tokenId)
-    const next: ProvisionState = {
-      ...state,
-      state: 'token_minted',
-      updated_at: this.nowFn().toISOString(),
-      token_id: result.tokenId.toString(),
-      mint_tx_hash: result.txHash,
-    }
-    await this.persist(next)
-    return next
-  }
-
-  /** Encode SII document with real tokenId; TX2 (updateIdentityURI); write scut block to Identity. */
+  /**
+   * POST to OpenSCUT's `/scut/v1/register` with our public keys, get
+   * back the minted token + mint/update tx hashes + the SII document
+   * the service composed. Write the resulting `scut` block into the
+   * Agent's Identity file.
+   */
   private async advanceToRegistered(state: ProvisionState): Promise<ProvisionState> {
-    if (!state.token_id || !state.mint_tx_hash || !state.public_keys_b64) {
+    if (!state.public_keys_b64) {
       throw new Error(
-        `cannot complete provisioning from state token_minted: missing required fields (token_id=${
-          state.token_id ?? 'null'
-        }, mint_tx_hash=${state.mint_tx_hash ?? 'null'}, public_keys_b64=${
-          state.public_keys_b64 ? 'present' : 'null'
-        })`,
+        'cannot complete provisioning from state keys_generated: public_keys_b64 missing',
       )
     }
-
-    const tokenIdBigInt = BigInt(state.token_id)
-    const doc = buildSiiDocument({
-      chainId: this.opts.chainId,
-      contract: this.opts.contractAddress,
-      tokenId: tokenIdBigInt,
-      ed25519PublicKeyB64: state.public_keys_b64.ed25519,
-      x25519PublicKeyB64: state.public_keys_b64.x25519,
-    })
-    const dataUri = encodeAsDataUri(doc)
-
-    const updateResult = await this.opts.onChain.updateIdentityUri(tokenIdBigInt, dataUri)
+    const req: RegisterRequest = {
+      keys: {
+        signing: { algorithm: 'ed25519', publicKey: state.public_keys_b64.ed25519 },
+        encryption: { algorithm: 'x25519', publicKey: state.public_keys_b64.x25519 },
+      },
+      displayName: this.opts.displayName ?? this.opts.agentName,
+    }
+    const response: RegisterResponse = await this.opts.registerClient.register(req)
 
     const registeredAt = this.nowFn().toISOString()
     const next: ProvisionState = {
       ...state,
       state: 'registered',
       updated_at: registeredAt,
-      update_tx_hash: updateResult.txHash,
+      token_id: response.agentRef.tokenId,
+      scut_uri: response.ref,
+      chain_id: response.agentRef.chainId,
+      contract: response.agentRef.contract,
+      mint_tx_hash: response.txHashes.mint,
+      update_tx_hash: response.txHashes.update,
     }
     await this.persist(next)
 
+    const docDataUri = encodeDocumentAsDataUri(response.document)
     await this.opts.writeIdentity({
       home: this.opts.home,
       agentName: this.opts.agentName,
       scut: {
-        uri: composeScutUri(this.opts.chainId, this.opts.contractAddress, tokenIdBigInt),
-        chain_id: this.opts.chainId,
-        contract: this.opts.contractAddress,
-        token_id: state.token_id,
-        identity_doc_uri: dataUri,
+        uri: response.ref,
+        chain_id: response.agentRef.chainId,
+        contract: response.agentRef.contract,
+        token_id: response.agentRef.tokenId,
+        identity_doc_uri: docDataUri,
         public_keys: state.public_keys_b64,
         registered_at: registeredAt,
-        mint_tx: state.mint_tx_hash,
-        update_tx: updateResult.txHash,
+        mint_tx: response.txHashes.mint,
+        update_tx: response.txHashes.update,
       },
     })
 
@@ -311,10 +289,14 @@ export class ProvisioningPipeline {
     await atomicWriteJson(paths.provisionState, state)
   }
 
-  private async fireNotification(kind: 'success' | 'error', state: ProvisionState): Promise<void> {
+  private async fireNotification(
+    kind: 'success' | 'error',
+    state: ProvisionState,
+    err: unknown,
+  ): Promise<void> {
     const ts = this.nowFn().toISOString()
     const id = newNotificationId()
-    const tier = kind === 'success' ? 'passive' : 'important'
+    const tier = kind === 'success' ? 'passive' : tierForError(err)
     const notifKind = kind === 'success' ? 'identity_provisioned' : 'identity_provision_failed'
     const fm: Record<string, unknown> = {
       schema_version: 1,
@@ -331,7 +313,7 @@ export class ProvisioningPipeline {
       fm['error_message'] = state.error.message
       fm['at_state'] = state.error.at_state
     }
-    const body = kind === 'success' ? this.buildSuccessBody(state) : this.buildErrorBody(state)
+    const body = kind === 'success' ? this.buildSuccessBody(state) : this.buildErrorBody(state, err)
     const content = `${FRONTMATTER_DELIM}\n${stringify(fm, { lineWidth: 0 }).trimEnd()}\n${FRONTMATTER_DELIM}\n${body}`
     const path = join(homePaths(this.opts.home).stateNotifications, `${id}.md`)
     await mkdir(dirname(path), { recursive: true })
@@ -349,16 +331,66 @@ export class ProvisioningPipeline {
     ].join('\n')
   }
 
-  private buildErrorBody(state: ProvisionState): string {
-    return [
+  private buildErrorBody(state: ProvisionState, err: unknown): string {
+    const lines: string[] = [
       `Agent **${this.opts.agentName}** SCUT provisioning failed.`,
       ``,
       `At state: ${state.error?.at_state ?? state.state}`,
       `Error: ${state.error?.message ?? '(unknown)'}`,
       ``,
+    ]
+    // Specific operator hints for the most actionable failure modes.
+    if (err instanceof RegisterRateLimitError) {
+      lines.push(
+        `OpenSCUT rate-limited this registration. The likely cause is re-creating an Agent with the same display name within 24 UTC hours. Either rename the Agent or wait until the next UTC midnight before retrying.`,
+        ``,
+      )
+    } else if (err instanceof RegisterServiceUnavailableError) {
+      lines.push(
+        `OpenSCUT's register service is currently unavailable (global daily cap reached, or the upstream RPC is down). Retry later, or check \`2200 agent identity wallet-status\` for service health.`,
+        ``,
+      )
+    } else if (err instanceof RegisterOnChainError) {
+      lines.push(
+        `OpenSCUT's on-chain mint or update failed. This is rare and usually indicates an upstream Base RPC problem. Retry the provisioning, and if it persists check the OpenSCUT service status.`,
+        ``,
+      )
+    }
+    lines.push(
       `Inspect with: \`2200 agent identity status ${this.opts.agentName}\``,
       `Retry with: \`2200 agent identity retry ${this.opts.agentName}\``,
       ``,
-    ].join('\n')
+    )
+    return lines.join('\n')
   }
+}
+
+/**
+ * Encode the SII document returned by OpenSCUT as a `data:` URI.
+ * Stored in the Identity file's `scut.identity_doc_uri` slot for
+ * resolver-free local verification: anyone who reads the Identity
+ * file sees the document inline.
+ *
+ * The on-chain URI at `agentRef.contract` already holds the same
+ * value (OpenSCUT's update step put it there); this is a local
+ * convenience copy.
+ */
+function encodeDocumentAsDataUri(doc: unknown): string {
+  return `data:application/json;base64,${Buffer.from(JSON.stringify(doc)).toString('base64')}`
+}
+
+/**
+ * Map a register-client error class to a notification tier. Rate-
+ * limit and service-unavailable failures are user-actionable
+ * (rename, wait, top up the wallet) so they get `important`.
+ * On-chain failures and unknown errors get `important` too. Auth /
+ * validation errors should never happen in the production flow
+ * (they indicate a 2200-side bug); flag them as `important` so
+ * Doug sees them.
+ */
+function tierForError(err: unknown): 'passive' | 'important' | 'critical' {
+  if (err instanceof RegisterServiceUnavailableError) return 'important'
+  if (err instanceof RegisterOnChainError) return 'important'
+  if (err instanceof RegisterRateLimitError) return 'important'
+  return 'important'
 }
