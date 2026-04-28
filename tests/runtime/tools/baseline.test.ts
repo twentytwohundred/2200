@@ -50,15 +50,16 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 18 tools (14 from Epic 2 + 4 pub tools from Epic 3 PR C)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(18)
+  it('exports exactly 19 tools (14 from Epic 2 + 4 pub tools from Epic 3 PR C + notification.ask from Epic 7 PR D)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(19)
   })
 
-  it('baselineServers() builds six servers (incl. pub from Epic 3 PR C)', () => {
+  it('baselineServers() builds seven servers (incl. notification from Epic 7 PR D)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
       'fs',
+      'notification',
       'pub',
       'shell',
       'time',
