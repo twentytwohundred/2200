@@ -429,6 +429,104 @@ describe('AgentLoop happy path', () => {
   })
 })
 
+describe('AgentLoop telemetry integration', () => {
+  it('appends one JSONL telemetry record per model call when a TelemetryWriter is configured', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const { TelemetryWriter } = await import('../../../src/runtime/telemetry/writer.js')
+    const writer = new TelemetryWriter(home, 'hobby')
+
+    const provider = new FakeProvider([fakeResponse('Done in one shot.')])
+    const fixedTime = new Date('2026-04-28T12:00:00.000Z')
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      telemetryWriter: writer,
+      now: () => fixedTime,
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'one shot',
+    })
+    await taskStore.save(task)
+    await loop.run(task)
+
+    const path = join(home, 'state', 'telemetry', 'hobby', '2026-04-28.jsonl')
+    const text = await readFile(path, 'utf8')
+    const records = text
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(records).toHaveLength(1)
+    const r = records[0]!
+    expect(r['agent_id']).toBe('hobby')
+    expect(r['provider']).toBe('anthropic')
+    expect(r['model_id']).toBe('claude-opus-4-7')
+    expect(r['status']).toBe('ok')
+    expect(r['input_tokens']).toBe(100)
+    expect(r['output_tokens']).toBe(50)
+    // Default pricing computes 100/1M * $15 + 50/1M * $75 = $0.00525.
+    expect(r['cost_usd']).toBeCloseTo(0.00525, 6)
+    expect(r['task_id']).toBe(task.frontmatter.id)
+  })
+
+  it('records an error-status telemetry record when complete() throws', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const { TelemetryWriter } = await import('../../../src/runtime/telemetry/writer.js')
+    const writer = new TelemetryWriter(home, 'hobby')
+
+    class ThrowingProvider implements LLMProvider {
+      readonly name = 'fake'
+      readonly baseUrl = 'http://fake'
+      complete(): Promise<CompletionResponse> {
+        return Promise.reject(new Error('simulated network failure'))
+      }
+    }
+    const fixedTime = new Date('2026-04-28T12:00:00.000Z')
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider: new ThrowingProvider(),
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      telemetryWriter: writer,
+      now: () => fixedTime,
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'will fail',
+    })
+    await taskStore.save(task)
+    const result = await loop.run(task)
+    expect(result.kind).toBe('errored')
+
+    const path = join(home, 'state', 'telemetry', 'hobby', '2026-04-28.jsonl')
+    const text = await readFile(path, 'utf8')
+    const records = text
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(records).toHaveLength(1)
+    expect(records[0]!['status']).toBe('error')
+    expect(records[0]!['cost_usd']).toBeNull()
+    expect(records[0]!['input_tokens']).toBe(0)
+  })
+})
+
 describe('AgentLoop detector trips', () => {
   it('fires tool_repetition after N identical fs.read calls', async () => {
     const { dispatcher } = makeDispatcher()

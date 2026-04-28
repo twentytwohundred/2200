@@ -36,8 +36,10 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { LLMProvider } from '../llm/provider.js'
+import { computeCostUsd, defaultPricingTable, type PricingTable } from '../llm/pricing.js'
 import type { CompletionResponse, Message } from '../llm/types.js'
 import type { IdentityRecord } from '../identity/types.js'
+import type { TelemetryWriter } from '../telemetry/writer.js'
 import {
   ToolDeniedError,
   type DispatchInput,
@@ -227,6 +229,21 @@ export interface AgentLoopOptions {
   logger?: Logger
   /** Injected for tests. */
   now?: () => Date
+  /**
+   * Per-Agent telemetry writer (Epic 4.5). Optional: when present the
+   * loop appends one JSONL record per model call (success or error)
+   * to today's per-Agent file. When absent the loop runs the same
+   * model→tool cycle without persisting telemetry... matches Epic 2
+   * behavior.
+   */
+  telemetryWriter?: TelemetryWriter
+  /**
+   * Pricing table used to populate `cost_usd` on telemetry records and
+   * on the in-memory `model_call_end` event. Defaults to the bundled
+   * pricing.json. Tests inject a focused table to assert exact dollar
+   * values without depending on real pricing data.
+   */
+  pricingTable?: PricingTable
 }
 
 export type LoopResult =
@@ -249,12 +266,15 @@ export class AgentLoop {
   private iteration = 0
   private readonly nowFn: () => Date
 
+  private readonly pricingTable: PricingTable
+
   constructor(private readonly opts: AgentLoopOptions) {
     this.log = opts.logger ?? createLogger(`agent/loop/${opts.identity.frontmatter.agent_name}`)
     this.thresholds = opts.thresholds ?? DEFAULT_THRESHOLDS
     this.maxIterations = opts.maxIterations ?? 200
     this.bufferSize = opts.eventBufferSize ?? 500
     this.nowFn = opts.now ?? (() => new Date())
+    this.pricingTable = opts.pricingTable ?? defaultPricingTable()
   }
 
   /** Run a task to completion or to a detector trip. Pure; does not block. */
@@ -279,31 +299,62 @@ export class AgentLoop {
       const modelLabel = `${modelBinding.provider}/${activeModelId}`
 
       let response: CompletionResponse
+      const startedAt = this.nowFn().getTime()
+      const callStart: LoopEvent = {
+        kind: 'model_call_start',
+        at: startedAt,
+        model: modelLabel,
+        iteration: this.iteration,
+      }
+      this.pushEvent(callStart)
       try {
-        const callStart: LoopEvent = {
-          kind: 'model_call_start',
-          at: this.nowFn().getTime(),
-          model: modelLabel,
-          iteration: this.iteration,
-        }
-        this.pushEvent(callStart)
         response = await this.opts.provider.complete({
           modelId: activeModelId,
           systemPrompt,
           messages: this.history,
         })
-        const callEnd: LoopEvent = {
-          kind: 'model_call_end',
-          at: this.nowFn().getTime(),
-          model: modelLabel,
-          iteration: this.iteration,
-          cost_usd: response.costMetrics.estDollars ?? 0,
-          finish_reason: response.finishReason,
-        }
-        this.pushEvent(callEnd)
       } catch (err) {
+        const finishedAt = this.nowFn().getTime()
+        await this.recordTelemetry(
+          task,
+          modelBinding.provider,
+          activeModelId,
+          finishedAt - startedAt,
+          'error',
+          null,
+        )
         return this.errored(err)
       }
+      const finishedAt = this.nowFn().getTime()
+      const computedCost = computeCostUsd(
+        {
+          provider: modelBinding.provider,
+          modelId: activeModelId,
+          inputTokens: response.costMetrics.inputTokens,
+          outputTokens: response.costMetrics.outputTokens,
+          ...(response.costMetrics.cachedTokens !== undefined
+            ? { cachedTokens: response.costMetrics.cachedTokens }
+            : {}),
+        },
+        this.pricingTable,
+      )
+      const callEnd: LoopEvent = {
+        kind: 'model_call_end',
+        at: finishedAt,
+        model: modelLabel,
+        iteration: this.iteration,
+        cost_usd: computedCost ?? response.costMetrics.estDollars ?? 0,
+        finish_reason: response.finishReason,
+      }
+      this.pushEvent(callEnd)
+      await this.recordTelemetry(
+        task,
+        modelBinding.provider,
+        activeModelId,
+        finishedAt - startedAt,
+        'ok',
+        { cost: computedCost, metrics: response.costMetrics },
+      )
 
       const trip = this.evaluate(task)
       if (trip) return await this.tripped(task, trip)
@@ -491,6 +542,45 @@ export class AgentLoop {
     this.events.push(event)
     while (this.events.length > this.bufferSize) {
       this.events.shift()
+    }
+  }
+
+  /**
+   * Append one telemetry record per model call when a TelemetryWriter
+   * is configured. No-op when not. Catches and logs writer errors so
+   * a transient I/O failure on the telemetry path never aborts a
+   * running task... telemetry is observability, not a load-bearing
+   * dependency.
+   */
+  private async recordTelemetry(
+    task: TaskRecord,
+    provider: string,
+    modelId: string,
+    durationMs: number,
+    status: 'ok' | 'error',
+    success: { cost: number | null; metrics: CompletionResponse['costMetrics'] } | null,
+  ): Promise<void> {
+    const writer = this.opts.telemetryWriter
+    if (!writer) return
+    try {
+      await writer.recordModelCall({
+        taskId: task.frontmatter.id,
+        provider,
+        modelId,
+        inputTokens: success?.metrics.inputTokens ?? 0,
+        outputTokens: success?.metrics.outputTokens ?? 0,
+        ...(success?.metrics.cachedTokens !== undefined
+          ? { cachedTokens: success.metrics.cachedTokens }
+          : {}),
+        costUsd: success?.cost ?? null,
+        status,
+        durationMs,
+        ts: new Date(this.nowFn().getTime()).toISOString(),
+      })
+    } catch (writeErr) {
+      this.log.warn('telemetry write failed', {
+        error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+      })
     }
   }
 
