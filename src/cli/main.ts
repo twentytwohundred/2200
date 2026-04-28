@@ -408,6 +408,84 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 usage
+  // ---------------------------------------------------------------------------
+
+  program
+    .command('usage')
+    .description('show LLM token / dollar usage by Agent, model, provider, day, or task')
+    .option('--agent <name>', 'filter to one Agent')
+    .option('--day', 'today only (default)')
+    .option('--week', 'last 7 calendar days (UTC)')
+    .option('--month', 'last 30 calendar days (UTC)')
+    .option('--since <YYYY-MM-DD>', 'custom start date (UTC)')
+    .option('--by <grouping>', 'agent | model | provider | day | task (default: agent)')
+    .option('--json', 'machine-readable output')
+    .action(
+      async (opts: {
+        agent?: string
+        day?: boolean
+        week?: boolean
+        month?: boolean
+        since?: string
+        by?: string
+        json?: boolean
+      }) => {
+        const home = await resolveHomeFromOpts(program)
+        const { readTelemetry, aggregate, rangeForPreset, rangeSince } =
+          await import('../runtime/telemetry/reader.js')
+        const now = new Date()
+        let range
+        if (opts.since) {
+          range = rangeSince(opts.since, now)
+        } else if (opts.month) {
+          range = rangeForPreset('month', now)
+        } else if (opts.week) {
+          range = rangeForPreset('week', now)
+        } else {
+          range = rangeForPreset('day', now)
+        }
+
+        const records = await readTelemetry(home, {
+          range,
+          ...(opts.agent !== undefined ? { agentName: opts.agent } : {}),
+        })
+        const agg = aggregate(records)
+
+        if (opts.json) {
+          console.log(JSON.stringify({ range, by: opts.by ?? 'agent', aggregations: agg }, null, 2))
+          return
+        }
+
+        const grouping = (opts.by ?? 'agent').toLowerCase()
+        const { printByAgent, printSimpleBuckets } = await import('./usage-formatter.js')
+        if (grouping === 'agent') {
+          await printByAgent(home, agg.byAgent, agg.total, range, now)
+        } else if (grouping === 'provider') {
+          printSimpleBuckets('Provider', agg.byProvider, agg.total, range)
+        } else if (grouping === 'model') {
+          printSimpleBuckets('Provider/Model', agg.byModel, agg.total, range)
+        } else if (grouping === 'day') {
+          printSimpleBuckets('Day', agg.byDay, agg.total, range)
+        } else if (grouping === 'task') {
+          printSimpleBuckets('Task', agg.byTask, agg.total, range)
+        } else {
+          console.error(
+            `unknown --by grouping: "${grouping}" (expected: agent, model, provider, day, task)`,
+          )
+          process.exit(1)
+        }
+
+        if (agg.total.cost_unknown_count > 0) {
+          console.log('')
+          console.log(
+            `Note: ${String(agg.total.cost_unknown_count)} record(s) had unknown pricing. Add the model to config/pricing.json (or default-pricing.json) to track those calls in dollar terms.`,
+          )
+        }
+      },
+    )
+
+  // ---------------------------------------------------------------------------
   // 2200 task <subcommand>
   // ---------------------------------------------------------------------------
 
