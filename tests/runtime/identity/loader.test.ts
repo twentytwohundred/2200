@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 const VALID = `---
-schema_version: 1
+schema_version: 2
 agent_name: hobby
 agent_role: "primary build agent for 2200"
 model:
@@ -65,7 +65,7 @@ describe('loadIdentity (happy path)', () => {
     const path = await writeAt('hobby.md', VALID)
     const id = await loadIdentity(path)
     expect(id.frontmatter.agent_name).toBe('hobby')
-    expect(id.frontmatter.schema_version).toBe(1)
+    expect(id.frontmatter.schema_version).toBe(2)
     expect(id.frontmatter.model.provider).toBe('anthropic')
     expect(id.frontmatter.model.model_id).toBe('claude-opus-4-7')
     expect(id.frontmatter.tools).toEqual([])
@@ -124,12 +124,16 @@ describe('loadIdentity (error paths)', () => {
     await expect(loadIdentity(path)).rejects.toThrow(/malformed YAML frontmatter/)
   })
 
-  it('rejects string schema_version (locked to integer)', async () => {
+  it('tolerates string schema_version on read (parsed to int and migrated forward)', async () => {
+    // schema_version='1' as YAML string is the historical-document case;
+    // the migrator chain parses it as 1, migrates 1->2, and the loader returns
+    // a typed record with schema_version: 2.
     const path = await writeAt(
       'string-version.md',
-      VALID.replace('schema_version: 1', "schema_version: '1'"),
+      VALID.replace('schema_version: 2', "schema_version: '1'"),
     )
-    await expect(loadIdentity(path)).rejects.toThrow(/schema validation/)
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.schema_version).toBe(2)
   })
 
   it('rejects an agent_name with invalid characters', async () => {
@@ -174,7 +178,7 @@ describe('validateIdentity', () => {
   })
 
   it('returns an error message on bad Identity', async () => {
-    const path = await writeAt('bad.md', VALID.replace('schema_version: 1', "schema_version: '1'"))
+    const path = await writeAt('bad.md', VALID.replace('agent_name: hobby', "agent_name: '@bad'"))
     const err = await validateIdentity(path)
     expect(err).not.toBeNull()
     expect(err).toMatch(/schema validation/)
@@ -184,7 +188,7 @@ describe('validateIdentity', () => {
 describe('validateFrontmatter', () => {
   it('parses an in-memory object', () => {
     const fm = validateFrontmatter({
-      schema_version: 1,
+      schema_version: 2,
       agent_name: 'hobby',
       agent_role: 'test',
       model: { tier: 'frontier', provider: 'anthropic', model_id: 'claude-opus-4-7' },
@@ -197,22 +201,115 @@ describe('validateFrontmatter', () => {
   })
 
   it('rejects missing required fields', () => {
-    expect(() => validateFrontmatter({ schema_version: 1 })).toThrow()
+    expect(() => validateFrontmatter({ schema_version: 2 })).toThrow()
   })
 })
 
 describe('migrator chain', () => {
-  it('a v0 document (missing schema_version) is upgraded to v1 on read', async () => {
-    const path = await writeAt('v0.md', VALID.replace('schema_version: 1\n', ''))
+  it('a v0 document (missing schema_version) is upgraded all the way to current on read', async () => {
+    const path = await writeAt('v0.md', VALID.replace('schema_version: 2\n', ''))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(1)
+    expect(id.frontmatter.schema_version).toBe(2)
+  })
+
+  it('a v1 document (Epic 4.5 predecessor) is upgraded to v2 with the default cost_caps applied', async () => {
+    const path = await writeAt('v1.md', VALID.replace('schema_version: 2', 'schema_version: 1'))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.schema_version).toBe(2)
+    expect(id.frontmatter.cost_caps.daily_usd).toBe(10)
+    expect(id.frontmatter.cost_caps.warn_at_pct).toBe(80)
+    expect(id.frontmatter.cost_caps.reset_at).toBe('00:00 UTC')
+    expect(id.frontmatter.cost_caps.on_breach).toBe('block_new_tasks')
   })
 
   it('a future schema_version (newer than the loader) is rejected', async () => {
     const path = await writeAt(
       'future.md',
-      VALID.replace('schema_version: 1', 'schema_version: 99'),
+      VALID.replace('schema_version: 2', 'schema_version: 99'),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/newer than this loader supports/)
+  })
+})
+
+describe('cost_caps', () => {
+  it('absent cost_caps block defaults to $10/day with warn at 80%, UTC reset, block-new-tasks behavior', async () => {
+    const path = await writeAt('default-caps.md', VALID)
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.cost_caps).toEqual({
+      daily_usd: 10,
+      warn_at_pct: 80,
+      reset_at: '00:00 UTC',
+      on_breach: 'block_new_tasks',
+    })
+  })
+
+  it('explicit cost_caps with only daily_usd fills other fields with defaults', async () => {
+    const path = await writeAt(
+      'partial-caps.md',
+      VALID.replace('created: 2026-04-26', 'created: 2026-04-26\ncost_caps:\n  daily_usd: 50.00'),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.cost_caps).toEqual({
+      daily_usd: 50,
+      warn_at_pct: 80,
+      reset_at: '00:00 UTC',
+      on_breach: 'block_new_tasks',
+    })
+  })
+
+  it('explicit cost_caps with all fields set preserves them', async () => {
+    const path = await writeAt(
+      'full-caps.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\ncost_caps:\n  daily_usd: 100\n  warn_at_pct: 50\n  reset_at: "00:00 America/New_York"\n  on_breach: block_new_tasks',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.cost_caps).toEqual({
+      daily_usd: 100,
+      warn_at_pct: 50,
+      reset_at: '00:00 America/New_York',
+      on_breach: 'block_new_tasks',
+    })
+  })
+
+  it('rejects a non-positive daily_usd', async () => {
+    const path = await writeAt(
+      'zero-usd.md',
+      VALID.replace('created: 2026-04-26', 'created: 2026-04-26\ncost_caps:\n  daily_usd: 0'),
+    )
+    await expect(loadIdentity(path)).rejects.toThrow(/daily_usd/)
+  })
+
+  it('rejects a warn_at_pct outside [1, 99]', async () => {
+    const tooHigh = await writeAt(
+      'pct-too-high.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\ncost_caps:\n  daily_usd: 10\n  warn_at_pct: 100',
+      ),
+    )
+    await expect(loadIdentity(tooHigh)).rejects.toThrow(/warn_at_pct/)
+
+    const tooLow = await writeAt(
+      'pct-too-low.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\ncost_caps:\n  daily_usd: 10\n  warn_at_pct: 0',
+      ),
+    )
+    await expect(loadIdentity(tooLow)).rejects.toThrow(/warn_at_pct/)
+  })
+
+  it('rejects an unknown on_breach value', async () => {
+    const path = await writeAt(
+      'bad-breach.md',
+      VALID.replace(
+        'created: 2026-04-26',
+        'created: 2026-04-26\ncost_caps:\n  daily_usd: 10\n  on_breach: throttle',
+      ),
+    )
+    await expect(loadIdentity(path)).rejects.toThrow(/on_breach/)
   })
 })
