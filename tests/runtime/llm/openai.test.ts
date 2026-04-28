@@ -223,6 +223,105 @@ describe('OpenAIProvider response parsing', () => {
       provider.complete({ modelId: 'gpt-5-4', messages: [{ role: 'user', content: 'hi' }] }),
     ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' })
   })
+
+  it('populates cachedTokens from DeepSeek-style prompt_cache_hit_tokens and normalizes inputTokens', async () => {
+    // DeepSeek returns prompt_tokens as the TOTAL (cached + uncached).
+    // The provider normalizes inputTokens to uncached only.
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'cmpl-deepseek',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 2000,
+          completion_tokens: 100,
+          total_tokens: 2100,
+          prompt_cache_hit_tokens: 1800,
+        },
+      }),
+    )
+    const provider = new OpenAIProvider({
+      apiKey: 'sk',
+      fetchImpl,
+      providerName: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+    })
+    const result = await provider.complete({
+      modelId: 'deepseek-chat',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics).toEqual({
+      inputTokens: 200, // 2000 total - 1800 cached = 200 uncached
+      outputTokens: 100,
+      cachedTokens: 1800,
+    })
+  })
+
+  it('populates cachedTokens from OpenAI-style prompt_tokens_details.cached_tokens', async () => {
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'cmpl-openai',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 800 },
+        },
+      }),
+    )
+    const provider = new OpenAIProvider({ apiKey: 'sk', fetchImpl })
+    const result = await provider.complete({
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics).toEqual({
+      inputTokens: 200,
+      outputTokens: 50,
+      cachedTokens: 800,
+    })
+  })
+
+  it('leaves cachedTokens absent when the vendor reports no cache stats', async () => {
+    // Kimi-style: vanilla usage with no cache fields.
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'cmpl-kimi',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 500, completion_tokens: 25, total_tokens: 525 },
+      }),
+    )
+    const provider = new OpenAIProvider({ apiKey: 'sk', fetchImpl, providerName: 'kimi' })
+    const result = await provider.complete({
+      modelId: 'moonshot-v1-128k',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics).toEqual({ inputTokens: 500, outputTokens: 25 })
+    expect('cachedTokens' in result.costMetrics).toBe(false)
+  })
+
+  it('clamps inputTokens to non-negative when cached count exceeds prompt_tokens (paranoid edge)', async () => {
+    // Vendor bug guard: if a provider reports cached > prompt, normalize to 0
+    // rather than emit a negative number.
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'cmpl-bug',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 5,
+          total_tokens: 105,
+          prompt_cache_hit_tokens: 200, // wonky vendor data
+        },
+      }),
+    )
+    const provider = new OpenAIProvider({ apiKey: 'sk', fetchImpl, providerName: 'deepseek' })
+    const result = await provider.complete({
+      modelId: 'deepseek-chat',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics.inputTokens).toBe(0)
+    expect(result.costMetrics.cachedTokens).toBe(200)
+  })
 })
 
 describe('OpenAIProvider error mapping', () => {

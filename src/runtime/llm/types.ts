@@ -28,11 +28,23 @@ export interface CompletionRequest {
 export type FinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'error'
 
 export interface CostMetrics {
+  /** Tokens charged at the standard input rate (cache misses + new content). */
   inputTokens: number
   outputTokens: number
   /**
-   * Optional dollar estimate. v1 leaves this null; the cost-behavior
-   * layer computes it later from a price-per-model table.
+   * Tokens served from a prompt cache. Anthropic returns these as
+   * `cache_read_input_tokens`; DeepSeek returns them as
+   * `prompt_cache_hit_tokens`. Providers that do not break out cached
+   * input leave this undefined. Cached tokens are typically priced at a
+   * 90% discount from standard input rate; the pricing layer applies
+   * the per-model `cached_input_per_mtok_usd` line.
+   */
+  cachedTokens?: number
+  /**
+   * Optional dollar estimate. v1 leaves this null at the provider
+   * level; the cost layer (`pricing.ts`) computes it later from a
+   * price-per-model table. The Agent loop populates this on the
+   * `model_call_end` event when emitting telemetry.
    */
   estDollars?: number
 }

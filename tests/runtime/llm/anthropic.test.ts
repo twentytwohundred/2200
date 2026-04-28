@@ -191,6 +191,49 @@ describe('AnthropicProvider response parsing', () => {
     })
     expect(result.finishReason).toBe('length')
   })
+
+  it('populates cachedTokens from cache_read_input_tokens when present', async () => {
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'msg_cached',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 200, // already excludes cache hits per Anthropic's convention
+          output_tokens: 50,
+          cache_read_input_tokens: 1800,
+        },
+      }),
+    )
+    const provider = new AnthropicProvider({ apiKey: 'sk', fetchImpl })
+    const result = await provider.complete({
+      modelId: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics).toEqual({
+      inputTokens: 200,
+      outputTokens: 50,
+      cachedTokens: 1800,
+    })
+  })
+
+  it('omits cachedTokens when the response does not include cache_read_input_tokens', async () => {
+    const fetchImpl = mockFetch(() =>
+      jsonResponse({
+        id: 'msg_x',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 3 },
+      }),
+    )
+    const provider = new AnthropicProvider({ apiKey: 'sk', fetchImpl })
+    const result = await provider.complete({
+      modelId: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(result.costMetrics).toEqual({ inputTokens: 5, outputTokens: 3 })
+    expect('cachedTokens' in result.costMetrics).toBe(false)
+  })
 })
 
 describe('AnthropicProvider error mapping', () => {
