@@ -82,7 +82,7 @@ function fakeIdentity(): IdentityRecord {
   return {
     source_path: '/unused-at-test',
     frontmatter: {
-      schema_version: 1,
+      schema_version: 2,
       agent_name: 'hobby',
       agent_role: 'build agent',
       model: {
@@ -94,6 +94,12 @@ function fakeIdentity(): IdentityRecord {
       project_dir: '/unused-at-test',
       brain_dir: '/unused-at-test',
       created: '2026-04-26',
+      cost_caps: {
+        daily_usd: 10,
+        warn_at_pct: 80,
+        reset_at: '00:00 UTC',
+        on_breach: 'block_new_tasks',
+      },
     },
     body: 'You are hobby, the test agent.',
   }

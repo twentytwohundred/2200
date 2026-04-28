@@ -68,12 +68,65 @@ export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]
 })
 
 /**
+ * Default cost cap applied to Identity files that lack a `cost_caps`
+ * block. Conservative by design... at current Hobby cadence
+ * (single-digit dollars per working day) this gives a real ceiling
+ * without being trivially blown through. Users adjust per-Agent.
+ */
+export const DEFAULT_DAILY_USD_CAP = 10
+
+/**
+ * Default for every cost_caps field. Single source of truth so the
+ * field-level Zod defaults and the outer object-level Zod default
+ * stay in sync.
+ */
+const COST_CAPS_DEFAULT = {
+  daily_usd: DEFAULT_DAILY_USD_CAP,
+  warn_at_pct: 80,
+  reset_at: '00:00 UTC',
+  on_breach: 'block_new_tasks',
+} as const
+
+/**
+ * Per-Agent cost-cap configuration. Read by the supervisor's BudgetTracker
+ * (Epic 4.5). `daily_usd` is the only field a user must set; everything
+ * else has a sensible default.
+ *
+ * Identity files written before Epic 4.5 land without a `cost_caps`
+ * block; the loader injects this default via the Zod schema. The
+ * `1-to-2` migrator handles the `schema_version` bump.
+ */
+export const CostCapsSchema = z.object({
+  /** Hard ceiling, USD per day. New tasks blocked once cumulative spend reaches this. */
+  daily_usd: z.number().positive(),
+  /** Soft warning threshold, integer percent in [1, 99]. Tier-2 notification fires at first crossing. */
+  warn_at_pct: z.number().int().min(1).max(99).default(COST_CAPS_DEFAULT.warn_at_pct),
+  /**
+   * Daily reset time. Free-form string at v1; the BudgetTracker accepts
+   * "HH:MM TZ" forms ("00:00 UTC", "00:00 America/New_York"). UTC default
+   * because the supervisor's clock is UTC and the test rig is timezone-
+   * agnostic.
+   */
+  reset_at: z.string().default(COST_CAPS_DEFAULT.reset_at),
+  /**
+   * Behavior when the daily cap is reached. v1 supports only
+   * `block_new_tasks`; the enum is reserved for `throttle` and
+   * `downgrade-tier` modes that may land in future epics.
+   */
+  on_breach: z.enum(['block_new_tasks']).default(COST_CAPS_DEFAULT.on_breach),
+})
+export type CostCaps = z.infer<typeof CostCapsSchema>
+
+/**
  * The Identity frontmatter schema.
  *
- * - `schema_version: 1` per the locked integer convention.
+ * - `schema_version: 2` per the locked integer convention.
+ *   v2 (Epic 4.5) added `cost_caps`. The migrator chain bumps older files.
  * - `tools: []` is the default; entries are ADDITIONS to the baseline
  *   tool set (NOT the full set). The runtime composes baseline + this
  *   array at boot.
+ * - `cost_caps.daily_usd` is the per-Agent daily spend ceiling; missing
+ *   blocks default to $10/day per `DEFAULT_DAILY_USD_CAP`.
  * - `provider_secret` is an optional SecretRef pointer for the LLM
  *   provider's credential. v1 supports `env` (read from process env)
  *   and `file` (read from file). Future: `exec` (shell out to a helper).
@@ -126,7 +179,7 @@ function AgentPubBlockSchemaForIdentity() {
 export type AgentPubBlock = z.infer<ReturnType<typeof AgentPubBlockSchemaForIdentity>>
 
 export const IdentityFrontmatterSchema = z.object({
-  schema_version: z.literal(1),
+  schema_version: z.literal(2),
   agent_name: z
     .string()
     .min(1)
@@ -142,6 +195,7 @@ export const IdentityFrontmatterSchema = z.object({
   created: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, {
     message: 'created must be a date in YYYY-MM-DD form',
   }),
+  cost_caps: CostCapsSchema.default(COST_CAPS_DEFAULT),
   provider_secret: z
     .object({
       source: z.enum(['env', 'file']),
