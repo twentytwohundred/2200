@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 const VALID = `---
-schema_version: 2
+schema_version: 3
 agent_name: hobby
 agent_role: "primary build agent for 2200"
 model:
@@ -65,7 +65,7 @@ describe('loadIdentity (happy path)', () => {
     const path = await writeAt('hobby.md', VALID)
     const id = await loadIdentity(path)
     expect(id.frontmatter.agent_name).toBe('hobby')
-    expect(id.frontmatter.schema_version).toBe(2)
+    expect(id.frontmatter.schema_version).toBe(3)
     expect(id.frontmatter.model.provider).toBe('anthropic')
     expect(id.frontmatter.model.model_id).toBe('claude-opus-4-7')
     expect(id.frontmatter.tools).toEqual([])
@@ -127,13 +127,13 @@ describe('loadIdentity (error paths)', () => {
   it('tolerates string schema_version on read (parsed to int and migrated forward)', async () => {
     // schema_version='1' as YAML string is the historical-document case;
     // the migrator chain parses it as 1, migrates 1->2, and the loader returns
-    // a typed record with schema_version: 2.
+    // a typed record with schema_version: 3.
     const path = await writeAt(
       'string-version.md',
-      VALID.replace('schema_version: 2', "schema_version: '1'"),
+      VALID.replace('schema_version: 3', "schema_version: '1'"),
     )
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(2)
+    expect(id.frontmatter.schema_version).toBe(3)
   })
 
   it('rejects an agent_name with invalid characters', async () => {
@@ -188,7 +188,7 @@ describe('validateIdentity', () => {
 describe('validateFrontmatter', () => {
   it('parses an in-memory object', () => {
     const fm = validateFrontmatter({
-      schema_version: 2,
+      schema_version: 3,
       agent_name: 'hobby',
       agent_role: 'test',
       model: { tier: 'frontier', provider: 'anthropic', model_id: 'claude-opus-4-7' },
@@ -201,31 +201,39 @@ describe('validateFrontmatter', () => {
   })
 
   it('rejects missing required fields', () => {
-    expect(() => validateFrontmatter({ schema_version: 2 })).toThrow()
+    expect(() => validateFrontmatter({ schema_version: 3 })).toThrow()
   })
 })
 
 describe('migrator chain', () => {
   it('a v0 document (missing schema_version) is upgraded all the way to current on read', async () => {
-    const path = await writeAt('v0.md', VALID.replace('schema_version: 2\n', ''))
+    const path = await writeAt('v0.md', VALID.replace('schema_version: 3\n', ''))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(2)
+    expect(id.frontmatter.schema_version).toBe(3)
   })
 
-  it('a v1 document (Epic 4.5 predecessor) is upgraded to v2 with the default cost_caps applied', async () => {
-    const path = await writeAt('v1.md', VALID.replace('schema_version: 2', 'schema_version: 1'))
+  it('a v1 document is upgraded all the way to v3 with default cost_caps and no scut block', async () => {
+    const path = await writeAt('v1.md', VALID.replace('schema_version: 3', 'schema_version: 1'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(2)
+    expect(id.frontmatter.schema_version).toBe(3)
     expect(id.frontmatter.cost_caps.daily_usd).toBe(10)
     expect(id.frontmatter.cost_caps.warn_at_pct).toBe(80)
     expect(id.frontmatter.cost_caps.reset_at).toBe('00:00 UTC')
     expect(id.frontmatter.cost_caps.on_breach).toBe('block_new_tasks')
+    expect(id.frontmatter.scut).toBeUndefined()
+  })
+
+  it('a v2 document is upgraded to v3 with no scut block (provisioning fills it later)', async () => {
+    const path = await writeAt('v2.md', VALID.replace('schema_version: 3', 'schema_version: 2'))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.schema_version).toBe(3)
+    expect(id.frontmatter.scut).toBeUndefined()
   })
 
   it('a future schema_version (newer than the loader) is rejected', async () => {
     const path = await writeAt(
       'future.md',
-      VALID.replace('schema_version: 2', 'schema_version: 99'),
+      VALID.replace('schema_version: 3', 'schema_version: 99'),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/newer than this loader supports/)
   })
@@ -311,5 +319,70 @@ describe('cost_caps', () => {
       ),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/on_breach/)
+  })
+})
+
+describe('scut block (Epic 4 Phase A)', () => {
+  const VALID_SCUT = `created: 2026-04-26
+scut:
+  uri: "scut://8453/0x199b48E27a28881502b251B0068F388Ce750feff/12345"
+  chain_id: 8453
+  contract: "0x199b48E27a28881502b251B0068F388Ce750feff"
+  token_id: "12345"
+  identity_doc_uri: "data:application/json;base64,eyJzaWlWZXJzaW9uIjoxfQ=="
+  public_keys:
+    ed25519: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    x25519: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  registered_at: "2026-04-29T15:23:00.000Z"
+  mint_tx: "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  update_tx: "0xfedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"`
+
+  it('absent scut block leaves frontmatter.scut undefined', async () => {
+    const path = await writeAt('no-scut.md', VALID)
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.scut).toBeUndefined()
+  })
+
+  it('valid scut block parses cleanly with the canonical Base contract', async () => {
+    const path = await writeAt('with-scut.md', VALID.replace('created: 2026-04-26', VALID_SCUT))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.scut).toBeDefined()
+    expect(id.frontmatter.scut?.chain_id).toBe(8453)
+    expect(id.frontmatter.scut?.contract).toMatch(/^0x199b48/)
+    expect(id.frontmatter.scut?.token_id).toBe('12345')
+    expect(id.frontmatter.scut?.identity_doc_uri).toMatch(/^data:application\/json;base64,/)
+  })
+
+  it('rejects a malformed scut.uri', async () => {
+    const bad = VALID_SCUT.replace(
+      'uri: "scut://8453/0x199b48E27a28881502b251B0068F388Ce750feff/12345"',
+      'uri: "not-a-scut-uri"',
+    )
+    const path = await writeAt('bad-uri.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/scut\.uri/)
+  })
+
+  it('rejects a contract address with the wrong length', async () => {
+    const bad = VALID_SCUT.replace(
+      'contract: "0x199b48E27a28881502b251B0068F388Ce750feff"',
+      'contract: "0xdeadbeef"',
+    )
+    const path = await writeAt('bad-contract.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/scut\.contract/)
+  })
+
+  it('rejects a non-numeric token_id', async () => {
+    const bad = VALID_SCUT.replace('token_id: "12345"', 'token_id: "abc"')
+    const path = await writeAt('bad-tokenid.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/scut\.token_id/)
+  })
+
+  it('rejects a tx hash with the wrong length', async () => {
+    const bad = VALID_SCUT.replace(
+      'mint_tx: "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"',
+      'mint_tx: "0xshort"',
+    )
+    const path = await writeAt('bad-mintx.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/scut\.mint_tx/)
   })
 })
