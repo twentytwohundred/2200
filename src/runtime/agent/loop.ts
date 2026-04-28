@@ -40,6 +40,7 @@ import { computeCostUsd, defaultPricingTable, type PricingTable } from '../llm/p
 import type { CompletionResponse, Message } from '../llm/types.js'
 import type { IdentityRecord } from '../identity/types.js'
 import type { TelemetryWriter } from '../telemetry/writer.js'
+import type { BudgetTracker } from './budget-tracker.js'
 import {
   ToolDeniedError,
   type DispatchInput,
@@ -244,6 +245,17 @@ export interface AgentLoopOptions {
    * values without depending on real pricing data.
    */
   pricingTable?: PricingTable
+  /**
+   * Per-Agent BudgetTracker (Epic 4.5). Optional. When present:
+   *   - The loop checks `isBlocked()` at the top of `run(task)` and
+   *     refuses to start the task with an `errored` result whose
+   *     error class is `BudgetBlockedError` if the cap has been hit.
+   *   - The loop calls `record(costUsd)` after each model call so the
+   *     tracker stays current and fires threshold notifications.
+   * When absent (Epic 2 behavior), the loop runs without budget
+   * enforcement.
+   */
+  budgetTracker?: BudgetTracker
 }
 
 export type LoopResult =
@@ -279,6 +291,26 @@ export class AgentLoop {
 
   /** Run a task to completion or to a detector trip. Pure; does not block. */
   async run(task: TaskRecord): Promise<LoopResult> {
+    // Budget gate: if the agent has crossed today's cap, refuse the
+    // task before doing any work. The currently-running task that
+    // crossed the cap will have completed (no mid-call interruption);
+    // this block fires on the NEXT task. PR E adds the override path
+    // that lifts the block.
+    if (this.opts.budgetTracker?.isBlocked() === true) {
+      const tracker = this.opts.budgetTracker
+      const message = `daily cost cap reached: $${tracker.getCumulative().toFixed(2)} of $${tracker.getCap().toFixed(2)} (resets at 00:00 UTC; override with \`2200 agent budget override ${this.opts.identity.frontmatter.agent_name}\`)`
+      this.log.warn('refusing task: budget blocked', {
+        cumulative: tracker.getCumulative(),
+        cap: tracker.getCap(),
+        task_id: task.frontmatter.id,
+      })
+      return {
+        kind: 'errored',
+        error: { class: 'BudgetBlockedError', message },
+        iterations: 0,
+      }
+    }
+
     const systemPrompt = this.buildSystemPrompt()
     this.history.length = 0
     this.history.push({ role: 'user', content: task.body })
@@ -355,6 +387,21 @@ export class AgentLoop {
         'ok',
         { cost: computedCost, metrics: response.costMetrics },
       )
+      // Budget tracker: record the charge (no-op when computedCost is
+      // null... the unknown-pricing case can't contribute to a cap that
+      // the user sees in dollar terms). Threshold notifications fire
+      // inline from the tracker. The currently-running task continues
+      // even if the cap is crossed; the next task gets refused at the
+      // top of `run()`.
+      if (this.opts.budgetTracker !== undefined) {
+        try {
+          await this.opts.budgetTracker.record(computedCost)
+        } catch (budgetErr) {
+          this.log.warn('budget-tracker record failed', {
+            error: budgetErr instanceof Error ? budgetErr.message : String(budgetErr),
+          })
+        }
+      }
 
       const trip = this.evaluate(task)
       if (trip) return await this.tripped(task, trip)
