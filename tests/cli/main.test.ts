@@ -28,7 +28,7 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the fifteen top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage, schedule, brain, shared-brain, model, extension, web)', () => {
+  it('has the sixteen top-level commands (init, daemon, agent, task, pub, user, chat, notification, usage, schedule, brain, shared-brain, model, extension, skill, web)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
     expect(names).toEqual([
@@ -43,6 +43,7 @@ describe('CLI program', () => {
       'pub',
       'schedule',
       'shared-brain',
+      'skill',
       'task',
       'usage',
       'user',

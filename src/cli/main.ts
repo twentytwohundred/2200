@@ -2105,6 +2105,64 @@ export function buildProgram(): Command {
       }
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 skill <subcommand>  (Epic 11 Phase A)
+  //
+  // Read-only scan over <home>/skills/<name>/SKILL.md. Phase A: list + show.
+  // Wrapping each Skill as a minimal Extension lands in Phase B once the
+  // Extension framework gains install/uninstall (Epic 12 Phase B).
+  // ---------------------------------------------------------------------------
+
+  const skill = program
+    .command('skill')
+    .description(
+      'inspect installed Skills (Phase A: list + show; auto-wrap as Extensions in Phase B)',
+    )
+
+  skill
+    .command('list')
+    .description('list installed Skills')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { listSkills, skillsHome } = await import('../runtime/skills/registry.js')
+      const items = await listSkills(home)
+      if (items.length === 0) {
+        console.log(
+          `No Skills installed at ${skillsHome(home)}.\n` +
+            `Drop a SKILL.md at <home>/skills/<name>/SKILL.md to register one.`,
+        )
+        return
+      }
+      for (const e of items) {
+        const tag = e.status === 'ok' ? 'ok      ' : 'INVALID '
+        const tagStr = e.tags.length > 0 ? ` [${e.tags.join(', ')}]` : ''
+        console.log(`${e.name.padEnd(28)}  ${tag}  ${e.description}${tagStr}`)
+        if (e.status === 'invalid' && e.reason) {
+          console.log(`  ${e.reason}`)
+        }
+      }
+    })
+
+  skill
+    .command('show <name>')
+    .description('print the parsed Skill (frontmatter + body)')
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { readSkill } = await import('../runtime/skills/registry.js')
+      const s = await readSkill(home, name)
+      console.log(`# ${s.name}`)
+      console.log(`description: ${s.frontmatter.description}`)
+      if (s.frontmatter.tags.length > 0) {
+        console.log(`tags:        ${s.frontmatter.tags.join(', ')}`)
+      }
+      if (s.frontmatter.tools.length > 0) {
+        console.log(`tools:       ${s.frontmatter.tools.join(', ')}`)
+      }
+      console.log(`path:        ${s.path}`)
+      console.log()
+      console.log(s.body)
+    })
+
   registerWebCommands(program)
 
   return program
