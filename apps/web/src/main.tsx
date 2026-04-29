@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { App } from './App'
+import { Router } from './router'
 import { ThemeProvider } from './theme/ThemeProvider'
 import './tokens/generated/tokens.css'
 import './tokens/generated/theme-default-dark.css'
@@ -16,7 +16,7 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <ThemeProvider>
-      <App />
+      <Router />
     </ThemeProvider>
   </StrictMode>,
 )

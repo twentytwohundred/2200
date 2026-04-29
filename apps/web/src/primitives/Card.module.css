@@ -1,0 +1,13 @@
+.card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.flat {
+  border-radius: var(--radius-md);
+}
+
+.elevated {
+  box-shadow: var(--shadow-elevation-1);
+}

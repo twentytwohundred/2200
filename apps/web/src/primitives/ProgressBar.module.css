@@ -1,0 +1,30 @@
+.track {
+  position: relative;
+  width: 100%;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width var(--duration-normal) var(--ease-out);
+}
+
+.v-running .fill {
+  background: var(--color-status-running);
+}
+
+.v-attention .fill {
+  background: var(--color-status-attention);
+}
+
+.v-error .fill {
+  background: var(--color-status-error);
+}
+
+.v-idle .fill {
+  background: var(--color-text-muted);
+}
