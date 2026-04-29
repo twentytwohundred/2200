@@ -54,8 +54,8 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 20 tools (14 from Epic 2 + 4 pub tools from Epic 3 PR C + notification.ask from Epic 7 PR D + brain.* reshape in Epic 8 PR C)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(20)
+  it('exports exactly 22 tools (14 from Epic 2 + 4 pub + notification.ask + 5 brain + 2 cross-Agent brain in Epic 8 Phase C)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(22)
   })
 
   it('baselineServers() builds seven servers (incl. notification from Epic 7 PR D)', () => {

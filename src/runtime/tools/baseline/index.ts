@@ -42,6 +42,8 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'brain.search',
   'brain.list',
   'brain.delete',
+  'brain.search_agent',
+  'brain.list_agent',
   'time.now',
   'time.sleep',
   'pub.send',

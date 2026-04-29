@@ -19,6 +19,10 @@
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
 import { getOrOpenBrain } from '../../brain/registry.js'
+import { BrainIndex, BrainIndexNotFoundError } from '../../brain/index-db.js'
+import { BrainStore } from '../../brain/store.js'
+import { BrainPermissionDeniedError, canReadBrain } from '../../brain/permissions.js'
+import { agentBrainIndexPath } from '../../storage/layout.js'
 
 // ---------------------------------------------------------------------------
 // brain.write
@@ -174,10 +178,109 @@ export const brainDelete = defineTool({
   },
 })
 
+// ---------------------------------------------------------------------------
+// brain.search_agent (Epic 8 Phase C)
+// ---------------------------------------------------------------------------
+
+const BrainSearchAgentArgsSchema = z.object({
+  agent: z.string().min(1),
+  query: z.string().min(1),
+  limit: z.number().int().positive().max(100).default(20),
+  types: z.array(z.string()).optional(),
+  any_tag: z.array(z.string()).optional(),
+})
+
+export const brainSearchAgent = defineTool({
+  name: 'brain.search_agent',
+  description:
+    "Full-text search another Agent's brain via SQLite FTS5. Requires the owner to have granted read permission via `2200 brain permissions <owner> --add <caller>`.",
+  idempotency: 'pure',
+  argsSchema: BrainSearchAgentArgsSchema,
+  execute: async (args, ctx) => {
+    const allowed = await canReadBrain(ctx.home, args.agent, ctx.callingAgent)
+    if (!allowed) {
+      throw new BrainPermissionDeniedError(args.agent, ctx.callingAgent)
+    }
+    if (args.agent === ctx.callingAgent) {
+      // Self-read: route through the warm registry handle.
+      const { index } = await getOrOpenBrain(ctx.home, ctx.callingAgent)
+      const hits = index.search(args.query, {
+        limit: args.limit,
+        ...(args.types !== undefined ? { types: args.types } : {}),
+        ...(args.any_tag !== undefined ? { anyTag: args.any_tag } : {}),
+      })
+      return { agent: args.agent, query: args.query, hits }
+    }
+    const path = agentBrainIndexPath(ctx.home, args.agent)
+    let index: BrainIndex
+    try {
+      index = BrainIndex.openReadOnlyAtPath(path)
+    } catch (err) {
+      if (err instanceof BrainIndexNotFoundError) {
+        return { agent: args.agent, query: args.query, hits: [] }
+      }
+      throw err
+    }
+    try {
+      const hits = index.search(args.query, {
+        limit: args.limit,
+        ...(args.types !== undefined ? { types: args.types } : {}),
+        ...(args.any_tag !== undefined ? { anyTag: args.any_tag } : {}),
+      })
+      return { agent: args.agent, query: args.query, hits }
+    } finally {
+      index.close()
+    }
+  },
+})
+
+// ---------------------------------------------------------------------------
+// brain.list_agent (Epic 8 Phase C)
+// ---------------------------------------------------------------------------
+
+const BrainListAgentArgsSchema = z.object({
+  agent: z.string().min(1),
+  type: z.string().optional(),
+  tag: z.string().optional(),
+  limit: z.number().int().positive().max(500).default(50),
+})
+
+export const brainListAgent = defineTool({
+  name: 'brain.list_agent',
+  description:
+    "Enumerate another Agent's brain notes (no body), sorted by updated descending. Requires permission as for brain.search_agent.",
+  idempotency: 'pure',
+  argsSchema: BrainListAgentArgsSchema,
+  execute: async (args, ctx) => {
+    const allowed = await canReadBrain(ctx.home, args.agent, ctx.callingAgent)
+    if (!allowed) {
+      throw new BrainPermissionDeniedError(args.agent, ctx.callingAgent)
+    }
+    const store = new BrainStore(ctx.home, args.agent)
+    const notes = await store.list({
+      limit: args.limit,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.tag !== undefined ? { tag: args.tag } : {}),
+    })
+    return {
+      agent: args.agent,
+      notes: notes.map((n) => ({
+        slug: n.slug,
+        title: n.frontmatter.title,
+        type: n.frontmatter.type,
+        tags: n.frontmatter.tags,
+        updated: n.frontmatter.updated,
+      })),
+    }
+  },
+})
+
 export const brainTools: ToolDefinition[] = [
   brainWrite,
   brainRead,
   brainSearch,
   brainList,
   brainDelete,
+  brainSearchAgent,
+  brainListAgent,
 ]

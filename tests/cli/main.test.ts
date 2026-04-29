@@ -93,11 +93,11 @@ describe('user subcommand', () => {
 })
 
 describe('brain subcommand', () => {
-  it('has list, show, rebuild, import', () => {
+  it('has list, show, rebuild, import, permissions', () => {
     const program = buildProgram()
     const brain = findSubcommand(program, 'brain')!
     const subs = brain.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['import', 'list', 'rebuild', 'show'])
+    expect(subs).toEqual(['import', 'list', 'permissions', 'rebuild', 'show'])
   })
 
   it('brain list takes <agent> and accepts --type, --tag, --limit', () => {
