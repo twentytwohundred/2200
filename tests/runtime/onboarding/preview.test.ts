@@ -19,6 +19,7 @@ const HANDOFF: HandoffDocument = {
     brain: {},
     budget: { daily_cap_usd: 25 },
     schedules: [],
+    mcp_servers: [],
     provenance: { source_system: '2200_onboarding' },
   },
   body: 'I am Emma...',

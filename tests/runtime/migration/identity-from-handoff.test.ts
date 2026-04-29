@@ -110,6 +110,71 @@ body
     ])
   })
 
+  it('passes mcp_servers from handoff into the Identity (Phase A friction-fix)', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: emma
+agent_type: email_agent
+identity:
+  display_name: emma
+budget:
+  daily_cap_usd: 25
+mcp_servers:
+  - name: gmail
+    transport: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-gmail']
+    env:
+      GMAIL_OAUTH_TOKEN:
+        source: env
+        id: GMAIL_OAUTH_TOKEN_EMMA
+---
+body
+`
+    const handoff = parseHandoffString(text, null)
+    const built = buildIdentityFromHandoff({
+      handoff,
+      home: HOME,
+      today: FIXED_DATE,
+    })
+    expect(built.frontmatter.mcp_servers).toHaveLength(1)
+    expect(built.frontmatter.mcp_servers[0]?.name).toBe('gmail')
+    // Wildcard tool grant seeded so the Agent has access to the
+    // declared server's tools the moment it starts.
+    expect(built.frontmatter.tools).toEqual(['gmail.*'])
+  })
+
+  it('seeds tools with one wildcard per declared mcp_server', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: multi
+identity:
+  display_name: multi
+budget:
+  daily_cap_usd: 10
+mcp_servers:
+  - name: github
+    transport: stdio
+    command: npx
+    args: []
+    env: {}
+  - name: slack
+    transport: stdio
+    command: npx
+    args: []
+    env: {}
+---
+body
+`
+    const handoff = parseHandoffString(text, null)
+    const built = buildIdentityFromHandoff({
+      handoff,
+      home: HOME,
+      today: FIXED_DATE,
+    })
+    expect(built.frontmatter.tools.sort()).toEqual(['github.*', 'slack.*'])
+  })
+
   it('humanizes underscores in agent_type for agent_role', () => {
     const text = `---
 handoff_schema_version: 1

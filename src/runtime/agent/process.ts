@@ -145,48 +145,73 @@ export class AgentProcess {
     // fixes the configuration and retries. Mid-session crashes are
     // handled by McpServerManager's locked backoff + notification
     // policy (Epic 9 Phase A spec).
-    for (const spec of this.identity.frontmatter.mcp_servers) {
-      const env: Record<string, string> = {}
-      for (const [varName, secretRef] of Object.entries(spec.env)) {
-        env[varName] = await resolveSecret(secretRef)
-      }
-      // Inherit a small set of safe env vars so commands like `npx`
-      // resolve their PATH and HOME correctly. Identity-supplied env
-      // takes precedence (the operator can override these explicitly).
-      for (const inheritedVar of ['PATH', 'HOME', 'USER', 'LANG']) {
-        const v = process.env[inheritedVar]
-        if (v !== undefined && env[inheritedVar] === undefined) {
-          env[inheritedVar] = v
+    //
+    // Partial-failure cleanup: if the N-th manager.start() throws, the
+    // managers we already started (1..N-1) own running child processes
+    // that will be orphaned if we just rethrow. Stop each one (best-
+    // effort) before letting the error propagate, so AgentProcess.start
+    // failure does not leak child processes.
+    try {
+      for (const spec of this.identity.frontmatter.mcp_servers) {
+        const env: Record<string, string> = {}
+        for (const [varName, secretRef] of Object.entries(spec.env)) {
+          env[varName] = await resolveSecret(secretRef)
         }
-      }
-      const manager = new McpServerManager({
-        serverName: spec.name,
-        spawnArgs: {
+        // Inherit a small set of safe env vars so commands like `npx`
+        // resolve their PATH and HOME correctly. Identity-supplied env
+        // takes precedence (the operator can override these explicitly).
+        for (const inheritedVar of ['PATH', 'HOME', 'USER', 'LANG']) {
+          const v = process.env[inheritedVar]
+          if (v !== undefined && env[inheritedVar] === undefined) {
+            env[inheritedVar] = v
+          }
+        }
+        const manager = new McpServerManager({
+          serverName: spec.name,
+          spawnArgs: {
+            name: spec.name,
+            command: spec.command,
+            args: spec.args,
+            env,
+          },
+          notifier: async ({ tier, body, extras }) => {
+            await emitNotification({
+              home: this.options.home,
+              agentName: this.options.name,
+              tier,
+              kind: 'mcp.restart',
+              body,
+              extras,
+            })
+          },
+          logger: this.log.child(`mcp/${spec.name}`),
+        })
+        // Track BEFORE awaiting start so a throw during start still
+        // gets the manager into our tracking array for cleanup. Stop
+        // is idempotent on a never-fully-started manager.
+        this.mcpManagers.push(manager)
+        await manager.start()
+        registry.register(manager)
+        this.log.info('MCP server spawned', {
           name: spec.name,
           command: spec.command,
-          args: spec.args,
-          env,
-        },
-        notifier: async ({ tier, body, extras }) => {
-          await emitNotification({
-            home: this.options.home,
-            agentName: this.options.name,
-            tier,
-            kind: 'mcp.restart',
-            body,
-            extras,
-          })
-        },
-        logger: this.log.child(`mcp/${spec.name}`),
-      })
-      await manager.start()
-      registry.register(manager)
-      this.mcpManagers.push(manager)
-      this.log.info('MCP server spawned', {
-        name: spec.name,
-        command: spec.command,
-        tools: manager.knownToolNames.length,
-      })
+          tools: manager.knownToolNames.length,
+        })
+      }
+    } catch (err) {
+      // Cleanup already-started managers in reverse order. Errors on
+      // stop are swallowed (best-effort); the original error rethrows.
+      for (let i = this.mcpManagers.length - 1; i >= 0; i--) {
+        const manager = this.mcpManagers[i]
+        if (manager === undefined) continue
+        try {
+          await manager.stop()
+        } catch {
+          // best-effort
+        }
+      }
+      this.mcpManagers.length = 0
+      throw err
     }
 
     // Expand the Identity's `tools:` grants (mix of exact names and

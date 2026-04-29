@@ -91,12 +91,21 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
   // The Identity expects schema_version literal `5`. Compose the
   // frontmatter and run it through the loader's validator so any
   // mapping bug surfaces here rather than at writeIdentity time.
+  //
+  // `tools` is empty by default (operator edits post-migration). When
+  // the handoff carries `mcp_servers`, we also seed a wildcard tool
+  // grant per declared server (e.g., `github.*`) so the Agent has
+  // access to the declared tools the moment it starts. The operator
+  // can narrow grants by editing the Identity post-migration.
+  const declaredServers = fm.mcp_servers
+  const wildcardGrants = declaredServers.map((s) => `${s.name}.*`)
+
   const candidate = {
     schema_version: 5,
     agent_name: fm.agent_name,
     agent_role: humanizeAgentType(fm.agent_type),
     model: DEFAULT_MODEL_BINDING,
-    tools: [],
+    tools: wildcardGrants,
     project_dir: `${args.home}/agents/${fm.agent_name}/project`,
     brain_dir: `${args.home}/agents/${fm.agent_name}/brain`,
     created: dateStr,
@@ -106,6 +115,7 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
     notification_policy: {
       tiers_allowed: fm.identity.notification_policy.tiers_allowed,
     },
+    mcp_servers: declaredServers,
   }
 
   const validated = IdentityFrontmatterSchema.parse(candidate)

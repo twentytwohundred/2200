@@ -34,6 +34,7 @@
 import { hostname } from 'node:os'
 import { ONBOARDING_NOTE_SLUG, type InterviewTranscript } from './types.js'
 import type { HandoffDocument } from '../migration/types.js'
+import type { McpServerSpec } from '../identity/types.js'
 
 const DEFAULT_DAILY_CAP_USD = 25
 const AGENT_NAME_TAG = 'agent_name'
@@ -45,6 +46,15 @@ export interface BuildHandoffArgs {
    * Defaults to `os.hostname()`.
    */
   sourceHost?: string
+  /**
+   * Suggested MCP servers from the tool-suggester (Epic 14 PR C).
+   * When provided, baked into the handoff's `mcp_servers[]` so the
+   * orchestrator writes them into the Agent's Identity directly. The
+   * operator still needs to set the env vars referenced by each
+   * server's SecretRef before starting the Agent (until Epic 9 Phase B
+   * automates OAuth credential capture).
+   */
+  mcpServers?: readonly McpServerSpec[]
 }
 
 /**
@@ -91,6 +101,7 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
         daily_cap_usd: DEFAULT_DAILY_CAP_USD,
       },
       schedules: [],
+      mcp_servers: args.mcpServers !== undefined ? [...args.mcpServers] : [],
       provenance: {
         source_system: '2200_onboarding',
         source_host: args.sourceHost ?? hostname(),

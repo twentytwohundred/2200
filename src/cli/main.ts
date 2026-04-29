@@ -283,6 +283,22 @@ export function buildProgram(): Command {
         yes?: boolean
         dryRun?: boolean
       }) => {
+        // Daemon-running guard runs FIRST so the operator gets the
+        // stop-the-daemon hint immediately, not after sitting through
+        // a 5-10 minute interview + LLM summary call. The --dry-run
+        // mode skips the materialization step entirely so it does
+        // not need this check; we still gate it here to keep the
+        // top-of-action contract simple.
+        const home = await resolveHomeFromOpts(program)
+        const probe = await connectToDaemon(home)
+        if (probe) {
+          await probe.close()
+          console.error(
+            `agent spawn cannot run while the supervisor daemon is up (state-file race risk). Stop with "2200 daemon stop" first, run spawn, then restart the daemon.`,
+          )
+          process.exit(1)
+        }
+
         const { loadScriptFile } = await import('../runtime/onboarding/script-loader.js')
         const { runInterview } = await import('../runtime/onboarding/interview.js')
         const { buildHandoffFromTranscript } =
@@ -349,19 +365,25 @@ export function buildProgram(): Command {
           rl.close()
         }
 
-        const handoff = buildHandoffFromTranscript({ transcript })
-        const tools = suggestTools(transcript, handoff.frontmatter.agent_name)
+        // Build the handoff with suggested mcp_servers baked in so
+        // the orchestrator writes them directly into the Identity ...
+        // no manual post-spawn YAML editing required. Schedules
+        // remain a separate post-spawn step at v1 (the schedule store
+        // is per-Agent and the operator wants to confirm cadences
+        // before the first fire).
+        const agentNameForSuggest = (() => {
+          // Re-derive what the handoff builder will normalize to,
+          // without duplicating the function: peek into a dry-run
+          // build to get the canonical name. Cheap.
+          const dryHandoff = buildHandoffFromTranscript({ transcript })
+          return dryHandoff.frontmatter.agent_name
+        })()
+        const tools = suggestTools(transcript, agentNameForSuggest)
         const schedules = suggestSchedules(transcript)
-
-        // Compose the proposed mcp_servers[] entries onto the
-        // handoff so the preview reflects what would be written. The
-        // user accepts or drops the whole bundle at confirmation;
-        // future polish can let them drop individual suggestions.
-        if (tools.length > 0) {
-          handoff.frontmatter.identity = {
-            ...handoff.frontmatter.identity,
-          }
-        }
+        const handoff = buildHandoffFromTranscript({
+          transcript,
+          mcpServers: tools.map((t) => t.server),
+        })
 
         console.log('\n' + renderPreview({ handoff, tools, schedules }) + '\n')
 
@@ -387,35 +409,14 @@ export function buildProgram(): Command {
           return
         }
 
-        // Materialize the Agent. Daemon-running guard mirrors the
-        // migrate flow: spawn writes to the same state-file surface
-        // a running supervisor would, so refuse if a daemon is up.
-        const home = await resolveHomeFromOpts(program)
-        const probe = await connectToDaemon(home)
-        if (probe) {
-          await probe.close()
-          console.error(
-            `agent spawn cannot run while the supervisor daemon is up (state-file race risk). Stop with "2200 daemon stop" first, run spawn, then restart the daemon.`,
-          )
-          process.exit(1)
-        }
-
-        // Inject the suggested mcp_servers + write the Identity via
-        // the migration orchestrator. The orchestrator handles
-        // Identity write, supervisor.createAgent, brain inline-note
+        // Materialize the Agent via the migration orchestrator. The
+        // orchestrator handles Identity write (with mcp_servers
+        // baked in), supervisor.createAgent, brain inline-note
         // write, and the summary notification.
         const { migrateFromHandoff } = await import('../runtime/migration/orchestrator.js')
         const { Supervisor: SupCls } = await import('../runtime/supervisor/supervisor.js')
         const supervisor = await SupCls.create({ home })
         try {
-          // Bake the suggested mcp_servers[] into the Identity
-          // before passing the handoff to the orchestrator. The
-          // builder (Epic 5) does not accept mcp_servers in its
-          // input; the cleanest seam is to write the Identity, then
-          // append mcp_servers. For now we rely on the operator
-          // editing the Identity post-spawn to add the suggested
-          // entries. Phase A keeps this manual; Phase B (OAuth)
-          // automates.
           const result = await migrateFromHandoff({
             handoff,
             home,
@@ -428,22 +429,10 @@ export function buildProgram(): Command {
 
           if (tools.length > 0) {
             console.log(
-              `\nNext steps for tools (operator wires manually at v1; OAuth automation in Epic 9 Phase B):`,
+              `\nMCP servers written into the Identity. Set the env vars below before "agent start" (OAuth automation lands in Epic 9 Phase B):`,
             )
             for (const tool of tools) {
               console.log(`  - ${tool.server.name}: ${tool.env_hint}`)
-              console.log(`    add to ${result.identity_path} under mcp_servers:`)
-              console.log(`      - name: ${tool.server.name}`)
-              console.log(`        transport: stdio`)
-              console.log(`        command: ${tool.server.command}`)
-              console.log(`        args: ${JSON.stringify(tool.server.args)}`)
-              const envEntries = Object.entries(tool.server.env)
-              if (envEntries.length > 0) {
-                console.log(`        env:`)
-                for (const [k, v] of envEntries) {
-                  console.log(`          ${k}: { source: ${v.source}, id: ${v.id} }`)
-                }
-              }
             }
           }
 
