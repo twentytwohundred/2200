@@ -23,6 +23,7 @@
 import { fileURLToPath } from 'node:url'
 import * as readline from 'node:readline'
 import { readdir, readFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
@@ -2013,8 +2014,24 @@ async function detectAgentThinking(home: string, agentName: string): Promise<boo
  * Entry-point guard: only invoke the parser when this module is executed
  * directly (e.g., via `2200 ...` or `node dist/cli/main.js`). When imported
  * by tests, the parse does not run.
+ *
+ * Paths are normalized through realpathSync so symlinked invocations (e.g.,
+ * a global pnpm-link or a hand-rolled `/opt/homebrew/bin/2200` symlink)
+ * resolve to the same canonical path as `import.meta.url`. Without this,
+ * `process.argv[1]` is the symlink path and `import.meta.url` is the real
+ * path, the comparison fails, and the CLI silently no-ops.
  */
-const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
+function realPathOrSelf(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  realPathOrSelf(fileURLToPath(import.meta.url)) === realPathOrSelf(process.argv[1])
 
 if (invokedDirectly) {
   buildProgram()
