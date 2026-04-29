@@ -639,7 +639,60 @@ export function buildProgram(): Command {
         console.log(`Errored at:     ${record.errored_at}`)
         console.log(`Error reason:   ${record.errored_reason ?? '(none)'}`)
       }
+      // Tool-health one-liner (Epic 9 Phase C-2). Cheap to compute; helps
+      // operators spot a noisy MCP server before it gets ignored.
+      try {
+        const { agentPaths } = await import('../runtime/storage/layout.js')
+        const { aggregateToolHealth } = await import('../runtime/tools/health.js')
+        const summary = await aggregateToolHealth(agentPaths(home, name).brain, name)
+        if (summary.total_records > 0) {
+          console.log(
+            `Tool health:    ${String(summary.tools.length)} active, ${String(summary.dormant.length)} dormant, ${String(summary.failing.length)} failing  (run \`2200 agent tool-health ${name}\` for detail)`,
+          )
+        }
+      } catch {
+        // swallow ... status should not fail because of a brain-dir read
+      }
     })
+
+  agent
+    .command('tool-health <name>')
+    .description('inspect per-tool call history for an Agent (Epic 9 Phase C-2)')
+    .option('--write', 'also write the rendered markdown to <brain>/tool_health.md')
+    .option('--dormant-days <n>', 'days of inactivity before a tool is flagged dormant', '30')
+    .option('--window <n>', 'window size for the recent-failure-rate calculation', '20')
+    .action(
+      async (name: string, opts: { write?: boolean; dormantDays: string; window: string }) => {
+        const home = await resolveHomeFromOpts(program)
+        const { agentPaths } = await import('../runtime/storage/layout.js')
+        const { aggregateToolHealth, renderToolHealthMd } =
+          await import('../runtime/tools/health.js')
+        const dormantDays = Number.parseInt(opts.dormantDays, 10)
+        const window = Number.parseInt(opts.window, 10)
+        if (!Number.isFinite(dormantDays) || dormantDays < 0) {
+          console.error('--dormant-days must be a non-negative integer')
+          process.exit(1)
+        }
+        if (!Number.isFinite(window) || window < 1) {
+          console.error('--window must be a positive integer')
+          process.exit(1)
+        }
+        const brain = agentPaths(home, name).brain
+        const summary = await aggregateToolHealth(brain, name, {
+          dormantThresholdDays: dormantDays,
+          recentFailureWindow: window,
+        })
+        const md = renderToolHealthMd(summary)
+        if (opts.write) {
+          const { writeFile } = await import('node:fs/promises')
+          const outPath = `${brain}/tool_health.md`
+          await writeFile(outPath, md, 'utf8')
+          console.log(`wrote ${outPath}`)
+        } else {
+          process.stdout.write(md)
+        }
+      },
+    )
 
   // ---------------------------------------------------------------------------
   // 2200 agent budget <subcommand>

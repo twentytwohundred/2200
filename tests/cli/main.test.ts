@@ -151,7 +151,7 @@ describe('daemon subcommand', () => {
 })
 
 describe('agent subcommand', () => {
-  it('has create, migrate, spawn, start, stop, resume, status, budget, identity', () => {
+  it('has create, migrate, spawn, start, stop, resume, status, budget, identity, tool-health', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const subs = agent.commands.map((c) => c.name()).sort()
@@ -165,6 +165,7 @@ describe('agent subcommand', () => {
       'start',
       'status',
       'stop',
+      'tool-health',
     ])
   })
 
