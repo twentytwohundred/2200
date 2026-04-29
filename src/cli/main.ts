@@ -23,7 +23,7 @@
 import { fileURLToPath } from 'node:url'
 import * as readline from 'node:readline'
 import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
@@ -255,6 +255,213 @@ export function buildProgram(): Command {
           )
         }
         console.log(`Run "2200 agent start ${name}" to bring it up.`)
+      },
+    )
+
+  agent
+    .command('spawn')
+    .description(
+      'spawn a new Agent through a guided conversation (Epic 14 Phase A; see wiki/epics/14-conversational-onboarding.md)',
+    )
+    .option(
+      '--script <path>',
+      'override the YAML question script (defaults to the bundled default-v1.yaml)',
+    )
+    .option('--provider <name>', 'LLM provider for the interview (default: anthropic)', 'anthropic')
+    .option(
+      '--model <id>',
+      'model id for the interview (default: claude-opus-4-7)',
+      'claude-opus-4-7',
+    )
+    .option('--yes', 'auto-confirm at the preview step (non-interactive)')
+    .option('--dry-run', 'run the interview, print the preview, do not create')
+    .action(
+      async (opts: {
+        script?: string
+        provider: string
+        model: string
+        yes?: boolean
+        dryRun?: boolean
+      }) => {
+        const { loadScriptFile } = await import('../runtime/onboarding/script-loader.js')
+        const { runInterview } = await import('../runtime/onboarding/interview.js')
+        const { buildHandoffFromTranscript } =
+          await import('../runtime/onboarding/identity-from-interview.js')
+        const { suggestTools } = await import('../runtime/onboarding/tool-suggestions.js')
+        const { suggestSchedules } = await import('../runtime/onboarding/schedule-suggestions.js')
+        const { renderPreview } = await import('../runtime/onboarding/preview.js')
+        const { resolveProvider } = await import('../runtime/llm/registry.js')
+
+        // Resolve the script path: explicit override or the bundled
+        // default at src/runtime/onboarding/scripts/default-v1.yaml
+        // (relative to the running cli/main.js).
+        const cliDir = dirname(fileURLToPath(import.meta.url))
+        const defaultScriptPath = join(
+          cliDir,
+          '..',
+          'runtime',
+          'onboarding',
+          'scripts',
+          'default-v1.yaml',
+        )
+        const scriptPath = opts.script ?? defaultScriptPath
+
+        const script = await loadScriptFile(scriptPath)
+
+        // Stdin/stdout interview UX.
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+        const stdinInput = {
+          ask: (promptText: string): Promise<string> =>
+            new Promise<string>((resolve) => {
+              process.stdout.write(`\n${promptText}\n> `)
+              rl.question('', (answer) => {
+                resolve(answer)
+              })
+            }),
+        }
+
+        let provider
+        try {
+          provider = await resolveProvider({ providerName: opts.provider })
+        } catch (err) {
+          rl.close()
+          console.error(
+            `Could not resolve LLM provider "${opts.provider}": ${err instanceof Error ? err.message : String(err)}`,
+          )
+          console.error(
+            `Set the appropriate API-key env var (e.g., ANTHROPIC_API_KEY for anthropic) before running.`,
+          )
+          process.exit(1)
+        }
+
+        let transcript
+        try {
+          console.log(
+            `\nStarting onboarding interview. Answer the prompts; the system will summarize at the end.\n`,
+          )
+          transcript = await runInterview({
+            script,
+            provider,
+            modelId: opts.model,
+            input: stdinInput,
+          })
+        } finally {
+          rl.close()
+        }
+
+        const handoff = buildHandoffFromTranscript({ transcript })
+        const tools = suggestTools(transcript, handoff.frontmatter.agent_name)
+        const schedules = suggestSchedules(transcript)
+
+        // Compose the proposed mcp_servers[] entries onto the
+        // handoff so the preview reflects what would be written. The
+        // user accepts or drops the whole bundle at confirmation;
+        // future polish can let them drop individual suggestions.
+        if (tools.length > 0) {
+          handoff.frontmatter.identity = {
+            ...handoff.frontmatter.identity,
+          }
+        }
+
+        console.log('\n' + renderPreview({ handoff, tools, schedules }) + '\n')
+
+        if (opts.dryRun === true) {
+          console.log('(dry run; nothing written. Drop --dry-run to create.)')
+          return
+        }
+
+        // Confirmation step (default no per locked Phase A decision).
+        let confirmed = opts.yes === true
+        if (!confirmed) {
+          const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout })
+          const answer = await new Promise<string>((resolve) => {
+            rl2.question('Confirm? [y/N] ', (a) => {
+              resolve(a.trim().toLowerCase())
+            })
+          })
+          rl2.close()
+          confirmed = answer === 'y' || answer === 'yes'
+        }
+        if (!confirmed) {
+          console.log('Cancelled. Nothing written.')
+          return
+        }
+
+        // Materialize the Agent. Daemon-running guard mirrors the
+        // migrate flow: spawn writes to the same state-file surface
+        // a running supervisor would, so refuse if a daemon is up.
+        const home = await resolveHomeFromOpts(program)
+        const probe = await connectToDaemon(home)
+        if (probe) {
+          await probe.close()
+          console.error(
+            `agent spawn cannot run while the supervisor daemon is up (state-file race risk). Stop with "2200 daemon stop" first, run spawn, then restart the daemon.`,
+          )
+          process.exit(1)
+        }
+
+        // Inject the suggested mcp_servers + write the Identity via
+        // the migration orchestrator. The orchestrator handles
+        // Identity write, supervisor.createAgent, brain inline-note
+        // write, and the summary notification.
+        const { migrateFromHandoff } = await import('../runtime/migration/orchestrator.js')
+        const { Supervisor: SupCls } = await import('../runtime/supervisor/supervisor.js')
+        const supervisor = await SupCls.create({ home })
+        try {
+          // Bake the suggested mcp_servers[] into the Identity
+          // before passing the handoff to the orchestrator. The
+          // builder (Epic 5) does not accept mcp_servers in its
+          // input; the cleanest seam is to write the Identity, then
+          // append mcp_servers. For now we rely on the operator
+          // editing the Identity post-spawn to add the suggested
+          // entries. Phase A keeps this manual; Phase B (OAuth)
+          // automates.
+          const result = await migrateFromHandoff({
+            handoff,
+            home,
+            supervisor,
+            today: new Date(),
+          })
+          console.log(`\nAgent "${result.agent_name}" created.`)
+          console.log(`  identity:           ${result.identity_path}`)
+          console.log(`  continuity note:    ${result.continuity_note_slug}`)
+
+          if (tools.length > 0) {
+            console.log(
+              `\nNext steps for tools (operator wires manually at v1; OAuth automation in Epic 9 Phase B):`,
+            )
+            for (const tool of tools) {
+              console.log(`  - ${tool.server.name}: ${tool.env_hint}`)
+              console.log(`    add to ${result.identity_path} under mcp_servers:`)
+              console.log(`      - name: ${tool.server.name}`)
+              console.log(`        transport: stdio`)
+              console.log(`        command: ${tool.server.command}`)
+              console.log(`        args: ${JSON.stringify(tool.server.args)}`)
+              const envEntries = Object.entries(tool.server.env)
+              if (envEntries.length > 0) {
+                console.log(`        env:`)
+                for (const [k, v] of envEntries) {
+                  console.log(`          ${k}: { source: ${v.source}, id: ${v.id} }`)
+                }
+              }
+            }
+          }
+
+          if (schedules.length > 0) {
+            console.log(`\nNext steps for schedules (operator runs after agent start):`)
+            for (const sched of schedules) {
+              console.log(
+                `  - ${sched.id}: 2200 schedule add ${result.agent_name} --cron "${sched.cron}" --tz ${sched.tz} --description "${sched.task.replace(/"/g, '\\"')}"`,
+              )
+            }
+          }
+
+          console.log(
+            `\nRun "2200 daemon start" then "2200 agent start ${result.agent_name}" to bring it up.`,
+          )
+        } finally {
+          await supervisor.shutdown()
+        }
       },
     )
 
