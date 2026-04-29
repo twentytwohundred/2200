@@ -189,7 +189,7 @@ describe('cli.agent.resume', () => {
 
     const pulsePath = join(agentPaths(home, 'hobby').root, 'pulse.json')
     const pulse = JSON.parse(await readFile(pulsePath, 'utf8')) as Record<string, unknown>
-    expect(pulse['state']).toBe('green')
+    expect(pulse['state']).toBe('resting')
   })
 
   it('returns null resumed_task_id when no task is blocked', async () => {
@@ -199,7 +199,7 @@ describe('cli.agent.resume', () => {
     expect(result.resumed_task_id).toBeNull()
     const pulsePath = join(agentPaths(home, 'hobby').root, 'pulse.json')
     const pulse = JSON.parse(await readFile(pulsePath, 'utf8')) as Record<string, unknown>
-    expect(pulse['state']).toBe('green')
+    expect(pulse['state']).toBe('resting')
   })
 
   it('errors on unknown agent', async () => {
