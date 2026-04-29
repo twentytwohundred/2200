@@ -27,6 +27,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "cli": "node ./dist/cli/main.js",
     "clean": "rm -rf dist coverage .tscache",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
