@@ -2421,33 +2421,123 @@ export function buildProgram(): Command {
           )
         }
 
-        const value = tokens.refresh_token ?? tokens.access_token
         const expiresAt =
           tokens.expires_in !== undefined
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : undefined
+        const createdAt = new Date().toISOString()
 
         const vault = new CredentialVault(home, agentName)
         await vault.set(credentialName, {
-          value,
+          value: tokens.access_token,
           metadata: {
-            created_at: new Date().toISOString(),
+            created_at: createdAt,
             provider: providerName,
             scopes: Array.from(scopes),
             ...(expiresAt ? { expires_at: expiresAt } : {}),
-            notes: tokens.refresh_token
-              ? 'refresh_token (use with the matching token endpoint to mint access tokens)'
-              : 'access_token (no refresh; will expire)',
+            notes: 'oauth access_token',
           },
         })
+        if (tokens.refresh_token) {
+          await vault.set(`${credentialName}-refresh`, {
+            value: tokens.refresh_token,
+            metadata: {
+              created_at: createdAt,
+              provider: providerName,
+              scopes: Array.from(scopes),
+              notes: `oauth refresh_token (companion to "${credentialName}")`,
+            },
+          })
+        }
 
         console.log()
-        console.log(`stored in ${agentName} vault as "${credentialName}"`)
+        console.log(`stored in ${agentName} vault:`)
+        console.log(`  access:    ${credentialName}`)
+        if (tokens.refresh_token) console.log(`  refresh:   ${credentialName}-refresh`)
         console.log(`  scopes:    ${Array.from(scopes).join(', ')}`)
         if (expiresAt) console.log(`  expires:   ${expiresAt}`)
         console.log(`  reference: { source: vault, id: "${credentialName}" } in mcp_servers env`)
       },
     )
+
+  oauth
+    .command('refresh <agent> <name>')
+    .description('manually refresh an OAuth access token using its companion refresh_token')
+    .action(async (agentName: string, name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const { findProvider, readClientCredentials } = await import('../runtime/oauth/providers.js')
+      const { refreshAccessToken } = await import('../runtime/oauth/refresh.js')
+
+      const vault = new CredentialVault(home, agentName)
+      const refreshName = name.endsWith('-refresh') ? name : `${name}-refresh`
+      const accessName = name.endsWith('-refresh') ? name.slice(0, -'-refresh'.length) : name
+      const refresh = await vault.get(refreshName).catch(() => null)
+      if (!refresh) {
+        console.error(`no refresh_token at ${agentName}:${refreshName}`)
+        process.exit(1)
+      }
+      const providerName = refresh.metadata.provider
+      if (!providerName) {
+        console.error(`refresh_token at ${agentName}:${refreshName} has no provider tag`)
+        process.exit(1)
+      }
+      const provider = findProvider(providerName)
+      if (!provider) {
+        console.error(`provider "${providerName}" is not in the registry`)
+        process.exit(1)
+      }
+      const creds = readClientCredentials(providerName)
+      if (!creds.clientId || !creds.clientSecret) {
+        console.error(
+          `client credentials missing. Set ${creds.envVarHints.id} and ${creds.envVarHints.secret} in the supervisor environment.`,
+        )
+        process.exit(1)
+      }
+      let tokens
+      try {
+        tokens = await refreshAccessToken({
+          provider,
+          refreshToken: refresh.value,
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret,
+        })
+      } catch (err) {
+        console.error(`refresh failed: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      }
+
+      const accessExisting = await vault.get(accessName).catch(() => null)
+      const expiresAt =
+        tokens.expires_in !== undefined
+          ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+          : undefined
+      await vault.set(accessName, {
+        value: tokens.access_token,
+        metadata: {
+          created_at: new Date().toISOString(),
+          provider: providerName,
+          scopes: accessExisting?.metadata.scopes ?? refresh.metadata.scopes ?? [],
+          ...(expiresAt ? { expires_at: expiresAt } : {}),
+          notes: 'oauth access_token (refreshed)',
+        },
+      })
+      if (tokens.refresh_token && tokens.refresh_token !== refresh.value) {
+        await vault.set(refreshName, {
+          value: tokens.refresh_token,
+          metadata: {
+            ...refresh.metadata,
+            created_at: new Date().toISOString(),
+            notes: `oauth refresh_token (rotated; companion to "${accessName}")`,
+          },
+        })
+      }
+      console.log(`refreshed ${agentName}:${accessName}`)
+      if (expiresAt) console.log(`  new expires: ${expiresAt}`)
+      if (tokens.refresh_token && tokens.refresh_token !== refresh.value) {
+        console.log(`  rotated:     ${refreshName}`)
+      }
+    })
 
   oauth
     .command('status <agent>')
@@ -2457,13 +2547,21 @@ export function buildProgram(): Command {
       const { CredentialVault } = await import('../runtime/credentials/vault.js')
       const vault = new CredentialVault(home, agentName)
       const all = await vault.list()
-      const oauthEntries = all.filter((e) => e.metadata.provider !== undefined)
+      const oauthEntries = all.filter(
+        (e) => e.metadata.provider !== undefined && !e.name.endsWith('-refresh'),
+      )
       if (oauthEntries.length === 0) {
         console.log(`No OAuth credentials in ${agentName} vault.`)
         return
       }
+      const hasRefresh = new Set(
+        all
+          .filter((e) => e.name.endsWith('-refresh'))
+          .map((e) => e.name.slice(0, -'-refresh'.length)),
+      )
       for (const e of oauthEntries) {
-        console.log(`${e.name.padEnd(28)}  [${e.metadata.provider ?? '?'}]`)
+        const flag = hasRefresh.has(e.name) ? ' [+refresh]' : ''
+        console.log(`${e.name.padEnd(28)}  [${e.metadata.provider ?? '?'}]${flag}`)
         if (e.metadata.scopes) console.log(`  scopes:  ${e.metadata.scopes.join(', ')}`)
         if (e.metadata.expires_at) console.log(`  expires: ${e.metadata.expires_at}`)
         if (e.metadata.notes) console.log(`  ${e.metadata.notes}`)
@@ -2473,16 +2571,22 @@ export function buildProgram(): Command {
   oauth
     .command('revoke <agent> <name>')
     .description(
-      'delete an OAuth credential from an Agent vault (does NOT call the revocation endpoint)',
+      'delete an OAuth credential pair (access + companion -refresh) from an Agent vault (does NOT call the provider revocation endpoint)',
     )
     .action(async (agentName: string, name: string) => {
       const home = await resolveHomeFromOpts(program)
       const { CredentialVault } = await import('../runtime/credentials/vault.js')
       const vault = new CredentialVault(home, agentName)
-      const removed = await vault.delete(name)
+      const baseName = name.endsWith('-refresh') ? name.slice(0, -'-refresh'.length) : name
+      const refreshName = `${baseName}-refresh`
+      const removedAccess = await vault.delete(baseName)
+      const removedRefresh = await vault.delete(refreshName)
+      const removed: string[] = []
+      if (removedAccess) removed.push(baseName)
+      if (removedRefresh) removed.push(refreshName)
       console.log(
-        removed
-          ? `deleted ${agentName}:${name} (still authorized at the provider; revoke separately if desired)`
+        removed.length > 0
+          ? `deleted ${agentName}: ${removed.join(', ')} (still authorized at the provider; revoke separately if desired)`
           : `no credential at ${agentName}:${name}`,
       )
     })

@@ -48,6 +48,7 @@ import {
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
 import { Scheduler } from '../scheduler/service.js'
+import { TokenRefreshService } from '../oauth/refresh-service.js'
 import type { ScheduleListEntry } from '../control-plane/protocol.js'
 import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
 
@@ -92,6 +93,7 @@ export class Supervisor {
   private readonly log: Logger
   private isShuttingDown = false
   private readonly scheduler: Scheduler
+  private readonly tokenRefresh: TokenRefreshService
   private webHandle: { stop: () => Promise<void>; broadcast: (e: WsEvent) => void } | undefined
   private readonly webConfig: SupervisorOptions['web']
 
@@ -102,6 +104,10 @@ export class Supervisor {
     this.scheduler = new Scheduler({
       home: state.home,
       logger: this.log.child('scheduler'),
+    })
+    this.tokenRefresh = new TokenRefreshService({
+      home: state.home,
+      logger: this.log.child('oauth-refresh'),
     })
     this.webConfig = options.web
   }
@@ -132,6 +138,7 @@ export class Supervisor {
     this.listener = options.listener ?? (await listenUds(Supervisor.socketPath(this.state.home)))
     void this.acceptLoop()
     await this.scheduler.start()
+    this.tokenRefresh.start()
     if (this.webConfig) {
       try {
         const handle: HttpServerHandle = await startHttpServer({
@@ -178,6 +185,7 @@ export class Supervisor {
       this.webHandle = undefined
     }
     this.scheduler.stop()
+    this.tokenRefresh.stop()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
       try {
         await sa.stop(timeoutMs)
