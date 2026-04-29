@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 const VALID = `---
-schema_version: 4
+schema_version: 5
 agent_name: hobby
 agent_role: "primary build agent for 2200"
 model:
@@ -65,7 +65,7 @@ describe('loadIdentity (happy path)', () => {
     const path = await writeAt('hobby.md', VALID)
     const id = await loadIdentity(path)
     expect(id.frontmatter.agent_name).toBe('hobby')
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
     expect(id.frontmatter.model.provider).toBe('anthropic')
     expect(id.frontmatter.model.model_id).toBe('claude-opus-4-7')
     expect(id.frontmatter.tools).toEqual([])
@@ -126,14 +126,14 @@ describe('loadIdentity (error paths)', () => {
 
   it('tolerates string schema_version on read (parsed to int and migrated forward)', async () => {
     // schema_version='1' as YAML string is the historical-document case;
-    // the migrator chain parses it as 1, migrates 1->2, and the loader returns
-    // a typed record with schema_version: 4.
+    // the migrator chain parses it as 1, runs 1->2->3->4->5, and the loader
+    // returns a typed record with schema_version: 5.
     const path = await writeAt(
       'string-version.md',
-      VALID.replace('schema_version: 4', "schema_version: '1'"),
+      VALID.replace('schema_version: 5', "schema_version: '1'"),
     )
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
   })
 
   it('rejects an agent_name with invalid characters', async () => {
@@ -188,7 +188,7 @@ describe('validateIdentity', () => {
 describe('validateFrontmatter', () => {
   it('parses an in-memory object', () => {
     const fm = validateFrontmatter({
-      schema_version: 4,
+      schema_version: 5,
       agent_name: 'hobby',
       agent_role: 'test',
       model: { tier: 'frontier', provider: 'anthropic', model_id: 'claude-opus-4-7' },
@@ -201,21 +201,35 @@ describe('validateFrontmatter', () => {
   })
 
   it('rejects missing required fields', () => {
-    expect(() => validateFrontmatter({ schema_version: 4 })).toThrow()
+    expect(() => validateFrontmatter({ schema_version: 5 })).toThrow()
+  })
+
+  it('admits a tools array containing a wildcard (Epic 9 Phase A)', () => {
+    const fm = validateFrontmatter({
+      schema_version: 5,
+      agent_name: 'hobby',
+      agent_role: 'test',
+      model: { tier: 'frontier', provider: 'anthropic', model_id: 'claude-opus-4-7' },
+      tools: ['github.*', 'slack.send'],
+      project_dir: '/p',
+      brain_dir: '/b',
+      created: '2026-04-26',
+    })
+    expect(fm.tools).toEqual(['github.*', 'slack.send'])
   })
 })
 
 describe('migrator chain', () => {
   it('a v0 document (missing schema_version) is upgraded all the way to current on read', async () => {
-    const path = await writeAt('v0.md', VALID.replace('schema_version: 4\n', ''))
+    const path = await writeAt('v0.md', VALID.replace('schema_version: 5\n', ''))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
   })
 
-  it('a v1 document is upgraded all the way to v4 with defaults applied', async () => {
-    const path = await writeAt('v1.md', VALID.replace('schema_version: 4', 'schema_version: 1'))
+  it('a v1 document is upgraded all the way to v5 with defaults applied', async () => {
+    const path = await writeAt('v1.md', VALID.replace('schema_version: 5', 'schema_version: 1'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
     expect(id.frontmatter.cost_caps.daily_usd).toBe(10)
     expect(id.frontmatter.cost_caps.warn_at_pct).toBe(80)
     expect(id.frontmatter.cost_caps.reset_at).toBe('00:00 UTC')
@@ -228,10 +242,10 @@ describe('migrator chain', () => {
     ])
   })
 
-  it('a v2 document is upgraded to v4 with no scut block and the default notification policy', async () => {
-    const path = await writeAt('v2.md', VALID.replace('schema_version: 4', 'schema_version: 2'))
+  it('a v2 document is upgraded to v5 with no scut block and the default notification policy', async () => {
+    const path = await writeAt('v2.md', VALID.replace('schema_version: 5', 'schema_version: 2'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
     expect(id.frontmatter.scut).toBeUndefined()
     expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
       'passive',
@@ -240,10 +254,10 @@ describe('migrator chain', () => {
     ])
   })
 
-  it('a v3 document is upgraded to v4 with the default notification policy', async () => {
-    const path = await writeAt('v3.md', VALID.replace('schema_version: 4', 'schema_version: 3'))
+  it('a v3 document is upgraded to v5 with the default notification policy', async () => {
+    const path = await writeAt('v3.md', VALID.replace('schema_version: 5', 'schema_version: 3'))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.schema_version).toBe(4)
+    expect(id.frontmatter.schema_version).toBe(5)
     expect(id.frontmatter.notification_policy.tiers_allowed).toEqual([
       'passive',
       'normal',
@@ -251,10 +265,17 @@ describe('migrator chain', () => {
     ])
   })
 
+  it('a v4 document is upgraded to v5 with mcp_servers defaulting to empty', async () => {
+    const path = await writeAt('v4.md', VALID.replace('schema_version: 5', 'schema_version: 4'))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.schema_version).toBe(5)
+    expect(id.frontmatter.mcp_servers).toEqual([])
+  })
+
   it('a future schema_version (newer than the loader) is rejected', async () => {
     const path = await writeAt(
       'future.md',
-      VALID.replace('schema_version: 4', 'schema_version: 99'),
+      VALID.replace('schema_version: 5', 'schema_version: 99'),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/newer than this loader supports/)
   })
@@ -452,5 +473,82 @@ describe('notification_policy block (Epic 7)', () => {
       ),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/tiers_allowed/)
+  })
+})
+
+describe('mcp_servers block (Epic 9 Phase A)', () => {
+  const GITHUB_BLOCK = `created: 2026-04-26
+mcp_servers:
+  - name: github
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_TOKEN:
+        source: env
+        id: GITHUB_TOKEN_HOBBY`
+
+  it('absent block defaults to empty array', async () => {
+    const path = await writeAt('default-mcp.md', VALID)
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.mcp_servers).toEqual([])
+  })
+
+  it('parses a stdio MCP server with env SecretRef', async () => {
+    const path = await writeAt('github-mcp.md', VALID.replace('created: 2026-04-26', GITHUB_BLOCK))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.mcp_servers).toHaveLength(1)
+    const server = id.frontmatter.mcp_servers[0]!
+    expect(server.name).toBe('github')
+    expect(server.transport).toBe('stdio')
+    expect(server.command).toBe('npx')
+    expect(server.args).toEqual(['-y', '@modelcontextprotocol/server-github'])
+    expect(server.env['GITHUB_TOKEN']).toEqual({
+      source: 'env',
+      id: 'GITHUB_TOKEN_HOBBY',
+    })
+  })
+
+  it('rejects a server name with invalid characters', async () => {
+    const bad = GITHUB_BLOCK.replace('name: github', "name: 'GitHub-Server'")
+    const path = await writeAt('bad-name-mcp.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/mcp_servers\.0\.name/)
+  })
+
+  it('rejects an unknown transport (only stdio is admitted in Phase A)', async () => {
+    const bad = GITHUB_BLOCK.replace('transport: stdio', 'transport: http')
+    const path = await writeAt('bad-transport-mcp.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/transport/)
+  })
+
+  it('rejects duplicate server names', async () => {
+    const dup = `${GITHUB_BLOCK}
+  - name: github
+    transport: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-github']
+    env: {}`
+    const path = await writeAt('dup-mcp.md', VALID.replace('created: 2026-04-26', dup))
+    await expect(loadIdentity(path)).rejects.toThrow(/duplicate.*name/)
+  })
+
+  it('admits an empty env map', async () => {
+    const noEnv = `created: 2026-04-26
+mcp_servers:
+  - name: time
+    transport: stdio
+    command: /usr/bin/echo
+    args: []`
+    const path = await writeAt('no-env-mcp.md', VALID.replace('created: 2026-04-26', noEnv))
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.mcp_servers[0]?.env).toEqual({})
+  })
+
+  it('rejects a SecretRef with an unknown source', async () => {
+    const bad = GITHUB_BLOCK.replace('source: env', 'source: vault')
+    const path = await writeAt('bad-secret-mcp.md', VALID.replace('created: 2026-04-26', bad))
+    await expect(loadIdentity(path)).rejects.toThrow(/source/)
   })
 })

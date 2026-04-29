@@ -45,7 +45,7 @@ describe('buildIdentityFromHandoff', () => {
       today: FIXED_DATE,
     })
 
-    expect(built.frontmatter.schema_version).toBe(4)
+    expect(built.frontmatter.schema_version).toBe(5)
     expect(built.frontmatter.agent_name).toBe('hobby')
     expect(built.frontmatter.agent_role).toBe('build agent')
     expect(built.frontmatter.model.tier).toBe('frontier')

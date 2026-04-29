@@ -34,7 +34,7 @@ async function seedAgent(name: string): Promise<void> {
   await writeFile(
     idSrc,
     `---
-schema_version: 4
+schema_version: 5
 agent_name: ${name}
 agent_role: build agent
 model:
