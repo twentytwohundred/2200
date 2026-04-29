@@ -80,8 +80,15 @@ export function FleetScreen(): ReactElement {
     refetchOnWindowFocus: true,
   })
 
+  const inboxQuery = useQuery({
+    queryKey: ['notifications', { state: 'pending' }],
+    queryFn: () => api.notifications({ state: 'pending' }),
+    staleTime: 5_000,
+  })
+
   const groups = useMemo(() => group(query.data?.items ?? []), [query.data])
   const aggregateStatus = `${theme} · WS ${live.status}`
+  const pendingCount = inboxQuery.data?.items.length ?? 0
 
   return (
     <main className={styles.shell}>
@@ -89,7 +96,14 @@ export function FleetScreen(): ReactElement {
         eyebrow={`2200 · FLEET · ${aggregateStatus.toUpperCase()}`}
         title="Fleet"
         subtitle="Mission control for the Agents on this instance. Status pills are live."
-        actions={<ThemeSwitcher />}
+        actions={
+          <div className={styles.headerActions}>
+            <Link to="/inbox" className={styles.inboxLink}>
+              INBOX{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
+            </Link>
+            <ThemeSwitcher />
+          </div>
+        }
       />
 
       {query.isLoading ? (

@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { FleetScreen } from './screens/fleet/FleetScreen'
 import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
+import { InboxScreen } from './screens/inbox/InboxScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 
 /**
@@ -22,6 +23,7 @@ export function Router(): ReactElement {
       <Routes>
         <Route path="/" element={<FleetScreen />} />
         <Route path="/agent/:name" element={<AgentDetailScreen />} />
+        <Route path="/inbox" element={<InboxScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -175,6 +175,15 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return request<ListEnvelope<Notification>>(`/api/v1/notifications${suffix}`)
   },
+  notificationRespond: (id: string, response: string) =>
+    request<Notification>(`/api/v1/notifications/${encodeURIComponent(id)}/respond`, {
+      method: 'POST',
+      body: { response },
+    }),
+  notificationDismiss: (id: string) =>
+    request<Notification>(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, {
+      method: 'POST',
+    }),
 }
 
 /** Internal handle for tests and hooks that need to share the request helper. */
