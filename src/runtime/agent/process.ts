@@ -30,8 +30,9 @@ import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
-import { spawnStdioMcpServer, type StdioMcpServerHandle } from '../mcp/stdio-transport.js'
+import { McpServerManager } from '../mcp/restart-manager.js'
 import { expandToolGrants } from '../mcp/tool-grants.js'
+import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
 import { AgentLoop, type LoopResult } from './loop.js'
@@ -78,7 +79,7 @@ export class AgentProcess {
   private taskInFlight = false
   private readonly pubWakeSources: PubWakeSource[] = []
   private readonly pubClients: PubClient[] = []
-  private readonly mcpHandles: StdioMcpServerHandle[] = []
+  private readonly mcpManagers: McpServerManager[] = []
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -140,9 +141,10 @@ export class AgentProcess {
     // Spawn declared MCP servers (Epic 9 Phase A) and register their
     // tools. Each `mcp_servers[]` entry resolves its env SecretRefs to
     // literal values before spawn; the literal values do not appear in
-    // logs. A spawn failure aborts Agent start ... the operator fixes
-    // the configuration and retries. Phase B (restart manager) handles
-    // mid-session crashes; Phase A relies on Agent restart.
+    // logs. The first spawn failure aborts Agent start ... the operator
+    // fixes the configuration and retries. Mid-session crashes are
+    // handled by McpServerManager's locked backoff + notification
+    // policy (Epic 9 Phase A spec).
     for (const spec of this.identity.frontmatter.mcp_servers) {
       const env: Record<string, string> = {}
       for (const [varName, secretRef] of Object.entries(spec.env)) {
@@ -157,18 +159,33 @@ export class AgentProcess {
           env[inheritedVar] = v
         }
       }
-      const handle = await spawnStdioMcpServer({
-        name: spec.name,
-        command: spec.command,
-        args: spec.args,
-        env,
+      const manager = new McpServerManager({
+        serverName: spec.name,
+        spawnArgs: {
+          name: spec.name,
+          command: spec.command,
+          args: spec.args,
+          env,
+        },
+        notifier: async ({ tier, body, extras }) => {
+          await emitNotification({
+            home: this.options.home,
+            agentName: this.options.name,
+            tier,
+            kind: 'mcp.restart',
+            body,
+            extras,
+          })
+        },
+        logger: this.log.child(`mcp/${spec.name}`),
       })
-      registry.register(handle)
-      this.mcpHandles.push(handle)
+      await manager.start()
+      registry.register(manager)
+      this.mcpManagers.push(manager)
       this.log.info('MCP server spawned', {
         name: spec.name,
         command: spec.command,
-        tools: handle.tools.size,
+        tools: manager.knownToolNames.length,
       })
     }
 
@@ -525,14 +542,14 @@ export class AgentProcess {
     }
     this.pubClients.length = 0
     // Stop external MCP servers (Epic 9 Phase A).
-    for (const handle of this.mcpHandles) {
+    for (const manager of this.mcpManagers) {
       try {
-        await handle.close()
+        await manager.stop()
       } catch {
         // best-effort
       }
     }
-    this.mcpHandles.length = 0
+    this.mcpManagers.length = 0
     if (this.machine.state !== 'stopped') {
       try {
         this.machine.transition('stopped', reason)
