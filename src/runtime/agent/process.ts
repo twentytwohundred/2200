@@ -26,6 +26,7 @@ import { resolveProvider } from '../llm/registry.js'
 import type { LLMProvider } from '../llm/provider.js'
 import { agentPaths } from '../storage/layout.js'
 import { TelemetryWriter } from '../telemetry/writer.js'
+import { PulseEmitter } from './pulse/emitter.js'
 import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
@@ -77,6 +78,7 @@ export class AgentProcess {
   private provider: LLMProvider | undefined
   private taskStore: TaskStore | undefined
   private loop: AgentLoop | undefined
+  private pulseEmitter: PulseEmitter | undefined
   private taskInFlight = false
   private readonly pubWakeSources: PubWakeSource[] = []
   private readonly pubClients: PubClient[] = []
@@ -272,6 +274,12 @@ export class AgentProcess {
     // Replay today's telemetry to recompute cumulative spend before the
     // first task runs. Restart-safe per [[upgrade-readiness]] discipline 3.
     await budgetTracker.init()
+    this.pulseEmitter = new PulseEmitter({
+      home: this.options.home,
+      agentName: this.options.name,
+      logger: this.log.child('pulse'),
+    })
+    this.pulseEmitter.start()
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -283,6 +291,7 @@ export class AgentProcess {
       logger: this.log.child('loop'),
       telemetryWriter,
       budgetTracker,
+      pulseEmitter: this.pulseEmitter,
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
@@ -614,6 +623,14 @@ export class AgentProcess {
       }
     }
     this.mcpHttpHandles.length = 0
+    if (this.pulseEmitter) {
+      try {
+        await this.pulseEmitter.stop()
+      } catch {
+        // best-effort
+      }
+      this.pulseEmitter = undefined
+    }
     if (this.machine.state !== 'stopped') {
       try {
         this.machine.transition('stopped', reason)

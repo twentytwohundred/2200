@@ -41,6 +41,7 @@ import type { CompletionResponse, Message } from '../llm/types.js'
 import type { IdentityRecord } from '../identity/types.js'
 import type { TelemetryWriter } from '../telemetry/writer.js'
 import type { BudgetTracker } from './budget-tracker.js'
+import type { PulseEmitter } from './pulse/emitter.js'
 import {
   ToolDeniedError,
   type DispatchInput,
@@ -256,6 +257,18 @@ export interface AgentLoopOptions {
    * enforcement.
    */
   budgetTracker?: BudgetTracker
+  /**
+   * Per-Agent Pulse emitter (Epic 9 follow-on). Optional. When present:
+   *   - The loop forwards every LoopEvent to the emitter so it can
+   *     compute intensity and write `<agent>/pulse.json` on its own
+   *     tick.
+   *   - On a detector trip, the loop calls `setTrip(kind, trip_id)`
+   *     so the dot pins to redlined synchronously with the trip
+   *     record being persisted.
+   * When absent, the loop runs without Pulse output ... pulse.json
+   * is only written by the trip handler, same as Epic 2.
+   */
+  pulseEmitter?: PulseEmitter
 }
 
 export type LoopResult =
@@ -590,6 +603,7 @@ export class AgentLoop {
     while (this.events.length > this.bufferSize) {
       this.events.shift()
     }
+    this.opts.pulseEmitter?.record(event)
   }
 
   /**
@@ -663,6 +677,7 @@ export class AgentLoop {
       thresholds: this.thresholds,
       now: this.nowFn,
     })
+    this.opts.pulseEmitter?.setTrip(verdict.kind, trip.trip_id)
     await this.opts.taskStore.update(task.frontmatter.id, (fm) => ({
       ...fm,
       state: 'blocked_on_detector',

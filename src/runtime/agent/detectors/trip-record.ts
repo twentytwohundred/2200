@@ -22,6 +22,7 @@ import { atomicWriteFile, atomicWriteJson } from '../../util/atomic-write.js'
 import { newDetectorTripId, newNotificationId } from '../../util/id.js'
 import { agentPaths, homePaths } from '../../storage/layout.js'
 import type { AgentStateSnapshot, DetectorThresholds, TripVerdict } from './types.js'
+import { PULSE_SCHEMA_VERSION, type PulseState } from '../pulse/types.js'
 
 export interface TripRecordPersisted {
   trip_id: string
@@ -31,15 +32,12 @@ export interface TripRecordPersisted {
   pulse_path: string
 }
 
-export interface PulseState {
-  schema_version: 1
-  agent: string
-  state: 'green' | 'yellow' | 'redlined'
-  detector_kind: string | null
-  trip_id: string | null
-  /** ISO 8601 UTC. */
-  updated_at: string
-}
+/**
+ * Pulse state shape is now defined in `../pulse/types.ts` (v2). The
+ * trip handler still writes pulse.json directly so the dot flips to
+ * `redlined` synchronously with the trip record being persisted.
+ */
+export type { PulseState } from '../pulse/types.js'
 
 export interface WriteTripArgs {
   home: string
@@ -102,9 +100,10 @@ export async function writeDetectorTrip(args: WriteTripArgs): Promise<TripRecord
   const pulsePath = join(agentPaths(args.home, args.agentName).root, 'pulse.json')
   await mkdir(dirname(pulsePath), { recursive: true })
   const pulse: PulseState = {
-    schema_version: 1,
+    schema_version: PULSE_SCHEMA_VERSION,
     agent: args.agentName,
     state: 'redlined',
+    intensity: 1,
     detector_kind: args.verdict.kind,
     trip_id: tripId,
     updated_at: ts,
@@ -134,9 +133,10 @@ export async function resetPulseToGreen(args: {
   const pulsePath = join(agentPaths(args.home, args.agentName).root, 'pulse.json')
   await mkdir(dirname(pulsePath), { recursive: true })
   const pulse: PulseState = {
-    schema_version: 1,
+    schema_version: PULSE_SCHEMA_VERSION,
     agent: args.agentName,
-    state: 'green',
+    state: 'resting',
+    intensity: 0,
     detector_kind: null,
     trip_id: null,
     updated_at: now().toISOString(),

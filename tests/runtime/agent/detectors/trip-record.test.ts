@@ -72,7 +72,8 @@ describe('writeDetectorTrip', () => {
     expect(pulse['state']).toBe('redlined')
     expect(pulse['detector_kind']).toBe('tool_repetition')
     expect(pulse['trip_id']).toBe(result.trip_id)
-    expect(pulse['schema_version']).toBe(1)
+    expect(pulse['schema_version']).toBe(2)
+    expect(pulse['intensity']).toBe(1)
   })
 
   it('writes notification under <home>/state/notifications/', async () => {
@@ -125,14 +126,15 @@ describe('writeDetectorTrip', () => {
 })
 
 describe('resetPulseToGreen', () => {
-  it('writes a green pulse', async () => {
+  it('writes a resting pulse (formerly green; renamed in Pulse v2)', async () => {
     await resetPulseToGreen({ home, agentName: 'hobby' })
     const pulse = JSON.parse(
       await readFile(join(agentPaths(home, 'hobby').root, 'pulse.json'), 'utf8'),
     ) as Record<string, unknown>
-    expect(pulse['state']).toBe('green')
+    expect(pulse['state']).toBe('resting')
     expect(pulse['detector_kind']).toBeNull()
     expect(pulse['trip_id']).toBeNull()
-    expect(pulse['schema_version']).toBe(1)
+    expect(pulse['schema_version']).toBe(2)
+    expect(pulse['intensity']).toBe(0)
   })
 })
