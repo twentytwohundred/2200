@@ -1,11 +1,15 @@
 import type { ReactElement } from 'react'
 import styles from './App.module.css'
+import { ThemeSwitcher } from './theme/ThemeSwitcher'
+import { useTheme } from './theme/ThemeProvider'
 
 function cx(...classes: (string | undefined)[]): string {
   return classes.filter(Boolean).join(' ')
 }
 
 export function App(): ReactElement {
+  const { theme } = useTheme()
+
   return (
     <main className={styles.shell}>
       <header className={styles.header}>
@@ -25,7 +29,8 @@ export function App(): ReactElement {
         </div>
         <div className={styles.tile}>
           <span className={styles.label}>THEME</span>
-          <span className={styles.value}>default-dark</span>
+          <span className={styles.value}>{theme}</span>
+          <ThemeSwitcher />
         </div>
         <div className={styles.tile}>
           <span className={styles.label}>API</span>

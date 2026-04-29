@@ -55,3 +55,15 @@ jobs:
 
       - name: Web app verify (typecheck + lint + format + test + build)
         run: pnpm --filter @twentytwohundred/web verify
+
+      # The web app's tokens.css + theme CSS files are generated from
+      # apps/web/src/tokens/source/tokens.json. Both source and generated
+      # are committed; this step regenerates and fails if the committed
+      # output drifts from the source. Catches a stale-source bump.
+      - name: Web tokens drift check
+        run: |
+          pnpm --filter @twentytwohundred/web run generate:tokens
+          if ! git diff --exit-code apps/web/src/tokens/generated/; then
+            echo "::error::Generated token CSS does not match source. Run 'pnpm --filter @twentytwohundred/web run generate:tokens' locally and commit the result."
+            exit 1
+          fi
