@@ -30,6 +30,9 @@ import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
+import { spawnStdioMcpServer, type StdioMcpServerHandle } from '../mcp/stdio-transport.js'
+import { expandToolGrants } from '../mcp/tool-grants.js'
+import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
 import { AgentLoop, type LoopResult } from './loop.js'
 import { loadState } from '../supervisor/state.js'
@@ -75,6 +78,7 @@ export class AgentProcess {
   private taskInFlight = false
   private readonly pubWakeSources: PubWakeSource[] = []
   private readonly pubClients: PubClient[] = []
+  private readonly mcpHandles: StdioMcpServerHandle[] = []
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -132,9 +136,51 @@ export class AgentProcess {
     for (const server of baselineServers()) {
       registry.register(server)
     }
+
+    // Spawn declared MCP servers (Epic 9 Phase A) and register their
+    // tools. Each `mcp_servers[]` entry resolves its env SecretRefs to
+    // literal values before spawn; the literal values do not appear in
+    // logs. A spawn failure aborts Agent start ... the operator fixes
+    // the configuration and retries. Phase B (restart manager) handles
+    // mid-session crashes; Phase A relies on Agent restart.
+    for (const spec of this.identity.frontmatter.mcp_servers) {
+      const env: Record<string, string> = {}
+      for (const [varName, secretRef] of Object.entries(spec.env)) {
+        env[varName] = await resolveSecret(secretRef)
+      }
+      // Inherit a small set of safe env vars so commands like `npx`
+      // resolve their PATH and HOME correctly. Identity-supplied env
+      // takes precedence (the operator can override these explicitly).
+      for (const inheritedVar of ['PATH', 'HOME', 'USER', 'LANG']) {
+        const v = process.env[inheritedVar]
+        if (v !== undefined && env[inheritedVar] === undefined) {
+          env[inheritedVar] = v
+        }
+      }
+      const handle = await spawnStdioMcpServer({
+        name: spec.name,
+        command: spec.command,
+        args: spec.args,
+        env,
+      })
+      registry.register(handle)
+      this.mcpHandles.push(handle)
+      this.log.info('MCP server spawned', {
+        name: spec.name,
+        command: spec.command,
+        tools: handle.tools.size,
+      })
+    }
+
+    // Expand the Identity's `tools:` grants (mix of exact names and
+    // `<namespace>.*` wildcards) against the now-fully-populated
+    // registry. The dispatcher consumes the resulting concrete set.
+    const expandedGrants = expandToolGrants(this.identity.frontmatter.tools, registry.toolNames())
+    const allowedToolNames = new Set<string>([...BASELINE_TOOL_NAMES, ...expandedGrants])
+
     const dispatcher = new ToolDispatcher({
       registry,
-      allowedToolNames: new Set([...BASELINE_TOOL_NAMES, ...this.identity.frontmatter.tools]),
+      allowedToolNames,
       home: this.options.home,
       callingAgent: this.options.name,
       brainDir: ap.brain,
@@ -160,7 +206,7 @@ export class AgentProcess {
       taskStore: this.taskStore,
       home: this.options.home,
       brainDir: ap.brain,
-      availableToolNames: [...BASELINE_TOOL_NAMES, ...this.identity.frontmatter.tools],
+      availableToolNames: [...allowedToolNames],
       logger: this.log.child('loop'),
       telemetryWriter,
       budgetTracker,
@@ -478,6 +524,15 @@ export class AgentProcess {
       }
     }
     this.pubClients.length = 0
+    // Stop external MCP servers (Epic 9 Phase A).
+    for (const handle of this.mcpHandles) {
+      try {
+        await handle.close()
+      } catch {
+        // best-effort
+      }
+    }
+    this.mcpHandles.length = 0
     if (this.machine.state !== 'stopped') {
       try {
         this.machine.transition('stopped', reason)
