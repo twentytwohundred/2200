@@ -1,19 +1,30 @@
 import type { ReactElement } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { FleetScreen } from './screens/fleet/FleetScreen'
+import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 
 /**
- * Minimal pathname-based switch.
+ * App-wide route map.
  *
- * Real routing (React Router or TanStack Router) lands when the screen
- * graph grows beyond Fleet + dev/components. For PR E, the home route
- * is the live Fleet screen and /dev/components is the engineering
- * reference.
+ * Phase A surface:
+ *   /                    Fleet (mission control)
+ *   /agent/:name         Agent detail (identity card variant)
+ *   /dev/components      Component library reference
+ *
+ * Future routes (PR G/H): /inbox, /inbox/:id, /pub/:id, /budget,
+ * /onboarding. The command palette (⌘K) overlays on whatever route is
+ * active, so it does not get its own URL.
  */
 export function Router(): ReactElement {
-  if (typeof window === 'undefined') return <FleetScreen />
-  if (window.location.pathname.startsWith('/dev/components')) {
-    return <ComponentsPage />
-  }
-  return <FleetScreen />
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<FleetScreen />} />
+        <Route path="/agent/:name" element={<AgentDetailScreen />} />
+        <Route path="/dev/components" element={<ComponentsPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
 }

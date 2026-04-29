@@ -48,6 +48,11 @@ export interface Agent {
   status: string
   pid: number | null
   current_task_id: string | null
+  identity_path: string
+  spawned_at: string | null
+  last_heartbeat: string | null
+  errored_at: string | null
+  errored_reason: string | null
 }
 
 export interface Notification {
@@ -155,6 +160,13 @@ export const api = {
   version: () => request<RuntimeVersion>('/api/v1/runtime/version'),
   agents: () => request<ListEnvelope<Agent>>('/api/v1/agents'),
   agent: (name: string) => request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}`),
+  agentStart: (name: string) =>
+    request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}/start`, { method: 'POST' }),
+  agentStop: (name: string, reason?: string) =>
+    request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}/stop`, {
+      method: 'POST',
+      body: reason ? { reason } : undefined,
+    }),
   notifications: (params?: { state?: string; tier?: string; agent?: string }) => {
     const qs = new URLSearchParams()
     if (params?.state) qs.set('state', params.state)
