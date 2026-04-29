@@ -29,6 +29,8 @@ import type { Logger } from '../util/logger.js'
 import { homePaths } from '../storage/layout.js'
 import {
   listNotifications,
+  markAnswered,
+  markDismissed,
   readNotification,
   type NotificationRecord,
 } from '../notifications/reader.js'
@@ -316,19 +318,62 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
-  // Respond + dismiss are placeholders that emit a clear "not yet implemented"
-  // error code. Phase E wires them into the existing
-  // NotificationStore.respond + dismiss helpers.
-  const notImplemented = (action: string) =>
-    new ApiError(501, 'not_implemented', `${action} not yet implemented in the v1 surface`)
-
-  fastify.post<{ Params: { id: string } }>('/api/v1/notifications/:id/respond', () => {
-    throw notImplemented('notification respond')
+  const RespondBodySchema = z.object({
+    response: z.string().min(1),
   })
 
-  fastify.post<{ Params: { id: string } }>('/api/v1/notifications/:id/dismiss', () => {
-    throw notImplemented('notification dismiss')
+  function notificationErrorOrThrow(err: unknown, id: string): never {
+    const message = err instanceof Error ? err.message : String(err)
+    if (
+      (err as NodeJS.ErrnoException).code === 'ENOENT' ||
+      message.includes('no YAML frontmatter')
+    ) {
+      throw notFound('notification', id)
+    }
+    if (message.includes('not "pending"')) {
+      throw new ApiError(409, 'notification_not_pending', message, { id })
+    }
+    throw err as Error
+  }
+
+  fastify.post<{ Params: { id: string }; Body: { response: string } }>(
+    '/api/v1/notifications/:id/respond',
+    async (req) => {
+      const parsed = RespondBodySchema.parse(req.body)
+      try {
+        const updated = await markAnswered(home, req.params.id, parsed.response)
+        broadcastNotificationEvent('notification.answered', updated)
+        return toNotificationDto(updated)
+      } catch (err) {
+        notificationErrorOrThrow(err, req.params.id)
+      }
+    },
+  )
+
+  fastify.post<{ Params: { id: string } }>('/api/v1/notifications/:id/dismiss', async (req) => {
+    try {
+      const updated = await markDismissed(home, req.params.id)
+      broadcastNotificationEvent('notification.dismissed', updated)
+      return toNotificationDto(updated)
+    } catch (err) {
+      notificationErrorOrThrow(err, req.params.id)
+    }
   })
+
+  function broadcastNotificationEvent(event: string, rec: NotificationRecord): void {
+    const msg = JSON.stringify({
+      event,
+      occurred_at: new Date().toISOString(),
+      payload: {
+        notification_id: rec.frontmatter.id,
+        agent: rec.frontmatter.agent,
+        tier: rec.frontmatter.tier,
+        kind: rec.frontmatter.kind,
+        state: rec.frontmatter.state,
+      },
+    })
+    for (const c of wsClients) c.send(msg)
+  }
 
   // -- websocket -----------------------------------------------------------
   // @fastify/websocket v11 wires upgraded sockets through the same route
