@@ -1875,6 +1875,159 @@ export function buildProgram(): Command {
       }
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 model <subcommand>  (Epic 10 Phase A)
+  //
+  // Surfaces the static model catalog at src/runtime/models/catalog.ts and
+  // lets operators migrate an Agent's model binding atomically. Phase A is
+  // hand-curated; Phase B grows polling + auto-migration.
+  // ---------------------------------------------------------------------------
+
+  const model = program
+    .command('model')
+    .description('manage Agent model bindings (list catalog, check status, migrate)')
+
+  model
+    .command('list')
+    .description('print the model catalog')
+    .option('--tier <tier>', 'filter by tier (frontier, fast, economy, specialist)')
+    .option('--provider <name>', 'filter by provider')
+    .option('--status <status>', 'filter by status (active, deprecated, retired)')
+    .action(async (opts: { tier?: string; provider?: string; status?: string }) => {
+      const { CATALOG, CATALOG_VERSION } = await import('../runtime/models/catalog.js')
+      const filtered = CATALOG.filter((e) => {
+        if (opts.tier && e.tier !== opts.tier) return false
+        if (opts.provider && e.provider !== opts.provider) return false
+        if (opts.status && e.status !== opts.status) return false
+        return true
+      })
+      console.log(
+        `# 2200 model catalog v${CATALOG_VERSION} (${String(filtered.length)} entr${
+          filtered.length === 1 ? 'y' : 'ies'
+        })`,
+      )
+      for (const e of filtered) {
+        const successor = e.recommended_successor ? ` -> ${e.recommended_successor}` : ''
+        console.log(
+          `${e.id.padEnd(36)}  ${e.tier.padEnd(10)}  ${e.status.padEnd(10)}${successor}  ${e.display_name}`,
+        )
+        if (e.notes) console.log(`  ${e.notes}`)
+      }
+    })
+
+  model
+    .command('status [agent]')
+    .description("show an Agent's current model binding + catalog status")
+    .action(async (agentName?: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { findById } = await import('../runtime/models/catalog.js')
+      const { loadIdentity } = await import('../runtime/identity/loader.js')
+      const { agentPaths, homePaths } = await import('../runtime/storage/layout.js')
+      const reportOne = async (name: string): Promise<void> => {
+        const path = agentPaths(home, name).identity
+        const identity = await loadIdentity(path)
+        const fm = identity.frontmatter
+        const id = `${fm.model.provider}/${fm.model.model_id}`
+        const entry = findById(id)
+        const tier = fm.model.tier
+        console.log(`# ${name}`)
+        console.log(`  declared:    ${id} (tier: ${tier})`)
+        if (fm.model.followup_model_id) {
+          console.log(
+            `  followup:    ${fm.model.provider}/${fm.model.followup_model_id} (chain on iteration 2+)`,
+          )
+        }
+        if (!entry) {
+          console.log(
+            `  catalog:     UNKNOWN ... model id is not in the catalog. Either add it or migrate.`,
+          )
+          return
+        }
+        const successor = entry.recommended_successor ? ` -> ${entry.recommended_successor}` : ''
+        console.log(`  catalog:     ${entry.status}${successor}`)
+        if (entry.tier !== tier) {
+          console.log(
+            `  tier drift:  declared "${tier}" but catalog says "${entry.tier}"; consider 2200 model migrate`,
+          )
+        }
+      }
+      if (agentName) {
+        await reportOne(agentName)
+        return
+      }
+      const { readdir } = await import('node:fs/promises')
+      const dir = homePaths(home).agents
+      let entries: string[]
+      try {
+        entries = await readdir(dir)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          console.log('No Agents found at this home.')
+          return
+        }
+        throw err
+      }
+      const names = entries.filter((n) => !n.startsWith('.')).sort()
+      if (names.length === 0) {
+        console.log('No Agents found at this home.')
+        return
+      }
+      for (const name of names) {
+        try {
+          await reportOne(name)
+        } catch (err) {
+          console.log(`# ${name}`)
+          console.log(`  ERROR: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    })
+
+  model
+    .command('migrate <agent> <target>')
+    .description('migrate an Agent to a new model. <target> is provider/model_id from the catalog.')
+    .option('--followup <model_id>', 'set followup_model_id (same provider)')
+    .action(async (agentName: string, target: string, opts: { followup?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { findById } = await import('../runtime/models/catalog.js')
+      const { loadIdentity, writeIdentity } = await import('../runtime/identity/loader.js')
+      const { agentPaths } = await import('../runtime/storage/layout.js')
+      const path = agentPaths(home, agentName).identity
+      const identity = await loadIdentity(path)
+      const entry = findById(target)
+      if (!entry) {
+        console.error(
+          `target "${target}" is not in the catalog. Run "2200 model list" to see available ids.`,
+        )
+        process.exit(1)
+      }
+      if (entry.status === 'retired') {
+        console.error(
+          `target "${target}" is retired. Pick an active alternative: "2200 model list --status active".`,
+        )
+        process.exit(1)
+      }
+      const before = `${identity.frontmatter.model.provider}/${identity.frontmatter.model.model_id}`
+      const updatedFrontmatter = {
+        ...identity.frontmatter,
+        model: {
+          tier: entry.tier,
+          provider: entry.provider,
+          model_id: entry.model_id,
+          ...(opts.followup ? { followup_model_id: opts.followup } : {}),
+        },
+      }
+      await writeIdentity(path, updatedFrontmatter, identity.body)
+      console.log(`migrated ${agentName}: ${before} -> ${entry.id}`)
+      if (entry.status === 'deprecated') {
+        console.log(
+          `  note: target is deprecated; recommended_successor is ${entry.recommended_successor ?? 'unset'}.`,
+        )
+      }
+      console.log(
+        `  bounce the Agent for the new binding to take effect: 2200 agent stop ${agentName} && 2200 agent start ${agentName}`,
+      )
+    })
+
   registerWebCommands(program)
 
   return program
