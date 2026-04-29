@@ -17,7 +17,7 @@
  * and process-spawning commands (`agent start`, `agent stop`) error with
  * a clear "start the daemon first" message.
  *
- * See https://github.com/twentytwohundred/.github/wiki/02-agent-runtime-minimum
+ * See https://github.com/twentytwohundred/wiki/blob/main/epics/02-agent-runtime-minimum.md
  * for the locked Epic 2 spec.
  */
 import { fileURLToPath } from 'node:url'
@@ -255,6 +255,105 @@ export function buildProgram(): Command {
           )
         }
         console.log(`Run "2200 agent start ${name}" to bring it up.`)
+      },
+    )
+
+  agent
+    .command('migrate')
+    .description(
+      'migrate an Agent into 2200 from a handoff document (Epic 5 Phase A; see wiki/epics/05-migration.md)',
+    )
+    .requiredOption('--from-handoff <path>', 'path to the handoff markdown document')
+    .option(
+      '--provision-identity',
+      'after registration, run the SCUT identity provisioning pipeline (subject to OpenSCUT per-displayName-per-day rate limit)',
+    )
+    .option(
+      '--force',
+      'replace any existing Agent of the same name (destructive: stops the process if running and removes the per-Agent state)',
+    )
+    .option(
+      '--validate',
+      'parse + validate the handoff document and print a preview without writing anything',
+    )
+    .action(
+      async (opts: {
+        fromHandoff: string
+        provisionIdentity?: boolean
+        force?: boolean
+        validate?: boolean
+      }) => {
+        const { parseHandoffFile } = await import('../runtime/migration/parser.js')
+        const handoff = await parseHandoffFile(opts.fromHandoff)
+        const fm = handoff.frontmatter
+
+        if (opts.validate === true) {
+          console.log(`handoff document validated: ${handoff.source_path ?? '(in memory)'}`)
+          console.log(`  agent_name:        ${fm.agent_name}`)
+          console.log(`  agent_type:        ${fm.agent_type}`)
+          console.log(`  display_name:      ${fm.identity.display_name}`)
+          console.log(
+            `  notification:      tiers_allowed=[${fm.identity.notification_policy.tiers_allowed.join(', ')}]`,
+          )
+          console.log(
+            `  brain.source_dir:  ${fm.brain.source_dir ?? '(none — inline notes only or empty brain)'}`,
+          )
+          console.log(`  brain.inline:      ${String(fm.brain.inline_notes?.length ?? 0)} note(s)`)
+          console.log(`  budget.daily_usd:  ${String(fm.budget.daily_cap_usd)}`)
+          console.log(`  body bytes:        ${String(Buffer.byteLength(handoff.body, 'utf8'))}`)
+          return
+        }
+
+        const home = await resolveHomeFromOpts(program)
+
+        // The orchestrator opens its own Supervisor (in-process) and
+        // talks to disk directly; running it concurrently with a
+        // daemon would risk state-file races. Refuse if a daemon is
+        // up and tell the operator how to recover.
+        const probe = await connectToDaemon(home)
+        if (probe) {
+          await probe.close()
+          console.error(
+            `agent migrate cannot run while the supervisor daemon is up (state-file race risk). Stop with "2200 daemon stop" first, run the migration, then restart the daemon.`,
+          )
+          process.exit(1)
+        }
+
+        const { migrateFromHandoff } = await import('../runtime/migration/orchestrator.js')
+        const supervisor = await Supervisor.create({ home })
+        try {
+          const result = await migrateFromHandoff({
+            handoff,
+            home,
+            supervisor,
+            today: new Date(),
+            ...(opts.provisionIdentity === true ? { provisionIdentity: true } : {}),
+            ...(opts.force === true ? { force: true } : {}),
+          })
+          console.log(`Agent "${result.agent_name}" migrated.`)
+          console.log(`  identity:           ${result.identity_path}`)
+          console.log(`  brain notes:        ${String(result.brain_imported_count)} imported`)
+          if (result.brain_skipped_count > 0) {
+            console.log(`  brain notes:        ${String(result.brain_skipped_count)} skipped`)
+          }
+          console.log(`  continuity note:    ${result.continuity_note_slug}`)
+          if (result.scut_uri !== null) {
+            console.log(`  scut identity:      ${result.scut_uri}`)
+          } else if (opts.provisionIdentity === true) {
+            console.log(
+              `  scut identity:      provisioning failed (recover with "2200 agent identity retry ${result.agent_name}")`,
+            )
+          } else {
+            console.log(
+              `  scut identity:      skipped (run "2200 agent identity provision ${result.agent_name}" to mint)`,
+            )
+          }
+          console.log(
+            `Run "2200 daemon start" then "2200 agent start ${result.agent_name}" to bring it up.`,
+          )
+        } finally {
+          await supervisor.shutdown()
+        }
       },
     )
 

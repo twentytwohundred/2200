@@ -144,11 +144,33 @@ describe('daemon subcommand', () => {
 })
 
 describe('agent subcommand', () => {
-  it('has create, start, stop, resume, status, budget, identity', () => {
+  it('has create, migrate, start, stop, resume, status, budget, identity', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const subs = agent.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['budget', 'create', 'identity', 'resume', 'start', 'status', 'stop'])
+    expect(subs).toEqual([
+      'budget',
+      'create',
+      'identity',
+      'migrate',
+      'resume',
+      'start',
+      'status',
+      'stop',
+    ])
+  })
+
+  it('agent migrate requires --from-handoff and accepts --provision-identity, --force, --validate', () => {
+    const program = buildProgram()
+    const agent = findSubcommand(program, 'agent')!
+    const migrate = findSubcommand(agent, 'migrate')!
+    const fromHandoff = migrate.options.find((o) => o.long === '--from-handoff')
+    expect(fromHandoff).toBeDefined()
+    expect(fromHandoff?.required).toBe(true)
+    const longs = migrate.options.map((o) => o.long)
+    expect(longs).toContain('--provision-identity')
+    expect(longs).toContain('--force')
+    expect(longs).toContain('--validate')
   })
 
   it('agent budget has override and status subcommands', () => {
