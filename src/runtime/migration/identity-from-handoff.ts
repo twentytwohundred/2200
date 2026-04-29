@@ -88,11 +88,11 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
     handoff_source_path: args.handoff.source_path,
   })
 
-  // The Identity expects schema_version literal `4`. Compose the
+  // The Identity expects schema_version literal `5`. Compose the
   // frontmatter and run it through the loader's validator so any
   // mapping bug surfaces here rather than at writeIdentity time.
   const candidate = {
-    schema_version: 4,
+    schema_version: 5,
     agent_name: fm.agent_name,
     agent_role: humanizeAgentType(fm.agent_type),
     model: DEFAULT_MODEL_BINDING,

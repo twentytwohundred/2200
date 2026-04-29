@@ -193,7 +193,7 @@ describe('emitNotification policy enforcement (Epic 7 PR E)', () => {
     await writeFile(
       idSrc,
       `---
-schema_version: 4
+schema_version: 5
 agent_name: hobby
 agent_role: build agent
 model:

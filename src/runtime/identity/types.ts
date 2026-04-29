@@ -16,6 +16,7 @@
  * so the runtime can pass it to the LLM as the system prompt.
  */
 import { z } from 'zod'
+import { SecretRefSchema } from '../secrets/types.js'
 
 export const ModelTierSchema = z.enum(['frontier', 'fast', 'economy', 'specialist'])
 export type ModelTier = z.infer<typeof ModelTierSchema>
@@ -59,12 +60,25 @@ export type ModelBinding = z.infer<typeof ModelBindingSchema>
 /**
  * Tool name in an Identity's `tools:` array. The runtime resolves each
  * to either a baseline tool (per [[2026-04-25-tool-baseline]]) or an
- * MCP server registered separately. v1 enforces only that the name has
- * a `<namespace>.<verb>` shape; whether the name resolves is a runtime
- * concern.
+ * MCP server registered via the `mcp_servers` block. Two shapes:
+ *
+ *   - **Exact name**: `<namespace>.<verb>` ... lowercase, underscores
+ *     allowed in either part (`shell.run`, `github.list_issues`). The
+ *     registry resolves to the named tool.
+ *   - **Namespace wildcard**: `<namespace>.*` ... grants every tool in
+ *     the namespace. Per the Epic 9 Phase A locked decision (2026-04-29),
+ *     wildcards exist for ergonomics: external MCP servers like the
+ *     GitHub server expose dozens of tools; listing each by name is
+ *     verbose. Both shapes coexist in a single `tools:` array; an
+ *     Identity can mix `github.*` with explicit `slack.send`.
+ *
+ * v5 schema (Epic 9 Phase A) accepts both shapes. v4 files that used
+ * only exact names continue to validate cleanly under v5 since the
+ * wildcard form is purely additive.
  */
-export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/, {
-  message: 'tool name must be <namespace>.<verb>, lowercase with underscores',
+export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*\.([a-z][a-z0-9_]*|\*)$/, {
+  message:
+    'tool name must be <namespace>.<verb> (e.g., shell.run) or <namespace>.* (e.g., github.*); lowercase with underscores',
 })
 
 /**
@@ -120,10 +134,11 @@ export type CostCaps = z.infer<typeof CostCapsSchema>
 /**
  * The Identity frontmatter schema.
  *
- * - `schema_version: 4` per the locked integer convention.
+ * - `schema_version: 5` per the locked integer convention.
  *   v2 (Epic 4.5) added `cost_caps`. v3 (Epic 4 Phase A) added the
  *   optional `scut` block. v4 (Epic 7) added `notification_policy`.
- *   The migrator chain bumps older files.
+ *   v5 (Epic 9 Phase A) added `mcp_servers`. The migrator chain
+ *   bumps older files.
  * - `tools: []` is the default; entries are ADDITIONS to the baseline
  *   tool set (NOT the full set). The runtime composes baseline + this
  *   array at boot.
@@ -286,8 +301,52 @@ const NOTIFICATION_POLICY_DEFAULT: NotificationPolicy = {
   tiers_allowed: ['passive', 'normal', 'important'],
 }
 
+/**
+ * MCP server spec (Epic 9 Phase A). Declares an external MCP server
+ * the supervisor spawns alongside the Agent process. The server's
+ * tools become available to the Agent if the Agent's `tools:` array
+ * grants access (by exact name or `<namespace>.*` wildcard).
+ *
+ * v1 supports `transport: stdio` only ... the supervisor spawns the
+ * named `command` with `args` and the resolved `env`, then talks MCP
+ * JSON-RPC over the child's stdin/stdout. HTTP transport lands in
+ * Phase C.
+ *
+ * `env` is a map of environment-variable-name → SecretRef. The
+ * supervisor resolves each SecretRef at spawn time (per
+ * [[upgrade-readiness]] discipline 5: tools never see literal
+ * credentials in their declarations) and passes the resolved env
+ * to the child. Empty map means "no extra env beyond the inherited
+ * supervisor env"; `env: {}` is fine.
+ *
+ * `name` is the registry namespace ... if `name: github`, the
+ * server's tools are dispatched as `github.<verb>`. Names must be
+ * unique within an Identity; the loader rejects duplicates.
+ */
+export const McpServerSpecSchema = z.object({
+  /** Registry namespace; tools dispatch as `<name>.<verb>`. Lowercase, alphanumeric + underscores. */
+  name: z.string().regex(/^[a-z][a-z0-9_]*$/, {
+    message:
+      'mcp_servers[].name must start with a lowercase letter; lowercase letters, digits, and underscores only',
+  }),
+  /** Transport. Phase A is stdio-only; HTTP lands in Phase C. */
+  transport: z.literal('stdio'),
+  /** Executable to spawn (e.g. `npx`, `node`, an absolute path to a binary). */
+  command: z.string().min(1),
+  /** Arguments passed to the command. Empty array allowed. */
+  args: z.array(z.string()).default([]),
+  /**
+   * Environment variables to set on the spawned child. Map of
+   * env-var-name → SecretRef. The supervisor resolves SecretRefs at
+   * spawn time. The resolved values are passed to the child and never
+   * logged.
+   */
+  env: z.record(z.string().min(1), SecretRefSchema).default({}),
+})
+export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
+
 export const IdentityFrontmatterSchema = z.object({
-  schema_version: z.literal(4),
+  schema_version: z.literal(5),
   agent_name: z
     .string()
     .min(1)
@@ -332,6 +391,32 @@ export const IdentityFrontmatterSchema = z.object({
    * block when minting a new Agent on an Epic-3-aware install.
    */
   pub: AgentPubBlockSchemaForIdentity().optional(),
+  /**
+   * External MCP servers the supervisor spawns alongside the Agent
+   * process at start (Epic 9 Phase A). Each entry's tools become
+   * available to the Agent if granted via the `tools` array (by
+   * exact name or `<namespace>.*` wildcard). Defaults to empty,
+   * preserving v4 semantics ... an Agent with no entry uses only
+   * the baseline tools.
+   */
+  mcp_servers: z
+    .array(McpServerSpecSchema)
+    .default([])
+    .superRefine((servers, ctx) => {
+      const seen = new Set<string>()
+      for (let i = 0; i < servers.length; i++) {
+        const name = servers[i]?.name
+        if (name === undefined) continue
+        if (seen.has(name)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [i, 'name'],
+            message: `duplicate mcp_servers[].name "${name}"; each Identity may declare a given namespace at most once`,
+          })
+        }
+        seen.add(name)
+      }
+    }),
 })
 export type IdentityFrontmatter = z.infer<typeof IdentityFrontmatterSchema>
 
