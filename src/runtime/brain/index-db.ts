@@ -19,10 +19,17 @@
  */
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { agentBrainIndexPath, homePaths } from '../storage/layout.js'
 import type { BrainNote } from './types.js'
+
+export class BrainIndexNotFoundError extends Error {
+  constructor(public readonly path: string) {
+    super(`brain index not found at ${path}`)
+    this.name = 'BrainIndexNotFoundError'
+  }
+}
 
 export interface SearchHit {
   slug: string
@@ -128,6 +135,23 @@ export class BrainIndex {
   static openAtPath(path: string): BrainIndex {
     mkdirSync(dirname(path), { recursive: true })
     const db = new Database(path)
+    return new BrainIndex(db)
+  }
+
+  /**
+   * Open another Agent's brain index in read-only mode (Epic 8 Phase C).
+   * The caller must have already verified permission via
+   * `canReadBrain`. SQLite supports concurrent readers + a single
+   * writer; the owner Agent's writer is unaffected.
+   *
+   * Throws `BrainIndexNotFoundError` if the file does not exist (the
+   * owner has never written a note).
+   */
+  static openReadOnlyAtPath(path: string): BrainIndex {
+    if (!existsSync(path)) {
+      throw new BrainIndexNotFoundError(path)
+    }
+    const db = new Database(path, { readonly: true, fileMustExist: true })
     return new BrainIndex(db)
   }
 

@@ -1271,6 +1271,40 @@ export function buildProgram(): Command {
       }
     })
 
+  brain
+    .command('permissions <agent>')
+    .description(
+      "manage cross-Agent read access to <agent>'s brain (Epic 8 Phase C). With no flags, lists current readers.",
+    )
+    .option('--add <reader>', 'grant <reader> read access to this brain')
+    .option('--remove <reader>', 'revoke <reader>' + "'" + 's access')
+    .action(async (agentName: string, opts: { add?: string; remove?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { readBrainPermissions, grantBrainRead, revokeBrainRead } =
+        await import('../runtime/brain/permissions.js')
+      if (opts.add) {
+        const r = await grantBrainRead(home, agentName, opts.add)
+        console.log(
+          `granted: ${opts.add} → ${agentName}. readers: ${r.readers.join(', ') || '(none)'}`,
+        )
+        return
+      }
+      if (opts.remove) {
+        const r = await revokeBrainRead(home, agentName, opts.remove)
+        console.log(
+          `revoked: ${opts.remove} ✕ ${agentName}. readers: ${r.readers.join(', ') || '(none)'}`,
+        )
+        return
+      }
+      const r = await readBrainPermissions(home, agentName)
+      if (r.readers.length === 0) {
+        console.log(`No cross-Agent readers configured for "${agentName}".`)
+        return
+      }
+      console.log(`Readers of ${agentName}'s brain:`)
+      for (const reader of r.readers) console.log(`  - ${reader}`)
+    })
+
   // ---------------------------------------------------------------------------
   // 2200 shared-brain <subcommand>  (Epic 8 Phase B)
   //
