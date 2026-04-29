@@ -302,34 +302,40 @@ const NOTIFICATION_POLICY_DEFAULT: NotificationPolicy = {
 }
 
 /**
- * MCP server spec (Epic 9 Phase A). Declares an external MCP server
- * the supervisor spawns alongside the Agent process. The server's
- * tools become available to the Agent if the Agent's `tools:` array
- * grants access (by exact name or `<namespace>.*` wildcard).
+ * MCP server spec (Epic 9 Phase A; HTTP variant added in Phase C).
+ * Declares an external MCP server the supervisor wires up alongside
+ * the Agent process. The server's tools become available to the
+ * Agent if the Agent's `tools:` array grants access (by exact name
+ * or `<namespace>.*` wildcard).
  *
- * v1 supports `transport: stdio` only ... the supervisor spawns the
- * named `command` with `args` and the resolved `env`, then talks MCP
- * JSON-RPC over the child's stdin/stdout. HTTP transport lands in
- * Phase C.
+ * Two transports:
  *
- * `env` is a map of environment-variable-name → SecretRef. The
- * supervisor resolves each SecretRef at spawn time (per
- * [[upgrade-readiness]] discipline 5: tools never see literal
- * credentials in their declarations) and passes the resolved env
- * to the child. Empty map means "no extra env beyond the inherited
- * supervisor env"; `env: {}` is fine.
+ * **stdio** ... the supervisor spawns the named `command` with `args`
+ * and the resolved `env`, then talks MCP JSON-RPC over the child's
+ * stdin/stdout. Best for community npx-based servers (`@modelcontextprotocol/server-github`)
+ * and locally-installed binaries.
  *
- * `name` is the registry namespace ... if `name: github`, the
- * server's tools are dispatched as `github.<verb>`. Names must be
- * unique within an Identity; the loader rejects duplicates.
+ * **http** ... the supervisor opens a Streamable HTTP MCP connection
+ * to `url`. Best for hosted commercial MCP services. Optional bearer
+ * auth via `auth.token` (SecretRef). Static headers via `headers`.
+ *
+ * `name` is the registry namespace for both transports ... if `name:
+ * github`, the server's tools dispatch as `github.<verb>`. Names must
+ * be unique within an Identity; the loader rejects duplicates.
+ *
+ * SecretRefs (in stdio `env` and HTTP `auth.token`) are resolved at
+ * spawn time by the supervisor. Resolved values never appear in
+ * logs.
  */
-export const McpServerSpecSchema = z.object({
+const McpServerSpecBaseSchema = z.object({
   /** Registry namespace; tools dispatch as `<name>.<verb>`. Lowercase, alphanumeric + underscores. */
   name: z.string().regex(/^[a-z][a-z0-9_]*$/, {
     message:
       'mcp_servers[].name must start with a lowercase letter; lowercase letters, digits, and underscores only',
   }),
-  /** Transport. Phase A is stdio-only; HTTP lands in Phase C. */
+})
+
+const McpServerSpecStdioSchema = McpServerSpecBaseSchema.extend({
   transport: z.literal('stdio'),
   /** Executable to spawn (e.g. `npx`, `node`, an absolute path to a binary). */
   command: z.string().min(1),
@@ -343,7 +349,37 @@ export const McpServerSpecSchema = z.object({
    */
   env: z.record(z.string().min(1), SecretRefSchema).default({}),
 })
+
+const McpHttpAuthSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('none') }),
+  z.object({
+    type: z.literal('bearer'),
+    /** SecretRef resolving to a bearer token (typically a vault entry from `2200 oauth login`). */
+    token: SecretRefSchema,
+  }),
+])
+
+const McpServerSpecHttpSchema = McpServerSpecBaseSchema.extend({
+  transport: z.literal('http'),
+  /** MCP HTTP endpoint (typically https://...). */
+  url: z.url(),
+  /** Optional auth. Defaults to `{ type: 'none' }`. */
+  auth: McpHttpAuthSchema.default({ type: 'none' }),
+  /**
+   * Optional static headers to set on every request. SecretRefs are
+   * NOT resolved here ... use `auth` for tokens. Keys are case-
+   * insensitive per HTTP semantics; values are passed verbatim.
+   */
+  headers: z.record(z.string().min(1), z.string()).default({}),
+})
+
+export const McpServerSpecSchema = z.discriminatedUnion('transport', [
+  McpServerSpecStdioSchema,
+  McpServerSpecHttpSchema,
+])
 export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
+export type McpServerSpecStdio = z.infer<typeof McpServerSpecStdioSchema>
+export type McpServerSpecHttp = z.infer<typeof McpServerSpecHttpSchema>
 
 export const IdentityFrontmatterSchema = z.object({
   schema_version: z.literal(5),

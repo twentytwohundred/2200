@@ -31,6 +31,7 @@ import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
 import { McpServerManager } from '../mcp/restart-manager.js'
+import { spawnHttpMcpServer, type HttpMcpServerHandle } from '../mcp/http-transport.js'
 import { expandToolGrants } from '../mcp/tool-grants.js'
 import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
@@ -80,6 +81,7 @@ export class AgentProcess {
   private readonly pubWakeSources: PubWakeSource[] = []
   private readonly pubClients: PubClient[] = []
   private readonly mcpManagers: McpServerManager[] = []
+  private readonly mcpHttpHandles: HttpMcpServerHandle[] = []
 
   constructor(private readonly options: AgentProcessOptions) {
     this.log = options.logger ?? createLogger(`agent/${options.name}`)
@@ -153,63 +155,73 @@ export class AgentProcess {
     // failure does not leak child processes.
     try {
       for (const spec of this.identity.frontmatter.mcp_servers) {
-        const env: Record<string, string> = {}
-        for (const [varName, secretRef] of Object.entries(spec.env)) {
-          // Pass the resolver context so SecretRefs of source 'vault'
-          // resolve against this Agent's per-Agent credential vault
-          // (Epic 9 Phase B). `env` and `file` sources ignore the
-          // context. Vault refs of the form `<agent>:<credential>`
-          // override the default (used when an Agent shares a
-          // supervisor-managed credential, rare).
-          env[varName] = await resolveSecret(secretRef, {
-            home: this.options.home,
-            agentName: this.options.name,
-          })
-        }
-        // Inherit a small set of safe env vars so commands like `npx`
-        // resolve their PATH and HOME correctly. Identity-supplied env
-        // takes precedence (the operator can override these explicitly).
-        for (const inheritedVar of ['PATH', 'HOME', 'USER', 'LANG']) {
-          const v = process.env[inheritedVar]
-          if (v !== undefined && env[inheritedVar] === undefined) {
-            env[inheritedVar] = v
-          }
-        }
-        const manager = new McpServerManager({
-          serverName: spec.name,
-          spawnArgs: {
-            name: spec.name,
-            command: spec.command,
-            args: spec.args,
-            env,
-          },
-          notifier: async ({ tier, body, extras }) => {
-            await emitNotification({
+        if (spec.transport === 'stdio') {
+          const env: Record<string, string> = {}
+          for (const [varName, secretRef] of Object.entries(spec.env)) {
+            env[varName] = await resolveSecret(secretRef, {
               home: this.options.home,
               agentName: this.options.name,
-              tier,
-              kind: 'mcp.restart',
-              body,
-              extras,
             })
-          },
-          logger: this.log.child(`mcp/${spec.name}`),
-        })
-        // Track BEFORE awaiting start so a throw during start still
-        // gets the manager into our tracking array for cleanup. Stop
-        // is idempotent on a never-fully-started manager.
-        this.mcpManagers.push(manager)
-        await manager.start()
-        registry.register(manager)
-        this.log.info('MCP server spawned', {
-          name: spec.name,
-          command: spec.command,
-          tools: manager.knownToolNames.length,
-        })
+          }
+          for (const inheritedVar of ['PATH', 'HOME', 'USER', 'LANG']) {
+            const v = process.env[inheritedVar]
+            if (v !== undefined && env[inheritedVar] === undefined) {
+              env[inheritedVar] = v
+            }
+          }
+          const manager = new McpServerManager({
+            serverName: spec.name,
+            spawnArgs: {
+              name: spec.name,
+              command: spec.command,
+              args: spec.args,
+              env,
+            },
+            notifier: async ({ tier, body, extras }) => {
+              await emitNotification({
+                home: this.options.home,
+                agentName: this.options.name,
+                tier,
+                kind: 'mcp.restart',
+                body,
+                extras,
+              })
+            },
+            logger: this.log.child(`mcp/${spec.name}`),
+          })
+          this.mcpManagers.push(manager)
+          await manager.start()
+          registry.register(manager)
+          this.log.info('MCP server spawned (stdio)', {
+            name: spec.name,
+            command: spec.command,
+            tools: manager.knownToolNames.length,
+          })
+        } else {
+          // transport === 'http'
+          const spawnArgs: Parameters<typeof spawnHttpMcpServer>[0] = {
+            name: spec.name,
+            url: spec.url,
+            extraHeaders: spec.headers,
+          }
+          if (spec.auth.type === 'bearer') {
+            spawnArgs.bearerToken = await resolveSecret(spec.auth.token, {
+              home: this.options.home,
+              agentName: this.options.name,
+            })
+          }
+          const handle = await spawnHttpMcpServer(spawnArgs)
+          this.mcpHttpHandles.push(handle)
+          registry.register(handle)
+          this.log.info('MCP server connected (http)', {
+            name: spec.name,
+            url: spec.url,
+            tools: handle.tools.size,
+            auth: spec.auth.type,
+          })
+        }
       }
     } catch (err) {
-      // Cleanup already-started managers in reverse order. Errors on
-      // stop are swallowed (best-effort); the original error rethrows.
       for (let i = this.mcpManagers.length - 1; i >= 0; i--) {
         const manager = this.mcpManagers[i]
         if (manager === undefined) continue
@@ -220,6 +232,16 @@ export class AgentProcess {
         }
       }
       this.mcpManagers.length = 0
+      for (let i = this.mcpHttpHandles.length - 1; i >= 0; i--) {
+        const handle = this.mcpHttpHandles[i]
+        if (handle === undefined) continue
+        try {
+          await handle.close()
+        } catch {
+          // best-effort
+        }
+      }
+      this.mcpHttpHandles.length = 0
       throw err
     }
 
@@ -575,7 +597,7 @@ export class AgentProcess {
       }
     }
     this.pubClients.length = 0
-    // Stop external MCP servers (Epic 9 Phase A).
+    // Stop external MCP servers (Epic 9 Phase A stdio + Phase C http).
     for (const manager of this.mcpManagers) {
       try {
         await manager.stop()
@@ -584,6 +606,14 @@ export class AgentProcess {
       }
     }
     this.mcpManagers.length = 0
+    for (const handle of this.mcpHttpHandles) {
+      try {
+        await handle.close()
+      } catch {
+        // best-effort
+      }
+    }
+    this.mcpHttpHandles.length = 0
     if (this.machine.state !== 'stopped') {
       try {
         this.machine.transition('stopped', reason)

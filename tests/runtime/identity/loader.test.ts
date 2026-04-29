@@ -503,6 +503,7 @@ mcp_servers:
     const server = id.frontmatter.mcp_servers[0]!
     expect(server.name).toBe('github')
     expect(server.transport).toBe('stdio')
+    if (server.transport !== 'stdio') throw new Error('expected stdio transport')
     expect(server.command).toBe('npx')
     expect(server.args).toEqual(['-y', '@modelcontextprotocol/server-github'])
     expect(server.env['GITHUB_TOKEN']).toEqual({
@@ -517,10 +518,68 @@ mcp_servers:
     await expect(loadIdentity(path)).rejects.toThrow(/mcp_servers\.0\.name/)
   })
 
-  it('rejects an unknown transport (only stdio is admitted in Phase A)', async () => {
-    const bad = GITHUB_BLOCK.replace('transport: stdio', 'transport: http')
+  it('rejects an unknown transport (only stdio + http are admitted)', async () => {
+    const bad = GITHUB_BLOCK.replace('transport: stdio', 'transport: websocket')
     const path = await writeAt('bad-transport-mcp.md', VALID.replace('created: 2026-04-26', bad))
     await expect(loadIdentity(path)).rejects.toThrow(/transport/)
+  })
+
+  it('parses an http MCP server with bearer auth via vault SecretRef (Phase C)', async () => {
+    const HTTP_BLOCK = `created: 2026-04-26
+mcp_servers:
+  - name: hostedmcp
+    transport: http
+    url: https://mcp.example.com/v1
+    auth:
+      type: bearer
+      token:
+        source: vault
+        id: hostedmcp-access`
+    const path = await writeAt('http-mcp.md', VALID.replace('created: 2026-04-26', HTTP_BLOCK))
+    const id = await loadIdentity(path)
+    const server = id.frontmatter.mcp_servers[0]!
+    expect(server.transport).toBe('http')
+    if (server.transport !== 'http') throw new Error('expected http')
+    expect(server.url).toBe('https://mcp.example.com/v1')
+    expect(server.auth.type).toBe('bearer')
+    if (server.auth.type === 'bearer') {
+      expect(server.auth.token).toEqual({ source: 'vault', id: 'hostedmcp-access' })
+    }
+    expect(server.headers).toEqual({})
+  })
+
+  it('parses an http MCP server with auth.type=none and static headers', async () => {
+    const HTTP_BLOCK = `created: 2026-04-26
+mcp_servers:
+  - name: hostedmcp
+    transport: http
+    url: https://mcp.example.com/v1
+    auth:
+      type: none
+    headers:
+      X-Tenant: '2200'
+      X-Project: hobby`
+    const path = await writeAt('http-mcp-none.md', VALID.replace('created: 2026-04-26', HTTP_BLOCK))
+    const id = await loadIdentity(path)
+    const server = id.frontmatter.mcp_servers[0]!
+    if (server.transport !== 'http') throw new Error('expected http')
+    expect(server.auth.type).toBe('none')
+    expect(server.headers).toEqual({ 'X-Tenant': '2200', 'X-Project': 'hobby' })
+  })
+
+  it('rejects an http MCP server with a non-URL', async () => {
+    const HTTP_BLOCK = `created: 2026-04-26
+mcp_servers:
+  - name: hostedmcp
+    transport: http
+    url: not-a-url
+    auth:
+      type: none`
+    const path = await writeAt(
+      'http-mcp-bad-url.md',
+      VALID.replace('created: 2026-04-26', HTTP_BLOCK),
+    )
+    await expect(loadIdentity(path)).rejects.toThrow(/url/i)
   })
 
   it('rejects duplicate server names', async () => {
@@ -543,7 +602,11 @@ mcp_servers:
     args: []`
     const path = await writeAt('no-env-mcp.md', VALID.replace('created: 2026-04-26', noEnv))
     const id = await loadIdentity(path)
-    expect(id.frontmatter.mcp_servers[0]?.env).toEqual({})
+    const server0 = id.frontmatter.mcp_servers[0]
+    if (server0?.transport !== 'stdio') {
+      throw new Error('expected one stdio server')
+    }
+    expect(server0.env).toEqual({})
   })
 
   it('rejects a SecretRef with an unknown source', async () => {
@@ -561,8 +624,11 @@ mcp_servers:
     )
     const path = await writeAt('vault-secret-mcp.md', VALID.replace('created: 2026-04-26', block))
     const id = await loadIdentity(path)
-    const env = id.frontmatter.mcp_servers[0]?.env ?? {}
-    const token = env['GITHUB_TOKEN']
+    const server0 = id.frontmatter.mcp_servers[0]
+    if (server0?.transport !== 'stdio') {
+      throw new Error('expected one stdio server')
+    }
+    const token = server0.env['GITHUB_TOKEN']
     expect(token?.source).toBe('vault')
     expect(token?.id).toBe('github-token')
   })
