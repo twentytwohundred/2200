@@ -29,7 +29,7 @@ import { Command } from 'commander'
 import { VERSION } from '../index.js'
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../runtime/control-plane/client.js'
-import { connectUds } from '../runtime/control-plane/transport-uds.js'
+import { connectUds } from '../runtime/control-plane/uds-client.js'
 import type {
   CliScheduleAddParams,
   StateSnapshotResult,

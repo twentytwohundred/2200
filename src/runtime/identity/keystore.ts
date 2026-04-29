@@ -25,13 +25,7 @@
  * supervisor↔Agent control plane so the master key never leaves
  * the supervisor process.
  */
-import {
-  generateKeyPairSync,
-  randomBytes,
-  hkdfSync,
-  createCipheriv,
-  createDecipheriv,
-} from 'node:crypto'
+import { randomBytes, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto'
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { atomicWriteFile } from '../util/atomic-write.js'
@@ -62,35 +56,6 @@ export interface PublicKeysB64 {
 export interface AgentKeypairs {
   ed25519: { publicKeyRaw: Buffer; privateKeyRaw: Buffer }
   x25519: { publicKeyRaw: Buffer; privateKeyRaw: Buffer }
-}
-
-/**
- * Generate a fresh Ed25519 + X25519 keypair pair for an Agent.
- * Returns the raw 32-byte private and public keys for both. The
- * caller is responsible for sealing them via `writeAgentKeys`.
- */
-export function generateAgentKeypairs(): AgentKeypairs {
-  const ed = generateKeyPairSync('ed25519')
-  const x = generateKeyPairSync('x25519')
-  return {
-    ed25519: {
-      publicKeyRaw: extractRaw32(
-        ed.publicKey.export({ type: 'spki', format: 'der' }),
-        'ed25519-pub',
-      ),
-      privateKeyRaw: extractRaw32(
-        ed.privateKey.export({ type: 'pkcs8', format: 'der' }),
-        'ed25519-priv',
-      ),
-    },
-    x25519: {
-      publicKeyRaw: extractRaw32(x.publicKey.export({ type: 'spki', format: 'der' }), 'x25519-pub'),
-      privateKeyRaw: extractRaw32(
-        x.privateKey.export({ type: 'pkcs8', format: 'der' }),
-        'x25519-priv',
-      ),
-    },
-  }
 }
 
 /**
@@ -258,20 +223,4 @@ function openBytes(blob: SealedBlob, wrappingKey: Buffer): Buffer {
   const pt1 = decipher.update(ciphertext)
   const pt2 = decipher.final()
   return Buffer.concat([pt1, pt2])
-}
-
-/**
- * Extract the 32 raw bytes of an Ed25519/X25519 key from a Node-
- * generated DER-encoded form. Both algorithms encode their 32-byte
- * key as the trailing 32 bytes of the DER payload.
- *
- * Node 22+ supports `keyObject.export({ format: 'jwk' })` which is
- * a cleaner path; using DER+slice keeps this dep-free against the
- * exact DER lengths the standard library produces.
- */
-function extractRaw32(der: Buffer, label: string): Buffer {
-  if (der.length < 32) {
-    throw new Error(`${label} DER is too short (${String(der.length)} bytes)`)
-  }
-  return der.subarray(der.length - 32)
 }

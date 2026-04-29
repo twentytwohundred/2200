@@ -24,7 +24,8 @@ import {
   pubListPubs,
   pubReact,
 } from '../../../../src/runtime/tools/baseline/pub.js'
-import { generateKeypair, writeCredentialFile } from '../../../../src/runtime/pub/keypair.js'
+import { writeCredentialFile } from '../../../../src/runtime/pub/keypair.js'
+import { generateKeypair } from '../../../../src/runtime/pub/keypair-generate.js'
 import {
   createIdentityClient,
   ensureRegistered,

@@ -16,7 +16,7 @@
  * is rejected by the supervisor.
  */
 import { JsonRpcClient } from '../control-plane/client.js'
-import { connectUds } from '../control-plane/transport-uds.js'
+import { connectUds } from '../control-plane/uds-client.js'
 import type { Connection } from '../control-plane/transport.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { AgentStateMachine } from './state-machine.js'

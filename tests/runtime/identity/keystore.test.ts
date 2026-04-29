@@ -23,12 +23,12 @@ import { mkdtemp, rm, stat, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  generateAgentKeypairs,
   hasAgentKeys,
   loadOrCreateMasterKey,
   readAgentPrivateKeys,
   writeAgentKeys,
 } from '../../../src/runtime/identity/keystore.js'
+import { generateAgentKeypairs } from '../../../src/runtime/identity/keystore-keygen.js'
 import { agentIdentityPaths, masterKeyPath } from '../../../src/runtime/storage/layout.js'
 import { initHome } from '../../../src/runtime/storage/init.js'
 

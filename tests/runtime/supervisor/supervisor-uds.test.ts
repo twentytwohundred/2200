@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Supervisor } from '../../../src/runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../../../src/runtime/control-plane/client.js'
-import { connectUds } from '../../../src/runtime/control-plane/transport-uds.js'
+import { connectUds } from '../../../src/runtime/control-plane/uds-client.js'
 
 /**
  * Write a minimal-but-valid Identity to a tmpfile and return its path.

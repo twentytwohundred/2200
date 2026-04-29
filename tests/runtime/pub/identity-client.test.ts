@@ -20,7 +20,7 @@ import {
   IdentityClientError,
   RegisterAgentConflict,
 } from '../../../src/runtime/pub/identity-client.js'
-import { generateKeypair } from '../../../src/runtime/pub/keypair.js'
+import { generateKeypair } from '../../../src/runtime/pub/keypair-generate.js'
 
 interface FakePub {
   baseUrl: string

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { startFakePub, type FakePub } from './fake-pub-server.js'
 import { PubClient } from '../../../src/runtime/pub/client.js'
 import { createIdentityClient, ensureRegistered } from '../../../src/runtime/pub/identity-client.js'
-import { generateKeypair } from '../../../src/runtime/pub/keypair.js'
+import { generateKeypair } from '../../../src/runtime/pub/keypair-generate.js'
 import type { PubCredential } from '../../../src/runtime/pub/keypair.js'
 
 let pub: FakePub | undefined

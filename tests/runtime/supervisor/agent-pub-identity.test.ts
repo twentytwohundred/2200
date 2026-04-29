@@ -20,7 +20,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import { Supervisor } from '../../../src/runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../../../src/runtime/control-plane/client.js'
-import { connectUds } from '../../../src/runtime/control-plane/transport-uds.js'
+import { connectUds } from '../../../src/runtime/control-plane/uds-client.js'
 import { agentPaths } from '../../../src/runtime/storage/layout.js'
 import { loadIdentity } from '../../../src/runtime/identity/loader.js'
 import { readCredentialFile } from '../../../src/runtime/pub/keypair.js'
