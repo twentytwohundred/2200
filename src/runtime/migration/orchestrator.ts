@@ -1,0 +1,302 @@
+/**
+ * Migration orchestrator (Epic 5 Phase A PR C).
+ *
+ * Wires the pieces shipped in PRs A and B into a single function that
+ * takes a parsed handoff document and produces a fully-provisioned
+ * Agent inside 2200:
+ *
+ *   1. Validate the Agent does not already exist (or take over with
+ *      `force: true`).
+ *   2. Build the Identity (PR B) and write it to disk.
+ *   3. Register the Agent with the supervisor (calls Supervisor.createAgent
+ *      directly; the CLI wrapper in PR D handles the daemon-vs-direct
+ *      shape).
+ *   4. Optionally provision the SCUT identity (gated by
+ *      `provisionIdentity: true`; calls the same runner that
+ *      `agent create` uses today).
+ *   5. Bulk-import the brain source dir (Epic 8 importFromDir) if the
+ *      handoff names one.
+ *   6. Write each inline note to the brain.
+ *   7. Write the handoff body as a brain note titled
+ *      `continuity-from-migration` so the Agent's first context is a
+ *      written explanation of where it came from.
+ *   8. Emit a Passive notification summarizing what landed.
+ *   9. Return a MigrateResult with the agent_name, identity path, SCUT
+ *      URI (if provisioned), counts, and notification id.
+ *
+ * Phase A intentionally does not implement checkpoint/resume. The
+ * orchestrator is mostly idempotent (Identity write is overwrite,
+ * brain import is upsert-on-slug, provisioning is idempotent at the
+ * OpenSCUT side once registered). The only step that fails loud on
+ * re-run is `Supervisor.createAgent` ("Agent already exists"); the
+ * caller resolves that with `force: true` (which deletes first) or by
+ * picking a different name. A later PR adds a state-file-backed
+ * resume path if the operator workflow ever needs it.
+ */
+import { mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { homedir } from 'node:os'
+import type { Supervisor } from '../supervisor/supervisor.js'
+import { writeIdentity } from '../identity/loader.js'
+import { runIdentityProvisionFromConfig } from '../identity/provision-runner.js'
+import { BrainStore } from '../brain/store.js'
+import { BrainIndex } from '../brain/index-db.js'
+import { importFromDir, type ImportResult } from '../brain/import.js'
+import { emitNotification } from '../notifications/writer.js'
+import { buildIdentityFromHandoff } from './identity-from-handoff.js'
+import { CONTINUITY_NOTE_SLUG, type HandoffDocument } from './types.js'
+
+export interface MigrateArgs {
+  handoff: HandoffDocument
+  home: string
+  /**
+   * Supervisor instance. The orchestrator calls supervisor.createAgent
+   * directly. The CLI wrapper (PR D) instantiates a Supervisor (no-
+   * daemon path) or talks to a running daemon via RPC.
+   */
+  supervisor: Supervisor
+  /**
+   * Today's date. Injected so tests are deterministic; production
+   * callers pass `new Date()`.
+   */
+  today: Date
+  /**
+   * When true, run the SCUT identity provisioning pipeline after
+   * Agent registration. Subject to OpenSCUT's per-displayName-per-day
+   * rate limit. Defaults false; the caller (CLI flag, test) opts in.
+   */
+  provisionIdentity?: boolean
+  /**
+   * When true, replace any existing Agent of the same name. The
+   * orchestrator deletes the prior agent's directory under
+   * `<home>/agents/<name>/` and removes any in-memory registration
+   * before re-creating. Destructive; the CLI surface gates this
+   * behind an explicit --force flag.
+   */
+  force?: boolean
+}
+
+export interface MigrateResult {
+  agent_name: string
+  /** Path to the source Identity file the orchestrator wrote. */
+  identity_path: string
+  /** Resolved SCUT URI, or null when provisioning was skipped or failed. */
+  scut_uri: string | null
+  /** Number of brain notes successfully imported (dir + inline). */
+  brain_imported_count: number
+  /** Number of source files the brain importer skipped. */
+  brain_skipped_count: number
+  /** Slug of the continuity-from-migration brain note. Always present. */
+  continuity_note_slug: string
+  /** Id of the summary notification that the orchestrator emitted. */
+  notification_id: string
+}
+
+/**
+ * Run a migration. Returns a MigrateResult on success; throws on any
+ * step that cannot proceed.
+ *
+ * Identity provisioning failure is intentionally non-fatal when
+ * `provisionIdentity: true`: the Agent is still registered, the brain
+ * is still imported, and the orchestrator surfaces the SCUT failure
+ * via the summary notification + a `null` scut_uri in the result. The
+ * operator recovers with `2200 agent identity retry <name>`.
+ */
+export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResult> {
+  const fm = args.handoff.frontmatter
+  const agentName = fm.agent_name
+
+  // Optional take-over: clean state for a previously-created Agent of
+  // the same name. Supervisor.removeAgent stops the running process
+  // (if any), clears the in-memory record, persists the state change,
+  // and deletes the per-Agent directory tree.
+  if (args.force === true) {
+    await args.supervisor.removeAgent(agentName)
+  }
+
+  // Build + write the Identity.
+  const built = buildIdentityFromHandoff({
+    handoff: args.handoff,
+    home: args.home,
+    today: args.today,
+  })
+  await mkdir(dirname(built.source_path), { recursive: true })
+  await writeIdentity(built.source_path, built.frontmatter, built.body)
+
+  // Register the Agent with the supervisor. This validates the
+  // Identity at the source path, copies it into the canonical
+  // <home>/agents/<name>/ tree, and records the registration. If the
+  // Identity has a pub: block (the migration handoff doesn't write
+  // one in v1), the supervisor handles pub identity provisioning
+  // here too.
+  await args.supervisor.createAgent(agentName, built.source_path)
+
+  // Optional SCUT identity provisioning. Failure is surfaced via the
+  // summary notification but does not abort the rest of the migration.
+  let scutUri: string | null = null
+  let scutError: string | null = null
+  if (args.provisionIdentity === true) {
+    try {
+      const result = await runIdentityProvisionFromConfig({
+        home: args.home,
+        agentName,
+      })
+      scutUri = result.uri
+    } catch (err) {
+      scutError = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  // Brain import: bulk-import from a source dir if the handoff names
+  // one, then write any inline notes. Both pass through BrainStore so
+  // the SQLite FTS5 index is updated alongside the markdown files.
+  let importedCount = 0
+  let skippedCount = 0
+  if (fm.brain.source_dir !== undefined) {
+    const sourceDir = expandHomeTilde(fm.brain.source_dir)
+    const result: ImportResult = await importFromDir({
+      home: args.home,
+      agentName,
+      sourceDir,
+    })
+    importedCount += result.imported.length
+    skippedCount += result.skipped.length
+  }
+  if (fm.brain.inline_notes !== undefined) {
+    const store = new BrainStore(args.home, agentName)
+    const index = BrainIndex.open(args.home, agentName)
+    try {
+      for (const note of fm.brain.inline_notes) {
+        const writeArgs: Parameters<typeof store.write>[0] = {
+          title: note.title,
+          body: note.body,
+          ...(note.slug !== undefined ? { slug: note.slug } : {}),
+          ...(note.type !== undefined ? { type: note.type } : {}),
+          ...(note.tags !== undefined ? { tags: note.tags } : {}),
+        }
+        const w = await store.write(writeArgs)
+        const fullNote = await store.read(w.slug)
+        index.upsert(fullNote)
+        importedCount += 1
+      }
+    } finally {
+      index.close()
+    }
+  }
+
+  // Write the continuity-from-migration brain note. Slug is locked
+  // via CONTINUITY_NOTE_SLUG so resume + future inspection can find
+  // it deterministically. The handoff body becomes the note body
+  // verbatim; provenance fields land in the note's frontmatter for
+  // round-trip traceability.
+  const continuityStore = new BrainStore(args.home, agentName)
+  const continuityIndex = BrainIndex.open(args.home, agentName)
+  try {
+    const w = await continuityStore.write({
+      title: 'Continuity from migration',
+      slug: CONTINUITY_NOTE_SLUG,
+      type: 'continuity',
+      tags: ['migration', fm.agent_type],
+      body: args.handoff.body,
+      extras: {
+        source_handoff_path: args.handoff.source_path,
+        provenance_source_system: fm.provenance.source_system,
+        provenance_source_host: fm.provenance.source_host,
+        provenance_exported_at: fm.provenance.exported_at,
+      },
+    })
+    const fullNote = await continuityStore.read(w.slug)
+    continuityIndex.upsert(fullNote)
+  } finally {
+    continuityIndex.close()
+  }
+
+  // Summary notification. Always Passive (the migration is itself a
+  // calm event; it does not need to interrupt). Content describes what
+  // landed plus, when applicable, the SCUT failure detail.
+  const summary = renderSummary({
+    agentName,
+    importedCount,
+    skippedCount,
+    scutUri,
+    scutError,
+    provisionAttempted: args.provisionIdentity === true,
+  })
+  const note = await emitNotification({
+    home: args.home,
+    agentName,
+    tier: 'passive',
+    kind: 'agent.migrated',
+    body: summary,
+    extras: {
+      imported_count: importedCount,
+      skipped_count: skippedCount,
+      ...(scutUri !== null ? { scut_uri: scutUri } : {}),
+      ...(scutError !== null ? { scut_error: scutError } : {}),
+    },
+  })
+
+  return {
+    agent_name: agentName,
+    identity_path: built.source_path,
+    scut_uri: scutUri,
+    brain_imported_count: importedCount,
+    brain_skipped_count: skippedCount,
+    continuity_note_slug: CONTINUITY_NOTE_SLUG,
+    notification_id: note.id,
+  }
+}
+
+interface SummaryArgs {
+  agentName: string
+  importedCount: number
+  skippedCount: number
+  scutUri: string | null
+  scutError: string | null
+  provisionAttempted: boolean
+}
+
+function renderSummary(args: SummaryArgs): string {
+  const lines: string[] = [
+    `# Agent migrated: ${args.agentName}`,
+    '',
+    `- Brain notes imported: **${String(args.importedCount)}**`,
+  ]
+  if (args.skippedCount > 0) {
+    lines.push(`- Brain notes skipped: ${String(args.skippedCount)} (see import logs)`)
+  }
+  if (args.provisionAttempted) {
+    if (args.scutUri !== null) {
+      lines.push(`- SCUT identity: \`${args.scutUri}\``)
+    } else if (args.scutError !== null) {
+      lines.push(
+        `- SCUT identity: provisioning failed (${args.scutError}). Recover with \`2200 agent identity retry ${args.agentName}\`.`,
+      )
+    }
+  } else {
+    lines.push(
+      '- SCUT identity: provisioning skipped (run `2200 agent identity provision` to mint).',
+    )
+  }
+  lines.push(
+    '',
+    `Continuity note: \`${CONTINUITY_NOTE_SLUG}\` (read it via \`2200 brain show ${args.agentName} ${CONTINUITY_NOTE_SLUG}\`).`,
+  )
+  return lines.join('\n')
+}
+
+/**
+ * Expand a leading `~/` in a path string to the operator's home dir.
+ * Anything else is returned unchanged. The handoff parser leaves
+ * `~`-prefixed paths intact so the orchestrator (which has the
+ * ambient OS context) is the single point of expansion.
+ */
+function expandHomeTilde(path: string): string {
+  if (path.startsWith('~/')) {
+    return `${homedir()}/${path.slice(2)}`
+  }
+  if (path === '~') {
+    return homedir()
+  }
+  return path
+}

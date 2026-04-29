@@ -11,6 +11,8 @@
  * the connection to the named Agent for the duration of that connection.
  * Reconnection (Agent crashes and is restarted) goes through register again.
  */
+import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-plane/server.js'
 import { listenUds } from '../control-plane/transport-uds.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
@@ -450,6 +452,36 @@ export class Supervisor {
     await spawned.stop()
     await this.updateAgent(name, { state: 'stopped', pid: null })
     this.log.info('Agent stopped', { name, reason })
+  }
+
+  /**
+   * Remove an Agent: stop the running process if any, clear the
+   * in-memory record, persist the state change, and delete the
+   * on-disk per-Agent directory tree under `<home>/agents/<name>/`.
+   *
+   * Used by the Epic 5 migration orchestrator's `--force` path to
+   * make re-migration possible after a botched first attempt. No-op
+   * (returns silently) if no Agent of the given name is registered.
+   *
+   * The brain index file at `<home>/state/brain/<name>/brain.db` is
+   * left in place; the next BrainStore.write recreates it cleanly.
+   * Notification files under `<home>/state/notifications/` belong
+   * to the home, not the per-Agent dir, and are not removed here.
+   */
+  async removeAgent(name: string): Promise<void> {
+    if (!this.state.agents[name]) return
+    if (this.spawned.get(name)) {
+      await this.stopAgent(name, 'remove_agent')
+    }
+    const next: Record<string, AgentRecord> = {}
+    for (const [k, v] of Object.entries(this.state.agents)) {
+      if (k !== name) next[k] = v
+    }
+    this.state.agents = next
+    await saveState(this.state)
+    const dir = dirname(agentPaths(this.state.home, name).identity)
+    await rm(dir, { recursive: true, force: true })
+    this.log.info('Agent removed', { name })
   }
 
   // ---------------------------------------------------------------------------
