@@ -1,0 +1,63 @@
+/*
+ * Bootstrap token slice. The full token system is generated from
+ * wiki/design-system/tokens.json in a follow-up PR. This file holds
+ * just enough tokens to render the scaffold's smoke page; replacing
+ * it with the generated tokens.css is non-breaking because the
+ * variable names and values match the canonical source.
+ *
+ * Source of truth: wiki/design-system/tokens.json (v0.3.0)
+ */
+
+:root {
+  /* Type families */
+  --type-family-sans: Inter, 'Helvetica Neue', system-ui, sans-serif;
+  --type-family-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 56px;
+  --space-10: 80px;
+}
+
+.theme-dark {
+  --color-bg-primary: oklch(0.16 0.005 250);
+  --color-bg-secondary: oklch(0.19 0.005 250);
+  --color-bg-elevated: oklch(0.22 0.006 250);
+  --color-bg-hover: oklch(0.26 0.007 250);
+  --color-bg-inset: oklch(0.13 0.005 250);
+
+  --color-border-default: oklch(0.28 0.006 250);
+  --color-border-emphasis: oklch(0.34 0.007 250);
+
+  --color-text-primary: oklch(0.97 0.003 250);
+  --color-text-secondary: oklch(0.78 0.005 250);
+  --color-text-muted: oklch(0.6 0.006 250);
+
+  --color-status-running: oklch(0.74 0.14 150);
+  --color-status-running-bg: oklch(0.32 0.06 150 / 0.35);
+}
+
+.theme-light {
+  --color-bg-primary: oklch(0.985 0.002 90);
+  --color-bg-secondary: oklch(1 0 0);
+  --color-bg-elevated: oklch(0.975 0.003 90);
+  --color-bg-hover: oklch(0.955 0.004 90);
+  --color-bg-inset: oklch(0.965 0.003 90);
+
+  --color-border-default: oklch(0.92 0.004 90);
+  --color-border-emphasis: oklch(0.86 0.005 90);
+
+  --color-text-primary: oklch(0.18 0.005 250);
+  --color-text-secondary: oklch(0.36 0.006 250);
+  --color-text-muted: oklch(0.5 0.006 250);
+
+  --color-status-running: oklch(0.55 0.14 150);
+  --color-status-running-bg: oklch(0.93 0.05 150);
+}

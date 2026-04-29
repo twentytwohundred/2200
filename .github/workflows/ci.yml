@@ -52,3 +52,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Web app verify (typecheck + lint + format + test + build)
+        run: pnpm --filter @twentytwohundred/web verify
