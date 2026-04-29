@@ -4,6 +4,7 @@ import { FleetScreen } from './screens/fleet/FleetScreen'
 import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
 import { InboxScreen } from './screens/inbox/InboxScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
+import { CommandPalette } from './palette/CommandPalette'
 
 /**
  * App-wide route map.
@@ -20,6 +21,7 @@ import { ComponentsPage } from './dev/ComponentsPage'
 export function Router(): ReactElement {
   return (
     <BrowserRouter>
+      <CommandPalette />
       <Routes>
         <Route path="/" element={<FleetScreen />} />
         <Route path="/agent/:name" element={<AgentDetailScreen />} />
