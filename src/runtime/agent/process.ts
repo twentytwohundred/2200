@@ -155,7 +155,16 @@ export class AgentProcess {
       for (const spec of this.identity.frontmatter.mcp_servers) {
         const env: Record<string, string> = {}
         for (const [varName, secretRef] of Object.entries(spec.env)) {
-          env[varName] = await resolveSecret(secretRef)
+          // Pass the resolver context so SecretRefs of source 'vault'
+          // resolve against this Agent's per-Agent credential vault
+          // (Epic 9 Phase B). `env` and `file` sources ignore the
+          // context. Vault refs of the form `<agent>:<credential>`
+          // override the default (used when an Agent shares a
+          // supervisor-managed credential, rare).
+          env[varName] = await resolveSecret(secretRef, {
+            home: this.options.home,
+            agentName: this.options.name,
+          })
         }
         // Inherit a small set of safe env vars so commands like `npx`
         // resolve their PATH and HOME correctly. Identity-supplied env
