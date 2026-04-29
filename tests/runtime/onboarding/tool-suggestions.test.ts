@@ -43,15 +43,18 @@ describe('suggestTools', () => {
     ])
     const suggestions = suggestTools(t, 'emma')
     expect(suggestions).toHaveLength(1)
-    expect(suggestions[0]?.server.name).toBe('gmail')
-    expect(suggestions[0]?.server.command).toBe('npx')
-    expect(suggestions[0]?.server.args).toContain('@modelcontextprotocol/server-gmail')
-    expect(suggestions[0]?.server.env['GMAIL_OAUTH_TOKEN']).toEqual({
+    const s0 = suggestions[0]!
+    const server = s0.server
+    expect(server.name).toBe('gmail')
+    if (server.transport !== 'stdio') throw new Error('expected stdio')
+    expect(server.command).toBe('npx')
+    expect(server.args).toContain('@modelcontextprotocol/server-gmail')
+    expect(server.env['GMAIL_OAUTH_TOKEN']).toEqual({
       source: 'env',
       id: 'GMAIL_OAUTH_TOKEN_EMMA',
     })
-    expect(suggestions[0]?.env_hint).toContain('GMAIL_OAUTH_TOKEN_EMMA')
-    expect(suggestions[0]?.source_tag).toBe('tool_email_account')
+    expect(s0.env_hint).toContain('GMAIL_OAUTH_TOKEN_EMMA')
+    expect(s0.source_tag).toBe('tool_email_account')
   })
 
   it('suggests GitHub for tool_project_path intent', () => {
@@ -62,8 +65,10 @@ describe('suggestTools', () => {
     ])
     const suggestions = suggestTools(t, 'devy')
     expect(suggestions).toHaveLength(1)
-    expect(suggestions[0]?.server.name).toBe('github')
-    expect(suggestions[0]?.server.env['GITHUB_TOKEN']).toEqual({
+    const server = suggestions[0]!.server
+    expect(server.name).toBe('github')
+    if (server.transport !== 'stdio') throw new Error('expected stdio')
+    expect(server.env['GITHUB_TOKEN']).toEqual({
       source: 'env',
       id: 'GITHUB_TOKEN_DEVY',
     })
@@ -107,7 +112,9 @@ describe('suggestTools', () => {
       { id: 'email_account', tag: 'tool_email_account', answer: 'a@b.com' },
     ])
     const suggestions = suggestTools(t, 'my-agent')
-    expect(suggestions[0]?.server.env['GMAIL_OAUTH_TOKEN']?.id).toBe('GMAIL_OAUTH_TOKEN_MY_AGENT')
+    const server = suggestions[0]!.server
+    if (server.transport !== 'stdio') throw new Error('expected stdio')
+    expect(server.env['GMAIL_OAUTH_TOKEN']?.id).toBe('GMAIL_OAUTH_TOKEN_MY_AGENT')
   })
 
   it('skips tagged entries that have no curated mapping', () => {
