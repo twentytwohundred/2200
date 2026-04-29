@@ -233,11 +233,16 @@ describe('Scheduler firing', () => {
     await scheduler.start()
     fakeTimers.fireAll()
     // Wait for the async fire chain (readSchedule → enqueue → recordFired
-    // → arm) to fully settle. We poll the TaskStore directly: under
-    // parallel suite load, the schedule write and the task write can
-    // become visible at slightly different times to a fresh
-    // TaskStore instance. Polling for the task makes the test
-    // robust to that timing.
+    // → arm) to fully settle. The poll covers all three observable
+    // effects:
+    //   1. task on disk (enqueueSyntheticTask)
+    //   2. last_fired_at on disk (recordFired)
+    //   3. timer re-armed (arm, which runs synchronously after
+    //      recordFired's promise resolves)
+    //
+    // Polling all three in one body avoids a microtask race where the
+    // test's promise chain unwinds between effect (2) and (3) and the
+    // armedCount assertion runs against an empty timers map.
     const taskStore = new TaskStore(home, 'hobby')
     await vi.waitFor(
       async () => {
@@ -248,6 +253,9 @@ describe('Scheduler firing', () => {
         const reread = await readSchedule(home, 'hobby', 'sched_x')
         if (reread.last_fired_at === null) {
           throw new Error('schedule not yet fired')
+        }
+        if (scheduler.armedCount() !== 1) {
+          throw new Error('next firing not yet armed')
         }
       },
       { timeout: 5000, interval: 10 },
