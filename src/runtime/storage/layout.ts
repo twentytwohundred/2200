@@ -123,6 +123,44 @@ export function agentTelemetryDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Agent credential vault directory (Epic 9 Phase B). One JSON file
+ * per credential at the leaf:
+ *   <home>/state/credentials/<agent_name>/<credential_name>.json
+ *
+ * Each file is a sealed envelope (AES-256-GCM) over the credential
+ * value plus its metadata (provider, scopes, expires_at, etc).
+ * Per-Agent salt under `salt`. Wrapping key derived via HKDF from
+ * the per-instance master key + this salt + a credential-namespace
+ * info string, mirroring the SCUT keystore pattern from Epic 4 Phase A.
+ *
+ * Files are mode 0600. Directory is mode 0700.
+ */
+export function agentCredentialsDir(home: string, agentName: string): string {
+  return join(home, 'state', 'credentials', agentName)
+}
+
+export interface AgentCredentialPaths {
+  readonly root: string
+  readonly salt: string
+}
+
+export function agentCredentialPaths(home: string, agentName: string): AgentCredentialPaths {
+  const root = agentCredentialsDir(home, agentName)
+  return {
+    root,
+    salt: join(root, 'salt'),
+  }
+}
+
+export function agentCredentialFilePath(
+  home: string,
+  agentName: string,
+  credentialName: string,
+): string {
+  return join(agentCredentialsDir(home, agentName), `${credentialName}.json`)
+}
+
+/**
  * Per-Agent budget state directory. One file per UTC day:
  *   <home>/state/budget/<agent_name>/YYYY-MM-DD.json
  * Plus a sticky `override.json` (PR E) that, when present, suppresses
