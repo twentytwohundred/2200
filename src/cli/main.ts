@@ -2294,9 +2294,216 @@ export function buildProgram(): Command {
       )
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 oauth <subcommand>  (Epic 9 Phase B-2)
+  //
+  // Browser-based OAuth flows for connecting third-party tools. Reads
+  // client_id + client_secret from env vars, runs the Authorization Code
+  // + PKCE flow against a known provider, stores the resulting refresh
+  // token in the calling Agent's credential vault.
+  //
+  // Operators register their own OAuth app at the provider's console
+  // (one-time setup) and export _2200_OAUTH_<PROVIDER>_CLIENT_ID +
+  // _2200_OAUTH_<PROVIDER>_CLIENT_SECRET. The CLI surfaces clear
+  // missing-env-var messages.
+  // ---------------------------------------------------------------------------
+
+  const oauth = program
+    .command('oauth')
+    .description(
+      'connect third-party providers via OAuth and store refresh tokens in the Agent vault',
+    )
+
+  oauth
+    .command('providers')
+    .description('list known OAuth providers + the env vars they read')
+    .action(async () => {
+      const { knownProviders, PROVIDERS, readClientCredentials } =
+        await import('../runtime/oauth/providers.js')
+      console.log('# known OAuth providers')
+      for (const name of knownProviders()) {
+        const cfg = PROVIDERS[name]
+        if (!cfg) continue
+        const creds = readClientCredentials(name)
+        const idStatus = creds.clientId ? 'set' : 'MISSING'
+        const secretStatus = creds.clientSecret ? 'set' : 'MISSING'
+        console.log(`${cfg.name.padEnd(10)}  scopes(default): ${cfg.defaultScopes.join(', ')}`)
+        console.log(`  ${creds.envVarHints.id}: ${idStatus}`)
+        console.log(`  ${creds.envVarHints.secret}: ${secretStatus}`)
+      }
+    })
+
+  oauth
+    .command('login <provider> <agent>')
+    .description(
+      'run the OAuth flow for <provider>, store the refresh token in <agent> vault as <name>',
+    )
+    .option('--name <name>', 'credential name in the vault (default: <provider>-<scopes-tag>)')
+    .option('--scopes <list>', 'comma-separated scopes (default: provider defaults)')
+    .option('--port <p>', 'specific localhost port for the redirect server', (v) => parseInt(v, 10))
+    .option('--timeout <s>', 'wait this many seconds for the user to complete the flow', (v) =>
+      parseInt(v, 10),
+    )
+    .option('--no-browser', 'do not auto-open the browser; print the URL only')
+    .action(
+      async (
+        providerName: string,
+        agentName: string,
+        opts: {
+          name?: string
+          scopes?: string
+          port?: number
+          timeout?: number
+          browser?: boolean
+        },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const { findProvider, knownProviders, readClientCredentials } =
+          await import('../runtime/oauth/providers.js')
+        const provider = findProvider(providerName)
+        if (!provider) {
+          console.error(
+            `unknown provider "${providerName}". Known: ${knownProviders().join(', ')}.`,
+          )
+          process.exit(1)
+        }
+        const creds = readClientCredentials(providerName)
+        if (!creds.clientId || !creds.clientSecret) {
+          console.error(
+            `missing OAuth client credentials for ${providerName}.\n` +
+              `  Register an OAuth app at the provider's console.\n` +
+              `  Set the redirect URI to http://127.0.0.1:<port>/callback (the CLI prints the port).\n` +
+              `  Then export:\n` +
+              `    ${creds.envVarHints.id}=...\n` +
+              `    ${creds.envVarHints.secret}=...`,
+          )
+          process.exit(1)
+        }
+        const scopes = opts.scopes
+          ? opts.scopes
+              .split(',')
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)
+          : provider.defaultScopes
+        const credentialName = opts.name ?? `${providerName}-${scopesTag(Array.from(scopes))}`
+
+        const { runOAuthFlow } = await import('../runtime/oauth/flow.js')
+        const { CredentialVault } = await import('../runtime/credentials/vault.js')
+
+        const flowArgs: Parameters<typeof runOAuthFlow>[0] = {
+          provider,
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret,
+          scopes,
+          onLog: (line) => {
+            console.log(line)
+          },
+        }
+        if (opts.port !== undefined) flowArgs.port = opts.port
+        if (opts.timeout !== undefined) flowArgs.timeoutMs = opts.timeout * 1000
+        if (opts.browser === false) {
+          flowArgs.openBrowser = (): void => undefined
+        }
+
+        let tokens
+        try {
+          tokens = await runOAuthFlow(flowArgs)
+        } catch (err) {
+          console.error(`oauth flow failed: ${err instanceof Error ? err.message : String(err)}`)
+          process.exit(1)
+        }
+
+        if (!tokens.refresh_token) {
+          console.warn(
+            `note: provider returned no refresh_token. The access_token will expire after ${
+              tokens.expires_in ? `${String(tokens.expires_in)}s` : 'the provider default'
+            } and there will be no automatic renewal.`,
+          )
+        }
+
+        const value = tokens.refresh_token ?? tokens.access_token
+        const expiresAt =
+          tokens.expires_in !== undefined
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : undefined
+
+        const vault = new CredentialVault(home, agentName)
+        await vault.set(credentialName, {
+          value,
+          metadata: {
+            created_at: new Date().toISOString(),
+            provider: providerName,
+            scopes: Array.from(scopes),
+            ...(expiresAt ? { expires_at: expiresAt } : {}),
+            notes: tokens.refresh_token
+              ? 'refresh_token (use with the matching token endpoint to mint access tokens)'
+              : 'access_token (no refresh; will expire)',
+          },
+        })
+
+        console.log()
+        console.log(`stored in ${agentName} vault as "${credentialName}"`)
+        console.log(`  scopes:    ${Array.from(scopes).join(', ')}`)
+        if (expiresAt) console.log(`  expires:   ${expiresAt}`)
+        console.log(`  reference: { source: vault, id: "${credentialName}" } in mcp_servers env`)
+      },
+    )
+
+  oauth
+    .command('status <agent>')
+    .description('list OAuth-tagged credentials in an Agent vault')
+    .action(async (agentName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const vault = new CredentialVault(home, agentName)
+      const all = await vault.list()
+      const oauthEntries = all.filter((e) => e.metadata.provider !== undefined)
+      if (oauthEntries.length === 0) {
+        console.log(`No OAuth credentials in ${agentName} vault.`)
+        return
+      }
+      for (const e of oauthEntries) {
+        console.log(`${e.name.padEnd(28)}  [${e.metadata.provider ?? '?'}]`)
+        if (e.metadata.scopes) console.log(`  scopes:  ${e.metadata.scopes.join(', ')}`)
+        if (e.metadata.expires_at) console.log(`  expires: ${e.metadata.expires_at}`)
+        if (e.metadata.notes) console.log(`  ${e.metadata.notes}`)
+      }
+    })
+
+  oauth
+    .command('revoke <agent> <name>')
+    .description(
+      'delete an OAuth credential from an Agent vault (does NOT call the revocation endpoint)',
+    )
+    .action(async (agentName: string, name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const vault = new CredentialVault(home, agentName)
+      const removed = await vault.delete(name)
+      console.log(
+        removed
+          ? `deleted ${agentName}:${name} (still authorized at the provider; revoke separately if desired)`
+          : `no credential at ${agentName}:${name}`,
+      )
+    })
+
   registerWebCommands(program)
 
   return program
+}
+
+function scopesTag(scopes: string[]): string {
+  if (scopes.length === 0) return 'default'
+  // Take the last path component of the first scope as a short tag.
+  const first = scopes[0] ?? 'default'
+  const idx = first.lastIndexOf('/')
+  const tail = idx >= 0 ? first.slice(idx + 1) : first
+  return (
+    tail
+      .replace(/[^a-z0-9-]/gi, '-')
+      .toLowerCase()
+      .slice(0, 24) || 'default'
+  )
 }
 
 /**
