@@ -169,10 +169,18 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // require a bearer token that resolves to a token record on disk.
   // ------------------------------------------------------------------------
   async function authenticate(req: FastifyRequest): Promise<Principal> {
+    // Browsers cannot set the Authorization header on a WebSocket upgrade.
+    // Accept ?token=<value> in the URL as an equivalent for the WS route.
+    let value: string | undefined
     const header = req.headers.authorization ?? ''
     const match = /^Bearer\s+([\S]+)$/.exec(header)
-    if (!match) throw unauthorized()
-    const value = match[1]
+    if (match?.[1]) {
+      value = match[1]
+    } else {
+      const url = new URL(req.url, 'http://placeholder')
+      const fromQuery = url.searchParams.get('token')
+      if (fromQuery) value = fromQuery
+    }
     if (!value) throw unauthorized()
     const token = await tokens.findByValue(value)
     if (!token) throw unauthorized()
@@ -181,7 +189,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
 
   fastify.addHook('preHandler', async (req) => {
     if (!req.url.startsWith('/api/v1/')) return
-    if (req.url === '/api/v1/ws') {
+    if (req.url.startsWith('/api/v1/ws')) {
       // The WS upgrade is authenticated separately below. Pre-handler
       // does not see the upgraded socket.
       return
