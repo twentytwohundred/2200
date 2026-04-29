@@ -40,6 +40,7 @@ import { importFromDir } from '../runtime/brain/import.js'
 import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
+import { registerWebCommands } from './web.js'
 import { homePaths } from '../runtime/storage/layout.js'
 import { loadUserIdentity } from '../runtime/user/loader.js'
 import { readCredentialFile } from '../runtime/pub/keypair.js'
@@ -1744,6 +1745,8 @@ export function buildProgram(): Command {
         )
       }
     })
+
+  registerWebCommands(program)
 
   return program
 }

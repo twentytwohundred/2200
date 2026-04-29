@@ -18,7 +18,13 @@ import { Supervisor } from './supervisor.js'
 import { writePidFile, removePidFile } from './pidfile.js'
 import { createLogger } from '../util/logger.js'
 
-function parseArgs(argv: string[]): { home: string } {
+interface BootstrapArgs {
+  home: string
+  webPort: number
+  webHost: string
+}
+
+function parseArgs(argv: string[]): BootstrapArgs {
   let home: string | undefined
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--home' && i + 1 < argv.length) {
@@ -30,12 +36,15 @@ function parseArgs(argv: string[]): { home: string } {
   if (!home) {
     throw new Error('--home <path> required (or set TWENTYTWOHUNDRED_HOME)')
   }
-  return { home }
+  const portRaw = process.env['TWENTYTWOHUNDRED_WEB_PORT']
+  const webPort = portRaw ? Number.parseInt(portRaw, 10) : 2200
+  const webHost = process.env['TWENTYTWOHUNDRED_WEB_HOST'] ?? '127.0.0.1'
+  return { home, webPort, webHost }
 }
 
 async function main(): Promise<void> {
   const log = createLogger('supervisor/bootstrap')
-  let args: { home: string }
+  let args: BootstrapArgs
   try {
     args = parseArgs(process.argv.slice(2))
   } catch (err) {
@@ -43,8 +52,14 @@ async function main(): Promise<void> {
     process.exit(64) // EX_USAGE
   }
 
-  const supervisor = await Supervisor.create({ home: args.home })
-  await supervisor.start()
+  const supervisor = await Supervisor.create({
+    home: args.home,
+    web: { port: args.webPort, host: args.webHost },
+  })
+  await supervisor.start({
+    home: args.home,
+    web: { port: args.webPort, host: args.webHost },
+  })
   await writePidFile(args.home, process.pid)
 
   log.info('supervisor daemon up', { pid: process.pid, home: args.home })
