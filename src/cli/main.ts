@@ -2028,6 +2028,83 @@ export function buildProgram(): Command {
       )
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 extension <subcommand>  (Epic 12 Phase A)
+  //
+  // Read-only registry over <home>/extensions/. Phase A: list + show.
+  // Install / uninstall / lifecycle execution lands in Phase B.
+  // ---------------------------------------------------------------------------
+
+  const extension = program
+    .command('extension')
+    .description('inspect installed Extensions (Phase A: list + show; install lands in Phase B)')
+
+  extension
+    .command('list')
+    .description('list installed Extensions')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { listExtensions, extensionsHome } = await import('../runtime/extensions/registry.js')
+      const items = await listExtensions(home)
+      if (items.length === 0) {
+        console.log(
+          `No Extensions installed at ${extensionsHome(home)}.\n` +
+            `Phase A is read-only: drop a manifest at <home>/extensions/<name>/manifest.json to register one.`,
+        )
+        return
+      }
+      for (const e of items) {
+        const tag = e.status === 'ok' ? e.version.padEnd(10) : '!INVALID '
+        console.log(`${e.name.padEnd(28)}  ${tag}  ${e.display_name}`)
+        if (e.status === 'invalid' && e.reason) {
+          console.log(`  ${e.reason}`)
+        } else if (e.description) {
+          console.log(`  ${e.description}`)
+        }
+      }
+    })
+
+  extension
+    .command('show <name>')
+    .description('print the full manifest for one Extension')
+    .action(async (name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { readExtension } = await import('../runtime/extensions/registry.js')
+      const rec = await readExtension(home, name)
+      console.log(`# ${rec.manifest.display_name}  v${rec.manifest.version}`)
+      console.log(`name:        ${rec.manifest.name}`)
+      console.log(`author:      ${rec.manifest.author}`)
+      if (rec.manifest.homepage) console.log(`homepage:    ${rec.manifest.homepage}`)
+      console.log(`description: ${rec.manifest.description}`)
+      console.log(`path:        ${rec.rootPath}`)
+      if (rec.manifest.permissions.length > 0) {
+        console.log(`permissions:`)
+        for (const p of rec.manifest.permissions) console.log(`  - ${p}`)
+      } else {
+        console.log(`permissions: (none ... pure-data Extension)`)
+      }
+      if (rec.manifest.tools.length > 0) {
+        console.log(`tools:`)
+        for (const t of rec.manifest.tools) {
+          console.log(`  - ${t.name}${t.description ? ` ... ${t.description}` : ''}`)
+        }
+      }
+      if (rec.manifest.schedules.length > 0) {
+        console.log(`schedules:`)
+        for (const s of rec.manifest.schedules) {
+          console.log(`  - ${s.id}: ${s.cron}${s.description ? ` ... ${s.description}` : ''}`)
+        }
+      }
+      const hooks: string[] = []
+      if (rec.manifest.hooks.install) hooks.push(`install: ${rec.manifest.hooks.install}`)
+      if (rec.manifest.hooks.uninstall) hooks.push(`uninstall: ${rec.manifest.hooks.uninstall}`)
+      if (rec.manifest.hooks.update) hooks.push(`update: ${rec.manifest.hooks.update}`)
+      if (hooks.length > 0) {
+        console.log(`hooks:`)
+        for (const h of hooks) console.log(`  - ${h}`)
+      }
+    })
+
   registerWebCommands(program)
 
   return program
