@@ -1219,6 +1219,134 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // 2200 shared-brain <subcommand>  (Epic 8 Phase B)
+  //
+  // Shared brain at <home>/shared/brain/. Any user or Agent (with
+  // appropriate Identity capability, gated in a follow-up) can read and
+  // search the shared corpus. v1 surface: list / show / search / rebuild
+  // / import. Mirrors the per-Agent brain CLI shape verbatim except the
+  // <agent> positional is replaced by a single shared root.
+  // ---------------------------------------------------------------------------
+
+  const sharedBrain = program
+    .command('shared-brain')
+    .description(
+      'manage the shared brain at <home>/shared/brain (list, show, search, rebuild, import)',
+    )
+
+  sharedBrain
+    .command('list')
+    .description('list shared brain notes (sorted by updated, descending)')
+    .option('--type <type>', 'filter by note type (feedback, project, ...)')
+    .option('--tag <tag>', 'filter by tag')
+    .option('--limit <n>', 'cap on results (default 50)', (v) => parseInt(v, 10))
+    .action(async (opts: { type?: string; tag?: string; limit?: number }) => {
+      const home = await resolveHomeFromOpts(program)
+      const store = BrainStore.forShared(home)
+      const notes = await store.list({
+        ...(opts.type !== undefined ? { type: opts.type } : {}),
+        ...(opts.tag !== undefined ? { tag: opts.tag } : {}),
+        limit: opts.limit ?? 50,
+      })
+      if (notes.length === 0) {
+        console.log('No shared brain notes.')
+        return
+      }
+      for (const n of notes) {
+        const tagsStr = n.frontmatter.tags.length > 0 ? ` [${n.frontmatter.tags.join(', ')}]` : ''
+        console.log(
+          `${n.slug.padEnd(40)}  ${n.frontmatter.type.padEnd(10)}  ${n.frontmatter.updated}  ${n.frontmatter.title}${tagsStr}`,
+        )
+      }
+    })
+
+  sharedBrain
+    .command('show <slug>')
+    .description('print the contents of a shared brain note')
+    .action(async (slug: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const store = BrainStore.forShared(home)
+      const note = await store.read(slug)
+      console.log(`# ${note.frontmatter.title}`)
+      console.log(`slug:    ${note.slug}`)
+      console.log(`type:    ${note.frontmatter.type}`)
+      if (note.frontmatter.tags.length > 0) {
+        console.log(`tags:    ${note.frontmatter.tags.join(', ')}`)
+      }
+      console.log(`created: ${note.frontmatter.created}`)
+      console.log(`updated: ${note.frontmatter.updated}`)
+      if (note.frontmatter.links.length > 0) {
+        console.log(`links:   ${note.frontmatter.links.join(', ')}`)
+      }
+      console.log(`path:    ${note.path}`)
+      console.log()
+      console.log(note.body)
+    })
+
+  sharedBrain
+    .command('search <query>')
+    .description('FTS5 search across shared brain notes')
+    .option('--limit <n>', 'cap on hits (default 20)', (v) => parseInt(v, 10))
+    .action(async (query: string, opts: { limit?: number }) => {
+      const home = await resolveHomeFromOpts(program)
+      const index = BrainIndex.openShared(home)
+      try {
+        const hits = index.search(query, { limit: opts.limit ?? 20 })
+        if (hits.length === 0) {
+          console.log(`No matches for "${query}" in the shared brain.`)
+          return
+        }
+        for (const h of hits) {
+          console.log(`${h.slug.padEnd(40)}  ${h.title}`)
+          console.log(`  ${h.snippet}`)
+        }
+      } finally {
+        index.close()
+      }
+    })
+
+  sharedBrain
+    .command('rebuild')
+    .description('rebuild the FTS5 index from disk for the shared brain')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const store = BrainStore.forShared(home)
+      const notes = await store.list({ limit: 100_000 })
+      const index = BrainIndex.openShared(home)
+      try {
+        index.rebuildFrom(notes)
+      } finally {
+        index.close()
+      }
+      console.log(`shared brain index rebuilt: ${String(notes.length)} note(s).`)
+    })
+
+  sharedBrain
+    .command('import <source-dir>')
+    .description('bulk-import a directory of markdown files into the shared brain')
+    .option('--dry-run', 'parse + map but do not write')
+    .action(async (sourceDir: string, opts: { dryRun?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const result = await importFromDir({
+        home,
+        sharedBrain: true,
+        sourceDir,
+        dryRun: opts.dryRun ?? false,
+      })
+      const verb = opts.dryRun ? 'would import' : 'imported'
+      console.log(`${verb} ${String(result.imported.length)} note(s) into the shared brain.`)
+      for (const e of result.imported) {
+        console.log(`  ${e.slug.padEnd(40)}  ${e.type.padEnd(10)}  ${e.title}`)
+      }
+      if (result.skipped.length > 0) {
+        console.log(`\nskipped ${String(result.skipped.length)} file(s):`)
+        for (const s of result.skipped) {
+          console.log(`  ${s.sourcePath}: ${s.reason}`)
+        }
+      }
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 schedule <subcommand>  (Epic 6 PR C)
   // ---------------------------------------------------------------------------
 

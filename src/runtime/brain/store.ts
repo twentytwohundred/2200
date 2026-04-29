@@ -17,7 +17,7 @@
 import { readdir, readFile, rm, mkdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { atomicWriteFile } from '../util/atomic-write.js'
-import { agentPaths } from '../storage/layout.js'
+import { agentPaths, homePaths } from '../storage/layout.js'
 import {
   BRAIN_SCHEMA_VERSION,
   deriveSlug,
@@ -59,14 +59,40 @@ export interface ListFilters {
 }
 
 export class BrainStore {
-  constructor(
-    private readonly home: string,
-    private readonly agentName: string,
-  ) {}
+  private readonly resolvedDir: string
+
+  /**
+   * Construct a BrainStore. Two shapes:
+   *   new BrainStore(home, agentName)  ... per-Agent (Phase A; legacy callers).
+   *   BrainStore.forAgent(home, name) ... per-Agent (preferred).
+   *   BrainStore.forShared(home)       ... shared brain (Epic 8 Phase B).
+   */
+  constructor(home: string, agentName: string)
+  constructor(opts: { dir: string })
+  constructor(homeOrOpts: string | { dir: string }, agentName?: string) {
+    if (typeof homeOrOpts === 'string') {
+      if (!agentName) {
+        throw new Error('BrainStore: agentName required when constructed with (home, agentName)')
+      }
+      this.resolvedDir = agentPaths(homeOrOpts, agentName).brain
+    } else {
+      this.resolvedDir = homeOrOpts.dir
+    }
+  }
+
+  /** Per-Agent brain at <home>/agents/<name>/brain. */
+  static forAgent(home: string, agentName: string): BrainStore {
+    return new BrainStore({ dir: agentPaths(home, agentName).brain })
+  }
+
+  /** Shared brain at <home>/shared/brain (Epic 8 Phase B). */
+  static forShared(home: string): BrainStore {
+    return new BrainStore({ dir: homePaths(home).sharedBrain })
+  }
 
   /** Resolve the brain dir without touching disk. */
   dir(): string {
-    return agentPaths(this.home, this.agentName).brain
+    return this.resolvedDir
   }
 
   /** Resolve a slug to its file path. */

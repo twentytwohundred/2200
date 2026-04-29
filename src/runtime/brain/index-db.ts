@@ -21,7 +21,7 @@ import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { agentBrainIndexPath } from '../storage/layout.js'
+import { agentBrainIndexPath, homePaths } from '../storage/layout.js'
 import type { BrainNote } from './types.js'
 
 export interface SearchHit {
@@ -116,7 +116,16 @@ export class BrainIndex {
 
   /** Open the index DB for an Agent. Creates the file + schema if absent. */
   static open(home: string, agentName: string): BrainIndex {
-    const path = agentBrainIndexPath(home, agentName)
+    return BrainIndex.openAtPath(agentBrainIndexPath(home, agentName))
+  }
+
+  /** Open the shared brain index DB (Epic 8 Phase B). */
+  static openShared(home: string): BrainIndex {
+    return BrainIndex.openAtPath(homePaths(home).sharedBrainIndex)
+  }
+
+  /** Open at an explicit path. Used by both per-Agent and shared factories; tests may also use this. */
+  static openAtPath(path: string): BrainIndex {
     mkdirSync(dirname(path), { recursive: true })
     const db = new Database(path)
     return new BrainIndex(db)
