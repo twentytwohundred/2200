@@ -1,0 +1,164 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { Supervisor } from '../../../src/runtime/supervisor/supervisor.js'
+import { startHttpServer, type HttpServerHandle } from '../../../src/runtime/http/server.js'
+import { WebTokenStore } from '../../../src/runtime/http/tokens.js'
+import { homePaths } from '../../../src/runtime/storage/layout.js'
+import type { Listener } from '../../../src/runtime/control-plane/transport.js'
+
+/**
+ * In-process HTTP smoke tests. The supervisor's UDS listener is bypassed
+ * (the test injects a no-op listener) so we can stand up a Supervisor
+ * without the daemon harness.
+ */
+
+let home: string
+let sup: Supervisor
+let handle: HttpServerHandle
+let token: string
+
+class NullListener implements Listener {
+  connections(): AsyncIterable<never> {
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<never> {
+        return {
+          next: () =>
+            new Promise<IteratorResult<never>>(() => {
+              /* never resolves */
+            }),
+        }
+      },
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async close(): Promise<void> {
+    /* no-op */
+  }
+}
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), '2200-http-'))
+  sup = await Supervisor.create({ home })
+  await sup.start({ home, listener: new NullListener() })
+  handle = await startHttpServer({
+    supervisor: sup,
+    home,
+    port: 0,
+    host: '127.0.0.1',
+    staticDir: join(home, '__no_static_dir__'),
+  })
+  const tokens = new WebTokenStore(homePaths(home).stateWebTokens)
+  const list = await tokens.list()
+  token = list[0]!.value
+})
+
+afterEach(async () => {
+  await handle.stop()
+  await sup.shutdown()
+  await rm(home, { recursive: true, force: true })
+})
+
+async function get(
+  path: string,
+  opts: { auth?: boolean } = { auth: true },
+): Promise<{
+  status: number
+  body: unknown
+  headers: Record<string, string>
+}> {
+  const headers: Record<string, string> = {}
+  if (opts.auth !== false) headers['authorization'] = `Bearer ${token}`
+  const res = await fetch(`${handle.url}${path}`, { headers })
+  const headersOut: Record<string, string> = {}
+  res.headers.forEach((v, k) => {
+    headersOut[k] = v
+  })
+  const text = await res.text()
+  let body: unknown = text
+  try {
+    body = JSON.parse(text)
+  } catch {
+    /* keep as text */
+  }
+  return { status: res.status, body, headers: headersOut }
+}
+
+describe('HTTP server', () => {
+  it('GET /api/v1/runtime/health returns 200 with a token', async () => {
+    const r = await get('/api/v1/runtime/health')
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ healthy: true })
+  })
+
+  it('GET /api/v1/me without a bearer is 401 with the standard envelope', async () => {
+    const r = await get('/api/v1/me', { auth: false })
+    expect(r.status).toBe(401)
+    expect(r.body).toMatchObject({
+      error: { code: 'unauthorized', status: 401 },
+    })
+    expect((r.body as { error: { request_id: string } }).error.request_id).toMatch(/^req_/)
+  })
+
+  it('GET /api/v1/me with a bogus bearer is 401', async () => {
+    const res = await fetch(`${handle.url}/api/v1/me`, {
+      headers: { authorization: 'Bearer notarealtoken' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('GET /api/v1/me with the right bearer returns the principal', async () => {
+    const r = await get('/api/v1/me')
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ kind: 'user', name: 'default' })
+  })
+
+  it('GET /api/v1/agents returns an empty list on a fresh home', async () => {
+    const r = await get('/api/v1/agents')
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ items: [], cursor: { next: null } })
+  })
+
+  it('GET /api/v1/agents/missing returns 404 with the standard envelope', async () => {
+    const r = await get('/api/v1/agents/missing')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({
+      error: { code: 'agent_not_found', status: 404, details: { agent: 'missing' } },
+    })
+  })
+
+  it('GET /api/v1/notifications returns an empty list', async () => {
+    const r = await get('/api/v1/notifications')
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ items: [] })
+  })
+
+  it('GET /api/v1/runtime/version returns the api + runtime fields', async () => {
+    const r = await get('/api/v1/runtime/version')
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ api: 'v1' })
+  })
+
+  it('GET /api/v1/schema enumerates the v1 endpoints', async () => {
+    const r = await get('/api/v1/schema')
+    expect(r.status).toBe(200)
+    const body = r.body as { endpoints: { method: string; path: string }[] }
+    expect(body.endpoints.some((e) => e.path === '/api/v1/me')).toBe(true)
+    expect(body.endpoints.some((e) => e.path === '/api/v1/agents')).toBe(true)
+    expect(body.endpoints.some((e) => e.path === '/api/v1/ws')).toBe(true)
+  })
+
+  it('echoes a request id back in the x-request-id header', async () => {
+    const r = await get('/api/v1/runtime/health')
+    expect(r.headers['x-request-id']).toMatch(/^req_/)
+  })
+
+  it('returns the placeholder HTML on / when no static build is present', async () => {
+    const res = await fetch(`${handle.url}/`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/text\/html/)
+    const text = await res.text()
+    expect(text).toMatch(/2200 web/)
+  })
+})

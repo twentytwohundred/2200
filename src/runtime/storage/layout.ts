@@ -52,6 +52,8 @@ export interface HomePaths {
   readonly stateOpenpub: string
   /** Per-Agent JSONL telemetry root (Epic 4.5). One subdir per Agent name. */
   readonly stateTelemetry: string
+  /** Web-app bearer tokens (Epic 15 Phase A). One JSON file per token. */
+  readonly stateWebTokens: string
   readonly config: string
   /** User identity markdown (Epic 3 PR B). */
   readonly configUserMd: string
@@ -76,6 +78,7 @@ export function homePaths(home: string): HomePaths {
     stateNotifications: join(state, 'notifications'),
     stateOpenpub: join(state, 'openpub'),
     stateTelemetry: join(state, 'telemetry'),
+    stateWebTokens: join(state, 'web-tokens'),
     config,
     configUserMd: join(config, 'user.md'),
     configUserPubSecret: join(config, 'user.pub.secret'),

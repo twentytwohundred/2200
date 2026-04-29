@@ -49,6 +49,7 @@ import {
 } from '../scheduler/schedule.js'
 import { Scheduler } from '../scheduler/service.js'
 import type { ScheduleListEntry } from '../control-plane/protocol.js'
+import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -59,6 +60,14 @@ export interface SupervisorOptions {
   listener?: Listener
   /** Inject a logger. */
   logger?: Logger
+  /**
+   * Web HTTP server config. Omit to skip the HTTP server entirely
+   * (default for tests). Production bootstrap sets `{ port, host }`.
+   */
+  web?: {
+    port: number
+    host: string
+  }
 }
 
 export class Supervisor {
@@ -83,6 +92,8 @@ export class Supervisor {
   private readonly log: Logger
   private isShuttingDown = false
   private readonly scheduler: Scheduler
+  private webHandle: { stop: () => Promise<void>; broadcast: (e: WsEvent) => void } | undefined
+  private readonly webConfig: SupervisorOptions['web']
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
     this.state = state
@@ -92,6 +103,7 @@ export class Supervisor {
       home: state.home,
       logger: this.log.child('scheduler'),
     })
+    this.webConfig = options.web
   }
 
   /**
@@ -120,6 +132,23 @@ export class Supervisor {
     this.listener = options.listener ?? (await listenUds(Supervisor.socketPath(this.state.home)))
     void this.acceptLoop()
     await this.scheduler.start()
+    if (this.webConfig) {
+      try {
+        const handle: HttpServerHandle = await startHttpServer({
+          supervisor: this,
+          home: this.state.home,
+          port: this.webConfig.port,
+          host: this.webConfig.host,
+          logger: this.log.child('http'),
+        })
+        this.webHandle = handle
+        this.log.info('http server listening', { url: handle.url })
+      } catch (err) {
+        this.log.warn('http server failed to start', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
     this.log.info('supervisor listening', {
       home: this.state.home,
       stateDir: this.state.state_dir,
@@ -137,6 +166,16 @@ export class Supervisor {
     if (this.listener) {
       await this.listener.close()
       this.listener = undefined
+    }
+    if (this.webHandle) {
+      try {
+        await this.webHandle.stop()
+      } catch (err) {
+        this.log.warn('error stopping http server', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      this.webHandle = undefined
     }
     this.scheduler.stop()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
