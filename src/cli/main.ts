@@ -2163,9 +2163,156 @@ export function buildProgram(): Command {
       console.log(s.body)
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 credential <subcommand>  (Epic 9 Phase B)
+  //
+  // Per-Agent encrypted credential vault. Each Agent has a vault at
+  // <home>/state/credentials/<agent>/. Stored values are sealed with
+  // AES-256-GCM using a per-Agent wrapping key derived from the
+  // master key + per-Agent salt + a credential-namespace info string.
+  //
+  // Phase B substrate ships manual entry; Phase B-2 wires the OAuth
+  // flows that populate vault entries automatically.
+  // ---------------------------------------------------------------------------
+
+  const credential = program
+    .command('credential')
+    .description('manage an Agent encrypted credential vault (Epic 9 Phase B)')
+
+  credential
+    .command('set <agent> <name>')
+    .description(
+      'set a credential. Reads the secret value from stdin (so it never lands in shell history)',
+    )
+    .option('--provider <name>', 'tag the credential with a provider (e.g. google, github)')
+    .option('--scopes <list>', 'comma-separated OAuth scopes')
+    .option('--expires-at <iso>', 'ISO-8601 UTC expiry (optional)')
+    .option('--notes <text>', 'free-form notes')
+    .action(
+      async (
+        agentName: string,
+        name: string,
+        opts: {
+          provider?: string
+          scopes?: string
+          expiresAt?: string
+          notes?: string
+        },
+      ) => {
+        const home = await resolveHomeFromOpts(program)
+        const { CredentialVault } = await import('../runtime/credentials/vault.js')
+        const value = await readSecretFromStdin()
+        if (!value) {
+          console.error(
+            'no value provided on stdin; pipe the secret in (e.g. echo "$TOKEN" | 2200 credential set ...)',
+          )
+          process.exit(1)
+        }
+        const vault = new CredentialVault(home, agentName)
+        await vault.set(name, {
+          value,
+          metadata: {
+            created_at: new Date().toISOString(),
+            ...(opts.provider ? { provider: opts.provider } : {}),
+            ...(opts.scopes
+              ? {
+                  scopes: opts.scopes
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0),
+                }
+              : {}),
+            ...(opts.expiresAt ? { expires_at: opts.expiresAt } : {}),
+            ...(opts.notes ? { notes: opts.notes } : {}),
+          },
+        })
+        console.log(`set credential ${agentName}:${name}`)
+      },
+    )
+
+  credential
+    .command('list <agent>')
+    .description('list credential names + metadata for an Agent (values stay sealed)')
+    .action(async (agentName: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const vault = new CredentialVault(home, agentName)
+      const entries = await vault.list()
+      if (entries.length === 0) {
+        console.log(`No credentials in ${agentName}'s vault.`)
+        return
+      }
+      for (const e of entries) {
+        const provider = e.metadata.provider ? `[${e.metadata.provider}]` : ''
+        const scopes = e.metadata.scopes ? `(${e.metadata.scopes.join(', ')})` : ''
+        const expires = e.metadata.expires_at ? ` expires ${e.metadata.expires_at}` : ''
+        console.log(`${e.name.padEnd(28)}  ${provider} ${scopes}${expires}`)
+        console.log(
+          `  created ${e.metadata.created_at}${e.metadata.notes ? `; ${e.metadata.notes}` : ''}`,
+        )
+      }
+    })
+
+  credential
+    .command('show <agent> <name>')
+    .description(
+      'print metadata for one credential. Use --reveal to also print the secret value (DANGEROUS).',
+    )
+    .option('--reveal', 'also print the plaintext credential value')
+    .action(async (agentName: string, name: string, opts: { reveal?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const vault = new CredentialVault(home, agentName)
+      const entry = await vault.get(name)
+      console.log(`# ${agentName}:${name}`)
+      console.log(`created:     ${entry.metadata.created_at}`)
+      if (entry.metadata.provider) console.log(`provider:    ${entry.metadata.provider}`)
+      if (entry.metadata.scopes) console.log(`scopes:      ${entry.metadata.scopes.join(', ')}`)
+      if (entry.metadata.expires_at) console.log(`expires_at:  ${entry.metadata.expires_at}`)
+      if (entry.metadata.notes) console.log(`notes:       ${entry.metadata.notes}`)
+      if (opts.reveal) {
+        console.log()
+        console.log(`value:       ${entry.value}`)
+      } else {
+        console.log()
+        console.log(
+          `(value is sealed; pass --reveal to print it. Don't paste it in shared terminals.)`,
+        )
+      }
+    })
+
+  credential
+    .command('delete <agent> <name>')
+    .description('delete a credential. Idempotent (no-op if missing).')
+    .action(async (agentName: string, name: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const { CredentialVault } = await import('../runtime/credentials/vault.js')
+      const vault = new CredentialVault(home, agentName)
+      const removed = await vault.delete(name)
+      console.log(
+        removed ? `deleted ${agentName}:${name}` : `no credential at ${agentName}:${name}`,
+      )
+    })
+
   registerWebCommands(program)
 
   return program
+}
+
+/**
+ * Read a secret value from stdin without echoing it to the terminal.
+ * If stdin is a TTY (no pipe), prompts the user; if stdin is a pipe,
+ * reads it through.
+ */
+async function readSecretFromStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    process.stderr.write('paste credential value, then press Enter: ')
+  }
+  let buf = ''
+  for await (const chunk of process.stdin) {
+    buf += typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf-8')
+  }
+  return buf.trim()
 }
 
 /**

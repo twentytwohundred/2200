@@ -547,8 +547,23 @@ mcp_servers:
   })
 
   it('rejects a SecretRef with an unknown source', async () => {
-    const bad = GITHUB_BLOCK.replace('source: env', 'source: vault')
+    // `vault` is now a valid source (Epic 9 Phase B). Use an obviously-bad
+    // source name to keep the negative test honest.
+    const bad = GITHUB_BLOCK.replace('source: env', 'source: nonsense')
     const path = await writeAt('bad-secret-mcp.md', VALID.replace('created: 2026-04-26', bad))
     await expect(loadIdentity(path)).rejects.toThrow(/source/)
+  })
+
+  it('accepts a SecretRef with the vault source (Epic 9 Phase B)', async () => {
+    const block = GITHUB_BLOCK.replace('source: env', 'source: vault').replace(
+      'id: GITHUB_TOKEN_HOBBY',
+      'id: github-token',
+    )
+    const path = await writeAt('vault-secret-mcp.md', VALID.replace('created: 2026-04-26', block))
+    const id = await loadIdentity(path)
+    const env = id.frontmatter.mcp_servers[0]?.env ?? {}
+    const token = env['GITHUB_TOKEN']
+    expect(token?.source).toBe('vault')
+    expect(token?.id).toBe('github-token')
   })
 })
