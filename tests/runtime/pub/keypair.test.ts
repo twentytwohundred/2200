@@ -12,13 +12,13 @@ import { join } from 'node:path'
 import { createPublicKey, verify } from 'node:crypto'
 import {
   composeAuthMessage,
-  generateKeypair,
   isCredentialFileMode0600,
   readCredentialFile,
   signMessage,
   writeCredentialFile,
   type PubCredential,
 } from '../../../src/runtime/pub/keypair.js'
+import { generateKeypair } from '../../../src/runtime/pub/keypair-generate.js'
 
 let tmp: string
 

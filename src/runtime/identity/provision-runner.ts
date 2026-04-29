@@ -11,7 +11,8 @@
  */
 import { agentPaths } from '../storage/layout.js'
 import { loadIdentity, writeIdentity } from './loader.js'
-import { generateAgentKeypairs, loadOrCreateMasterKey, writeAgentKeys } from './keystore.js'
+import { loadOrCreateMasterKey, writeAgentKeys } from './keystore.js'
+import { generateAgentKeypairs } from './keystore-keygen.js'
 import {
   createRegisterClient,
   DEFAULT_REGISTER_BASE_URL,

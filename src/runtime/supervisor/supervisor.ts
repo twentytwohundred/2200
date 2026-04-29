@@ -14,7 +14,7 @@
 import { rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-plane/server.js'
-import { listenUds } from '../control-plane/transport-uds.js'
+import { listenUds } from '../control-plane/uds-server.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
@@ -30,7 +30,8 @@ import { newTaskId } from '../util/id.js'
 import { findFreePort } from '../util/free-port.js'
 import type { TaskListEntry, PubListEntry } from '../control-plane/protocol.js'
 import { resetPulseToGreen } from '../agent/detectors/trip-record.js'
-import { generateKeypair, writeCredentialFile, readCredentialFile } from '../pub/keypair.js'
+import { writeCredentialFile, readCredentialFile } from '../pub/keypair.js'
+import { generateKeypair } from '../pub/keypair-generate.js'
 import {
   createIdentityClient,
   ensureRegistered,
