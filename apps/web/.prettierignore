@@ -2,3 +2,7 @@ dist
 node_modules
 coverage
 .tscache
+# Generated CSS ... source of truth is tokens.json; do not reformat.
+src/tokens/generated/
+# Vendored canonical tokens.json from the wiki ... do not reformat.
+src/tokens/source/tokens.json
