@@ -1,0 +1,90 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-9) var(--space-6);
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-family: var(--type-family-mono);
+  font-size: 18px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.body {
+  font-size: 13px;
+  margin: 0;
+  max-width: 48ch;
+  color: var(--color-text-secondary);
+}
+
+.action {
+  margin-top: var(--space-2);
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.errorShell {
+  background: var(--color-status-error-bg);
+  border: 1px solid color-mix(in oklch, var(--color-status-error) 35%, transparent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-7) var(--space-6);
+}
+
+.errorTitle {
+  color: var(--color-status-error);
+}
+
+/* Loading skeleton */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+
+.skeletonRow {
+  display: block;
+  height: 14px;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-sm);
+  animation: skeletonPulse 1.6s var(--ease-in-out) infinite;
+}
+
+.skeletonRow:nth-child(odd) {
+  width: 92%;
+}
+
+.skeletonRow:nth-child(even) {
+  width: 76%;
+}
+
+.skeletonRow:nth-child(3n) {
+  width: 64%;
+}
+
+@keyframes skeletonPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}

@@ -2,10 +2,7 @@ import type { ReactElement } from 'react'
 import styles from './App.module.css'
 import { ThemeSwitcher } from './theme/ThemeSwitcher'
 import { useTheme } from './theme/ThemeProvider'
-
-function cx(...classes: (string | undefined)[]): string {
-  return classes.filter(Boolean).join(' ')
-}
+import { Pill } from './primitives'
 
 export function App(): ReactElement {
   const { theme } = useTheme()
@@ -22,10 +19,7 @@ export function App(): ReactElement {
       <section className={styles.grid}>
         <div className={styles.tile}>
           <span className={styles.label}>STATUS</span>
-          <span className={cx(styles.pill, styles.pillRunning)}>
-            <span className={styles.pillDot} />
-            RUNNING
-          </span>
+          <Pill variant="running">RUNNING</Pill>
         </div>
         <div className={styles.tile}>
           <span className={styles.label}>THEME</span>
@@ -35,6 +29,12 @@ export function App(): ReactElement {
         <div className={styles.tile}>
           <span className={styles.label}>API</span>
           <span className={styles.value}>not yet wired</span>
+        </div>
+        <div className={styles.tile}>
+          <span className={styles.label}>DEV</span>
+          <a className={styles.value} href="/dev/components">
+            /dev/components →
+          </a>
         </div>
       </section>
     </main>

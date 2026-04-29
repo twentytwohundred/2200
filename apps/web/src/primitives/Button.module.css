@@ -1,0 +1,123 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-family: var(--type-family-sans);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.body {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, currentColor 12%, transparent);
+  opacity: 0.85;
+}
+
+/* Sizes */
+.s-sm {
+  height: 24px;
+  padding: 0 var(--space-3);
+  font-size: 12px;
+}
+
+.s-md {
+  height: 28px;
+  padding: 0 var(--space-4);
+  font-size: 13px;
+}
+
+.s-lg {
+  height: 36px;
+  padding: 0 var(--space-5);
+  font-size: 14px;
+}
+
+.icon {
+  padding: 0;
+  width: 28px;
+  height: 28px;
+}
+
+.icon.s-sm {
+  width: 24px;
+  height: 24px;
+}
+
+.icon.s-lg {
+  width: 36px;
+  height: 36px;
+}
+
+/* Variants */
+.v-default {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-default);
+}
+
+.v-default:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-emphasis);
+}
+
+.v-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-color: var(--color-accent);
+}
+
+.v-primary:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.v-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-color: transparent;
+}
+
+.v-ghost:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.v-destructive {
+  background: transparent;
+  color: var(--color-status-error);
+  border-color: var(--color-status-error);
+}
+
+.v-destructive:hover:not(:disabled) {
+  background: var(--color-status-error-bg);
+}
