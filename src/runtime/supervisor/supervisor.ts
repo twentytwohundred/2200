@@ -303,6 +303,12 @@ export class Supervisor {
       canonicalIdentityPath: canonical,
       pubProvisioned: !!identity.frontmatter.pub,
     })
+    if (this.webHandle) {
+      this.webHandle.broadcast({
+        event: 'agent.created',
+        payload: { agent: name },
+      })
+    }
   }
 
   /**
@@ -1148,6 +1154,16 @@ export class Supervisor {
       agents: { ...this.state.agents, [name]: next },
     }
     await saveState(this.state)
+    if (this.webHandle && existing.state !== next.state) {
+      this.webHandle.broadcast({
+        event: 'agent.status_changed',
+        payload: {
+          agent: name,
+          old_status: existing.state,
+          new_status: next.state,
+        },
+      })
+    }
   }
 
   // ---------------------------------------------------------------------------

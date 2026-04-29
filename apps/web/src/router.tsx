@@ -1,19 +1,19 @@
 import type { ReactElement } from 'react'
-import { App } from './App'
+import { FleetScreen } from './screens/fleet/FleetScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 
 /**
  * Minimal pathname-based switch.
  *
- * Real routing (React Router or TanStack Router) lands when Fleet
- * ships and the screen graph grows beyond two entries. For PR C, the
- * library page is reachable at /dev/components and the smoke page at
- * everything else.
+ * Real routing (React Router or TanStack Router) lands when the screen
+ * graph grows beyond Fleet + dev/components. For PR E, the home route
+ * is the live Fleet screen and /dev/components is the engineering
+ * reference.
  */
 export function Router(): ReactElement {
-  if (typeof window === 'undefined') return <App />
+  if (typeof window === 'undefined') return <FleetScreen />
   if (window.location.pathname.startsWith('/dev/components')) {
     return <ComponentsPage />
   }
-  return <App />
+  return <FleetScreen />
 }
