@@ -4,3 +4,5 @@ coverage/
 .tscache/
 pnpm-lock.yaml
 *.log
+# Workspace members own their own prettier config + verify pipeline.
+apps/
