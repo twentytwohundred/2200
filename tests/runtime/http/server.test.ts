@@ -32,9 +32,8 @@ class NullListener implements Listener {
       },
     }
   }
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async close(): Promise<void> {
-    /* no-op */
+  close(): Promise<void> {
+    return Promise.resolve()
   }
 }
 

@@ -37,7 +37,12 @@ const FRONTMATTER_RE = /^---\n([\s\S]+?)\n---\n?([\s\S]*)$/
 
 export interface ImportArgs {
   home: string
-  agentName: string
+  /**
+   * Where to import. Either an Agent (`agentName: string`) or the
+   * shared brain (`sharedBrain: true`). Exactly one must be set.
+   */
+  agentName?: string
+  sharedBrain?: boolean
   sourceDir: string
   /**
    * If true, parse + map each file but do not write. Returns the
@@ -71,8 +76,20 @@ export async function importFromDir(args: ImportArgs): Promise<ImportResult> {
   const files = await listMarkdownFiles(args.sourceDir)
   if (files.length === 0) return result
 
-  const store = new BrainStore(args.home, args.agentName)
-  const index = args.dryRun === true ? null : BrainIndex.open(args.home, args.agentName)
+  let store: BrainStore
+  let index: BrainIndex | null
+  if (args.sharedBrain === true) {
+    if (args.agentName !== undefined) {
+      throw new Error('importFromDir: agentName and sharedBrain are mutually exclusive')
+    }
+    store = BrainStore.forShared(args.home)
+    index = args.dryRun === true ? null : BrainIndex.openShared(args.home)
+  } else if (args.agentName !== undefined) {
+    store = BrainStore.forAgent(args.home, args.agentName)
+    index = args.dryRun === true ? null : BrainIndex.open(args.home, args.agentName)
+  } else {
+    throw new Error('importFromDir: pass agentName or sharedBrain: true')
+  }
   try {
     for (const file of files) {
       try {

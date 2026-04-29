@@ -43,6 +43,10 @@ export interface HomePaths {
   readonly commonsReference: string
   readonly commonsScratch: string
   readonly agents: string
+  /** Shared brain markdown root (Epic 8 Phase B). One file per note at <sharedBrain>/<slug>.md. */
+  readonly sharedBrain: string
+  /** Shared brain FTS5 index (Epic 8 Phase B). Rebuildable from sharedBrain/. */
+  readonly sharedBrainIndex: string
   readonly state: string
   readonly stateSupervisorJson: string
   readonly stateSupervisorSock: string
@@ -70,6 +74,8 @@ export function homePaths(home: string): HomePaths {
     commonsReference: join(home, 'commons', 'reference'),
     commonsScratch: join(home, 'commons', 'scratch'),
     agents: join(home, 'agents'),
+    sharedBrain: join(home, 'shared', 'brain'),
+    sharedBrainIndex: join(state, 'brain', '__shared__', 'brain.db'),
     state,
     stateSupervisorJson: join(state, 'supervisor.json'),
     stateSupervisorSock: join(state, 'supervisor.sock'),
