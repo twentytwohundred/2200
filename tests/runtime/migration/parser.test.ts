@@ -232,6 +232,36 @@ body
     ])
   })
 
+  it('admits an optional mcp_servers list (Phase A friction-fix)', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: x
+identity:
+  display_name: x
+budget:
+  daily_cap_usd: 1
+mcp_servers:
+  - name: github
+    transport: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-github']
+    env:
+      GITHUB_TOKEN:
+        source: env
+        id: GITHUB_TOKEN_X
+---
+body
+`
+    const doc = parseHandoffString(text, null)
+    expect(doc.frontmatter.mcp_servers).toHaveLength(1)
+    expect(doc.frontmatter.mcp_servers[0]?.name).toBe('github')
+  })
+
+  it('defaults mcp_servers to empty when the field is absent', () => {
+    const doc = parseHandoffString(MINIMAL_HANDOFF, null)
+    expect(doc.frontmatter.mcp_servers).toEqual([])
+  })
+
   it('admits Phase B carryover_keys without breaking (Phase A ignores them)', () => {
     const text = `---
 handoff_schema_version: 1

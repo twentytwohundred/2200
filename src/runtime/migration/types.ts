@@ -19,6 +19,7 @@
  * (see [[2026-04-26-schema-version-format]]).
  */
 import { z } from 'zod'
+import { McpServerSpecSchema } from '../identity/types.js'
 
 export const HANDOFF_SCHEMA_VERSION = 1
 
@@ -187,6 +188,22 @@ export const HandoffFrontmatterSchema = z.object({
         'Phase A requires schedules: []. Wire schedules post-migration via `2200 schedule add`.',
     })
     .default([]),
+  /**
+   * External MCP servers to declare on the new Agent's Identity. Optional;
+   * when present, the orchestrator pipes the entries through to the
+   * resulting Identity's `mcp_servers[]` block so the Agent has access to
+   * the declared tools the moment it starts. The shape mirrors
+   * `Identity.mcp_servers[]` exactly.
+   *
+   * Both the migration flow (Epic 5) and the conversational onboarding
+   * flow (Epic 14) populate this field: migration handoffs from a future
+   * 2200-to-2200 export carry the source Agent's mcp_servers verbatim;
+   * `2200 agent spawn` populates it from the suggested-tools curated
+   * mapping (Epic 14 PR C). v1 in handoff documents on disk: optional
+   * (defaults to empty); the loader silently accepts a v1 document
+   * without the field.
+   */
+  mcp_servers: z.array(McpServerSpecSchema).default([]),
   provenance: HandoffProvenanceSchema.default({}),
 })
 export type HandoffFrontmatter = z.infer<typeof HandoffFrontmatterSchema>

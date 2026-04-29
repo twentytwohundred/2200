@@ -128,4 +128,30 @@ describe('buildHandoffFromTranscript', () => {
     expect(handoff.frontmatter.provenance.source_host).toBeDefined()
     expect(handoff.frontmatter.provenance.source_host?.length).toBeGreaterThan(0)
   })
+
+  it('defaults mcp_servers to empty when none provided', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({}),
+      sourceHost: 'test-host',
+    })
+    expect(handoff.frontmatter.mcp_servers).toEqual([])
+  })
+
+  it('passes through mcpServers when provided (Phase A friction-fix)', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({}),
+      sourceHost: 'test-host',
+      mcpServers: [
+        {
+          name: 'github',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-github'],
+          env: { GITHUB_TOKEN: { source: 'env', id: 'GITHUB_TOKEN_EMMA' } },
+        },
+      ],
+    })
+    expect(handoff.frontmatter.mcp_servers).toHaveLength(1)
+    expect(handoff.frontmatter.mcp_servers[0]?.name).toBe('github')
+  })
 })
