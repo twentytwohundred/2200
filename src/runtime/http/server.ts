@@ -233,6 +233,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/runtime/version' },
       { method: 'GET', path: '/api/v1/agents' },
       { method: 'GET', path: '/api/v1/agents/:name' },
+      { method: 'POST', path: '/api/v1/agents/:name/start' },
+      { method: 'POST', path: '/api/v1/agents/:name/stop' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -254,6 +256,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     if (!rec) throw notFound('agent', req.params.name)
     return toAgentDto(rec)
   })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/start', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    await supervisor.startAgent(req.params.name)
+    const after = supervisor.snapshot().agents[req.params.name]
+    if (!after) throw notFound('agent', req.params.name)
+    return toAgentDto(after)
+  })
+
+  const StopBodySchema = z
+    .object({
+      reason: z.string().min(1).optional(),
+    })
+    .optional()
+
+  fastify.post<{ Params: { name: string }; Body: { reason?: string } | undefined }>(
+    '/api/v1/agents/:name/stop',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const parsed = StopBodySchema.parse(req.body)
+      const reason = parsed?.reason ?? 'web_request'
+      await supervisor.stopAgent(req.params.name, reason)
+      const after = supervisor.snapshot().agents[req.params.name]
+      if (!after) throw notFound('agent', req.params.name)
+      return toAgentDto(after)
+    },
+  )
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -490,12 +521,22 @@ function toAgentDto(rec: {
   state: string
   pid: number | null
   current_task_id: string | null
+  identity_path: string
+  spawned_at: string | null
+  last_heartbeat: string | null
+  errored_at: string | null
+  errored_reason: string | null
 }) {
   return {
     name: rec.name,
     status: rec.state,
     pid: rec.pid,
     current_task_id: rec.current_task_id,
+    identity_path: rec.identity_path,
+    spawned_at: rec.spawned_at,
+    last_heartbeat: rec.last_heartbeat,
+    errored_at: rec.errored_at,
+    errored_reason: rec.errored_reason,
   }
 }
 

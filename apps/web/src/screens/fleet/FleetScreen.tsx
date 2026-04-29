@@ -9,6 +9,7 @@
  */
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Agent, ApiError, NetworkError } from '../../lib/api'
 import {
@@ -171,23 +172,31 @@ function Band({ title, agents, empty, density }: BandProps): ReactElement {
         <ul className={listClass}>
           {agents.map((a) => (
             <li key={a.name} className={styles.row}>
-              <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
-              <span className={styles.rowName}>{a.name}</span>
-              <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
-              <span className={styles.rowActivity}>
-                {a.current_task_id ? (
-                  <KV
-                    k="TASK"
-                    v={<span className={styles.mono}>{a.current_task_id.slice(0, 12)}</span>}
-                    kw={48}
-                  />
-                ) : (
-                  <span className={styles.rowMuted}>
-                    {density === 'compact' ? '—' : 'no current task'}
-                  </span>
-                )}
-              </span>
-              <span className={styles.rowPid}>{a.pid !== null ? `pid ${String(a.pid)}` : '—'}</span>
+              <Link
+                to={`/agent/${encodeURIComponent(a.name)}`}
+                className={styles.rowLink}
+                aria-label={`Open ${a.name}`}
+              >
+                <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
+                <span className={styles.rowName}>{a.name}</span>
+                <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
+                <span className={styles.rowActivity}>
+                  {a.current_task_id ? (
+                    <KV
+                      k="TASK"
+                      v={<span className={styles.mono}>{a.current_task_id.slice(0, 12)}</span>}
+                      kw={48}
+                    />
+                  ) : (
+                    <span className={styles.rowMuted}>
+                      {density === 'compact' ? '—' : 'no current task'}
+                    </span>
+                  )}
+                </span>
+                <span className={styles.rowPid}>
+                  {a.pid !== null ? `pid ${String(a.pid)}` : '—'}
+                </span>
+              </Link>
             </li>
           ))}
         </ul>

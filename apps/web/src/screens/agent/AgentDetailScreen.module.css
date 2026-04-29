@@ -1,0 +1,106 @@
+.shell {
+  min-height: 100vh;
+  padding: var(--space-7) var(--space-6) var(--space-9);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--type-family-sans);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.back {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.back:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.heroText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.heroName {
+  font-family: var(--type-family-mono);
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  margin: 0;
+  word-break: break-all;
+}
+
+.heroError {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--color-status-error-bg);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-status-error);
+}
+
+.heroErrorLabel {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  margin-right: var(--space-2);
+}
+
+.heroActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mono {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.monoPath {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  word-break: break-all;
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.advisory {
+  margin: var(--space-3) 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  max-width: 60ch;
+}
