@@ -22,7 +22,14 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          // Developer-runnable scripts under `scripts/` are checked
+          // against the default project rather than the per-file
+          // tsconfig discovery the project service does for src/tests.
+          // Keeps them lintable without forcing every smoke into the
+          // build graph.
+          allowDefaultProject: ['scripts/*.ts'],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },

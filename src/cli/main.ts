@@ -27,6 +27,12 @@ import { realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Command } from 'commander'
 import { VERSION } from '../index.js'
+import { runFreshnessCheck } from './freshness-check.js'
+
+// Build-freshness check: warn early if `dist/` is stale relative to
+// `src/`. Runs once per CLI invocation; safe in non-dev installs (no
+// `src/` co-located ⇒ silent no-op). See `freshness-check.ts`.
+runFreshnessCheck()
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../runtime/control-plane/client.js'
 import { connectUds } from '../runtime/control-plane/uds-client.js'

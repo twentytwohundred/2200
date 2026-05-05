@@ -56,6 +56,42 @@ describe('spawnDaemon precondition', () => {
   })
 })
 
+describe('runtime-env loading on spawn', () => {
+  it('proceeds when runtimeEnvPath points at a non-existent file', async () => {
+    await writePidFile(home, 2147483647)
+    const result = await spawnDaemon({
+      home,
+      bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+      runtimeEnvPath: join(home, 'no-such-runtime-env.env'),
+    })
+    expect(result).toBeGreaterThan(0)
+  })
+
+  it('respects runtimeEnvPath: null (disabled load) without throwing', async () => {
+    await writePidFile(home, 2147483647)
+    const result = await spawnDaemon({
+      home,
+      bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+      runtimeEnvPath: null,
+    })
+    expect(result).toBeGreaterThan(0)
+  })
+
+  it('aborts the spawn when runtime-env file has a parse error', async () => {
+    await writePidFile(home, 2147483647)
+    const { writeFile } = await import('node:fs/promises')
+    const badPath = join(home, 'bad-runtime.env')
+    await writeFile(badPath, 'this line is missing the equals sign\n')
+    await expect(
+      spawnDaemon({
+        home,
+        bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+        runtimeEnvPath: badPath,
+      }),
+    ).rejects.toThrowError(/runtime\.env parse error/)
+  })
+})
+
 describe('killDaemon', () => {
   it('returns false when no daemon is running', async () => {
     expect(await killDaemon(home)).toBe(false)

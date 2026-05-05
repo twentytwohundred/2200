@@ -24,6 +24,7 @@ import { dirname, resolve } from 'node:path'
 import { writePidFile, readLivePid } from './pidfile.js'
 import { homePaths } from '../storage/layout.js'
 import { createLogger, type Logger } from '../util/logger.js'
+import { loadRuntimeEnv, defaultRuntimeEnvPath } from '../config/runtime-env.js'
 
 /** Path to the daemon log file under <home>/state/supervisor.log. */
 export function logFilePath(home: string): string {
@@ -39,6 +40,12 @@ export interface SpawnDaemonOptions {
   nodePath?: string
   /** Inject a logger. */
   logger?: Logger
+  /**
+   * Override the runtime-env file path. Defaults to
+   * `~/.config/2200/runtime.env`. Pass `null` to disable runtime-env
+   * loading entirely (tests).
+   */
+  runtimeEnvPath?: string | null
 }
 
 /**
@@ -59,6 +66,20 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
   const nodePath = opts.nodePath ?? process.execPath
   const logPath = logFilePath(opts.home)
 
+  // Load runtime.env so the daemon (and the agents it later spawns)
+  // inherit long-lived secrets like LLM-provider API keys without the
+  // user having to source a shell rc before `2200 daemon start`.
+  // Parse errors throw and abort the spawn; missing file is fine
+  // (the daemon starts; agents will fail loudly if their required
+  // keys aren't set, which is the correct degraded behavior).
+  let runtimeEnv: Record<string, string> = {}
+  let runtimeEnvFromPath: string | null = null
+  if (opts.runtimeEnvPath !== null) {
+    const target = opts.runtimeEnvPath ?? defaultRuntimeEnvPath()
+    runtimeEnv = await loadRuntimeEnv(target)
+    runtimeEnvFromPath = target
+  }
+
   // Open the log file for append; the child process inherits the FD as
   // its stdout and stderr.
   const logHandle = await open(logPath, 'a')
@@ -66,6 +87,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
     const child = spawn(nodePath, [bootstrapPath, '--home', opts.home], {
       detached: true,
       stdio: ['ignore', logHandle.fd, logHandle.fd],
+      env: { ...process.env, ...runtimeEnv },
     })
 
     if (child.pid === undefined) {
@@ -82,6 +104,8 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
       pid: child.pid,
       home: opts.home,
       logPath,
+      runtime_env_loaded: Object.keys(runtimeEnv).length,
+      runtime_env_path: runtimeEnvFromPath,
     })
 
     return child.pid
