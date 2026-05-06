@@ -281,6 +281,8 @@ export class AgentProcess {
     })
     this.pulseEmitter.start()
     const { FilesystemSkillProvider } = await import('../skills/provider.js')
+    const { resolveRuntimeMode } = await import('../config/runtime-mode.js')
+    const runtimeMode = resolveRuntimeMode(process.env)
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -294,6 +296,7 @@ export class AgentProcess {
       budgetTracker,
       pulseEmitter: this.pulseEmitter,
       skillProvider: new FilesystemSkillProvider(this.options.home),
+      runtimeMode,
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))

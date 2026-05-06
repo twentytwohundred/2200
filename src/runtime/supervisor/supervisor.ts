@@ -52,6 +52,7 @@ import { Scheduler } from '../scheduler/service.js'
 import { TokenRefreshService } from '../oauth/refresh-service.js'
 import type { ScheduleListEntry } from '../control-plane/protocol.js'
 import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
+import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -70,6 +71,22 @@ export interface SupervisorOptions {
     port: number
     host: string
   }
+  /**
+   * Deployment tier this Supervisor is running in (Epic 17 substrate;
+   * see [[../../wiki/decisions/2026-05-05-managed-service]] and
+   * [[../../wiki/conventions/security-architecture-hosted-mode]]).
+   *
+   * Defaults to `self-hosted` when omitted; production daemon-start
+   * resolves the value from the `TWENTYTWOHUNDRED_RUNTIME_MODE` env
+   * var via `resolveRuntimeMode`. Tests can override directly.
+   *
+   * v1 ships only `self-hosted` as a real deployment; the other
+   * values are accepted so the runtime substrate is in place for
+   * Epic 17 (proxy provider binding, system-prompt clarification,
+   * starter-inference rate limits) without a substrate change at
+   * that time.
+   */
+  runtimeMode?: RuntimeMode
 }
 
 export class Supervisor {
@@ -97,6 +114,7 @@ export class Supervisor {
   private readonly tokenRefresh: TokenRefreshService
   private webHandle: { stop: () => Promise<void>; broadcast: (e: WsEvent) => void } | undefined
   private readonly webConfig: SupervisorOptions['web']
+  private readonly runtimeMode: RuntimeMode
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
     this.state = state
@@ -111,6 +129,16 @@ export class Supervisor {
       logger: this.log.child('oauth-refresh'),
     })
     this.webConfig = options.web
+    this.runtimeMode = options.runtimeMode ?? DEFAULT_RUNTIME_MODE
+  }
+
+  /**
+   * The deployment tier this Supervisor is running in. Read by Agent
+   * subprocess spawn so the AgentLoop can branch on it (Epic 17
+   * substrate); read by the daemon for startup logging.
+   */
+  getRuntimeMode(): RuntimeMode {
+    return this.runtimeMode
   }
 
   /**
@@ -160,6 +188,7 @@ export class Supervisor {
     this.log.info('supervisor listening', {
       home: this.state.home,
       stateDir: this.state.state_dir,
+      runtime_mode: this.runtimeMode,
     })
   }
 

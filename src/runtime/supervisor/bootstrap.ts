@@ -52,17 +52,22 @@ async function main(): Promise<void> {
     process.exit(64) // EX_USAGE
   }
 
+  const { resolveRuntimeMode } = await import('../config/runtime-mode.js')
+  const runtimeMode = resolveRuntimeMode(process.env)
+
   const supervisor = await Supervisor.create({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
+    runtimeMode,
   })
   await supervisor.start({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
+    runtimeMode,
   })
   await writePidFile(args.home, process.pid)
 
-  log.info('supervisor daemon up', { pid: process.pid, home: args.home })
+  log.info('supervisor daemon up', { pid: process.pid, home: args.home, runtime_mode: runtimeMode })
 
   let shuttingDown = false
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {

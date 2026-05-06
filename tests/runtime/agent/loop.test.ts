@@ -926,6 +926,58 @@ describe('AgentLoop skill.invoke', () => {
   })
 })
 
+describe('AgentLoop runtimeMode plumbing', () => {
+  it('defaults to self-hosted when no runtimeMode option is supplied', () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider: new FakeProvider([]),
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+    })
+    expect(loop.getRuntimeMode()).toBe('self-hosted')
+  })
+
+  it('honors an explicit hosted-managed option', () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider: new FakeProvider([]),
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      runtimeMode: 'hosted-managed',
+    })
+    expect(loop.getRuntimeMode()).toBe('hosted-managed')
+  })
+
+  it('honors an explicit hosted-byok option', () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider: new FakeProvider([]),
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      runtimeMode: 'hosted-byok',
+    })
+    expect(loop.getRuntimeMode()).toBe('hosted-byok')
+  })
+})
+
 interface FakeSkillData {
   body: string
   tools: string[]

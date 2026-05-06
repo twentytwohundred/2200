@@ -58,6 +58,7 @@ import {
   type RunRecord,
 } from '../tools/records.js'
 import { newCallId, newPermId, newPlanId, newRunId } from '../util/id.js'
+import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
 import type { TaskRecord } from './task/types.js'
 import type { TaskStore } from './task/store.js'
 import { ACTIVE_DETECTORS, evaluateDetectors } from './detectors/evaluator.js'
@@ -296,6 +297,18 @@ export interface AgentLoopOptions {
    * not configured for this Agent."
    */
   skillProvider?: SkillProvider
+  /**
+   * Deployment tier this Agent is running in (Epic 17 substrate).
+   * Defaults to `self-hosted`. Resolved by AgentProcess from the
+   * `TWENTYTWOHUNDRED_RUNTIME_MODE` env var inherited from the
+   * supervisor; tests can override directly.
+   *
+   * v1 stores the mode without behavior changes; future code reads
+   * it for the system-prompt clarification (no provider keys in
+   * env), the proxy provider binding, and starter-inference rate
+   * limits, all of which gate on the hosted tiers.
+   */
+  runtimeMode?: RuntimeMode
 }
 
 export type LoopResult =
@@ -319,6 +332,7 @@ export class AgentLoop {
   private readonly nowFn: () => Date
 
   private readonly pricingTable: PricingTable
+  private readonly runtimeMode: RuntimeMode
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.log = opts.logger ?? createLogger(`agent/loop/${opts.identity.frontmatter.agent_name}`)
@@ -327,6 +341,17 @@ export class AgentLoop {
     this.bufferSize = opts.eventBufferSize ?? 500
     this.nowFn = opts.now ?? (() => new Date())
     this.pricingTable = opts.pricingTable ?? defaultPricingTable()
+    this.runtimeMode = opts.runtimeMode ?? DEFAULT_RUNTIME_MODE
+  }
+
+  /**
+   * The deployment tier this AgentLoop is bound to. v1 stores it
+   * without behavior changes; Epic 17 reads it for the proxy
+   * provider binding, system-prompt clarification, and starter-
+   * inference rate limits.
+   */
+  getRuntimeMode(): RuntimeMode {
+    return this.runtimeMode
   }
 
   /**
