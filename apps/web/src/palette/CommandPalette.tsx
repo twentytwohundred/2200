@@ -5,18 +5,24 @@
  *
  * v1 result kinds:
  *   - `agent`         go to /agent/:name
- *   - `route`         go to a fixed route
- *   - `theme`         toggle the active theme
+ *   - `route`         go to a fixed route (Fleet, Inbox, Budget,
+ *                     Components)
+ *   - `command`       theme toggle, Spawn an Agent, per-agent
+ *                     start/stop quick actions (gated by current
+ *                     status)
  * The palette mounts at the root and floats above whatever route is
  * active. URL does not change when the palette opens.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Agent } from '../lib/api'
 import { AgentMark, Pill } from '../primitives'
 import { useTheme } from '../theme/ThemeProvider'
 import styles from './CommandPalette.module.css'
+
+const RUNNING_STATUSES = new Set(['running', 'waiting'])
+const STOPPED_STATUSES = new Set(['stopped', 'errored'])
 
 interface PaletteResult {
   /** Stable key for React + keyboard navigation. */
@@ -77,12 +83,27 @@ export function CommandPalette(): ReactElement {
   const listRef = useRef<HTMLUListElement | null>(null)
   const navigate = useNavigate()
   const { theme, toggle } = useTheme()
+  const queryClient = useQueryClient()
 
   const agentsQuery = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.agents(),
     staleTime: 5_000,
     enabled: open,
+  })
+
+  // Single mutation handles per-agent start/stop from the palette.
+  // Invalidates the agents list + the named agent's detail cache so
+  // both Fleet and AgentDetail reflect the new status. Errors are
+  // swallowed for now ... the palette is a fire-and-forget surface
+  // and a failed mutation will resurface on the next list refresh.
+  const agentActionMutation = useMutation({
+    mutationFn: ({ name, action }: { name: string; action: 'start' | 'stop' }) =>
+      action === 'start' ? api.agentStart(name) : api.agentStop(name, 'palette'),
+    onSuccess: (data, vars) => {
+      queryClient.setQueryData(['agents', vars.name], data)
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
   })
 
   const close = useCallback(() => {
@@ -167,6 +188,17 @@ export function CommandPalette(): ReactElement {
         },
       },
       {
+        id: 'nav:budget',
+        group: 'NAVIGATE',
+        label: 'Budget',
+        hint: '/budget',
+        searchable: 'budget spend caps daily ledger usd cost',
+        activate: () => {
+          void navigate('/budget')
+          close()
+        },
+      },
+      {
         id: 'nav:components',
         group: 'NAVIGATE',
         label: 'Component library',
@@ -181,6 +213,17 @@ export function CommandPalette(): ReactElement {
 
     const commands: PaletteResult[] = [
       {
+        id: 'cmd:spawn',
+        group: 'COMMANDS',
+        label: 'Spawn an Agent',
+        hint: '/onboarding',
+        searchable: 'spawn new agent onboarding create card stack interview',
+        activate: () => {
+          void navigate('/onboarding')
+          close()
+        },
+      },
+      {
         id: 'cmd:theme',
         group: 'COMMANDS',
         label: theme === 'default-dark' ? 'Switch to light theme' : 'Switch to dark theme',
@@ -193,8 +236,43 @@ export function CommandPalette(): ReactElement {
       },
     ]
 
-    return [...agentResults, ...nav, ...commands]
-  }, [agentsQuery.data, navigate, close, theme, toggle])
+    // Per-agent quick actions ... add Start when stopped/errored;
+    // add Stop when running/waiting. Skip both for blocked states
+    // so the palette doesn't surface ambiguous transitions; users
+    // can still navigate to /agent/:name for the full controls.
+    const agentCommands: PaletteResult[] = []
+    for (const a of agents) {
+      if (STOPPED_STATUSES.has(a.status)) {
+        agentCommands.push({
+          id: `cmd:start:${a.name}`,
+          group: 'COMMANDS',
+          label: `Start ${a.name}`,
+          hint: a.status,
+          leading: <AgentMark id={a.name} name={a.name} size="sm" />,
+          searchable: `start ${a.name} resume run agent`,
+          activate: () => {
+            agentActionMutation.mutate({ name: a.name, action: 'start' })
+            close()
+          },
+        })
+      } else if (RUNNING_STATUSES.has(a.status)) {
+        agentCommands.push({
+          id: `cmd:stop:${a.name}`,
+          group: 'COMMANDS',
+          label: `Stop ${a.name}`,
+          hint: a.status,
+          leading: <AgentMark id={a.name} name={a.name} size="sm" />,
+          searchable: `stop ${a.name} pause halt agent`,
+          activate: () => {
+            agentActionMutation.mutate({ name: a.name, action: 'stop' })
+            close()
+          },
+        })
+      }
+    }
+
+    return [...agentResults, ...nav, ...commands, ...agentCommands]
+  }, [agentsQuery.data, navigate, close, theme, toggle, agentActionMutation])
 
   const filtered = useMemo<PaletteResult[]>(() => {
     if (!query.trim()) return allResults
