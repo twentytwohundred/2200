@@ -102,6 +102,9 @@ export function FleetScreen(): ReactElement {
             <Link to="/inbox" className={styles.inboxLink}>
               INBOX{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
             </Link>
+            <Link to="/budget" className={styles.inboxLink}>
+              BUDGET
+            </Link>
             <ThemeSwitcher />
           </div>
         }

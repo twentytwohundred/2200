@@ -77,6 +77,48 @@ export interface Agent {
   pulse: Pulse | null
 }
 
+/**
+ * Per-day budget state surfaced by `GET /api/v1/agents/:name/budget`.
+ * Sourced from `<home>/state/budget/<agent>/<day>.json` which the
+ * Agent's BudgetTracker writes after each model call (Epic 4.5).
+ *
+ * `cumulative_usd` is today's spend so far. `cap_usd` is the
+ * configured daily cap from the Agent's identity. `blocked` is true
+ * when the cap has been crossed and new tasks are being refused.
+ */
+export interface BudgetState {
+  day: string
+  agent: string
+  cumulative_usd: number
+  cap_usd: number
+  warn_at_pct: number
+  warned_today: boolean
+  blocked: boolean
+  last_recorded_at: string | null
+}
+
+/**
+ * Optional override that lifts the daily block until the named ISO
+ * timestamp. Set via `2200 agent budget override <agent>` (Epic 4.5
+ * PR E). Null when no override is in effect.
+ */
+export interface BudgetOverride {
+  until: string
+  reason: string | null
+}
+
+/**
+ * Aggregate response from the budget endpoint: today's state, any
+ * active override, and the full per-day history (oldest-first).
+ * History is intended to drive the Sparkline + per-day breakdown on
+ * the Budget screen.
+ */
+export interface BudgetResponse {
+  today: BudgetState | null
+  override: BudgetOverride | null
+  history: BudgetState[]
+}
+
 export interface Notification {
   id: string
   ts: string
@@ -189,6 +231,8 @@ export const api = {
       method: 'POST',
       body: reason ? { reason } : undefined,
     }),
+  budget: (name: string) =>
+    request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),
   notifications: (params?: { state?: string; tier?: string; agent?: string }) => {
     const qs = new URLSearchParams()
     if (params?.state) qs.set('state', params.state)

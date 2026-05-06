@@ -3,20 +3,24 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { FleetScreen } from './screens/fleet/FleetScreen'
 import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
 import { InboxScreen } from './screens/inbox/InboxScreen'
+import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
 /**
  * App-wide route map.
  *
- * Phase A surface:
+ * Phase A + B surface:
  *   /                    Fleet (mission control)
  *   /agent/:name         Agent detail (identity card variant)
+ *   /inbox               Inbox (keyboard triage)
+ *   /budget              Budget (Phase B v0.1: data substrate, ledger
+ *                        receipt polish later)
  *   /dev/components      Component library reference
  *
- * Future routes (PR G/H): /inbox, /inbox/:id, /pub/:id, /budget,
- * /onboarding. The command palette (⌘K) overlays on whatever route is
- * active, so it does not get its own URL.
+ * Future routes: /inbox/:id, /pub/:id, /onboarding. The command
+ * palette (⌘K) overlays on whatever route is active, so it does not
+ * get its own URL.
  */
 export function Router(): ReactElement {
   return (
@@ -26,6 +30,7 @@ export function Router(): ReactElement {
         <Route path="/" element={<FleetScreen />} />
         <Route path="/agent/:name" element={<AgentDetailScreen />} />
         <Route path="/inbox" element={<InboxScreen />} />
+        <Route path="/budget" element={<BudgetScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

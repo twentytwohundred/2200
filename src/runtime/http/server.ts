@@ -37,6 +37,13 @@ import {
 import { readPulse } from '../agent/pulse/reader.js'
 import type { PulseState } from '../agent/pulse/types.js'
 import {
+  listBudgetHistory,
+  readBudgetOverride,
+  readBudgetStateToday,
+  type BudgetState,
+  type BudgetOverride,
+} from '../agent/budget-reader.js'
+import {
   ApiError,
   envelope,
   genericEnvelope,
@@ -239,6 +246,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
       { method: 'POST', path: '/api/v1/agents/:name/stop' },
+      { method: 'GET', path: '/api/v1/agents/:name/budget' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -289,6 +297,24 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return await toAgentDto(home, after)
     },
   )
+
+  // -- agent budget --------------------------------------------------------
+  // Reads the per-day budget state file the AgentProcess's BudgetTracker
+  // writes to disk (Epic 4.5). Cross-process boundary: reading from disk
+  // is the supported surface; the in-memory tracker is owned by the
+  // AgentProcess and is not directly reachable from the supervisor.
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/budget', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const today = await readBudgetStateToday(home, req.params.name)
+    const override = await readBudgetOverride(home, req.params.name)
+    const history = await listBudgetHistory(home, req.params.name)
+    return {
+      today: today ? toBudgetStateDto(today) : null,
+      override: override ? toBudgetOverrideDto(override) : null,
+      history: history.map(toBudgetStateDto),
+    }
+  })
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -623,6 +649,42 @@ function pulseToDto(p: PulseState): PulseDto {
     detector_kind: p.detector_kind,
     trip_id: p.trip_id,
     updated_at: p.updated_at,
+  }
+}
+
+interface BudgetStateDto {
+  day: string
+  agent: string
+  cumulative_usd: number
+  cap_usd: number
+  warn_at_pct: number
+  warned_today: boolean
+  blocked: boolean
+  last_recorded_at: string | null
+}
+
+function toBudgetStateDto(s: BudgetState): BudgetStateDto {
+  return {
+    day: s.day,
+    agent: s.agent,
+    cumulative_usd: s.cumulative_usd,
+    cap_usd: s.cap_usd,
+    warn_at_pct: s.warn_at_pct,
+    warned_today: s.warned_today,
+    blocked: s.blocked,
+    last_recorded_at: s.last_recorded_at,
+  }
+}
+
+interface BudgetOverrideDto {
+  until: string
+  reason: string | null
+}
+
+function toBudgetOverrideDto(o: BudgetOverride): BudgetOverrideDto {
+  return {
+    until: o.until,
+    reason: o.reason ?? null,
   }
 }
 
