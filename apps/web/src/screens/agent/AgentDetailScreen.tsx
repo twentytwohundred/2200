@@ -10,17 +10,27 @@
 import type { ReactElement } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, NetworkError, api, type Agent } from '../../lib/api'
+import {
+  ApiError,
+  NetworkError,
+  api,
+  type Agent,
+  type BudgetResponse,
+  type ListEnvelope,
+  type Notification,
+} from '../../lib/api'
 import {
   AgentMark,
   Button,
   Card,
+  EmptyState,
   ErrorState,
   KV,
   LoadingState,
   PageHeader,
   Pill,
   type PillVariant,
+  ProgressBar,
   PulseDot,
   SectionHeader,
 } from '../../primitives'
@@ -85,6 +95,32 @@ export function AgentDetailScreen(): ReactElement {
       queryClient.setQueryData(['agents', name], data)
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
+  })
+
+  // Recent notifications scoped to this Agent. v1 shows the most
+  // recent five regardless of state so the user can spot pending
+  // asks, recent answers, and dismissals at a glance.
+  const notificationsQuery = useQuery({
+    queryKey: ['notifications', { agent: name }],
+    queryFn: () => {
+      if (!name) throw new Error('agent name missing from route')
+      return api.notifications({ agent: name })
+    },
+    enabled: Boolean(name),
+    staleTime: 10_000,
+  })
+
+  // Today's budget snapshot. The dedicated /budget screen still owns
+  // the full per-day history + overrides UI; the inline view here is
+  // a "is this Agent close to its cap?" health check.
+  const budgetQuery = useQuery({
+    queryKey: ['budget', name],
+    queryFn: () => {
+      if (!name) throw new Error('agent name missing from route')
+      return api.budget(name)
+    },
+    enabled: Boolean(name),
+    staleTime: 10_000,
   })
 
   const agent = query.data
@@ -274,13 +310,16 @@ export function AgentDetailScreen(): ReactElement {
             </Card>
           </section>
 
+          <BudgetSection name={agent.name} query={budgetQuery} />
+
+          <ActivitySection name={agent.name} query={notificationsQuery} />
+
           <section>
             <SectionHeader title="DEFERRED · ARRIVES IN A LATER PR" />
             <Card padding={20}>
               <p className={styles.advisory}>
-                Brain notes preview, schedule list, budget summary, and tool list will land with
-                their respective backend endpoints. Phase A's headline criterion (live status) is
-                what this screen proves today.
+                Brain notes preview, schedule list, and tool list will land with their respective
+                backend endpoints.
               </p>
             </Card>
           </section>
@@ -288,6 +327,137 @@ export function AgentDetailScreen(): ReactElement {
       ) : null}
     </main>
   )
+}
+
+interface BudgetSectionProps {
+  name: string
+  query: ReturnType<typeof useQuery<BudgetResponse>>
+}
+
+function BudgetSection({ name, query }: BudgetSectionProps): ReactElement {
+  const today = query.data?.today ?? null
+  const override = query.data?.override ?? null
+  return (
+    <section>
+      <SectionHeader
+        title="BUDGET · TODAY"
+        action={
+          <Link to={`/budget?agent=${encodeURIComponent(name)}`} className={styles.sectionLink}>
+            FULL LEDGER →
+          </Link>
+        }
+      />
+      <Card padding={20}>
+        {query.isLoading ? (
+          <LoadingState rows={2} />
+        ) : query.isError ? (
+          <ErrorState
+            title="Could not load budget"
+            body={query.error instanceof Error ? query.error.message : String(query.error)}
+          />
+        ) : today ? (
+          <>
+            <div className={styles.budgetHero}>
+              <span>
+                <span className={styles.budgetAmount}>{fmtUsd(today.cumulative_usd)}</span>
+                <span className={styles.budgetOf}>of {fmtUsd(today.cap_usd)}</span>
+              </span>
+              {today.blocked ? (
+                <Pill variant="error">BLOCKED</Pill>
+              ) : today.warned_today ? (
+                <Pill variant="attention">WARNED</Pill>
+              ) : (
+                <Pill variant="info">OK</Pill>
+              )}
+            </div>
+            <ProgressBar
+              value={today.cumulative_usd}
+              max={today.cap_usd}
+              variant={today.blocked ? 'error' : today.warned_today ? 'attention' : 'auto'}
+            />
+            {override ? (
+              <KV
+                k="OVERRIDE"
+                v={
+                  <span className={styles.mono}>
+                    until {override.until}
+                    {override.reason ? ` · ${override.reason}` : ''}
+                  </span>
+                }
+              />
+            ) : null}
+          </>
+        ) : (
+          <EmptyState
+            title="No spend yet today"
+            body="The Agent has not made a model call today."
+          />
+        )}
+      </Card>
+    </section>
+  )
+}
+
+interface ActivitySectionProps {
+  name: string
+  query: ReturnType<typeof useQuery<ListEnvelope<Notification>>>
+}
+
+function ActivitySection({ name, query }: ActivitySectionProps): ReactElement {
+  const items: Notification[] = (query.data?.items ?? []).slice(0, 5)
+  return (
+    <section>
+      <SectionHeader
+        title="RECENT NOTIFICATIONS"
+        action={
+          <Link to={`/inbox?agent=${encodeURIComponent(name)}`} className={styles.sectionLink}>
+            INBOX →
+          </Link>
+        }
+      />
+      <Card padding={20}>
+        {query.isLoading ? (
+          <LoadingState rows={3} />
+        ) : query.isError ? (
+          <ErrorState
+            title="Could not load notifications"
+            body={query.error instanceof Error ? query.error.message : String(query.error)}
+          />
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="No notifications"
+            body="This Agent has not emitted any notifications yet."
+          />
+        ) : (
+          <div className={styles.activityList}>
+            {items.map((n) => (
+              <div key={n.id} className={styles.activityRow}>
+                <Pill variant={tierVariant(n.tier)} dot={false}>
+                  {n.tier.toUpperCase()}
+                </Pill>
+                <span className={styles.activityKind}>{n.kind}</span>
+                <span className={styles.activityBody} title={n.body}>
+                  {n.body || <span className={styles.muted}>(no body)</span>}
+                </span>
+                <span className={styles.activityTime}>{n.ts.slice(11, 19)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </section>
+  )
+}
+
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(2)}`
+}
+
+function tierVariant(tier: string): PillVariant {
+  if (tier === 'critical') return 'error'
+  if (tier === 'important') return 'attention'
+  if (tier === 'normal') return 'info'
+  return 'idle'
 }
 
 function errorTitle(error: unknown): string {
