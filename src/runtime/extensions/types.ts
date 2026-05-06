@@ -129,14 +129,21 @@ export const ExtensionManifestSchema = z.object({
   tools: z.array(ExtensionToolSchema).default([]),
   /**
    * Optional lifecycle hooks. Each is a relative path to a script
-   * inside the Extension's directory. Phase A reads them but does
-   * not execute; Phase B wires execution.
+   * inside the Extension's directory.
+   *
+   * - `install` / `uninstall` / `update`: Phase B substrate. Run on
+   *   the corresponding lifecycle verb.
+   * - `tick`: Phase B-2. Runs on every Extension schedule fire (one
+   *   tick per schedule). Receives `EXTENSION_SCHEDULE_ID` in env so
+   *   the script can branch on which schedule fired. See
+   *   [[../decisions/2026-05-06-extension-schedules-fire-tick-hook]].
    */
   hooks: z
     .object({
       install: z.string().optional(),
       uninstall: z.string().optional(),
       update: z.string().optional(),
+      tick: z.string().optional(),
     })
     .default({}),
 })

@@ -33,6 +33,17 @@ import {
   readSchedule,
   type ScheduleEntry,
 } from './schedule.js'
+import {
+  listAllExtensionSchedules,
+  readExtensionSchedule,
+  recordExtensionScheduleFired,
+  nextExtensionFireTime,
+  extensionScheduleJobKey,
+  type ExtensionScheduleEntry,
+} from '../extensions/schedules.js'
+import { readExtension } from '../extensions/registry.js'
+import { readGrants, hasGrant } from '../extensions/grants.js'
+import { runHook, type HookExecResult } from '../extensions/hooks.js'
 
 export interface SchedulerOptions {
   home: string
@@ -52,8 +63,14 @@ export class Scheduler {
   private readonly clearTimer: (handle: NodeJS.Timeout) => void
   private readonly log: Logger
 
-  /** id → timer handle. Cleared and rebuilt on reload. */
+  /** Per-Agent schedule id → timer handle. Cleared and rebuilt on reload. */
   private readonly timers = new Map<string, NodeJS.Timeout>()
+  /**
+   * Per-Extension schedule timers, keyed by `extension:<name>:<id>`
+   * to disambiguate from Agent schedule ids in the same logical pool.
+   * Cleared and rebuilt on reload.
+   */
+  private readonly extensionTimers = new Map<string, NodeJS.Timeout>()
   private started = false
 
   constructor(opts: SchedulerOptions) {
@@ -75,11 +92,17 @@ export class Scheduler {
    */
   async start(): Promise<number> {
     this.stop()
-    const entries = await this.scanAll()
+    const agentEntries = await this.scanAll()
+    const extensionEntries = await listAllExtensionSchedules(this.home)
     let armed = 0
-    for (const entry of entries) {
+    for (const entry of agentEntries) {
       if (!entry.enabled) continue
       this.arm(entry)
+      armed += 1
+    }
+    for (const entry of extensionEntries) {
+      if (!entry.enabled) continue
+      this.armExtension(entry)
       armed += 1
     }
     this.started = true
@@ -91,6 +114,8 @@ export class Scheduler {
   stop(): void {
     for (const t of this.timers.values()) this.clearTimer(t)
     this.timers.clear()
+    for (const t of this.extensionTimers.values()) this.clearTimer(t)
+    this.extensionTimers.clear()
     this.started = false
   }
 
@@ -108,9 +133,9 @@ export class Scheduler {
     return this.started
   }
 
-  /** Number of currently-armed timers. */
+  /** Number of currently-armed timers (Agent + Extension schedules). */
   armedCount(): number {
-    return this.timers.size
+    return this.timers.size + this.extensionTimers.size
   }
 
   /**
@@ -247,5 +272,140 @@ export class Scheduler {
       task_id: taskId,
     })
     return taskId
+  }
+
+  // --- extension-schedule plumbing ---------------------------------------
+
+  /**
+   * Arm the timer for one extension schedule. The job key is the
+   * composite `extension:<name>:<id>` so the timer pool stays
+   * disambiguated from per-Agent schedules.
+   */
+  private armExtension(entry: ExtensionScheduleEntry): void {
+    const now = this.nowFn()
+    let nextIso = entry.next_fire_at
+    if (nextIso === null || Date.parse(nextIso) <= now.getTime()) {
+      nextIso = nextExtensionFireTime(entry.cron, now)
+      if (nextIso === null) {
+        this.log.warn('extension schedule has no future fire time; not arming', {
+          extension: entry.extension_name,
+          id: entry.id,
+        })
+        return
+      }
+    }
+    const delayMs = Math.max(0, Date.parse(nextIso) - now.getTime())
+    const key = extensionScheduleJobKey(entry.extension_name, entry.id)
+    const handle = this.setTimer(() => {
+      void this.fireExtension(entry.extension_name, entry.id)
+    }, delayMs)
+    this.extensionTimers.set(key, handle)
+    this.log.info('extension schedule armed', {
+      extension: entry.extension_name,
+      id: entry.id,
+      next_fire_at: nextIso,
+      delay_ms: delayMs,
+    })
+  }
+
+  /**
+   * Timer callback for an extension schedule. Re-reads the entry,
+   * runs the Extension's tick hook, records the fire, arms next.
+   *
+   * Hook failure (non-zero exit / timeout / spawn error) is logged
+   * but does NOT disable the schedule. Operators disable misbehaving
+   * extension schedules explicitly via the CLI; the runtime never
+   * silently turns them off.
+   */
+  private async fireExtension(extensionName: string, scheduleId: string): Promise<void> {
+    const key = extensionScheduleJobKey(extensionName, scheduleId)
+    this.extensionTimers.delete(key)
+    let entry: ExtensionScheduleEntry
+    try {
+      entry = await readExtensionSchedule(this.home, extensionName, scheduleId)
+    } catch (err) {
+      this.log.warn('extension schedule disappeared between arm and fire; skipping', {
+        extension: extensionName,
+        id: scheduleId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    if (!entry.enabled) {
+      this.log.info('extension schedule disabled before fire; skipping', {
+        extension: extensionName,
+        id: scheduleId,
+      })
+      return
+    }
+
+    let hookResult: HookExecResult | null = null
+    try {
+      const ext = await readExtension(this.home, extensionName)
+      const tickPath = ext.manifest.hooks.tick
+      if (!tickPath) {
+        this.log.warn(
+          'extension schedule fired but manifest declares no tick hook; nothing to run',
+          { extension: extensionName, id: scheduleId },
+        )
+      } else {
+        const grants = await readGrants(this.home, extensionName)
+        if (!hasGrant(grants, 'schedule')) {
+          this.log.warn(
+            'extension schedule fired but `schedule` permission is not granted; skipping tick',
+            { extension: extensionName, id: scheduleId },
+          )
+        } else {
+          hookResult = await runHook({
+            home: this.home,
+            name: extensionName,
+            version: entry.extension_version,
+            hook: 'tick',
+            scriptRelative: tickPath,
+            grants,
+            scheduleId,
+          })
+          if (hookResult.exitCode !== 0 || hookResult.timedOut) {
+            this.log.error('extension tick hook failed', {
+              extension: extensionName,
+              id: scheduleId,
+              exit_code: hookResult.exitCode,
+              timed_out: hookResult.timedOut,
+              log_path: hookResult.logPath,
+            })
+          } else {
+            this.log.info('extension tick hook ran', {
+              extension: extensionName,
+              id: scheduleId,
+              duration_ms: hookResult.durationMs,
+            })
+          }
+        }
+      }
+    } catch (err) {
+      this.log.error('extension schedule fire failed', {
+        extension: extensionName,
+        id: scheduleId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    try {
+      const updated = await recordExtensionScheduleFired(
+        this.home,
+        extensionName,
+        scheduleId,
+        this.nowFn,
+      )
+      if (updated.enabled && updated.next_fire_at !== null) {
+        this.armExtension(updated)
+      }
+    } catch (err) {
+      this.log.error('extension schedule recordFired failed', {
+        extension: extensionName,
+        id: scheduleId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 }

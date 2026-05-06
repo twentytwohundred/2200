@@ -228,9 +228,19 @@ export function extensionStatePaths(home: string, name: string): ExtensionStateP
 export function extensionHookLogPath(
   home: string,
   name: string,
-  hook: 'install' | 'uninstall' | 'update',
+  hook: 'install' | 'uninstall' | 'update' | 'tick',
 ): string {
   return join(extensionStateDir(home, name), `${hook}.log`)
+}
+
+/**
+ * Per-Extension schedules directory (Epic 12 Phase B-2). One JSON
+ * file per schedule entry: `<home>/state/extensions/<name>/schedules/
+ * <schedule_id>.json`. Created lazily by the install orchestrator on
+ * first install with a non-empty `schedules[]` manifest field.
+ */
+export function extensionSchedulesDir(home: string, name: string): string {
+  return join(extensionStateDir(home, name), 'schedules')
 }
 
 /**
