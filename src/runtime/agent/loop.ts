@@ -48,6 +48,7 @@ import {
   type DispatchResult,
   type ToolDispatcher,
 } from '../tools/dispatcher.js'
+import type { SkillProvider } from '../skills/provider.js'
 import type { TaskRecord } from './task/types.js'
 import type { TaskStore } from './task/store.js'
 import { ACTIVE_DETECTORS, evaluateDetectors } from './detectors/evaluator.js'
@@ -269,6 +270,23 @@ export interface AgentLoopOptions {
    * is only written by the trip handler, same as Epic 2.
    */
   pulseEmitter?: PulseEmitter
+  /**
+   * Skill provider (Epic 11 Phase B-2). Optional. When present:
+   *   - The system prompt lists installed skills (name + description)
+   *     so the model knows it can `skill.invoke <name>` alongside
+   *     regular tool calls.
+   *   - `skill.invoke` tool calls are intercepted by the loop before
+   *     dispatch. The provider resolves the skill, the loop validates
+   *     declared tool dependencies against `availableToolNames`, and
+   *     the SKILL.md body is returned to the model as the "tool"
+   *     result for that call. Missing skills + missing tool
+   *     dependencies surface as explicit error messages so the model
+   *     can adapt.
+   * When absent, `skill.invoke` falls through to the dispatcher and
+   * fails with ToolNotFoundError ... the same surface for "skills are
+   * not configured for this Agent."
+   */
+  skillProvider?: SkillProvider
 }
 
 export type LoopResult =
@@ -302,6 +320,17 @@ export class AgentLoop {
     this.pricingTable = opts.pricingTable ?? defaultPricingTable()
   }
 
+  /**
+   * Synthetic tool name the model emits to invoke a Skill. Intercepted
+   * by the loop before the dispatcher; never resolved through the
+   * tool registry. The shape mirrors a normal tool call:
+   *
+   *     ```tool
+   *     { "tool": "skill.invoke", "args": { "name": "finance" } }
+   *     ```
+   */
+  static readonly SKILL_INVOKE_TOOL = 'skill.invoke'
+
   /** Run a task to completion or to a detector trip. Pure; does not block. */
   async run(task: TaskRecord): Promise<LoopResult> {
     // Budget gate: if the agent has crossed today's cap, refuse the
@@ -324,7 +353,7 @@ export class AgentLoop {
       }
     }
 
-    const systemPrompt = this.buildSystemPrompt()
+    const systemPrompt = await this.buildSystemPrompt()
     this.history.length = 0
     this.history.push({ role: 'user', content: task.body })
 
@@ -467,6 +496,10 @@ export class AgentLoop {
     call: ParsedToolCall,
     model: string,
   ): Promise<TripVerdict | null> {
+    if (call.tool === AgentLoop.SKILL_INVOKE_TOOL && this.opts.skillProvider) {
+      return await this.runSkillInvoke(task, call)
+    }
+
     const argsHash = hashArgs(call.tool, call.args)
 
     const startEvent: LoopEvent = {
@@ -567,10 +600,104 @@ export class AgentLoop {
     return this.evaluate(task)
   }
 
-  private buildSystemPrompt(): string {
+  /**
+   * Handle a `skill.invoke` tool call: resolve the skill, validate
+   * declared tool dependencies against the Agent's available tools,
+   * and feed the skill body back into history as the tool result.
+   *
+   * Bypasses the ToolDispatcher (no plan/run/perm records yet ... a
+   * future PR adds Skill-aware records). Still emits the loop's
+   * tool_call_{start,end} events so detectors and Pulse stay coherent
+   * with what the model just did.
+   */
+  private async runSkillInvoke(
+    task: TaskRecord,
+    call: ParsedToolCall,
+  ): Promise<TripVerdict | null> {
+    const argsHash = hashArgs(call.tool, call.args)
+    const startTs = this.nowFn().getTime()
+    const callId = `skill-${String(this.iteration)}-${argsHash.slice(0, 8)}`
+    this.pushEvent({
+      kind: 'tool_call_start',
+      at: startTs,
+      call_id: callId,
+      tool: call.tool,
+      args_hash: argsHash,
+      iteration: this.iteration,
+    })
+
+    const rawName = call.args['name']
+    let payload: { ok: boolean; result: string }
+    if (typeof rawName !== 'string' || rawName.length === 0) {
+      payload = {
+        ok: false,
+        result:
+          'skill.invoke requires args.name: string. Example: { "tool": "skill.invoke", "args": { "name": "finance" } }',
+      }
+    } else {
+      const provider = this.opts.skillProvider
+      if (!provider) {
+        // Defensive: caller already checked, but a defensive branch
+        // keeps the type narrowing clean.
+        payload = { ok: false, result: 'skill provider is not configured for this Agent' }
+      } else {
+        const skill = await provider.resolve(rawName)
+        if (!skill) {
+          payload = {
+            ok: false,
+            result: `skill "${rawName}" is not installed; run \`2200 skill install <source>\` to add it`,
+          }
+        } else {
+          const missing = skill.toolDependencies.filter(
+            (t) => !this.opts.availableToolNames.includes(t),
+          )
+          if (missing.length > 0) {
+            payload = {
+              ok: false,
+              result:
+                `skill "${rawName}" requires tool(s) the Agent does not have: ${missing.join(', ')}. ` +
+                `Connect them via \`2200 oauth login\` (for tool integrations) or update the Identity's tools list, then retry.`,
+            }
+          } else {
+            payload = {
+              ok: true,
+              result:
+                `[invoking skill: ${rawName}]\n\n${skill.body}\n\n` +
+                `[end of skill: ${rawName} ... apply the instructions above to the current task]`,
+            }
+          }
+        }
+      }
+    }
+
+    const endTs = this.nowFn().getTime()
+    this.pushEvent({
+      kind: 'tool_call_end',
+      at: endTs,
+      call_id: callId,
+      tool: call.tool,
+      args_hash: argsHash,
+      iteration: this.iteration,
+      ok: payload.ok,
+      duration_ms: endTs - startTs,
+      ...(payload.ok ? {} : { error_class: 'SkillResolutionError' }),
+    })
+    this.history.push({
+      role: 'tool',
+      content: JSON.stringify({
+        tool: call.tool,
+        ok: payload.ok,
+        ...(payload.ok ? { output: payload.result } : { error: payload.result }),
+      }),
+    })
+
+    return this.evaluate(task)
+  }
+
+  private async buildSystemPrompt(): Promise<string> {
     const id = this.opts.identity
     const tools = this.opts.availableToolNames.join(', ')
-    return [
+    const lines: string[] = [
       id.body,
       '',
       '---',
@@ -595,7 +722,36 @@ export class AgentLoop {
       '  /project/...             your private project workspace',
       '  /brain/...               your Brain (notes, indexes); use brain.* tools for normal access',
       '  /shared/...              your outbox to other Agents',
-    ].join('\n')
+    ]
+    if (this.opts.skillProvider) {
+      const [skills, conflicts] = await Promise.all([
+        this.opts.skillProvider.list(),
+        this.opts.skillProvider.conflicts(),
+      ])
+      if (skills.length > 0) {
+        lines.push('', '## Available skills', '')
+        lines.push(
+          'Skills are reusable instructions you can invoke when their description matches the task at hand. Invoke one with:',
+          '',
+          '```tool',
+          '{ "tool": "skill.invoke", "args": { "name": "<skill-name>" }, "reason": "<why this skill matches>" }',
+          '```',
+          '',
+          'The skill body is returned as the tool result; follow its instructions for the rest of the task.',
+          '',
+        )
+        for (const s of skills) {
+          lines.push(`- **${s.name}**: ${s.description}`)
+        }
+        if (conflicts.length > 0) {
+          lines.push(
+            '',
+            `**Name conflicts** (also installed as Extensions; prefer the Extension if you need its capabilities, otherwise the Skill body): ${conflicts.join(', ')}`,
+          )
+        }
+      }
+    }
+    return lines.join('\n')
   }
 
   private pushEvent(event: LoopEvent): void {
