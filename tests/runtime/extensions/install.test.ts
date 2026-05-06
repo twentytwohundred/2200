@@ -34,6 +34,8 @@ interface MakeSourceArgs {
   installHook?: { file: string; content: string }
   uninstallHook?: { file: string; content: string }
   updateHook?: { file: string; content: string }
+  tickHook?: { file: string; content: string }
+  schedules?: { id: string; cron: string; description?: string }[]
 }
 
 async function makeSource(args: MakeSourceArgs): Promise<string> {
@@ -47,7 +49,7 @@ async function makeSource(args: MakeSourceArgs): Promise<string> {
     description: `Test extension ${args.name}`,
     author: 'Test',
     permissions: args.permissions ?? [],
-    schedules: [],
+    schedules: args.schedules ?? [],
     tools: [],
     hooks: {},
   }
@@ -68,6 +70,12 @@ async function makeSource(args: MakeSourceArgs): Promise<string> {
     hooks['update'] = args.updateHook.file
     const path = join(dir, args.updateHook.file)
     await writeFile(path, args.updateHook.content, 'utf8')
+    await chmod(path, 0o755)
+  }
+  if (args.tickHook) {
+    hooks['tick'] = args.tickHook.file
+    const path = join(dir, args.tickHook.file)
+    await writeFile(path, args.tickHook.content, 'utf8')
     await chmod(path, 0o755)
   }
   manifest['hooks'] = hooks
@@ -399,5 +407,144 @@ describe('updateExtension', () => {
       await readFile(join(home, 'extensions', 'bumpy', 'manifest.json'), 'utf8'),
     ) as { version: string }
     expect(liveManifest.version).toBe('0.1.0')
+  })
+})
+
+describe('schedule lifecycle through install / update / uninstall', () => {
+  it('persists schedules on install when the schedule permission is granted', async () => {
+    const src = await makeSource({
+      name: 'sched-ok',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho tick\n` },
+      schedules: [{ id: 'tick-1', cron: '0 */1 * * *', description: 'hourly' }],
+    })
+    const { listExtensionSchedules } = await import('../../../src/runtime/extensions/schedules.js')
+    const r = await installExtension({ home, source: localSource(src), approve: approveAll })
+    expect(r.schedulesChanged).toBe(true)
+    const persisted = await listExtensionSchedules(home, 'sched-ok')
+    expect(persisted.map((e) => e.id)).toEqual(['tick-1'])
+    expect(persisted[0]?.cron).toBe('0 */1 * * *')
+    expect(persisted[0]?.description).toBe('hourly')
+  })
+
+  it('refuses to install when schedules exist without the schedule permission', async () => {
+    const src = await makeSource({
+      name: 'no-sched-perm',
+      // permissions intentionally omits 'schedule'
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho tick\n` },
+      schedules: [{ id: 'tick-1', cron: '0 */1 * * *' }],
+    })
+    await expect(
+      installExtension({ home, source: localSource(src), approve: approveAll }),
+    ).rejects.toThrow(/schedule.*permission is not granted/)
+  })
+
+  it('refuses to install when schedules exist without a tick hook', async () => {
+    const src = await makeSource({
+      name: 'no-tick',
+      permissions: ['schedule'],
+      // no tickHook declared
+      schedules: [{ id: 'tick-1', cron: '0 */1 * * *' }],
+    })
+    await expect(
+      installExtension({ home, source: localSource(src), approve: approveAll }),
+    ).rejects.toThrow(/no `hooks.tick` script/)
+  })
+
+  it('reports schedulesChanged=false when manifest declares no schedules', async () => {
+    const src = await makeSource({ name: 'nosched' })
+    const r = await installExtension({ home, source: localSource(src), approve: approveAll })
+    expect(r.schedulesChanged).toBe(false)
+  })
+
+  it('reconciles schedules across update (preserves last_fired_at on overlap)', async () => {
+    const { listExtensionSchedules, recordExtensionScheduleFired } =
+      await import('../../../src/runtime/extensions/schedules.js')
+    const src1 = await makeSource({
+      name: 'recon',
+      version: '0.1.0',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho tick\n` },
+      schedules: [
+        { id: 'a', cron: '0 * * * *' },
+        { id: 'b', cron: '*/15 * * * *' },
+      ],
+    })
+    await installExtension({ home, source: localSource(src1), approve: approveAll })
+    await recordExtensionScheduleFired(home, 'recon', 'a', () => new Date('2026-05-06T12:00:00Z'))
+
+    const src2 = await makeSource({
+      name: 'recon',
+      version: '0.2.0',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho tick\n` },
+      schedules: [
+        { id: 'a', cron: '0 * * * *' }, // unchanged
+        { id: 'c', cron: '*/30 * * * *' }, // new (replaces b)
+      ],
+    })
+    const r = await updateExtension({
+      home,
+      source: localSource(src2),
+      approveNewPermissions: () => Promise.resolve(true),
+    })
+    expect(r.schedulesChanged).toBe(true)
+    const final = await listExtensionSchedules(home, 'recon')
+    expect(final.map((e) => e.id)).toEqual(['a', 'c'])
+    const a = final.find((e) => e.id === 'a')
+    expect(a?.last_fired_at).toBe('2026-05-06T12:00:00.000Z')
+  })
+
+  it('reports schedulesChanged=false on update when nothing changed', async () => {
+    const src1 = await makeSource({
+      name: 'stable',
+      version: '0.1.0',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho t\n` },
+      schedules: [{ id: 'a', cron: '0 * * * *' }],
+    })
+    await installExtension({ home, source: localSource(src1), approve: approveAll })
+    const src2 = await makeSource({
+      name: 'stable',
+      version: '0.2.0',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho t\n` },
+      schedules: [{ id: 'a', cron: '0 * * * *' }], // identical to install
+    })
+    const r = await updateExtension({
+      home,
+      source: localSource(src2),
+      approveNewPermissions: () => Promise.resolve(true),
+    })
+    expect(r.schedulesChanged).toBe(false)
+  })
+
+  it('clears schedules on uninstall and reports schedulesChanged=true', async () => {
+    const src = await makeSource({
+      name: 'wipeout',
+      permissions: ['schedule'],
+      tickHook: { file: 'tick.sh', content: `#!/usr/bin/env bash\necho t\n` },
+      schedules: [{ id: 'a', cron: '0 * * * *' }],
+    })
+    await installExtension({ home, source: localSource(src), approve: approveAll })
+    const r = await uninstallExtension({
+      home,
+      name: 'wipeout',
+      approve: () => Promise.resolve(true),
+    })
+    expect(r.removed).toBe(true)
+    expect(r.schedulesChanged).toBe(true)
+  })
+
+  it('uninstall reports schedulesChanged=false when there were no schedules', async () => {
+    const src = await makeSource({ name: 'nosched-bye' })
+    await installExtension({ home, source: localSource(src), approve: approveAll })
+    const r = await uninstallExtension({
+      home,
+      name: 'nosched-bye',
+      approve: () => Promise.resolve(true),
+    })
+    expect(r.removed).toBe(true)
+    expect(r.schedulesChanged).toBe(false)
   })
 })

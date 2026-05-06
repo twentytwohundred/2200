@@ -1119,6 +1119,12 @@ export class Supervisor {
         })
         return { ok: true as const, task_id: taskId }
       },
+
+      'cli.scheduler.reload': async () => {
+        const armed = await this.scheduler.reload()
+        this.log.info('scheduler reloaded via cli', { armed })
+        return { ok: true as const, armed }
+      },
     }
   }
 

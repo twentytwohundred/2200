@@ -76,6 +76,23 @@ function firstLine(text: string): string {
 }
 
 /**
+ * If a supervisor daemon is running, RPC `cli.scheduler.reload` so it
+ * picks up newly-written or removed schedule files without a restart.
+ * No-op when no daemon is running. Used by Extension lifecycle verbs
+ * (install / uninstall / update) after they touch per-Extension
+ * schedule files on disk.
+ */
+async function maybeReloadSchedulerIfDaemonRunning(home: string): Promise<void> {
+  const probe = await connectToDaemon(home)
+  if (!probe) return
+  try {
+    await probe.call('cli.scheduler.reload', {})
+  } finally {
+    await probe.close()
+  }
+}
+
+/**
  * Yes/no prompt over stdin/stdout. Returns true only on a clear "y" /
  * "yes". Anything else (including a Ctrl-D close) resolves false.
  * Used by destructive verbs (extension install/uninstall/update) where
@@ -2310,6 +2327,9 @@ export function buildProgram(): Command {
             `\nInstalled ${result.manifest.name}@${result.manifest.version}; no install hook.`,
           )
         }
+        if (result.schedulesChanged) {
+          await maybeReloadSchedulerIfDaemonRunning(home)
+        }
       } catch (err) {
         if (err instanceof ExtensionInstallError || err instanceof ExtensionManifestError) {
           console.error(err.message)
@@ -2361,6 +2381,9 @@ export function buildProgram(): Command {
       } else {
         console.log(`Uninstalled "${name}". (No uninstall hook declared.)`)
       }
+      if (result.schedulesChanged) {
+        await maybeReloadSchedulerIfDaemonRunning(home)
+      }
     })
 
   extension
@@ -2411,6 +2434,9 @@ export function buildProgram(): Command {
           console.log(
             `\nUpdated ${result.manifest.name}: ${result.fromVersion} → ${result.toVersion}; no update hook.`,
           )
+        }
+        if (result.schedulesChanged) {
+          await maybeReloadSchedulerIfDaemonRunning(home)
         }
       } catch (err) {
         if (err instanceof ExtensionInstallError || err instanceof ExtensionManifestError) {

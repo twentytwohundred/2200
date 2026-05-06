@@ -58,7 +58,7 @@ export const DEFAULT_HOOK_TIMEOUT_MS = 30_000
 /** Grace period between SIGTERM and SIGKILL on timeout. */
 export const HOOK_KILL_GRACE_MS = 2_000
 
-export type HookKind = 'install' | 'uninstall' | 'update'
+export type HookKind = 'install' | 'uninstall' | 'update' | 'tick'
 
 export interface HookExecArgs {
   /** 2200_HOME root. */
@@ -73,10 +73,12 @@ export interface HookExecArgs {
   scriptRelative: string
   /** Permissions the user has granted this Extension. */
   grants: ExtensionGrants
-  /** For `update`: previous version. Ignored for install/uninstall. */
+  /** For `update`: previous version. Ignored for install/uninstall/tick. */
   fromVersion?: string
-  /** For `update`: new version. Ignored for install/uninstall. */
+  /** For `update`: new version. Ignored for install/uninstall/tick. */
   toVersion?: string
+  /** For `tick`: id of the schedule whose firing triggered this run. */
+  scheduleId?: string
   /** Override timeout (testing). */
   timeoutMs?: number
   /**
@@ -131,6 +133,7 @@ export function buildHookEnv(args: {
   grants: ExtensionGrants
   fromVersion?: string
   toVersion?: string
+  scheduleId?: string
   inheritedEnv: Record<string, string | undefined>
 }): Record<string, string> {
   const out: Record<string, string> = {}
@@ -155,6 +158,9 @@ export function buildHookEnv(args: {
   if (args.hook === 'update') {
     if (args.fromVersion !== undefined) out['EXTENSION_FROM_VERSION'] = args.fromVersion
     if (args.toVersion !== undefined) out['EXTENSION_TO_VERSION'] = args.toVersion
+  }
+  if (args.hook === 'tick' && args.scheduleId !== undefined) {
+    out['EXTENSION_SCHEDULE_ID'] = args.scheduleId
   }
   return out
 }
@@ -219,6 +225,7 @@ export async function runHook(args: HookExecArgs): Promise<HookExecResult> {
     grants: args.grants,
     ...(args.fromVersion !== undefined ? { fromVersion: args.fromVersion } : {}),
     ...(args.toVersion !== undefined ? { toVersion: args.toVersion } : {}),
+    ...(args.scheduleId !== undefined ? { scheduleId: args.scheduleId } : {}),
     inheritedEnv: args.inheritedEnv ?? process.env,
   })
 

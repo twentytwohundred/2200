@@ -521,6 +521,24 @@ export const CliScheduleRunOnceResultSchema = z.object({
 })
 export type CliScheduleRunOnceResult = z.infer<typeof CliScheduleRunOnceResultSchema>
 
+/**
+ * Generic scheduler reload (Epic 12 Phase B-2). The CLI calls this
+ * after `2200 extension install / uninstall / update` mutates
+ * per-Extension schedule files on disk so the running supervisor's
+ * Scheduler picks them up without a daemon restart. Re-uses the same
+ * reload entry point as per-Agent schedule mutations; the Scheduler
+ * doesn't distinguish trigger sources internally.
+ */
+export const CliSchedulerReloadParamsSchema = z.object({})
+export type CliSchedulerReloadParams = z.infer<typeof CliSchedulerReloadParamsSchema>
+
+export const CliSchedulerReloadResultSchema = z.object({
+  ok: z.literal(true),
+  /** Number of timers armed after the reload. */
+  armed: z.number().int().nonnegative(),
+})
+export type CliSchedulerReloadResult = z.infer<typeof CliSchedulerReloadResultSchema>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -619,6 +637,10 @@ export const METHODS = {
   'cli.schedule.run-once': {
     params: CliScheduleRunOnceParamsSchema,
     result: CliScheduleRunOnceResultSchema,
+  },
+  'cli.scheduler.reload': {
+    params: CliSchedulerReloadParamsSchema,
+    result: CliSchedulerReloadResultSchema,
   },
 } as const
 
