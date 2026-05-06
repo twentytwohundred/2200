@@ -21,12 +21,14 @@ import { pubTools } from './pub.js'
 import { notificationTools } from './notification.js'
 
 /**
- * All 20 baseline tool names. Used by tool-in-set perm checks and
+ * All baseline tool names. Used by tool-in-set perm checks and
  * Identity validation. Bumped 14 → 18 in Epic 3 PR C (pub.* tools);
  * bumped 18 → 19 in Epic 7 PR D (notification.ask); reshaped in
  * Epic 8 PR C (brain.* swapped from path-based v1 stubs to
  * slug-based Phase A: brain.write/read/search/list/delete; dropped
- * brain.links — Phase C delivers `brain.get_links`).
+ * brain.links — Phase C delivers `brain.get_links`); bumped to
+ * include `notification.inform` for Epic 7 Phase B (fire-and-forget
+ * passive notification surface).
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
   'fs.read',
@@ -51,6 +53,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'pub.list_pubs',
   'pub.react',
   'notification.ask',
+  'notification.inform',
 ]
 
 /** Build the seven baseline MCP servers. */
