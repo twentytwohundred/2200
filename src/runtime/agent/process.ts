@@ -280,6 +280,7 @@ export class AgentProcess {
       logger: this.log.child('pulse'),
     })
     this.pulseEmitter.start()
+    const { FilesystemSkillProvider } = await import('../skills/provider.js')
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -292,6 +293,7 @@ export class AgentProcess {
       telemetryWriter,
       budgetTracker,
       pulseEmitter: this.pulseEmitter,
+      skillProvider: new FilesystemSkillProvider(this.options.home),
     })
 
     const conn = this.options.connection ?? (await connectUds(this.options.socketPath))

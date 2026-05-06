@@ -662,3 +662,181 @@ describe('AgentLoop detector trips', () => {
     }
   })
 })
+
+describe('AgentLoop skill.invoke', () => {
+  it('returns the skill body to the model when invoked', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse(
+        'I should use the finance skill.\n```tool\n{"tool":"skill.invoke","args":{"name":"finance"},"reason":"matches the task"}\n```',
+      ),
+      fakeResponse('Skill applied. Done.'),
+    ])
+    const skillProvider = makeFakeSkillProvider({
+      finance: {
+        body: 'Walk through Mercury, then Chase. Summarize at the end.',
+        tools: [],
+      },
+    })
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      skillProvider,
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'check finances',
+    })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    if (r.kind === 'done') expect(r.iterations).toBe(2)
+
+    // The history should contain a tool message with the skill body.
+    const events = loop._events.filter((e) => e.kind === 'tool_call_end')
+    expect(events.length).toBeGreaterThan(0)
+    const last = events[events.length - 1]
+    expect(last?.tool).toBe('skill.invoke')
+    if (last?.kind === 'tool_call_end') expect(last.ok).toBe(true)
+  })
+
+  it('surfaces an error when the skill is not installed', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse('```tool\n{"tool":"skill.invoke","args":{"name":"missing"}}\n```'),
+      fakeResponse('Acknowledging the error and proceeding without the skill.'),
+    ])
+    const skillProvider = makeFakeSkillProvider({})
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      skillProvider,
+    })
+    const task = newPendingTask({ id: newTaskId(), agent: 'hobby', title: 't', body: 'go' })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    const events = loop._events.filter((e) => e.kind === 'tool_call_end')
+    const last = events[events.length - 1]
+    if (last?.kind === 'tool_call_end') {
+      expect(last.tool).toBe('skill.invoke')
+      expect(last.ok).toBe(false)
+      expect(last.error_class).toBe('SkillResolutionError')
+    }
+  })
+
+  it('surfaces an error when a declared tool dependency is missing', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse('```tool\n{"tool":"skill.invoke","args":{"name":"needs-x"}}\n```'),
+      fakeResponse('Got it; cannot run without the connector.'),
+    ])
+    const skillProvider = makeFakeSkillProvider({
+      'needs-x': {
+        body: 'Body',
+        tools: ['custom.x'], // not in baseline
+      },
+    })
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES, // does NOT include custom.x
+      skillProvider,
+    })
+    const task = newPendingTask({ id: newTaskId(), agent: 'hobby', title: 't', body: 'go' })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    const events = loop._events.filter((e) => e.kind === 'tool_call_end')
+    const last = events[events.length - 1]
+    if (last?.kind === 'tool_call_end') {
+      expect(last.tool).toBe('skill.invoke')
+      expect(last.ok).toBe(false)
+    }
+    // The history's last tool message should mention the missing tool name.
+    // We don't have a direct accessor; verify via the fact that the
+    // model produced a sensible follow-up after seeing the error
+    // (iterations === 2 confirms the loop fed something back).
+    if (r.kind === 'done') expect(r.iterations).toBe(2)
+  })
+
+  it('falls through to dispatcher when no skillProvider is configured (404)', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse('```tool\n{"tool":"skill.invoke","args":{"name":"any"}}\n```'),
+      fakeResponse('Acknowledging and recovering.'),
+    ])
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      // no skillProvider
+    })
+    const task = newPendingTask({ id: newTaskId(), agent: 'hobby', title: 't', body: 'go' })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    // Without a provider, skill.invoke routed to dispatcher → ToolNotFoundError.
+    const events = loop._events.filter((e) => e.kind === 'tool_call_end')
+    const last = events[events.length - 1]
+    if (last?.kind === 'tool_call_end') {
+      expect(last.tool).toBe('skill.invoke')
+      expect(last.ok).toBe(false)
+      expect(last.error_class).toBe('ToolNotFoundError')
+    }
+  })
+})
+
+interface FakeSkillData {
+  body: string
+  tools: string[]
+}
+function makeFakeSkillProvider(skills: Record<string, FakeSkillData>) {
+  return {
+    list: () =>
+      Promise.resolve(
+        Object.entries(skills).map(([name, _]) => ({
+          name,
+          description: `Test skill ${name}`,
+        })),
+      ),
+    resolve: (name: string) => {
+      const s = skills[name]
+      if (!s) return Promise.resolve(null)
+      return Promise.resolve({
+        name,
+        body: s.body,
+        toolDependencies: s.tools,
+      })
+    },
+    conflicts: () => Promise.resolve([] as readonly string[]),
+  }
+}
