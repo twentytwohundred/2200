@@ -26,6 +26,7 @@ import {
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { getToken } from '../lib/auth'
+import type { Agent, ListEnvelope, Pulse } from '../lib/api'
 
 export interface WsEvent {
   event: string
@@ -75,6 +76,15 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'agent.task_finished':
         case 'agent.task_errored':
           void queryClient.invalidateQueries({ queryKey: ['agents'] })
+          break
+        case 'pulse.changed':
+          // Pulse events arrive frequently (one per pulse.json update,
+          // ~1/s when an agent is active). Invalidating the agents
+          // query on every event would re-fetch the full list at the
+          // same cadence; instead surgically patch the affected
+          // agent's `pulse` field in the cache so the PulseDot
+          // re-renders without a network round trip.
+          patchAgentPulseInCache(queryClient, ev.payload)
           break
         case 'notification.created':
         case 'notification.answered':
@@ -177,3 +187,54 @@ export function useLiveSignal(): LiveSignalContextValue {
   if (!ctx) throw new Error('useLiveSignal must be used inside a <LiveSignalProvider>')
   return ctx
 }
+
+/**
+ * Patch one agent's `pulse` field across every active `agents`
+ * query in the TanStack Query cache. Skips updates when the payload
+ * shape is wrong or when the named agent is not in the cached list
+ * (no-op until the next list query lands).
+ *
+ * Surgical update beats a full invalidate for pulse events because
+ * the cadence is high (~1/s during activity) and the payload size
+ * is modest; refetching the full agents list on every pulse tick
+ * would multiply API traffic for no UX gain.
+ */
+function patchAgentPulseInCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  payload: Record<string, unknown>,
+): void {
+  const agentName = typeof payload.agent === 'string' ? payload.agent : null
+  const pulseRaw = payload.pulse
+  if (!agentName || !isPulse(pulseRaw)) return
+  queryClient.setQueriesData<ListEnvelope<Agent>>({ queryKey: ['agents'] }, (current) => {
+    if (!current) return current
+    const idx = current.items.findIndex((a) => a.name === agentName)
+    if (idx === -1) return current
+    const items = current.items.slice()
+    const target = items[idx]
+    if (!target) return current
+    items[idx] = { ...target, pulse: pulseRaw }
+    return { ...current, items }
+  })
+  // Single-agent query path: GET /api/v1/agents/:name. Patch the
+  // cache for the same pulse so the AgentDetail screen's render is
+  // also live without a round-trip.
+  queryClient.setQueriesData<Agent>({ queryKey: ['agent', agentName] }, (current) => {
+    if (!current) return current
+    return { ...current, pulse: pulseRaw }
+  })
+}
+
+function isPulse(value: unknown): value is Pulse {
+  if (!value || typeof value !== 'object') return false
+  const v = value as Partial<Pulse>
+  return (
+    typeof v.state === 'string' &&
+    typeof v.intensity === 'number' &&
+    typeof v.updated_at === 'string'
+  )
+}
+
+// `agent` and `pulse` are typed as `unknown` on Record access via
+// dot notation, so dot-notation is the lint-preferred form when the
+// key is statically known.

@@ -53,6 +53,7 @@ import { TokenRefreshService } from '../oauth/refresh-service.js'
 import type { ScheduleListEntry } from '../control-plane/protocol.js'
 import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
 import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
+import { PulseWatcher } from '../agent/pulse/watcher.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -97,6 +98,14 @@ export class Supervisor {
   private readonly agentByConnection = new WeakMap<Connection, string>()
   private readonly spawned = new Map<string, SpawnedAgent>()
   private readonly spawnedPubs = new Map<string, SpawnedPub>()
+  /**
+   * One PulseWatcher per running Agent (Epic 15 PulseDot live-feed).
+   * Started when the agent is spawned, stopped when the agent exits
+   * or the supervisor shuts down. The watcher polls `pulse.json` and
+   * forwards changes to the WS broadcast so connected web clients
+   * see the dot animate without polling.
+   */
+  private readonly pulseWatchers = new Map<string, PulseWatcher>()
   /**
    * Pubs whose exit was initiated by the supervisor (via `stopPub` or
    * `shutdown`). Distinguishes user-initiated exit (final state =
@@ -216,6 +225,8 @@ export class Supervisor {
     }
     this.scheduler.stop()
     this.tokenRefresh.stop()
+    for (const watcher of this.pulseWatchers.values()) watcher.stop()
+    this.pulseWatchers.clear()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
       try {
         await sa.stop(timeoutMs)
@@ -499,11 +510,52 @@ export class Supervisor {
     void spawned.exited.then(({ code, signal }) => {
       void this.handleAgentExit(name, code, signal)
     })
+    this.startPulseWatcher(name)
     await this.updateAgent(name, {
       pid: spawned.pid,
       spawned_at: new Date().toISOString(),
       state: 'running',
     })
+  }
+
+  /**
+   * Start a PulseWatcher for the named agent if one is not already
+   * running. Idempotent. The watcher forwards pulse.json changes
+   * through the supervisor's WS broadcast as `pulse.changed` events.
+   */
+  private startPulseWatcher(name: string): void {
+    if (this.pulseWatchers.has(name)) return
+    const watcher = new PulseWatcher({
+      home: this.state.home,
+      agentName: name,
+      onChange: (pulse) => {
+        if (!this.webHandle) return
+        this.webHandle.broadcast({
+          event: 'pulse.changed',
+          payload: {
+            agent: name,
+            pulse: {
+              state: pulse.state,
+              intensity: pulse.intensity,
+              detector_kind: pulse.detector_kind,
+              trip_id: pulse.trip_id,
+              updated_at: pulse.updated_at,
+            },
+          },
+        })
+      },
+      logger: this.log.child(`pulse-watcher/${name}`),
+    })
+    watcher.start()
+    this.pulseWatchers.set(name, watcher)
+  }
+
+  /** Stop and forget the PulseWatcher for the named agent. Idempotent. */
+  private stopPulseWatcher(name: string): void {
+    const watcher = this.pulseWatchers.get(name)
+    if (!watcher) return
+    watcher.stop()
+    this.pulseWatchers.delete(name)
   }
 
   /** Send `agent.stop` to a running Agent and wait for graceful exit. */
@@ -1163,6 +1215,7 @@ export class Supervisor {
     signal: NodeJS.Signals | null,
   ): Promise<void> {
     this.spawned.delete(name)
+    this.stopPulseWatcher(name)
     const record = this.state.agents[name]
     if (!record) return
     if (record.state === 'errored') {
