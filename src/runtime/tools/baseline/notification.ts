@@ -1,18 +1,22 @@
 /**
- * notification.* baseline tools (Epic 7 PR D).
+ * notification.* baseline tools.
  *
- * v1 surfaces:
- *   notification.ask  -> blocks the loop until the user responds or
- *                        dismisses. Returns the response text.
+ * Surfaces:
+ *   notification.ask    -> blocks the loop until the user responds or
+ *                          dismisses. Returns the response text.
+ *   notification.inform -> fire-and-forget passive notification.
+ *                          Returns immediately; user sees the entry on
+ *                          their next inbox open. Use for "look at this"
+ *                          surfaces (inbox-message arrival, status
+ *                          change, completion summary) where blocking
+ *                          the Agent on a user response would be wrong.
  *
- * Future v1.1 candidates (not in this PR):
- *   notification.inform  -> fire-and-forget passive notification
- *   notification.update  -> patch a previously-emitted ask
+ * Future v1.x candidates (not in this PR):
+ *   notification.update -> patch a previously-emitted ask
  *
- * The tool dispatches via the same plan/run/perm wrapping as every
+ * Both tools dispatch via the same plan/run/perm wrapping as every
  * other baseline tool. Idempotency is `destructive` because the
- * resulting notification persists in user-visible state and the
- * Ask response can drive subsequent Agent decisions.
+ * resulting notification persists in user-visible state.
  */
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
@@ -82,4 +86,44 @@ export const notificationAsk = defineTool({
   },
 })
 
-export const notificationTools: ToolDefinition[] = [notificationAsk]
+const NotificationInformArgsSchema = z.object({
+  /**
+   * Tier of the notification. Same gating as `notification.ask`:
+   * the calling Agent's `notification_policy.tiers_allowed` is
+   * enforced (Agents cannot escalate their own priority per
+   * CLAUDE.md "Notification tier gating").
+   */
+  tier: NotificationTierSchema,
+  /** Markdown body shown to the user. */
+  body: z.string().min(1),
+  /**
+   * Optional grouping key. Defaults to `agent_inform`. The mobile
+   * app + CLI use this to bucket related entries (e.g.,
+   * `inbox_arrival`, `task_completed`, `status_update`).
+   */
+  kind: z.string().min(1).default('agent_inform'),
+})
+
+export const notificationInform = defineTool({
+  name: 'notification.inform',
+  description:
+    "Surface a passive notification to the user without blocking the loop. Use for 'look at this' moments (inbox-message arrival, status updates, completion summaries) where you don't need a user response. Fire-and-forget: returns immediately with the new notification's id.",
+  idempotency: 'destructive',
+  argsSchema: NotificationInformArgsSchema,
+  execute: async (args, ctx) => {
+    const emit = await emitNotification({
+      home: ctx.home,
+      agentName: ctx.callingAgent,
+      tier: args.tier,
+      kind: args.kind,
+      body: args.body,
+      // Fire-and-forget: no response expected, no waitForResponse.
+      requiresResponse: false,
+      enforcePolicy: true,
+      ...(ctx.taskId !== null ? { extras: { task_id: ctx.taskId } } : {}),
+    })
+    return { notification_id: emit.id, status: 'emitted' as const }
+  },
+})
+
+export const notificationTools: ToolDefinition[] = [notificationAsk, notificationInform]
