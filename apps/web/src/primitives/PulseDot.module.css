@@ -1,0 +1,53 @@
+.dot {
+  display: inline-block;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+/* State bands ... color from existing status tokens so theme switches
+   propagate without dedicated pulse tokens. The state-to-color
+   mapping is intentionally close to the existing Pill variant
+   colors so the Fleet view reads coherently with both indicators
+   side by side. */
+
+.s-resting {
+  color: var(--color-text-muted);
+  opacity: 0.55;
+}
+
+.s-working_light {
+  color: var(--color-status-info);
+}
+
+.s-working_medium {
+  color: var(--color-status-running);
+}
+
+.s-working_hard {
+  color: var(--color-status-attention);
+}
+
+.s-redlined {
+  color: var(--color-status-error);
+}
+
+.s-stopped {
+  color: var(--color-text-muted);
+  opacity: 0.3;
+}
+
+.pulse {
+  animation: pulseDotIntensity var(--pulse-period, 1800ms) var(--ease-in-out) infinite;
+}
+
+@keyframes pulseDotIntensity {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

@@ -43,6 +43,27 @@ export class NetworkError extends Error {
   }
 }
 
+/**
+ * Pulse v2 sub-document carried with every Agent DTO. `null` when the
+ * Agent has never run on this home (no pulse.json yet) or when the
+ * pulse file failed to parse. Pulse data is observability, not
+ * load-bearing for the screen ... a missing pulse should still render
+ * the row.
+ *
+ * - `state` is one of: 'resting' | 'working_light' | 'working_medium'
+ *   | 'working_hard' | 'redlined' | 'stopped'.
+ * - `intensity` is a smoothed activity metric in [0, 1].
+ * - `detector_kind` and `trip_id` are populated only when the Agent
+ *   is paused by a detector trip (state === 'redlined').
+ */
+export interface Pulse {
+  state: 'resting' | 'working_light' | 'working_medium' | 'working_hard' | 'redlined' | 'stopped'
+  intensity: number
+  detector_kind: string | null
+  trip_id: string | null
+  updated_at: string
+}
+
 export interface Agent {
   name: string
   status: string
@@ -53,6 +74,7 @@ export interface Agent {
   last_heartbeat: string | null
   errored_at: string | null
   errored_reason: string | null
+  pulse: Pulse | null
 }
 
 export interface Notification {
