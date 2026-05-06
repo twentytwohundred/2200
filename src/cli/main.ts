@@ -321,6 +321,10 @@ export function buildProgram(): Command {
     )
     .option('--yes', 'auto-confirm at the preview step (non-interactive)')
     .option('--dry-run', 'run the interview, print the preview, do not create')
+    .option(
+      '--replay <path>',
+      'skip the interview; replay a saved transcript JSON (from <home>/state/onboarding/transcripts/) through the rest of the spawn flow',
+    )
     .action(
       async (opts: {
         script?: string
@@ -328,6 +332,7 @@ export function buildProgram(): Command {
         model: string
         yes?: boolean
         dryRun?: boolean
+        replay?: string
       }) => {
         // Daemon-running guard runs FIRST so the operator gets the
         // stop-the-daemon hint immediately, not after sitting through
@@ -353,62 +358,81 @@ export function buildProgram(): Command {
         const { suggestSchedules } = await import('../runtime/onboarding/schedule-suggestions.js')
         const { renderPreview } = await import('../runtime/onboarding/preview.js')
         const { resolveProvider } = await import('../runtime/llm/registry.js')
-
-        // Resolve the script path: explicit override or the bundled
-        // default at src/runtime/onboarding/scripts/default-v1.yaml
-        // (relative to the running cli/main.js).
-        const cliDir = dirname(fileURLToPath(import.meta.url))
-        const defaultScriptPath = join(
-          cliDir,
-          '..',
-          'runtime',
-          'onboarding',
-          'scripts',
-          'default-v1.yaml',
-        )
-        const scriptPath = opts.script ?? defaultScriptPath
-
-        const script = await loadScriptFile(scriptPath)
-
-        // Stdin/stdout interview UX.
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-        const stdinInput = {
-          ask: (promptText: string): Promise<string> =>
-            new Promise<string>((resolve) => {
-              process.stdout.write(`\n${promptText}\n> `)
-              rl.question('', (answer) => {
-                resolve(answer)
-              })
-            }),
-        }
-
-        let provider
-        try {
-          provider = await resolveProvider({ providerName: opts.provider })
-        } catch (err) {
-          rl.close()
-          console.error(
-            `Could not resolve LLM provider "${opts.provider}": ${err instanceof Error ? err.message : String(err)}`,
-          )
-          console.error(
-            `Set the appropriate API-key env var (e.g., ANTHROPIC_API_KEY for anthropic) before running.`,
-          )
-          process.exit(1)
-        }
+        const { saveTranscript, loadTranscript, TranscriptStoreError } =
+          await import('../runtime/onboarding/transcript-store.js')
 
         let transcript
-        try {
-          console.log(
-            `\nStarting onboarding interview. Answer the prompts; the system will summarize at the end.\n`,
+        if (opts.replay !== undefined) {
+          // Replay path: skip the interview entirely. Load the saved
+          // transcript JSON and re-run the rest of the spawn flow
+          // through it. Useful for testing onboarding-script changes
+          // against a deterministic input or reproducing a destroyed
+          // Agent without re-walking the conversation.
+          try {
+            const saved = await loadTranscript(opts.replay)
+            transcript = saved.transcript
+            console.log(`Replaying transcript saved ${saved.saved_at} for "${saved.agent_name}".`)
+          } catch (err) {
+            if (err instanceof TranscriptStoreError) {
+              console.error(err.message)
+              process.exit(1)
+            }
+            throw err
+          }
+        } else {
+          // Live interview path. Resolve the script, set up
+          // stdin/readline, resolve the LLM provider, run the
+          // questions.
+          const cliDir = dirname(fileURLToPath(import.meta.url))
+          const defaultScriptPath = join(
+            cliDir,
+            '..',
+            'runtime',
+            'onboarding',
+            'scripts',
+            'default-v1.yaml',
           )
-          transcript = await runInterview({
-            script,
-            provider,
-            modelId: opts.model,
-            input: stdinInput,
-          })
-        } finally {
-          rl.close()
+          const scriptPath = opts.script ?? defaultScriptPath
+          const script = await loadScriptFile(scriptPath)
+
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+          const stdinInput = {
+            ask: (promptText: string): Promise<string> =>
+              new Promise<string>((resolve) => {
+                process.stdout.write(`\n${promptText}\n> `)
+                rl.question('', (answer) => {
+                  resolve(answer)
+                })
+              }),
+          }
+
+          let provider
+          try {
+            provider = await resolveProvider({ providerName: opts.provider })
+          } catch (err) {
+            rl.close()
+            console.error(
+              `Could not resolve LLM provider "${opts.provider}": ${err instanceof Error ? err.message : String(err)}`,
+            )
+            console.error(
+              `Set the appropriate API-key env var (e.g., ANTHROPIC_API_KEY for anthropic) before running.`,
+            )
+            process.exit(1)
+          }
+
+          try {
+            console.log(
+              `\nStarting onboarding interview. Answer the prompts; the system will summarize at the end.\n`,
+            )
+            transcript = await runInterview({
+              script,
+              provider,
+              modelId: opts.model,
+              input: stdinInput,
+            })
+          } finally {
+            rl.close()
+          }
         }
 
         // Build the handoff with suggested mcp_servers baked in so
@@ -469,9 +493,27 @@ export function buildProgram(): Command {
             supervisor,
             today: new Date(),
           })
+          // Persist the full interview transcript for audit + future
+          // replay. Failures here do not block agent creation; the
+          // Agent is already on disk.
+          let transcriptPath: string | null = null
+          try {
+            transcriptPath = await saveTranscript({
+              home,
+              agentName: result.agent_name,
+              transcript,
+            })
+          } catch (err) {
+            console.warn(
+              `note: could not save transcript: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
           console.log(`\nAgent "${result.agent_name}" created.`)
           console.log(`  identity:           ${result.identity_path}`)
           console.log(`  continuity note:    ${result.continuity_note_slug}`)
+          if (transcriptPath) {
+            console.log(`  transcript:         ${transcriptPath}`)
+          }
 
           if (tools.length > 0) {
             console.log(

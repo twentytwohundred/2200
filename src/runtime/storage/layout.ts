@@ -244,6 +244,22 @@ export function extensionSchedulesDir(home: string, name: string): string {
 }
 
 /**
+ * Saved onboarding transcripts (Epic 14 Phase A: persistence).
+ *
+ *   <home>/state/onboarding/transcripts/<agent_name>-<iso>.json
+ *
+ * Each successful `2200 spawn` invocation persists the full interview
+ * transcript here so the operator can audit the conversation that
+ * produced an Agent. The same file is the input format for the
+ * `2200 spawn --replay <path>` flag, which skips the interview and
+ * replays the captured transcript through the Identity / tool /
+ * schedule generators.
+ */
+export function onboardingTranscriptsDir(home: string): string {
+  return join(home, 'state', 'onboarding', 'transcripts')
+}
+
+/**
  * Per-Agent SCUT identity directory (Epic 4 Phase A). Layout:
  *   <home>/state/identities/<agent_name>/
  *   ├── keys/
