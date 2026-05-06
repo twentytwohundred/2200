@@ -59,6 +59,18 @@
   word-break: break-all;
 }
 
+.heroStatusRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pulseRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .heroError {
   margin: var(--space-2) 0 0;
   padding: var(--space-3);
