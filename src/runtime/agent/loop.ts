@@ -49,6 +49,15 @@ import {
   type ToolDispatcher,
 } from '../tools/dispatcher.js'
 import type { SkillProvider } from '../skills/provider.js'
+import {
+  writePlanRecord,
+  writePermRecord,
+  writeRunRecord,
+  type PermRecord,
+  type PlanRecord,
+  type RunRecord,
+} from '../tools/records.js'
+import { newCallId, newPermId, newPlanId, newRunId } from '../util/id.js'
 import type { TaskRecord } from './task/types.js'
 import type { TaskStore } from './task/store.js'
 import { ACTIVE_DETECTORS, evaluateDetectors } from './detectors/evaluator.js'
@@ -497,7 +506,7 @@ export class AgentLoop {
     model: string,
   ): Promise<TripVerdict | null> {
     if (call.tool === AgentLoop.SKILL_INVOKE_TOOL && this.opts.skillProvider) {
-      return await this.runSkillInvoke(task, call)
+      return await this.runSkillInvoke(task, call, model)
     }
 
     const argsHash = hashArgs(call.tool, call.args)
@@ -613,10 +622,18 @@ export class AgentLoop {
   private async runSkillInvoke(
     task: TaskRecord,
     call: ParsedToolCall,
+    model: string,
   ): Promise<TripVerdict | null> {
     const argsHash = hashArgs(call.tool, call.args)
     const startTs = this.nowFn().getTime()
-    const callId = `skill-${String(this.iteration)}-${argsHash.slice(0, 8)}`
+    const startIso = new Date(startTs).toISOString()
+    const callId = newCallId()
+    const planId = newPlanId()
+    const permId = newPermId()
+    const runId = newRunId()
+    const agentName = this.opts.identity.frontmatter.agent_name
+    const taskId = task.frontmatter.id
+
     this.pushEvent({
       kind: 'tool_call_start',
       at: startTs,
@@ -626,26 +643,52 @@ export class AgentLoop {
       iteration: this.iteration,
     })
 
+    // 1) Plan record. Always lands ... a plan is the record of intent
+    // even when the Skill ultimately can't run.
+    const planRecord: PlanRecord = {
+      schema_version: 1,
+      id: planId,
+      ts: startIso,
+      agent: agentName,
+      task_id: taskId,
+      call_id: callId,
+      model,
+      tool: call.tool,
+      args: call.args,
+      precondition: call.precondition ?? null,
+      predicted_outcome: call.predicted_outcome,
+      reason: call.reason,
+    }
+    await writePlanRecord(this.opts.brainDir, planRecord)
+
+    // 2) Resolve the skill + check tool dependencies. The "perm" for
+    // a Skill is the dependency check: a Skill that names a tool the
+    // Agent does not have is denied at this layer (parallel to the
+    // dispatcher's allowed_in_set check for tools).
     const rawName = call.args['name']
-    let payload: { ok: boolean; result: string }
+    let payload: { ok: boolean; result: string; denial: string | null }
     if (typeof rawName !== 'string' || rawName.length === 0) {
       payload = {
         ok: false,
         result:
           'skill.invoke requires args.name: string. Example: { "tool": "skill.invoke", "args": { "name": "finance" } }',
+        denial: 'missing-args',
       }
     } else {
       const provider = this.opts.skillProvider
       if (!provider) {
-        // Defensive: caller already checked, but a defensive branch
-        // keeps the type narrowing clean.
-        payload = { ok: false, result: 'skill provider is not configured for this Agent' }
+        payload = {
+          ok: false,
+          result: 'skill provider is not configured for this Agent',
+          denial: 'provider-missing',
+        }
       } else {
         const skill = await provider.resolve(rawName)
         if (!skill) {
           payload = {
             ok: false,
             result: `skill "${rawName}" is not installed; run \`2200 skill install <source>\` to add it`,
+            denial: 'skill-not-installed',
           }
         } else {
           const missing = skill.toolDependencies.filter(
@@ -657,6 +700,7 @@ export class AgentLoop {
               result:
                 `skill "${rawName}" requires tool(s) the Agent does not have: ${missing.join(', ')}. ` +
                 `Connect them via \`2200 oauth login\` (for tool integrations) or update the Identity's tools list, then retry.`,
+              denial: `missing-tool-deps:${missing.join(',')}`,
             }
           } else {
             payload = {
@@ -664,13 +708,56 @@ export class AgentLoop {
               result:
                 `[invoking skill: ${rawName}]\n\n${skill.body}\n\n` +
                 `[end of skill: ${rawName} ... apply the instructions above to the current task]`,
+              denial: null,
             }
           }
         }
       }
     }
 
+    // 3) Perm record. Records the dependency check outcome.
+    const permRecord: PermRecord = {
+      schema_version: 1,
+      id: permId,
+      ts: this.nowFn().toISOString(),
+      agent: agentName,
+      task_id: taskId,
+      plan_ref: planId,
+      call_id: callId,
+      tool: call.tool,
+      checks: [],
+      authorized: payload.ok,
+      denial_reason: payload.ok
+        ? null
+        : { check_type: 'skill_dependency_check', detail: payload.denial },
+    }
+    await writePermRecord(this.opts.brainDir, permRecord)
+
+    // 4) Run record. The "output" is the skill body when authorized,
+    // null + error otherwise.
     const endTs = this.nowFn().getTime()
+    const endIso = new Date(endTs).toISOString()
+    const runRecord: RunRecord = {
+      schema_version: 1,
+      id: runId,
+      ts_start: startIso,
+      ts_end: endIso,
+      agent: agentName,
+      task_id: taskId,
+      plan_ref: planId,
+      call_id: callId,
+      tool: call.tool,
+      inputs: call.args,
+      output: payload.ok ? payload.result : null,
+      output_ref: null,
+      error: payload.ok
+        ? null
+        : { class: 'SkillResolutionError', message: payload.result, retryable: false },
+      duration_ms: endTs - startTs,
+      cost_metrics: {},
+    }
+    await writeRunRecord(this.opts.brainDir, runRecord)
+
     this.pushEvent({
       kind: 'tool_call_end',
       at: endTs,
