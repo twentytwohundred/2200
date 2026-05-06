@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type Agent, ApiError, NetworkError } from '../../lib/api'
 import {
   AgentMark,
+  Button,
   Card,
   EmptyState,
   ErrorState,
@@ -25,6 +26,7 @@ import {
   PulseDot,
   SectionHeader,
 } from '../../primitives'
+import { useNavigate } from 'react-router-dom'
 import { useTheme } from '../../theme/ThemeProvider'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
 import { useLiveSignal } from '../../ws/useLiveSignal'
@@ -73,6 +75,7 @@ function pillLabel(status: string): string {
 export function FleetScreen(): ReactElement {
   const { theme } = useTheme()
   const live = useLiveSignal()
+  const navigate = useNavigate()
 
   const query = useQuery({
     queryKey: ['agents'],
@@ -141,9 +144,20 @@ export function FleetScreen(): ReactElement {
             title="No Agents yet"
             body={
               <>
-                Create one with <span className={styles.mono}>2200 agent spawn</span> in your shell.
-                Spawned Agents land here automatically.
+                Spawn one through the conversational onboarding flow, or run{' '}
+                <span className={styles.mono}>2200 agent spawn</span> in your shell. Either way the
+                Agent lands here once it's on disk.
               </>
+            }
+            action={
+              <Button
+                variant="primary"
+                onClick={() => {
+                  void navigate('/onboarding')
+                }}
+              >
+                Spawn an Agent
+              </Button>
             }
           />
         </Card>
