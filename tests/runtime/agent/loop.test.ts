@@ -813,6 +813,117 @@ describe('AgentLoop skill.invoke', () => {
       expect(last.error_class).toBe('ToolNotFoundError')
     }
   })
+
+  it('writes plan / perm / run records for a skill.invoke call', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse(
+        '```tool\n{"tool":"skill.invoke","args":{"name":"finance"},"reason":"matches the task","predicted_outcome":"finance guidance applied"}\n```',
+      ),
+      fakeResponse('Done.'),
+    ])
+    const skillProvider = makeFakeSkillProvider({
+      finance: { body: 'Walk through Mercury.', tools: [] },
+    })
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      skillProvider,
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'do finance',
+    })
+    await taskStore.save(task)
+    await loop.run(task)
+
+    const taskId = task.frontmatter.id
+    const { readdir, readFile: rf } = await import('node:fs/promises')
+    const planDir = join(ap.brain, '.records', 'plan', taskId)
+    const permDir = join(ap.brain, '.records', 'perm', taskId)
+    const runDir = join(ap.brain, '.records', 'run', taskId)
+
+    const planFiles = await readdir(planDir)
+    const permFiles = await readdir(permDir)
+    const runFiles = await readdir(runDir)
+    expect(planFiles.length).toBeGreaterThanOrEqual(1)
+    expect(permFiles.length).toBeGreaterThanOrEqual(1)
+    expect(runFiles.length).toBeGreaterThanOrEqual(1)
+
+    // Find the plan record for skill.invoke.
+    let foundSkillPlan = false
+    for (const f of planFiles) {
+      const content = await rf(join(planDir, f), 'utf8')
+      if (content.includes('tool: skill.invoke')) {
+        foundSkillPlan = true
+        expect(content).toContain('predicted_outcome: finance guidance applied')
+        break
+      }
+    }
+    expect(foundSkillPlan).toBe(true)
+
+    // The perm record should mark the call authorized (no missing deps).
+    let foundAuthorized = false
+    for (const f of permFiles) {
+      const content = await rf(join(permDir, f), 'utf8')
+      if (content.includes('tool: skill.invoke')) {
+        expect(content).toContain('authorized: true')
+        foundAuthorized = true
+        break
+      }
+    }
+    expect(foundAuthorized).toBe(true)
+  })
+
+  it('writes a denied perm record when a tool dependency is missing', async () => {
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new FakeProvider([
+      fakeResponse('```tool\n{"tool":"skill.invoke","args":{"name":"needs-x"}}\n```'),
+      fakeResponse('Acknowledging.'),
+    ])
+    const skillProvider = makeFakeSkillProvider({
+      'needs-x': { body: 'Body', tools: ['custom.x'] },
+    })
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES, // does NOT include custom.x
+      skillProvider,
+    })
+    const task = newPendingTask({ id: newTaskId(), agent: 'hobby', title: 't', body: 'go' })
+    await taskStore.save(task)
+    await loop.run(task)
+
+    const { readdir, readFile: rf } = await import('node:fs/promises')
+    const permDir = join(ap.brain, '.records', 'perm', task.frontmatter.id)
+    const permFiles = await readdir(permDir)
+    let denialDetail: string | null = null
+    for (const f of permFiles) {
+      const content = await rf(join(permDir, f), 'utf8')
+      if (content.includes('tool: skill.invoke')) {
+        expect(content).toContain('authorized: false')
+        const m = /detail:\s*(.+)/.exec(content)
+        if (m) denialDetail = m[1]?.trim() ?? null
+        break
+      }
+    }
+    expect(denialDetail).toContain('missing-tool-deps:custom.x')
+  })
 })
 
 interface FakeSkillData {
