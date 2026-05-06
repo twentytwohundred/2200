@@ -12,6 +12,13 @@
  *   d            dismiss the focused item
  *   Enter        submit the response (when input is focused)
  *   Esc          blur the response input
+ *
+ * Filter bar: chips for tier (all/critical/important/normal) and
+ * agent (all/<each agent on this instance>). The agent filter
+ * pre-selects from the `?agent=<name>` URL parameter so the
+ * AgentDetail screen's "INBOX →" link lands focused. Tier counts in
+ * the header are computed off the unfiltered pending list, so the
+ * counts stay accurate while a filter is active.
  */
 import {
   useCallback,
@@ -22,7 +29,7 @@ import {
   type FormEvent,
   type ReactElement,
 } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type Notification } from '../../lib/api'
 import {
@@ -50,6 +57,10 @@ function tierVariant(tier: string): PillVariant {
   return 'idle'
 }
 
+const TIERS = ['critical', 'important', 'normal'] as const
+type Tier = (typeof TIERS)[number]
+type TierFilter = Tier | 'all'
+
 function isTextInput(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
@@ -61,15 +72,88 @@ export function InboxScreen(): ReactElement {
   const { theme } = useTheme()
   const live = useLiveSignal()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const query = useQuery({
+  const tierParam = searchParams.get('tier')
+  const agentParam = searchParams.get('agent')
+  const tierFilter: TierFilter =
+    tierParam === 'critical' || tierParam === 'important' || tierParam === 'normal'
+      ? tierParam
+      : 'all'
+  const agentFilter: string | null = agentParam && agentParam.length > 0 ? agentParam : null
+
+  // Unfiltered pending list ... drives the tier-count breakdown in the
+  // header, the agent picker chips, and stays accurate regardless of
+  // the active filter (so the user can always see how many
+  // critical/important/normal items are pending in total).
+  const unfilteredQuery = useQuery({
     queryKey: ['notifications', { state: 'pending' }],
     queryFn: () => api.notifications({ state: 'pending' }),
     staleTime: 5_000,
     refetchOnWindowFocus: true,
   })
 
+  const filterParams = useMemo(
+    () => ({
+      state: 'pending',
+      ...(tierFilter !== 'all' ? { tier: tierFilter } : {}),
+      ...(agentFilter ? { agent: agentFilter } : {}),
+    }),
+    [tierFilter, agentFilter],
+  )
+
+  // Filtered list. Either a separate API call (when a filter is
+  // active) or a reuse of the unfilteredQuery (when not). The cache
+  // key includes the filter shape so each filter combo dedupes
+  // independently.
+  const filterIsActive = tierFilter !== 'all' || Boolean(agentFilter)
+  const filteredQuery = useQuery({
+    queryKey: ['notifications', filterParams],
+    queryFn: () => api.notifications(filterParams),
+    staleTime: 5_000,
+    enabled: filterIsActive,
+  })
+
+  const query = filterIsActive ? filteredQuery : unfilteredQuery
   const items = useMemo(() => query.data?.items ?? [], [query.data])
+  const allPending = useMemo(() => unfilteredQuery.data?.items ?? [], [unfilteredQuery.data])
+
+  const tierCounts = useMemo<Record<Tier, number>>(() => {
+    const counts: Record<Tier, number> = { critical: 0, important: 0, normal: 0 }
+    for (const n of allPending) {
+      if (n.tier === 'critical' || n.tier === 'important' || n.tier === 'normal') {
+        counts[n.tier] += 1
+      }
+    }
+    return counts
+  }, [allPending])
+
+  const agentNames = useMemo(() => {
+    const set = new Set<string>()
+    for (const n of allPending) set.add(n.agent)
+    return [...set].sort()
+  }, [allPending])
+
+  const updateFilter = useCallback(
+    (next: { tier?: TierFilter; agent?: string | null }): void => {
+      const sp = new URLSearchParams(searchParams)
+      const nextTier = next.tier ?? tierFilter
+      const nextAgent = next.agent !== undefined ? next.agent : agentFilter
+      if (nextTier === 'all') sp.delete('tier')
+      else sp.set('tier', nextTier)
+      if (!nextAgent) sp.delete('agent')
+      else sp.set('agent', nextAgent)
+      setSearchParams(sp, { replace: true })
+    },
+    [searchParams, setSearchParams, tierFilter, agentFilter],
+  )
+
+  const resetFilters = useCallback(() => {
+    const sp = new URLSearchParams(searchParams)
+    sp.delete('tier')
+    sp.delete('agent')
+    setSearchParams(sp, { replace: true })
+  }, [searchParams, setSearchParams])
   const [focusIdx, setFocusIdx] = useState(0)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -165,13 +249,29 @@ export function InboxScreen(): ReactElement {
   )
 
   const eyebrow = `2200 · INBOX · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
+  const totalPending = allPending.length
+  const subtitle = (() => {
+    const parts: string[] = []
+    if (tierCounts.critical > 0) parts.push(`${String(tierCounts.critical)} critical`)
+    if (tierCounts.important > 0) parts.push(`${String(tierCounts.important)} important`)
+    if (tierCounts.normal > 0) parts.push(`${String(tierCounts.normal)} normal`)
+    const head =
+      totalPending === 0
+        ? 'No pending asks.'
+        : `${String(totalPending)} pending${parts.length > 0 ? ` (${parts.join(' · ')})` : ''}.`
+    return `${head} Keyboard: j/k to move, e to respond, d to dismiss.`
+  })()
 
   return (
     <main className={styles.shell}>
       <PageHeader
         eyebrow={eyebrow}
-        title={`Inbox · ${String(items.length)}`}
-        subtitle="Pending asks from your Agents. Keyboard: j/k to move, e to respond, d to dismiss."
+        title={
+          filterIsActive
+            ? `Inbox · ${String(items.length)} of ${String(totalPending)}`
+            : `Inbox · ${String(items.length)}`
+        }
+        subtitle={subtitle}
         actions={
           <div className={styles.headerActions}>
             <Link to="/" className={styles.back}>
@@ -181,6 +281,87 @@ export function InboxScreen(): ReactElement {
           </div>
         }
       />
+
+      {totalPending > 0 ? (
+        <div className={styles.filterBar} role="toolbar" aria-label="Filter inbox">
+          <div className={styles.filterGroup}>
+            <span className={styles.filterLabel}>TIER</span>
+            <button
+              type="button"
+              className={styles.filterChip}
+              data-active={tierFilter === 'all'}
+              onClick={() => {
+                updateFilter({ tier: 'all' })
+              }}
+            >
+              ALL <span className={styles.filterCount}>· {String(totalPending)}</span>
+            </button>
+            {TIERS.map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={styles.filterChip}
+                data-active={tierFilter === t}
+                onClick={() => {
+                  updateFilter({ tier: t })
+                }}
+              >
+                {t.toUpperCase()}{' '}
+                <span className={styles.filterCount}>· {String(tierCounts[t])}</span>
+              </button>
+            ))}
+          </div>
+          {agentNames.length > 1 || agentFilter ? (
+            <div className={styles.filterGroup}>
+              <span className={styles.filterLabel}>AGENT</span>
+              <button
+                type="button"
+                className={styles.filterChip}
+                data-active={!agentFilter}
+                onClick={() => {
+                  updateFilter({ agent: null })
+                }}
+              >
+                ALL
+              </button>
+              {agentNames.map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={styles.filterChip}
+                  data-active={agentFilter === a}
+                  onClick={() => {
+                    updateFilter({ agent: a })
+                  }}
+                >
+                  {a}
+                </button>
+              ))}
+              {agentFilter && !agentNames.includes(agentFilter) ? (
+                <button
+                  type="button"
+                  className={styles.filterChip}
+                  data-active
+                  onClick={() => {
+                    updateFilter({ agent: null })
+                  }}
+                  title="The named Agent has no pending notifications. Click to clear."
+                >
+                  {agentFilter}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className={styles.filterReset}
+            disabled={!filterIsActive}
+            onClick={resetFilters}
+          >
+            RESET
+          </button>
+        </div>
+      ) : null}
 
       {query.isLoading ? (
         <Card padding={20}>
@@ -205,10 +386,22 @@ export function InboxScreen(): ReactElement {
         </Card>
       ) : items.length === 0 ? (
         <Card padding={0}>
-          <EmptyState
-            title="No pending asks"
-            body="Quiet inbox. When an Agent emits an ask via notification.ask, it shows up here."
-          />
+          {filterIsActive ? (
+            <EmptyState
+              title="No notifications match your filter"
+              body="Clear the filter to see the full pending list."
+              action={
+                <Button size="sm" onClick={resetFilters}>
+                  Reset filters
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState
+              title="No pending asks"
+              body="Quiet inbox. When an Agent emits an ask via notification.ask, it shows up here."
+            />
+          )}
         </Card>
       ) : (
         <div className={styles.split}>
