@@ -2481,6 +2481,73 @@ export function buildProgram(): Command {
       console.log(s.body)
     })
 
+  skill
+    .command('install <source>')
+    .description('install a Skill from a local directory or github URL (github:owner/repo)')
+    .option('--force', 'replace an existing install of the same Skill')
+    .action(async (source: string, opts: { force?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { resolveSource } = await import('../runtime/extensions/source.js')
+      const { installSkill, SkillInstallError } = await import('../runtime/skills/install.js')
+      const { SkillParseError } = await import('../runtime/skills/types.js')
+      let resolved
+      try {
+        resolved = await resolveSource(source)
+      } catch (err) {
+        console.error(
+          `Could not resolve source: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await installSkill({
+          home,
+          source: resolved,
+          force: opts.force === true,
+        })
+        const fm = result.skill.frontmatter
+        console.log(`\nInstalled Skill ${result.skill.name}`)
+        console.log(`description: ${fm.description}`)
+        if (fm.tags.length > 0) console.log(`tags:        ${fm.tags.join(', ')}`)
+        if (fm.tools.length > 0) console.log(`tools:       ${fm.tools.join(', ')}`)
+        console.log(`path:        ${result.destRoot}`)
+      } catch (err) {
+        if (err instanceof SkillInstallError || err instanceof SkillParseError) {
+          console.error(err.message)
+          process.exit(1)
+        }
+        throw err
+      } finally {
+        await resolved.cleanup().catch(() => undefined)
+      }
+    })
+
+  skill
+    .command('uninstall <name>')
+    .description('uninstall a Skill; removes the skill directory')
+    .option('--yes', 'skip the confirmation prompt')
+    .action(async (name: string, opts: { yes?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { uninstallSkill } = await import('../runtime/skills/install.js')
+      const result = await uninstallSkill({
+        home,
+        name,
+        approve: () => {
+          if (opts.yes === true) return Promise.resolve(true)
+          return promptYesNo(`Uninstall Skill ${name}? [y/N] `)
+        },
+      })
+      if (result.aborted) {
+        console.log('Aborted; nothing removed.')
+        return
+      }
+      if (!result.removed) {
+        console.log(`Skill "${name}" is not installed.`)
+        return
+      }
+      console.log(`Uninstalled Skill "${name}".`)
+    })
+
   // ---------------------------------------------------------------------------
   // 2200 credential <subcommand>  (Epic 9 Phase B)
   //
