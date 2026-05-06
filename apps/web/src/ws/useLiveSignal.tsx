@@ -206,20 +206,26 @@ function patchAgentPulseInCache(
   const agentName = typeof payload.agent === 'string' ? payload.agent : null
   const pulseRaw = payload.pulse
   if (!agentName || !isPulse(pulseRaw)) return
-  queryClient.setQueriesData<ListEnvelope<Agent>>({ queryKey: ['agents'] }, (current) => {
-    if (!current) return current
-    const idx = current.items.findIndex((a) => a.name === agentName)
-    if (idx === -1) return current
-    const items = current.items.slice()
-    const target = items[idx]
-    if (!target) return current
-    items[idx] = { ...target, pulse: pulseRaw }
-    return { ...current, items }
-  })
-  // Single-agent query path: GET /api/v1/agents/:name. Patch the
-  // cache for the same pulse so the AgentDetail screen's render is
-  // also live without a round-trip.
-  queryClient.setQueriesData<Agent>({ queryKey: ['agent', agentName] }, (current) => {
+  // List cache: `['agents']` exact. The fleet view consumes this.
+  // Use exact:true so the partial-prefix match does NOT also fire
+  // against `['agents', <name>]` (the detail cache, different shape).
+  queryClient.setQueriesData<ListEnvelope<Agent>>(
+    { queryKey: ['agents'], exact: true },
+    (current) => {
+      if (!current) return current
+      const idx = current.items.findIndex((a) => a.name === agentName)
+      if (idx === -1) return current
+      const items = current.items.slice()
+      const target = items[idx]
+      if (!target) return current
+      items[idx] = { ...target, pulse: pulseRaw }
+      return { ...current, items }
+    },
+  )
+  // Single-agent cache: `['agents', name]` exact. The AgentDetail
+  // screen consumes this, so patching keeps the hero / status section
+  // live without a round-trip.
+  queryClient.setQueriesData<Agent>({ queryKey: ['agents', agentName], exact: true }, (current) => {
     if (!current) return current
     return { ...current, pulse: pulseRaw }
   })
@@ -234,7 +240,3 @@ function isPulse(value: unknown): value is Pulse {
     typeof v.updated_at === 'string'
   )
 }
-
-// `agent` and `pulse` are typed as `unknown` on Record access via
-// dot notation, so dot-notation is the lint-preferred form when the
-// key is statically known.
