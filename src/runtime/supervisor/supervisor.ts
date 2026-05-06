@@ -54,6 +54,7 @@ import type { ScheduleListEntry } from '../control-plane/protocol.js'
 import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
 import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
+import { OnboardingSessionStore } from '../onboarding/session-store.js'
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -121,6 +122,7 @@ export class Supervisor {
   private isShuttingDown = false
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
+  private readonly onboardingSessions: OnboardingSessionStore
   private webHandle: { stop: () => Promise<void>; broadcast: (e: WsEvent) => void } | undefined
   private readonly webConfig: SupervisorOptions['web']
   private readonly runtimeMode: RuntimeMode
@@ -137,6 +139,9 @@ export class Supervisor {
       home: state.home,
       logger: this.log.child('oauth-refresh'),
     })
+    this.onboardingSessions = new OnboardingSessionStore({
+      logger: this.log.child('onboarding'),
+    })
     this.webConfig = options.web
     this.runtimeMode = options.runtimeMode ?? DEFAULT_RUNTIME_MODE
   }
@@ -148,6 +153,17 @@ export class Supervisor {
    */
   getRuntimeMode(): RuntimeMode {
     return this.runtimeMode
+  }
+
+  /**
+   * The shared onboarding-session store. Used by the HTTP server to
+   * back the Card Stack onboarding flow's `POST /api/v1/onboarding/...`
+   * endpoints. In-memory only ... a supervisor restart drops every
+   * in-flight interview, matching the CLI's `Ctrl-C aborts the spawn`
+   * behavior.
+   */
+  getOnboardingSessions(): OnboardingSessionStore {
+    return this.onboardingSessions
   }
 
   /**
@@ -177,6 +193,7 @@ export class Supervisor {
     void this.acceptLoop()
     await this.scheduler.start()
     this.tokenRefresh.start()
+    this.onboardingSessions.start()
     if (this.webConfig) {
       try {
         const handle: HttpServerHandle = await startHttpServer({
@@ -225,6 +242,7 @@ export class Supervisor {
     }
     this.scheduler.stop()
     this.tokenRefresh.stop()
+    this.onboardingSessions.stop()
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {

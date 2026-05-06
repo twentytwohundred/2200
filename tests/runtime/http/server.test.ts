@@ -260,3 +260,63 @@ describe('HTTP server WebSocket auth', () => {
     expect(code).toBe(4401)
   })
 })
+
+describe('HTTP server onboarding endpoints', () => {
+  async function authedJson(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    const init: RequestInit = {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+    }
+    if (body !== undefined) init.body = JSON.stringify(body)
+    const res = await fetch(`${handle.url}${path}`, init)
+    const text = await res.text()
+    let parsed: unknown = text
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      // keep as text
+    }
+    return { status: res.status, body: parsed }
+  }
+
+  it('GET /api/v1/onboarding/missing returns 404 with the standard envelope', async () => {
+    const r = await authedJson('GET', '/api/v1/onboarding/onb_does_not_exist')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({ error: { code: 'onboarding_session_not_found' } })
+  })
+
+  it('POST /api/v1/onboarding/:id/answer returns 404 for an unknown session', async () => {
+    const r = await authedJson('POST', '/api/v1/onboarding/onb_unknown/answer', {
+      answer: 'whatever',
+    })
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({ error: { code: 'onboarding_session_not_found' } })
+  })
+
+  it('DELETE /api/v1/onboarding/:id returns 404 for an unknown session', async () => {
+    const r = await authedJson('DELETE', '/api/v1/onboarding/onb_unknown')
+    expect(r.status).toBe(404)
+  })
+
+  it('POST /api/v1/onboarding without an LLM provider configured surfaces 503', async () => {
+    // Test env has no ANTHROPIC_API_KEY etc. unset by initHome; the
+    // anthropic provider resolution fails and the endpoint returns
+    // a clean 503 rather than a 500.
+    const r = await authedJson('POST', '/api/v1/onboarding')
+    // The exact status code depends on whether the test env has
+    // ANTHROPIC_API_KEY set. In a clean CI run it's missing → 503.
+    // Locally with a key, it succeeds → 200. Accept either; both are
+    // documented behaviors.
+    expect([200, 503]).toContain(r.status)
+    if (r.status === 503) {
+      expect(r.body).toMatchObject({ error: { code: 'llm_provider_unavailable' } })
+    }
+  })
+})
