@@ -192,6 +192,48 @@ export function agentSchedulesDir(home: string, agentName: string): string {
 }
 
 /**
+ * Per-Extension state directory (Epic 12 Phase B). Layout:
+ *   <home>/state/extensions/<name>/
+ *   ├── grants.json     permissions the user approved at install time
+ *   ├── state.json      key-value bag the Extension can read/write across hooks
+ *   ├── scratch/        sandboxed read/write area when fs.scratch is granted
+ *   └── *.log           per-hook stdout/stderr capture (install.log etc)
+ *
+ * The Extension's *static* files (manifest.json, hook scripts, bundled assets)
+ * live at `<home>/extensions/<name>/`. State here is the runtime mutable
+ * counterpart, separated so an upgrade can replace static files cleanly while
+ * preserving Extension state.
+ */
+export interface ExtensionStatePaths {
+  readonly root: string
+  readonly grants: string
+  readonly state: string
+  readonly scratch: string
+}
+
+export function extensionStateDir(home: string, name: string): string {
+  return join(home, 'state', 'extensions', name)
+}
+
+export function extensionStatePaths(home: string, name: string): ExtensionStatePaths {
+  const root = extensionStateDir(home, name)
+  return {
+    root,
+    grants: join(root, 'grants.json'),
+    state: join(root, 'state.json'),
+    scratch: join(root, 'scratch'),
+  }
+}
+
+export function extensionHookLogPath(
+  home: string,
+  name: string,
+  hook: 'install' | 'uninstall' | 'update',
+): string {
+  return join(extensionStateDir(home, name), `${hook}.log`)
+}
+
+/**
  * Per-Agent SCUT identity directory (Epic 4 Phase A). Layout:
  *   <home>/state/identities/<agent_name>/
  *   ├── keys/
