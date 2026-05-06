@@ -22,6 +22,7 @@ import {
   PageHeader,
   Pill,
   type PillVariant,
+  PulseDot,
   SectionHeader,
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
@@ -194,6 +195,13 @@ function Band({ title, agents, empty, density }: BandProps): ReactElement {
                 <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
                 <span className={styles.rowName}>{a.name}</span>
                 <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
+                {a.pulse && (
+                  <PulseDot
+                    state={a.pulse.state}
+                    intensity={a.pulse.intensity}
+                    size={density === 'compact' ? 'sm' : 'md'}
+                  />
+                )}
                 <span className={styles.rowActivity}>
                   {a.current_task_id ? (
                     <KV

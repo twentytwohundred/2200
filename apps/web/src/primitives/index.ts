@@ -21,6 +21,9 @@ export type { UserMarkProps, UserMarkSize, UserMarkState } from './UserMark'
 export { Pill } from './Pill'
 export type { PillProps, PillVariant } from './Pill'
 
+export { PulseDot } from './PulseDot'
+export type { PulseDotProps, PulseStateName } from './PulseDot'
+
 export { Button } from './Button'
 export type { ButtonProps, ButtonSize, ButtonVariant } from './Button'
 

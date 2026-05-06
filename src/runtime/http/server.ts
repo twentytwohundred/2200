@@ -34,6 +34,8 @@ import {
   readNotification,
   type NotificationRecord,
 } from '../notifications/reader.js'
+import { readPulse } from '../agent/pulse/reader.js'
+import type { PulseState } from '../agent/pulse/types.js'
 import {
   ApiError,
   envelope,
@@ -246,17 +248,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   }))
 
   // -- agents --------------------------------------------------------------
-  fastify.get('/api/v1/agents', () => {
+  fastify.get('/api/v1/agents', async () => {
     const snap = supervisor.snapshot()
-    const items = Object.values(snap.agents).map(toAgentDto)
+    const items = await Promise.all(Object.values(snap.agents).map((rec) => toAgentDto(home, rec)))
     return { items, cursor: { next: null, limit: items.length } }
   })
 
-  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name', (req) => {
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name', async (req) => {
     const snap = supervisor.snapshot()
     const rec = snap.agents[req.params.name]
     if (!rec) throw notFound('agent', req.params.name)
-    return toAgentDto(rec)
+    return await toAgentDto(home, rec)
   })
 
   fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/start', async (req) => {
@@ -265,7 +267,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     await supervisor.startAgent(req.params.name)
     const after = supervisor.snapshot().agents[req.params.name]
     if (!after) throw notFound('agent', req.params.name)
-    return toAgentDto(after)
+    return await toAgentDto(home, after)
   })
 
   const StopBodySchema = z
@@ -284,7 +286,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       await supervisor.stopAgent(req.params.name, reason)
       const after = supervisor.snapshot().agents[req.params.name]
       if (!after) throw notFound('agent', req.params.name)
-      return toAgentDto(after)
+      return await toAgentDto(home, after)
     },
   )
 
@@ -561,17 +563,37 @@ interface WsSocket {
 // ---------------------------------------------------------------------------
 // DTO mappers ... keep wire shape stable independent of internal records.
 // ---------------------------------------------------------------------------
-function toAgentDto(rec: {
-  name: string
-  state: string
-  pid: number | null
-  current_task_id: string | null
-  identity_path: string
-  spawned_at: string | null
-  last_heartbeat: string | null
-  errored_at: string | null
-  errored_reason: string | null
-}) {
+/**
+ * The agent DTO carried over `/api/v1/agents` and friends. The
+ * `pulse` field comes from `<home>/agents/<name>/pulse.json` (Pulse
+ * v2 substrate). It is `null` when the Agent has never run on this
+ * home (no pulse file yet) and when reading the pulse file errors;
+ * pulse data is observability, not load-bearing for the screen.
+ */
+async function toAgentDto(
+  home: string,
+  rec: {
+    name: string
+    state: string
+    pid: number | null
+    current_task_id: string | null
+    identity_path: string
+    spawned_at: string | null
+    last_heartbeat: string | null
+    errored_at: string | null
+    errored_reason: string | null
+  },
+) {
+  let pulse: PulseDto | null = null
+  try {
+    const raw = await readPulse(home, rec.name)
+    if (raw) pulse = pulseToDto(raw)
+  } catch {
+    // Tolerate: a malformed pulse.json should not 500 the agents
+    // endpoint. The web app shows the agent as if pulse is unknown
+    // and the operator can chase the parse error in the supervisor
+    // log on their own time.
+  }
   return {
     name: rec.name,
     status: rec.state,
@@ -582,6 +604,25 @@ function toAgentDto(rec: {
     last_heartbeat: rec.last_heartbeat,
     errored_at: rec.errored_at,
     errored_reason: rec.errored_reason,
+    pulse,
+  }
+}
+
+interface PulseDto {
+  state: string
+  intensity: number
+  detector_kind: string | null
+  trip_id: string | null
+  updated_at: string
+}
+
+function pulseToDto(p: PulseState): PulseDto {
+  return {
+    state: p.state,
+    intensity: p.intensity,
+    detector_kind: p.detector_kind,
+    trip_id: p.trip_id,
+    updated_at: p.updated_at,
   }
 }
 
