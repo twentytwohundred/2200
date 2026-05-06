@@ -105,6 +105,9 @@ export function FleetScreen(): ReactElement {
             <Link to="/budget" className={styles.inboxLink}>
               BUDGET
             </Link>
+            <Link to="/onboarding" className={styles.inboxLink}>
+              SPAWN
+            </Link>
             <ThemeSwitcher />
           </div>
         }

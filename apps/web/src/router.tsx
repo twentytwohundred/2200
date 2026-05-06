@@ -4,6 +4,7 @@ import { FleetScreen } from './screens/fleet/FleetScreen'
 import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
 import { InboxScreen } from './screens/inbox/InboxScreen'
 import { BudgetScreen } from './screens/budget/BudgetScreen'
+import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
@@ -16,11 +17,12 @@ import { CommandPalette } from './palette/CommandPalette'
  *   /inbox               Inbox (keyboard triage)
  *   /budget              Budget (Phase B v0.1: data substrate, ledger
  *                        receipt polish later)
+ *   /onboarding          Card Stack onboarding (Phase B v0.1)
  *   /dev/components      Component library reference
  *
- * Future routes: /inbox/:id, /pub/:id, /onboarding. The command
- * palette (⌘K) overlays on whatever route is active, so it does not
- * get its own URL.
+ * Future routes: /inbox/:id, /pub/:id. The command palette (⌘K)
+ * overlays on whatever route is active, so it does not get its own
+ * URL.
  */
 export function Router(): ReactElement {
   return (
@@ -31,6 +33,7 @@ export function Router(): ReactElement {
         <Route path="/agent/:name" element={<AgentDetailScreen />} />
         <Route path="/inbox" element={<InboxScreen />} />
         <Route path="/budget" element={<BudgetScreen />} />
+        <Route path="/onboarding" element={<OnboardingScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

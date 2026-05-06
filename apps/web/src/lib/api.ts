@@ -119,6 +119,96 @@ export interface BudgetResponse {
   history: BudgetState[]
 }
 
+/**
+ * Onboarding (Epic 14 Phase A + Epic 15 Phase B) wire shapes.
+ *
+ * Driven by the server-side state machine at /api/v1/onboarding (the
+ * runtime's OnboardingSession). The web Card Stack consumes these
+ * directly; field shapes mirror what session.ts returns but are
+ * declared here independently per the runtime/client boundary.
+ */
+export type OnboardingState =
+  | 'awaiting_opening'
+  | 'awaiting_branch_question'
+  | 'summarizing'
+  | 'done'
+  | 'confirmed'
+  | 'cancelled'
+  | 'errored'
+
+export interface OnboardingQuestion {
+  index: number
+  /** Total once a branch is chosen; null while the opening is in flight. */
+  total: number | null
+  question: {
+    id: string
+    text: string
+    /** 'free_form' today; left as string for forward-compat with future expects kinds. */
+    expects: string
+    intent_tag?: string
+  }
+}
+
+export interface OnboardingTranscriptEntry {
+  question_id: string
+  question_text: string
+  answer: string
+  intent_tag?: string
+  asked_at: string
+}
+
+export interface OnboardingTranscript {
+  interview_schema_version: number
+  script_name: string
+  chosen_branch: string
+  entries: OnboardingTranscriptEntry[]
+  summary: string
+  started_at: string
+  finished_at: string
+}
+
+export interface OnboardingToolSuggestion {
+  server: { name: string }
+  env_hint: string
+  rationale: string
+  source_tag: string
+}
+
+export interface OnboardingScheduleSuggestion {
+  id: string
+  cron: string
+  tz: string
+  task: string
+  rationale: string
+  source_tag: string
+}
+
+export interface OnboardingPreview {
+  transcript: OnboardingTranscript
+  /** Opaque to the web client; surfaced via summary + agent_name. */
+  handoff: { frontmatter: { agent_name: string; [k: string]: unknown }; body: string }
+  tools: OnboardingToolSuggestion[]
+  schedules: OnboardingScheduleSuggestion[]
+  agent_name: string
+}
+
+export interface OnboardingSessionResponse {
+  session_id: string
+  state: OnboardingState
+  question: OnboardingQuestion | null
+  preview?: OnboardingPreview | null
+}
+
+export interface OnboardingConfirmResponse {
+  session_id: string
+  agent_name: string
+  identity_path: string
+  continuity_note_slug: string | null
+  transcript_path: string | null
+  tools: { server: string; env_hint: string }[]
+  schedules: OnboardingScheduleSuggestion[]
+}
+
 export interface Notification {
   id: string
   ts: string
@@ -250,6 +340,27 @@ export const api = {
     request<Notification>(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, {
       method: 'POST',
     }),
+  onboardingStart: (body?: { provider?: string; model?: string; script?: string }) =>
+    request<OnboardingSessionResponse>('/api/v1/onboarding', {
+      method: 'POST',
+      body: body ?? {},
+    }),
+  onboardingGet: (id: string) =>
+    request<OnboardingSessionResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}`),
+  onboardingAnswer: (id: string, answer: string) =>
+    request<OnboardingSessionResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}/answer`, {
+      method: 'POST',
+      body: { answer },
+    }),
+  onboardingConfirm: (id: string) =>
+    request<OnboardingConfirmResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}/confirm`, {
+      method: 'POST',
+    }),
+  onboardingCancel: (id: string) =>
+    request<{ session_id: string; state: 'cancelled' }>(
+      `/api/v1/onboarding/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
 }
 
 /** Internal handle for tests and hooks that need to share the request helper. */
