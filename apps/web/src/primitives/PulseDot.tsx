@@ -43,12 +43,7 @@ const SIZE_PX: Record<NonNullable<PulseDotProps['size']>, number> = {
  * state band so the dot does not jitter; this primitive does not
  * smooth further.
  */
-export function PulseDot({
-  state,
-  intensity,
-  title,
-  size = 'md',
-}: PulseDotProps): ReactElement {
+export function PulseDot({ state, intensity, title, size = 'md' }: PulseDotProps): ReactElement {
   const px = SIZE_PX[size]
   const clamped = Math.max(0, Math.min(1, intensity))
   const periodMs = Math.round(2000 - clamped * 1500)
@@ -57,11 +52,7 @@ export function PulseDot({
     state === 'working_medium' ||
     state === 'working_hard' ||
     state === 'redlined'
-  const className = cx(
-    styles.dot,
-    styles[`s-${state}`],
-    animates ? styles.pulse : null,
-  )
+  const className = cx(styles.dot, styles[`s-${state}`], animates ? styles.pulse : null)
   return (
     <span
       className={className}

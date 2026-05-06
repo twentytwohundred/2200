@@ -57,13 +57,7 @@ export class NetworkError extends Error {
  *   is paused by a detector trip (state === 'redlined').
  */
 export interface Pulse {
-  state:
-    | 'resting'
-    | 'working_light'
-    | 'working_medium'
-    | 'working_hard'
-    | 'redlined'
-    | 'stopped'
+  state: 'resting' | 'working_light' | 'working_medium' | 'working_hard' | 'redlined' | 'stopped'
   intensity: number
   detector_kind: string | null
   trip_id: string | null
