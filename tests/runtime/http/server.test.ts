@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import WebSocket from 'ws'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Supervisor } from '../../../src/runtime/supervisor/supervisor.js'
 import { startHttpServer, type HttpServerHandle } from '../../../src/runtime/http/server.js'
@@ -159,5 +160,94 @@ describe('HTTP server', () => {
     expect(res.headers.get('content-type')).toMatch(/text\/html/)
     const text = await res.text()
     expect(text).toMatch(/2200 web/)
+  })
+
+  it('GET /api/v1/me accepts ?token=<value> in the URL as an alternative to the Authorization header', async () => {
+    // Browsers cannot set the Authorization header on EventSource or
+    // WebSocket connections, so the URL fallback is load-bearing for
+    // those surfaces. Tested explicitly for HTTP first since the same
+    // authenticate() function gates both paths.
+    const res = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { kind: string; name: string }
+    expect(body).toMatchObject({ kind: 'user', name: 'default' })
+  })
+
+  it('GET /api/v1/me with a bogus ?token= is 401', async () => {
+    const res = await fetch(`${handle.url}/api/v1/me?token=bogus-not-a-real-token`)
+    expect(res.status).toBe(401)
+  })
+})
+
+describe('HTTP server WebSocket auth', () => {
+  it('upgrades and receives hello when ?token=<value> matches a known token', async () => {
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=${encodeURIComponent(token)}`
+    const ws = new WebSocket(wsUrl)
+    const message = await new Promise<string>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not produce a message within 2000ms'))
+      }, 2000)
+      ws.once('message', (data) => {
+        clearTimeout(t)
+        // `data` is a Buffer (or Buffer[] in fragmented frames) on
+        // node-ws; the assertion below operates on a UTF-8 string.
+        const buf = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data)
+        resolve(buf.toString('utf8'))
+      })
+      ws.once('error', (err) => {
+        clearTimeout(t)
+        reject(err)
+      })
+    })
+    ws.close()
+    const parsed = JSON.parse(message) as {
+      event: string
+      payload: { principal: { name: string } }
+    }
+    expect(parsed.event).toBe('hello')
+    expect(parsed.payload.principal.name).toBe('default')
+  })
+
+  it('closes the WS with code 4401 when no token is supplied', async () => {
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl)
+    const code = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not close within 2000ms'))
+      }, 2000)
+      ws.once('close', (closeCode) => {
+        clearTimeout(t)
+        resolve(closeCode)
+      })
+      ws.once('error', () => {
+        // Some `ws` versions raise an error before the close event when
+        // the server returns a non-101 status; either path is valid for
+        // an unauthenticated upgrade. The follow-up close handler still
+        // fires in that case.
+      })
+    })
+    expect(code).toBe(4401)
+  })
+
+  it('closes the WS with code 4401 when ?token= is bogus', async () => {
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=bogus-not-a-real-token`
+    const ws = new WebSocket(wsUrl)
+    const code = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not close within 2000ms'))
+      }, 2000)
+      ws.once('close', (closeCode) => {
+        clearTimeout(t)
+        resolve(closeCode)
+      })
+      ws.once('error', () => {
+        /* see comment in previous test */
+      })
+    })
+    expect(code).toBe(4401)
   })
 })
