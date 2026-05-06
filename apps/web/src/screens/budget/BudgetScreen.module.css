@@ -1,0 +1,99 @@
+.shell {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.agentPicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.agentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+.agentChip[data-active='true'] {
+  border-color: var(--color-border-emphasis);
+  background: var(--color-bg-elevated);
+}
+
+.agentChipName {
+  text-transform: lowercase;
+}
+
+.heroRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.heroPrimary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.heroAmount {
+  font-family: var(--type-family-mono);
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+}
+
+.heroOf {
+  font-family: var(--type-family-mono);
+  font-size: 16px;
+  color: var(--color-text-muted);
+}
+
+.mono {
+  font-family: var(--type-family-mono);
+}
+
+.historyTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+}
+
+.historyTable thead {
+  background: var(--color-bg-elevated);
+}
+
+.historyTable th,
+.historyTable td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border-subtle);
+  letter-spacing: 0.05em;
+}
+
+.historyTable th {
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.historyTable tbody tr:last-child td {
+  border-bottom: none;
+}
