@@ -21,6 +21,7 @@ import {
   PageHeader,
   Pill,
   type PillVariant,
+  PulseDot,
   SectionHeader,
 } from '../../primitives'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
@@ -141,7 +142,16 @@ export function AgentDetailScreen(): ReactElement {
               <AgentMark id={agent.name} name={agent.name} size="xl" solid />
               <div className={styles.heroText}>
                 <h2 className={styles.heroName}>{agent.name}</h2>
-                <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>
+                <div className={styles.heroStatusRow}>
+                  <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>
+                  {agent.pulse && (
+                    <PulseDot
+                      state={agent.pulse.state}
+                      intensity={agent.pulse.intensity}
+                      size="md"
+                    />
+                  )}
+                </div>
                 {agent.errored_reason ? (
                   <p className={styles.heroError}>
                     <span className={styles.heroErrorLabel}>ERRORED:</span> {agent.errored_reason}
@@ -207,6 +217,25 @@ export function AgentDetailScreen(): ReactElement {
                   <span className={styles.mono}>
                     {agent.current_task_id ?? <span className={styles.muted}>none</span>}
                   </span>
+                }
+              />
+              <KV
+                k="PULSE"
+                v={
+                  agent.pulse ? (
+                    <span className={styles.pulseRow}>
+                      <PulseDot
+                        state={agent.pulse.state}
+                        intensity={agent.pulse.intensity}
+                        size="sm"
+                      />
+                      <span className={styles.mono}>
+                        {agent.pulse.state} · {agent.pulse.intensity.toFixed(2)}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className={styles.muted}>(no pulse data)</span>
+                  )
                 }
               />
               <KV
