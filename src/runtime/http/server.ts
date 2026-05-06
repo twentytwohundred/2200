@@ -251,6 +251,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
       { method: 'POST', path: '/api/v1/notifications/:id/dismiss' },
+      { method: 'POST', path: '/api/v1/onboarding' },
+      { method: 'GET', path: '/api/v1/onboarding/:id' },
+      { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
+      { method: 'POST', path: '/api/v1/onboarding/:id/confirm' },
+      { method: 'DELETE', path: '/api/v1/onboarding/:id' },
       { method: 'WS', path: '/api/v1/ws' },
     ],
   }))
@@ -386,6 +391,167 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     } catch (err) {
       notificationErrorOrThrow(err, req.params.id)
     }
+  })
+
+  // -- onboarding (Epic 14 + Epic 15 Phase B Card Stack) --------------------
+  // Server-side state machine for the conversational onboarding flow.
+  // The web app calls these endpoints to drive a question/answer
+  // conversation, see a preview, and confirm to spawn an Agent.
+  // Sessions are in-memory only on the supervisor; a daemon restart
+  // drops every in-flight interview, mirroring the CLI's flow.
+  const sessions = supervisor.getOnboardingSessions()
+
+  const StartOnboardingBodySchema = z
+    .object({
+      provider: z.string().min(1).optional(),
+      model: z.string().min(1).optional(),
+      script: z.string().min(1).optional(),
+    })
+    .optional()
+
+  fastify.post('/api/v1/onboarding', async (req) => {
+    const body = StartOnboardingBodySchema.parse(req.body) ?? {}
+    const providerName = body.provider ?? 'anthropic'
+    const modelId = body.model ?? 'claude-opus-4-7'
+
+    const { loadScriptFile } = await import('../onboarding/script-loader.js')
+    const { resolveProvider } = await import('../llm/registry.js')
+    const { OnboardingSession } = await import('../onboarding/session.js')
+    const { newRequestId: newId } = await import('./errors.js')
+
+    const cliDir = dirname(fileURLToPath(import.meta.url))
+    const defaultScriptPath = join(cliDir, '..', 'onboarding', 'scripts', 'default-v1.yaml')
+    const scriptPath = body.script ?? defaultScriptPath
+    const script = await loadScriptFile(scriptPath)
+    let provider
+    try {
+      provider = await resolveProvider({ providerName })
+    } catch (err) {
+      throw new ApiError(
+        503,
+        'llm_provider_unavailable',
+        `Could not resolve LLM provider "${providerName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    const id = `onb_${newId().replace(/^req_/, '')}`
+    const session = new OnboardingSession({ id, script, provider, modelId })
+    sessions.register(session)
+    return {
+      session_id: id,
+      state: session.getState(),
+      question: session.currentQuestion(),
+    }
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/onboarding/:id', (req) => {
+    const session = sessions.touch(req.params.id)
+    if (!session) {
+      throw new ApiError(
+        404,
+        'onboarding_session_not_found',
+        `No onboarding session "${req.params.id}". Sessions expire after 30 minutes of inactivity.`,
+      )
+    }
+    return {
+      session_id: session.id,
+      state: session.getState(),
+      question: session.currentQuestion(),
+      preview: session.getPreview(),
+    }
+  })
+
+  const AnswerBodySchema = z.object({
+    answer: z.string(),
+  })
+
+  fastify.post<{ Params: { id: string }; Body: { answer: string } }>(
+    '/api/v1/onboarding/:id/answer',
+    async (req) => {
+      const session = sessions.touch(req.params.id)
+      if (!session) {
+        throw new ApiError(
+          404,
+          'onboarding_session_not_found',
+          `No onboarding session "${req.params.id}".`,
+        )
+      }
+      const body = AnswerBodySchema.parse(req.body)
+      const result = await session.submitAnswer(body.answer)
+      return {
+        session_id: session.id,
+        state: session.getState(),
+        ...(result.kind === 'next'
+          ? { question: result.question, preview: null }
+          : { question: null, preview: result.preview }),
+      }
+    },
+  )
+
+  fastify.post<{ Params: { id: string } }>('/api/v1/onboarding/:id/confirm', async (req) => {
+    const session = sessions.touch(req.params.id)
+    if (!session) {
+      throw new ApiError(
+        404,
+        'onboarding_session_not_found',
+        `No onboarding session "${req.params.id}".`,
+      )
+    }
+    const preview = session.getPreview()
+    if (!preview) {
+      throw new ApiError(
+        409,
+        'onboarding_not_ready',
+        `Session "${req.params.id}" is in state "${session.getState()}"; finish the interview before confirming.`,
+      )
+    }
+    const { migrateFromHandoff } = await import('../migration/orchestrator.js')
+    const { saveTranscript } = await import('../onboarding/transcript-store.js')
+    const result = await migrateFromHandoff({
+      handoff: preview.handoff,
+      home,
+      supervisor,
+      today: new Date(),
+    })
+    let transcriptPath: string | null = null
+    try {
+      transcriptPath = await saveTranscript({
+        home,
+        agentName: result.agent_name,
+        transcript: preview.transcript,
+      })
+    } catch {
+      // Persistence failure is non-fatal ... the Agent is on disk.
+    }
+    session.markConfirmed()
+    sessions.delete(session.id)
+    return {
+      session_id: session.id,
+      agent_name: result.agent_name,
+      identity_path: result.identity_path,
+      continuity_note_slug: result.continuity_note_slug,
+      transcript_path: transcriptPath,
+      tools: preview.tools.map((t) => ({
+        server: t.server.name,
+        env_hint: t.env_hint,
+      })),
+      schedules: preview.schedules,
+    }
+  })
+
+  fastify.delete<{ Params: { id: string } }>('/api/v1/onboarding/:id', (req) => {
+    const session = sessions.peek(req.params.id)
+    if (!session) {
+      throw new ApiError(
+        404,
+        'onboarding_session_not_found',
+        `No onboarding session "${req.params.id}".`,
+      )
+    }
+    session.cancel()
+    sessions.delete(req.params.id)
+    return { session_id: req.params.id, state: 'cancelled' as const }
   })
 
   function broadcastNotificationEvent(event: string, rec: NotificationRecord): void {
