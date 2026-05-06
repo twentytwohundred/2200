@@ -223,12 +223,19 @@ describe('PubWakeSource', () => {
     })
     wake.start()
     await alice.client.send({ content: '@bob first', mentions: [bob.agentId] })
-    await new Promise((r) => setTimeout(r, 100))
+    // Wait until the message has been routed and the task enqueued.
+    // A fixed sleep here was the source of a flaky CI fail under load
+    // (CI saw 0 tasks when the timeout elapsed before the wake.start
+    // subscription delivered the message).
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
     expect((await bob.taskStore.list()).length).toBe(1)
 
     wake.stop()
     await alice.client.send({ content: '@bob second', mentions: [bob.agentId] })
-    await new Promise((r) => setTimeout(r, 100))
+    // After unsubscribe, the assertion is "nothing happens" ... a
+    // bounded wait for non-events is the right shape, and 200ms is
+    // plenty headroom over the typical message-routing latency.
+    await new Promise((r) => setTimeout(r, 200))
     expect((await bob.taskStore.list()).length).toBe(1) // unchanged
 
     await alice.client.close()
