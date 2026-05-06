@@ -76,6 +76,27 @@ function firstLine(text: string): string {
 }
 
 /**
+ * Yes/no prompt over stdin/stdout. Returns true only on a clear "y" /
+ * "yes". Anything else (including a Ctrl-D close) resolves false.
+ * Used by destructive verbs (extension install/uninstall/update) where
+ * default-deny is the right behavior.
+ */
+async function promptYesNo(promptText: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(promptText, (a) => {
+        resolve(a)
+      })
+    })
+    const trimmed = answer.trim().toLowerCase()
+    return trimmed === 'y' || trimmed === 'yes'
+  } finally {
+    rl.close()
+  }
+}
+
+/**
  * Connect to a running supervisor daemon if one is live on the given
  * 2200_HOME. Returns null if no daemon is running. Throws on UDS
  * connect failure even when the PID file says a daemon should be there
@@ -2122,15 +2143,17 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
-  // 2200 extension <subcommand>  (Epic 12 Phase A)
+  // 2200 extension <subcommand>  (Epic 12 Phase A + Phase B substrate)
   //
-  // Read-only registry over <home>/extensions/. Phase A: list + show.
-  // Install / uninstall / lifecycle execution lands in Phase B.
+  // Phase A: read-only registry (list + show) over <home>/extensions/.
+  // Phase B: install / uninstall / update with capability-derived hook
+  //          execution. Schedule + tool registration land in the next
+  //          Phase B sub-PR.
   // ---------------------------------------------------------------------------
 
   const extension = program
     .command('extension')
-    .description('inspect installed Extensions (Phase A: list + show; install lands in Phase B)')
+    .description('inspect + install Extensions (list, show, install, uninstall, update)')
 
   extension
     .command('list')
@@ -2142,7 +2165,7 @@ export function buildProgram(): Command {
       if (items.length === 0) {
         console.log(
           `No Extensions installed at ${extensionsHome(home)}.\n` +
-            `Phase A is read-only: drop a manifest at <home>/extensions/<name>/manifest.json to register one.`,
+            `Run \`2200 extension install <path-or-github-url>\` to add one.`,
         )
         return
       }
@@ -2195,6 +2218,208 @@ export function buildProgram(): Command {
       if (hooks.length > 0) {
         console.log(`hooks:`)
         for (const h of hooks) console.log(`  - ${h}`)
+      }
+    })
+
+  extension
+    .command('install <source>')
+    .description('install an Extension from a local directory or github URL (github:owner/repo)')
+    .option('--yes', 'auto-approve all permissions (non-interactive operators / scripts)')
+    .option(
+      '--force',
+      'replace an existing install of the same Extension after running its uninstall hook',
+    )
+    .action(async (source: string, opts: { yes?: boolean; force?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { resolveSource } = await import('../runtime/extensions/source.js')
+      const { installExtension, ExtensionInstallError } =
+        await import('../runtime/extensions/install.js')
+      const { ExtensionManifestError } = await import('../runtime/extensions/types.js')
+
+      let resolved
+      try {
+        resolved = await resolveSource(source)
+      } catch (err) {
+        console.error(
+          `Could not resolve source: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await installExtension({
+          home,
+          source: resolved,
+          force: opts.force === true,
+          approve: async (manifest) => {
+            console.log(`\nExtension: ${manifest.display_name}  v${manifest.version}`)
+            console.log(`name:        ${manifest.name}`)
+            console.log(`author:      ${manifest.author}`)
+            if (manifest.homepage) console.log(`homepage:    ${manifest.homepage}`)
+            console.log(`description: ${manifest.description}`)
+            console.log(`source:      ${resolved.kind} ... ${resolved.origin}`)
+            if (manifest.permissions.length > 0) {
+              console.log(`permissions:`)
+              for (const p of manifest.permissions) console.log(`  - ${p}`)
+            } else {
+              console.log(`permissions: (none)`)
+            }
+            if (manifest.tools.length > 0) {
+              console.log(`tools:`)
+              for (const t of manifest.tools) {
+                console.log(`  - ${t.name}${t.description ? ` ... ${t.description}` : ''}`)
+              }
+            }
+            if (manifest.schedules.length > 0) {
+              console.log(`schedules:`)
+              for (const s of manifest.schedules) {
+                console.log(`  - ${s.id}: ${s.cron}${s.description ? ` ... ${s.description}` : ''}`)
+              }
+            }
+            const hooks: string[] = []
+            if (manifest.hooks.install) hooks.push(`install: ${manifest.hooks.install}`)
+            if (manifest.hooks.uninstall) hooks.push(`uninstall: ${manifest.hooks.uninstall}`)
+            if (manifest.hooks.update) hooks.push(`update: ${manifest.hooks.update}`)
+            if (hooks.length > 0) {
+              console.log(`hooks:`)
+              for (const h of hooks) console.log(`  - ${h}`)
+            }
+            if (opts.yes === true) {
+              return { requested: manifest.permissions, approved: manifest.permissions }
+            }
+            const ok = await promptYesNo(
+              manifest.permissions.length > 0
+                ? `Grant the ${String(manifest.permissions.length)} permission(s) above and install? [y/N] `
+                : `Install? [y/N] `,
+            )
+            if (!ok) return null
+            return { requested: manifest.permissions, approved: manifest.permissions }
+          },
+        })
+        if (result.aborted) {
+          console.log('Aborted; nothing installed.')
+          return
+        }
+        if (result.hookResult) {
+          console.log(
+            `\nInstalled ${result.manifest.name}@${result.manifest.version}; ` +
+              `install hook ran in ${String(result.hookResult.durationMs)}ms ` +
+              `(log at ${result.hookResult.logPath}).`,
+          )
+        } else {
+          console.log(
+            `\nInstalled ${result.manifest.name}@${result.manifest.version}; no install hook.`,
+          )
+        }
+      } catch (err) {
+        if (err instanceof ExtensionInstallError || err instanceof ExtensionManifestError) {
+          console.error(err.message)
+          process.exit(1)
+        }
+        throw err
+      } finally {
+        await resolved.cleanup().catch(() => undefined)
+      }
+    })
+
+  extension
+    .command('uninstall <name>')
+    .description('uninstall an Extension; runs its uninstall hook then removes files + state')
+    .option('--yes', 'skip the confirmation prompt')
+    .action(async (name: string, opts: { yes?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { uninstallExtension } = await import('../runtime/extensions/install.js')
+      const result = await uninstallExtension({
+        home,
+        name,
+        approve: async () => {
+          if (opts.yes === true) return true
+          return promptYesNo(`Uninstall ${name}? [y/N] `)
+        },
+      })
+      if (result.aborted) {
+        console.log('Aborted; nothing removed.')
+        return
+      }
+      if (!result.removed) {
+        console.log(`Extension "${name}" is not installed.`)
+        return
+      }
+      if (result.hookFailed && result.hookResult) {
+        const exit =
+          result.hookResult.exitCode === null ? 'null' : String(result.hookResult.exitCode)
+        const signal = result.hookResult.signal ?? 'null'
+        console.warn(
+          `Uninstall hook failed (exit=${exit}, signal=${signal}, ` +
+            `timed_out=${String(result.hookResult.timedOut)}). ` +
+            `Files + state removed anyway. Log: ${result.hookResult.logPath}`,
+        )
+      } else if (result.hookResult) {
+        console.log(
+          `Uninstall hook ran in ${String(result.hookResult.durationMs)}ms ` +
+            `(log at ${result.hookResult.logPath}). Files + state removed.`,
+        )
+      } else {
+        console.log(`Uninstalled "${name}". (No uninstall hook declared.)`)
+      }
+    })
+
+  extension
+    .command('update <source>')
+    .description('update an installed Extension from a new source (path or github URL)')
+    .option('--yes', 'auto-approve any newly-requested permissions')
+    .option('--allow-same-version', 're-run the update hook even if the version did not change')
+    .action(async (source: string, opts: { yes?: boolean; allowSameVersion?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { resolveSource } = await import('../runtime/extensions/source.js')
+      const { updateExtension, ExtensionInstallError } =
+        await import('../runtime/extensions/install.js')
+      const { ExtensionManifestError } = await import('../runtime/extensions/types.js')
+      let resolved
+      try {
+        resolved = await resolveSource(source)
+      } catch (err) {
+        console.error(
+          `Could not resolve source: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await updateExtension({
+          home,
+          source: resolved,
+          allowSameVersion: opts.allowSameVersion === true,
+          approveNewPermissions: async (manifest, additions) => {
+            console.log(
+              `\nUpdating ${manifest.name} to v${manifest.version}; new permissions requested:`,
+            )
+            for (const p of additions) console.log(`  + ${p}`)
+            if (opts.yes === true) return true
+            return promptYesNo('Approve and continue? [y/N] ')
+          },
+        })
+        if (result.aborted) {
+          console.log('Aborted; existing version preserved.')
+          return
+        }
+        if (result.hookResult) {
+          console.log(
+            `\nUpdated ${result.manifest.name}: ${result.fromVersion} → ${result.toVersion}; ` +
+              `update hook ran in ${String(result.hookResult.durationMs)}ms ` +
+              `(log at ${result.hookResult.logPath}).`,
+          )
+        } else {
+          console.log(
+            `\nUpdated ${result.manifest.name}: ${result.fromVersion} → ${result.toVersion}; no update hook.`,
+          )
+        }
+      } catch (err) {
+        if (err instanceof ExtensionInstallError || err instanceof ExtensionManifestError) {
+          console.error(err.message)
+          process.exit(1)
+        }
+        throw err
+      } finally {
+        await resolved.cleanup().catch(() => undefined)
       }
     })
 
