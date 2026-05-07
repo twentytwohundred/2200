@@ -1875,6 +1875,17 @@ function applyModelEdit(
       break
     }
   }
+  // Pull out the existing provider so we can detect a switch.
+  let existingProvider: string | null = null
+  for (const line of block) {
+    const m = /^\s+provider:\s*(\S+)/.exec(line)
+    if (m?.[1] !== undefined) {
+      existingProvider = m[1]
+      break
+    }
+  }
+  const providerChanged = existingProvider !== null && existingProvider !== edit.provider
+
   const setLine = (key: string, value: string): string => `${indent}${key}: ${value}`
   let providerSeen = false
   let modelIdSeen = false
@@ -1890,11 +1901,15 @@ function applyModelEdit(
       modelIdSeen = true
     } else if (stripped.startsWith('followup_model_id:')) {
       followupSeen = true
-      // Drop when explicitly cleared; otherwise replace.
+      // followup_model_id is provider-specific: a deepseek-reasoner id
+      // makes no sense on xAI. Drop on provider change unless the
+      // caller explicitly supplied a new value.
       if (edit.followup_model_id === null) {
         // skip line
       } else if (edit.followup_model_id !== undefined) {
         newBlock.push(setLine('followup_model_id', edit.followup_model_id))
+      } else if (providerChanged) {
+        // skip — stale follow-up from prior provider
       } else {
         newBlock.push(line) // unchanged
       }
@@ -1908,8 +1923,56 @@ function applyModelEdit(
     newBlock.push(setLine('followup_model_id', edit.followup_model_id))
   }
 
-  const rebuilt = [...lines.slice(0, modelLineIdx + 1), ...newBlock, ...lines.slice(blockEnd)]
-  return head + rebuilt.join('\n') + tail
+  let rebuiltLines: string[] = [
+    ...lines.slice(0, modelLineIdx + 1),
+    ...newBlock,
+    ...lines.slice(blockEnd),
+  ]
+
+  // Strip a top-level `provider_secret:` block on provider change.
+  // The secret ref points at the OLD provider's env var (e.g.
+  // DEEPSEEK_API_KEY); leaving it in place causes the runtime to ship
+  // the wrong vendor's key to the new provider's endpoint, which
+  // surfaces as a confusing "invalid API key" error from the new
+  // vendor. Falling back to the registry default for the new provider
+  // is the right behavior.
+  if (providerChanged) {
+    rebuiltLines = stripTopLevelBlock(rebuiltLines, 'provider_secret')
+  }
+
+  return head + rebuiltLines.join('\n') + tail
+}
+
+/**
+ * Remove a top-level YAML mapping (header line + every contiguous
+ * indented child line) from a frontmatter line array. Used when
+ * `applyModelEdit` detects a provider switch and needs to clear
+ * provider-specific overrides.
+ */
+function stripTopLevelBlock(lines: string[], key: string): string[] {
+  const headerRe = new RegExp(`^${key}:\\s*$`)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i] ?? ''
+    if (headerRe.test(line)) {
+      // Skip header.
+      i++
+      // Skip every following indented (or blank) child line.
+      while (i < lines.length) {
+        const child = lines[i] ?? ''
+        if (child === '' || /^\s/.test(child)) {
+          i++
+        } else {
+          break
+        }
+      }
+      continue
+    }
+    out.push(line)
+    i++
+  }
+  return out
 }
 
 /** Marker prefix that identifies a chat-spawned task body. Kept in sync with buildChatTaskBody. */
