@@ -74,10 +74,21 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'agent.status_changed':
         case 'agent.task_started':
         case 'agent.task_finished':
-        case 'agent.task_errored':
+        case 'agent.task_errored': {
           void queryClient.invalidateQueries({ queryKey: ['agents'] })
+          // Also invalidate the per-Agent tasks list when the runtime
+          // signals a task state change. The task list is keyed on
+          // ['tasks', name]; invalidate the whole 'tasks' prefix so
+          // any open AgentDetail view refreshes immediately.
+          const agentName = 'agent' in ev.payload ? (ev.payload as { agent?: unknown }).agent : null
+          if (typeof agentName === 'string') {
+            void queryClient.invalidateQueries({ queryKey: ['tasks', agentName] })
+          } else {
+            void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+          }
           break
-        case 'pulse.changed':
+        }
+        case 'pulse.changed': {
           // Pulse events arrive frequently (one per pulse.json update,
           // ~1/s when an agent is active). Invalidating the agents
           // query on every event would re-fetch the full list at the
@@ -85,7 +96,21 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
           // agent's `pulse` field in the cache so the PulseDot
           // re-renders without a network round trip.
           patchAgentPulseInCache(queryClient, ev.payload)
+          // Soft-invalidate the per-Agent tasks list at the pulse
+          // cadence so a working Agent's tasks panel keeps up with
+          // state transitions even when no explicit task event fires
+          // (the runtime doesn't yet emit task lifecycle events).
+          // Pulse fires only when the agent is active, so this is
+          // self-throttling.
+          const agentName = 'agent' in ev.payload ? (ev.payload as { agent?: unknown }).agent : null
+          if (typeof agentName === 'string') {
+            void queryClient.invalidateQueries({
+              queryKey: ['tasks', agentName],
+              refetchType: 'active',
+            })
+          }
           break
+        }
         case 'notification.created':
         case 'notification.answered':
         case 'notification.dismissed':
