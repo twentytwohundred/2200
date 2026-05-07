@@ -111,6 +111,9 @@ export function FleetScreen(): ReactElement {
             <Link to="/onboarding" className={styles.inboxLink}>
               SPAWN
             </Link>
+            <Link to="/settings" className={styles.inboxLink}>
+              SETTINGS
+            </Link>
             <ThemeSwitcher />
           </div>
         }
