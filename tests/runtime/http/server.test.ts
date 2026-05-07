@@ -160,6 +160,32 @@ describe('HTTP server', () => {
     })
   })
 
+  it('GET /api/v1/agents/:name/schedules returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/schedules')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({ error: { code: 'agent_not_found' } })
+  })
+
+  it('PATCH /api/v1/agents/:name/schedules/:id returns 404 for an unknown agent', async () => {
+    const res = await fetch(`${handle.url}/api/v1/agents/missing/schedules/sch_unknown`, {
+      method: 'PATCH',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ enabled: false }),
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('DELETE /api/v1/agents/:name/schedules/:id returns 404 for an unknown agent', async () => {
+    const res = await fetch(`${handle.url}/api/v1/agents/missing/schedules/sch_unknown`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.status).toBe(404)
+  })
+
   it('GET /api/v1/notifications returns an empty list', async () => {
     const r = await get('/api/v1/notifications')
     expect(r.status).toBe(200)
