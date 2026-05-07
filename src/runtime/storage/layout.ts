@@ -99,6 +99,8 @@ export interface AgentPaths {
   readonly shared: string
   /** Agent's pub credential file (Epic 3 PR B). Mode 0600. */
   readonly pubSecret: string
+  /** JSONL transcript of the user-Agent chat thread (Epic 15 Phase C). */
+  readonly chatLog: string
 }
 
 export function agentPaths(home: string, agentName: string): AgentPaths {
@@ -110,6 +112,7 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     brain: join(root, 'brain'),
     shared: join(root, 'shared'),
     pubSecret: join(root, 'pub.secret'),
+    chatLog: join(root, 'chat.jsonl'),
   }
 }
 

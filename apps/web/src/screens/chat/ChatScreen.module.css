@@ -1,0 +1,131 @@
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--space-5);
+  gap: var(--space-3);
+  box-sizing: border-box;
+}
+
+.transcript {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.empty {
+  text-align: center;
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: var(--space-7);
+}
+
+.messageRow {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.messageRow[data-role='user'] {
+  flex-direction: row-reverse;
+}
+
+.bubble {
+  max-width: 75%;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.bubbleUser {
+  background: var(--color-accent, var(--color-border-emphasis));
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-emphasis);
+}
+
+.bubbleAgent {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.bubbleSystem {
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-subtle);
+  font-size: 12px;
+  font-family: var(--type-family-mono);
+}
+
+.meta {
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+  text-transform: uppercase;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+.input {
+  width: 100%;
+  font-family: var(--type-family-sans);
+  font-size: 14px;
+  padding: var(--space-3);
+  min-height: 60px;
+  max-height: 240px;
+  resize: vertical;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-border-emphasis);
+}
+
+.thinking {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.thinkingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-border-emphasis);
+  animation: chatPulse 1200ms ease-in-out infinite;
+}
+
+@keyframes chatPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
