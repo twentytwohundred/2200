@@ -888,11 +888,32 @@ export class AgentLoop {
   private async buildSystemPrompt(): Promise<string> {
     const id = this.opts.identity
     const tools = this.opts.availableToolNames.join(', ')
+    // Authoritative runtime context. Agents asked "what model are you
+    // running?" should answer from this block rather than from any
+    // model claim that may live in the persona body. Persona prose
+    // gets stale when an operator switches the model; this line
+    // doesn't, since it's regenerated from the active Identity on
+    // every task.
+    const m = id.frontmatter.model
+    const runtimeBlock = [
+      '## Runtime',
+      '',
+      `You are the Agent named "${id.frontmatter.agent_name}".`,
+      `Your runtime model is \`${m.provider}/${m.model_id}\`.`,
+      ...(m.followup_model_id
+        ? [
+            `Iteration 2+ of each task switches to \`${m.provider}/${m.followup_model_id}\` for deeper reasoning.`,
+          ]
+        : []),
+      'When asked which model you are running, answer from this block. Do not invent or repeat a model name from your persona body.',
+      '',
+    ]
     const lines: string[] = [
       id.body,
       '',
       '---',
       '',
+      ...runtimeBlock,
       '## Tool calling protocol (v1)',
       '',
       'You can call tools by emitting a fenced code block tagged `tool` with a JSON object inside:',
