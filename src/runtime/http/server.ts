@@ -661,6 +661,19 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     title: z.string().min(1).max(200).optional(),
     body: z.string().min(1),
     priority: z.number().int().min(0).max(100).optional(),
+    /**
+     * Task idempotency mode (Epic 2 / Epic 4.5).
+     *   - 'pure': safe-to-rerun, mutating tools blocked. Best for
+     *     read-only / report tasks.
+     *   - 'checkpointed': may have side effects, restart resumes from
+     *     last checkpoint. Best for interactive tasks where the user
+     *     expects writes (brain notes, fs writes, pub messages).
+     *   - 'destructive': may have side effects, never auto-resume.
+     * Defaults to 'checkpointed' for web-sent tasks: the user is
+     * consciously asking the agent to do something and would expect
+     * mutations to land.
+     */
+    idempotency: z.enum(['pure', 'checkpointed', 'destructive']).optional(),
   })
 
   fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/tasks', async (req, reply) => {
@@ -679,6 +692,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       title: titleArg,
       body: body.body,
       priority: body.priority ?? 0,
+      idempotency: body.idempotency ?? 'checkpointed',
     })
     await store.save(task)
     void reply.status(201)

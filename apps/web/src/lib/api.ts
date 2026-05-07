@@ -201,6 +201,7 @@ export interface TaskCreateBody {
   title?: string
   body: string
   priority?: number
+  idempotency?: 'pure' | 'checkpointed' | 'destructive'
 }
 
 export interface TaskCreateResponse {
