@@ -266,6 +266,7 @@ export interface TaskListItem {
   detector_kind: string | null
   iterations: number | null
   outcome_preview: string | null
+  source: 'chat' | 'other'
 }
 
 export interface TaskDetail extends TaskListItem {
