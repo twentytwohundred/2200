@@ -194,6 +194,36 @@ export interface AgentToolsResponse {
 }
 
 /**
+ * Task interaction (Epic 15 Phase C). Posting `{ body }` enqueues a
+ * pending task; the running Agent's loop picks it up.
+ */
+export interface TaskCreateBody {
+  title?: string
+  body: string
+  priority?: number
+}
+
+export interface TaskCreateResponse {
+  id: string
+  agent: string
+  state: string
+  title: string
+  created: string
+}
+
+/**
+ * Brain note write (Epic 15 Phase C). POST `{ title, body, slug?, type?,
+ * tags? }` creates or upserts a note. Returns the resulting BrainNote.
+ */
+export interface BrainNoteCreateBody {
+  title: string
+  body: string
+  slug?: string
+  type?: string
+  tags?: string[]
+}
+
+/**
  * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
  * note list, FTS5 search, and single-note fetch via three endpoints
  * under /api/v1/agents/:name/brain.
@@ -456,6 +486,16 @@ export const api = {
     request<BrainNote>(
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
     ),
+  brainWrite: (name: string, body: BrainNoteCreateBody) =>
+    request<BrainNote>(`/api/v1/agents/${encodeURIComponent(name)}/brain`, {
+      method: 'POST',
+      body,
+    }),
+  taskCreate: (name: string, body: TaskCreateBody) =>
+    request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
+      method: 'POST',
+      body,
+    }),
   schedulesList: (name: string) =>
     request<ListEnvelope<ScheduleEntry>>(`/api/v1/agents/${encodeURIComponent(name)}/schedules`),
   scheduleCreate: (name: string, body: ScheduleCreateBody) =>

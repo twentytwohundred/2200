@@ -7,7 +7,7 @@
  * actions (Pause / Resume) live in the page header. The status pill
  * updates live without a refresh via the WebSocket subscription.
  */
-import type { ReactElement } from 'react'
+import { useState, type FormEvent, type ReactElement } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -319,6 +319,8 @@ export function AgentDetailScreen(): ReactElement {
             </Card>
           </section>
 
+          <SendTaskSection name={agent.name} />
+
           <BudgetSection name={agent.name} query={budgetQuery} />
 
           <ActivitySection name={agent.name} query={notificationsQuery} />
@@ -361,6 +363,74 @@ export function AgentDetailScreen(): ReactElement {
         </>
       ) : null}
     </main>
+  )
+}
+
+interface SendTaskSectionProps {
+  name: string
+}
+
+function SendTaskSection({ name }: SendTaskSectionProps): ReactElement {
+  const [body, setBody] = useState('')
+  const [lastSent, setLastSent] = useState<string | null>(null)
+
+  const mutation = useMutation({
+    mutationFn: (taskBody: string) => api.taskCreate(name, { body: taskBody }),
+    onSuccess: (res) => {
+      setBody('')
+      setLastSent(res.id)
+    },
+  })
+
+  const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
+    e.preventDefault()
+    const trimmed = body.trim()
+    if (trimmed.length === 0) return
+    mutation.mutate(trimmed)
+  }
+
+  return (
+    <section>
+      <SectionHeader title="SEND TASK" />
+      <Card padding={20}>
+        <form onSubmit={handleSubmit} className={styles.sendForm}>
+          <textarea
+            className={styles.sendInput}
+            placeholder={`Tell ${name} what to do...`}
+            value={body}
+            onChange={(e) => {
+              setBody(e.target.value)
+            }}
+            disabled={mutation.isPending}
+          />
+          {mutation.error ? (
+            <div className={styles.sendError}>
+              {mutation.error instanceof ApiError
+                ? `${mutation.error.code}: ${mutation.error.message}`
+                : mutation.error instanceof Error
+                  ? mutation.error.message
+                  : String(mutation.error)}
+            </div>
+          ) : null}
+          {lastSent && !mutation.error ? (
+            <div className={styles.sendSuccess}>
+              Sent task <span className={styles.mono}>{lastSent}</span>. The Agent's loop will pick
+              it up on the next tick.
+            </div>
+          ) : null}
+          <div className={styles.sendActions}>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={mutation.isPending || body.trim().length === 0}
+              kbd="↵"
+            >
+              {mutation.isPending ? 'Sending...' : 'Send'}
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </section>
   )
 }
 
