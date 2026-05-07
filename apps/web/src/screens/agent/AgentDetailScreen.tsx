@@ -373,12 +373,22 @@ interface SendTaskSectionProps {
   name: string
 }
 
+type Idempotency = 'pure' | 'checkpointed' | 'destructive'
+
+const IDEMPOTENCY_HINTS: Record<Idempotency, string> = {
+  pure: 'read-only; mutating tools blocked',
+  checkpointed: 'mutations OK; resume from checkpoint on restart',
+  destructive: 'mutations OK; never auto-resume',
+}
+
 function SendTaskSection({ name }: SendTaskSectionProps): ReactElement {
   const [body, setBody] = useState('')
+  const [idempotency, setIdempotency] = useState<Idempotency>('checkpointed')
   const [lastSent, setLastSent] = useState<string | null>(null)
 
   const mutation = useMutation({
-    mutationFn: (taskBody: string) => api.taskCreate(name, { body: taskBody }),
+    mutationFn: (args: { body: string; idempotency: Idempotency }) =>
+      api.taskCreate(name, { body: args.body, idempotency: args.idempotency }),
     onSuccess: (res) => {
       setBody('')
       setLastSent(res.id)
@@ -389,7 +399,7 @@ function SendTaskSection({ name }: SendTaskSectionProps): ReactElement {
     e.preventDefault()
     const trimmed = body.trim()
     if (trimmed.length === 0) return
-    mutation.mutate(trimmed)
+    mutation.mutate({ body: trimmed, idempotency })
   }
 
   return (
@@ -422,6 +432,22 @@ function SendTaskSection({ name }: SendTaskSectionProps): ReactElement {
             </div>
           ) : null}
           <div className={styles.sendActions}>
+            <span className={styles.idempotencyGroup} title={IDEMPOTENCY_HINTS[idempotency]}>
+              {(['pure', 'checkpointed', 'destructive'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={styles.idempotencyChip}
+                  data-active={idempotency === v}
+                  onClick={() => {
+                    setIdempotency(v)
+                  }}
+                  disabled={mutation.isPending}
+                >
+                  {v}
+                </button>
+              ))}
+            </span>
             <Button
               type="submit"
               variant="primary"

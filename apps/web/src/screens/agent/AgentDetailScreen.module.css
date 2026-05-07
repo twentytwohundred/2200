@@ -252,7 +252,38 @@
 .sendActions {
   display: flex;
   gap: var(--space-2);
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.idempotencyGroup {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.idempotencyChip {
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.idempotencyChip[data-active='true'] {
+  border-color: var(--color-border-emphasis);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.idempotencyChip:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .sendError {
