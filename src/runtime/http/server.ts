@@ -282,6 +282,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name/tasks' },
       { method: 'POST', path: '/api/v1/agents/:name/tasks' },
       { method: 'POST', path: '/api/v1/agents/:name/brain' },
+      { method: 'PATCH', path: '/api/v1/agents/:name/brain/note/:slug' },
+      { method: 'DELETE', path: '/api/v1/agents/:name/brain/note/:slug' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -678,6 +680,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     tags: z.array(z.string().min(1).max(40)).optional(),
   })
 
+  /**
+   * Sync a single note into the FTS5 index. Daemon-side writes go
+   * through the BrainStore on disk but the index is owned by the
+   * agent process; if the daemon doesn't push the change in, search
+   * misses the new content until the next rebuild. Briefly opens
+   * the index in write mode (SQLite WAL allows this concurrent with
+   * the agent's own writer).
+   */
+  function syncBrainIndex(
+    agentName: string,
+    op: 'upsert' | 'delete',
+    noteOrSlug: BrainNote | string,
+  ): void {
+    try {
+      const idxPath = agentBrainIndexPath(home, agentName)
+      const index = BrainIndex.openAtPath(idxPath)
+      try {
+        if (op === 'upsert') index.upsert(noteOrSlug as BrainNote)
+        else index.delete(noteOrSlug as string)
+      } finally {
+        index.close()
+      }
+    } catch {
+      // Tolerate: a flaky index op is non-fatal. Search has a list-
+      // fallback for missing index, and the next 2200 brain rebuild
+      // re-syncs.
+    }
+  }
+
   fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req, reply) => {
     const snap = supervisor.snapshot()
     if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
@@ -692,9 +723,69 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     if (body.tags !== undefined) writeArgs.tags = body.tags
     const result = await store.write(writeArgs)
     const note = await store.read(result.slug)
+    syncBrainIndex(req.params.name, 'upsert', note)
     void reply.status(result.created ? 201 : 200)
     return toBrainNoteDto(note)
   })
+
+  // PATCH a brain note. Body { title, body, type?, tags? } overwrites
+  // the named slug. The frontmatter `created` is preserved across
+  // writes by the BrainStore; `updated` is bumped to now().
+  const PatchBrainNoteBody = z.object({
+    title: z.string().min(1).max(200),
+    body: z.string().min(1),
+    type: z.string().min(1).max(40).optional(),
+    tags: z.array(z.string().min(1).max(40)).optional(),
+  })
+
+  fastify.patch<{ Params: { name: string; slug: string } }>(
+    '/api/v1/agents/:name/brain/note/:slug',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = BrainStore.forAgent(home, req.params.name)
+      const existing = await store.tryRead(req.params.slug)
+      if (!existing) {
+        throw new ApiError(
+          404,
+          'brain_note_not_found',
+          `No note with slug "${req.params.slug}" in agent "${req.params.name}".`,
+        )
+      }
+      const body = PatchBrainNoteBody.parse(req.body)
+      const writeArgs: Parameters<typeof store.write>[0] = {
+        title: body.title,
+        body: body.body,
+        slug: req.params.slug,
+      }
+      if (body.type !== undefined) writeArgs.type = body.type
+      if (body.tags !== undefined) writeArgs.tags = body.tags
+      await store.write(writeArgs)
+      const note = await store.read(req.params.slug)
+      syncBrainIndex(req.params.name, 'upsert', note)
+      return toBrainNoteDto(note)
+    },
+  )
+
+  fastify.delete<{ Params: { name: string; slug: string } }>(
+    '/api/v1/agents/:name/brain/note/:slug',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = BrainStore.forAgent(home, req.params.name)
+      const existing = await store.tryRead(req.params.slug)
+      if (!existing) {
+        throw new ApiError(
+          404,
+          'brain_note_not_found',
+          `No note with slug "${req.params.slug}" in agent "${req.params.name}".`,
+        )
+      }
+      await store.delete(req.params.slug)
+      syncBrainIndex(req.params.name, 'delete', req.params.slug)
+      return { slug: req.params.slug, deleted: true as const }
+    },
+  )
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])

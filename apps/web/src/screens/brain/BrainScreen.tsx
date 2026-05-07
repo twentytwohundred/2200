@@ -18,6 +18,7 @@ import {
   ApiError,
   NetworkError,
   api,
+  type BrainNote,
   type BrainNoteListItem,
   type BrainSearchHit,
 } from '../../lib/api'
@@ -314,29 +315,18 @@ export function BrainScreen(): ReactElement {
                   />
                 </Card>
               ) : noteQuery.data ? (
-                <Card padding={20}>
-                  <div className={styles.noteHeader}>
-                    <h3 className={styles.noteTitle}>{noteQuery.data.title}</h3>
-                    <div className={styles.noteMeta}>
-                      <span>{noteQuery.data.type}</span>
-                      {noteQuery.data.tags.map((t) => (
-                        <span key={t}>#{t}</span>
-                      ))}
-                      <span>created {formatTime(noteQuery.data.created)}</span>
-                      <span>updated {formatTime(noteQuery.data.updated)}</span>
-                    </div>
-                  </div>
-                  <div className={styles.noteBody}>{noteQuery.data.body}</div>
-                  {noteQuery.data.links.length > 0 ? (
-                    <div className={styles.linksRow}>
-                      {noteQuery.data.links.map((link) => (
-                        <span key={link} className={styles.linkBadge}>
-                          [[{link}]]
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </Card>
+                <NoteDetailCard
+                  agentName={name ?? ''}
+                  note={noteQuery.data}
+                  onSaved={(slug) => {
+                    void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+                    setSelectedSlug(slug)
+                  }}
+                  onDeleted={() => {
+                    void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+                    setSelectedSlug(null)
+                  }}
+                />
               ) : (
                 <Card padding={0}>
                   <EmptyState
@@ -370,6 +360,242 @@ function errorBody(err: unknown): string {
   }
   if (err instanceof ApiError) return `${err.code}: ${err.message}`
   return err instanceof Error ? err.message : String(err)
+}
+
+interface NoteDetailCardProps {
+  agentName: string
+  note: BrainNote
+  onSaved: (slug: string) => void
+  onDeleted: () => void
+}
+
+function NoteDetailCard({
+  agentName,
+  note,
+  onSaved,
+  onDeleted,
+}: NoteDetailCardProps): ReactElement {
+  const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [editTitle, setEditTitle] = useState(note.title)
+  const [editBody, setEditBody] = useState(note.body)
+  const [editTags, setEditTags] = useState(note.tags.join(' '))
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      api.brainEdit(agentName, note.slug, {
+        title: editTitle.trim(),
+        body: editBody.trim(),
+        ...(editTags.trim()
+          ? {
+              tags: editTags
+                .split(/[,\s]+/)
+                .map((t) => t.trim())
+                .filter(Boolean),
+            }
+          : { tags: [] }),
+      }),
+    onSuccess: (saved) => {
+      setEditing(false)
+      onSaved(saved.slug)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.brainDelete(agentName, note.slug),
+    onSuccess: () => {
+      onDeleted()
+    },
+  })
+
+  const beginEdit = (): void => {
+    setEditTitle(note.title)
+    setEditBody(note.body)
+    setEditTags(note.tags.join(' '))
+    setEditing(true)
+    setConfirmDelete(false)
+  }
+
+  return (
+    <Card padding={20}>
+      {editing ? (
+        <form
+          style={{ display: 'grid', gap: 'var(--space-3)' }}
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (editTitle.trim().length === 0 || editBody.trim().length === 0) return
+            saveMutation.mutate()
+          }}
+        >
+          <Input
+            type="text"
+            value={editTitle}
+            onChange={(e) => {
+              setEditTitle(e.target.value)
+            }}
+            disabled={saveMutation.isPending}
+          />
+          <textarea
+            style={{
+              width: '100%',
+              fontFamily: 'var(--type-family-mono)',
+              fontSize: '13px',
+              padding: 'var(--space-3)',
+              minHeight: '180px',
+              resize: 'vertical',
+              background: 'var(--color-bg-elevated)',
+              border: '1px solid var(--color-border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--color-text-primary)',
+            }}
+            value={editBody}
+            onChange={(e) => {
+              setEditBody(e.target.value)
+            }}
+            disabled={saveMutation.isPending}
+          />
+          <Input
+            type="text"
+            placeholder="Tags (comma- or space-separated)"
+            value={editTags}
+            onChange={(e) => {
+              setEditTags(e.target.value)
+            }}
+            disabled={saveMutation.isPending}
+          />
+          {saveMutation.error ? (
+            <div
+              style={{
+                fontFamily: 'var(--type-family-mono)',
+                fontSize: '12px',
+                color: 'var(--color-status-error)',
+                background: 'var(--color-bg-elevated)',
+                padding: 'var(--space-2) var(--space-3)',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              {saveMutation.error instanceof ApiError
+                ? `${saveMutation.error.code}: ${saveMutation.error.message}`
+                : saveMutation.error instanceof Error
+                  ? saveMutation.error.message
+                  : String(saveMutation.error)}
+            </div>
+          ) : null}
+          <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setEditing(false)
+              }}
+              disabled={saveMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={
+                saveMutation.isPending ||
+                editTitle.trim().length === 0 ||
+                editBody.trim().length === 0
+              }
+            >
+              {saveMutation.isPending ? 'Saving...' : 'Save'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className={styles.noteHeader}>
+            <h3 className={styles.noteTitle}>{note.title}</h3>
+            <div className={styles.noteMeta}>
+              <span>{note.type}</span>
+              {note.tags.map((t) => (
+                <span key={t}>#{t}</span>
+              ))}
+              <span>created {formatTime(note.created)}</span>
+              <span>updated {formatTime(note.updated)}</span>
+            </div>
+          </div>
+          <div className={styles.noteBody}>{note.body}</div>
+          {note.links.length > 0 ? (
+            <div className={styles.linksRow}>
+              {note.links.map((link) => (
+                <span key={link} className={styles.linkBadge}>
+                  [[{link}]]
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div
+            style={{
+              display: 'flex',
+              gap: 'var(--space-2)',
+              justifyContent: 'flex-end',
+              marginTop: 'var(--space-3)',
+            }}
+          >
+            <Button size="sm" variant="ghost" onClick={beginEdit}>
+              Edit
+            </Button>
+            {confirmDelete ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setConfirmDelete(false)
+                  }}
+                  disabled={deleteMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => {
+                    deleteMutation.mutate()
+                  }}
+                >
+                  {deleteMutation.isPending ? 'Deleting...' : 'Confirm delete'}
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  setConfirmDelete(true)
+                }}
+              >
+                Delete
+              </Button>
+            )}
+          </div>
+          {deleteMutation.error ? (
+            <div
+              style={{
+                fontFamily: 'var(--type-family-mono)',
+                fontSize: '12px',
+                color: 'var(--color-status-error)',
+                background: 'var(--color-bg-elevated)',
+                padding: 'var(--space-2) var(--space-3)',
+                borderRadius: 'var(--radius-sm)',
+                marginTop: 'var(--space-2)',
+              }}
+            >
+              {deleteMutation.error instanceof ApiError
+                ? `${deleteMutation.error.code}: ${deleteMutation.error.message}`
+                : deleteMutation.error instanceof Error
+                  ? deleteMutation.error.message
+                  : String(deleteMutation.error)}
+            </div>
+          ) : null}
+        </>
+      )}
+    </Card>
+  )
 }
 
 interface ComposeNoteProps {

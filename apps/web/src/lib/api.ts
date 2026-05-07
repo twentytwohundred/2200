@@ -526,6 +526,20 @@ export const api = {
       method: 'POST',
       body,
     }),
+  brainEdit: (
+    name: string,
+    slug: string,
+    body: { title: string; body: string; type?: string; tags?: string[] },
+  ) =>
+    request<BrainNote>(
+      `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
+      { method: 'PATCH', body },
+    ),
+  brainDelete: (name: string, slug: string) =>
+    request<{ slug: string; deleted: true }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
+      { method: 'DELETE' },
+    ),
   taskCreate: (name: string, body: TaskCreateBody) =>
     request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
       method: 'POST',
