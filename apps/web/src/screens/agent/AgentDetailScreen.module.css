@@ -272,3 +272,54 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
 }
+
+.taskList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.taskRow {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.taskHead {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.taskTitle {
+  font-family: var(--type-family-sans);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskTime {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.taskPreview {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.taskMeta {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}

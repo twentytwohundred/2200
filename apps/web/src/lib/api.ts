@@ -224,6 +224,32 @@ export interface BrainNoteCreateBody {
 }
 
 /**
+ * Task list item (Epic 15 Phase C). Surfaces just enough to render a
+ * "what has this Agent been working on" panel without leaking the
+ * full task body / checkpoint payload.
+ */
+export type TaskState =
+  | 'pending'
+  | 'running'
+  | 'blocked_on_user'
+  | 'blocked_on_agent'
+  | 'blocked_on_detector'
+  | 'done'
+  | 'errored'
+
+export interface TaskListItem {
+  id: string
+  agent: string
+  state: TaskState
+  title: string
+  created: string
+  last_at: string | null
+  detector_kind: string | null
+  iterations: number | null
+  outcome_preview: string | null
+}
+
+/**
  * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
  * note list, FTS5 search, and single-note fetch via three endpoints
  * under /api/v1/agents/:name/brain.
@@ -465,6 +491,15 @@ export const api = {
     request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),
   agentTools: (name: string) =>
     request<AgentToolsResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tools`),
+  agentTasks: (name: string, params?: { state?: TaskState; limit?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.state) qs.set('state', params.state)
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<ListEnvelope<TaskListItem>>(
+      `/api/v1/agents/${encodeURIComponent(name)}/tasks${suffix}`,
+    )
+  },
   brainList: (name: string, params?: { type?: string; tag?: string; limit?: number }) => {
     const qs = new URLSearchParams()
     if (params?.type) qs.set('type', params.type)

@@ -18,6 +18,7 @@ import {
   type BudgetResponse,
   type ListEnvelope,
   type Notification,
+  type TaskListItem,
 } from '../../lib/api'
 import {
   AgentMark,
@@ -323,6 +324,8 @@ export function AgentDetailScreen(): ReactElement {
 
           <BudgetSection name={agent.name} query={budgetQuery} />
 
+          <TasksSection name={agent.name} />
+
           <ActivitySection name={agent.name} query={notificationsQuery} />
 
           <section>
@@ -556,6 +559,91 @@ function ActivitySection({ name, query }: ActivitySectionProps): ReactElement {
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`
+}
+
+interface TasksSectionProps {
+  name: string
+}
+
+function TasksSection({ name }: TasksSectionProps): ReactElement {
+  const query = useQuery({
+    queryKey: ['tasks', name],
+    queryFn: () => api.agentTasks(name, { limit: 8 }),
+    enabled: Boolean(name),
+    // Tight refetch during a session — Doug's just-sent tasks should
+    // surface within a couple seconds of state transitions.
+    staleTime: 2_000,
+    refetchInterval: 5_000,
+  })
+  const items = query.data?.items ?? []
+  return (
+    <section>
+      <SectionHeader title={`RECENT TASKS · ${String(items.length)}`} />
+      <Card padding={20}>
+        {query.isLoading ? (
+          <LoadingState rows={3} />
+        ) : query.isError ? (
+          <ErrorState
+            title="Could not load tasks"
+            body={
+              query.error instanceof ApiError
+                ? `${query.error.code}: ${query.error.message}`
+                : query.error instanceof Error
+                  ? query.error.message
+                  : String(query.error)
+            }
+          />
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="No tasks yet"
+            body="Send a task above and it'll show up here. Tasks the Agent picks up via schedules and pub mentions also surface."
+          />
+        ) : (
+          <div className={styles.taskList}>
+            {items.map((t) => (
+              <TaskRow key={t.id} task={t} />
+            ))}
+          </div>
+        )}
+      </Card>
+    </section>
+  )
+}
+
+interface TaskRowProps {
+  task: TaskListItem
+}
+
+function taskPillVariant(state: string): PillVariant {
+  if (state === 'running') return 'running'
+  if (state === 'pending' || state === 'blocked_on_agent') return 'info'
+  if (state === 'blocked_on_user' || state === 'blocked_on_detector') return 'attention'
+  if (state === 'errored') return 'error'
+  if (state === 'done') return 'idle'
+  return 'idle'
+}
+
+function TaskRow({ task }: TaskRowProps): ReactElement {
+  return (
+    <div className={styles.taskRow}>
+      <div className={styles.taskHead}>
+        <Pill variant={taskPillVariant(task.state)}>
+          {task.state.toUpperCase().replace(/_/g, ' ')}
+        </Pill>
+        <span className={styles.taskTitle}>{task.title}</span>
+        <span className={styles.taskTime}>{formatTimestamp(task.last_at ?? task.created)}</span>
+      </div>
+      {task.outcome_preview ? (
+        <div className={styles.taskPreview}>{task.outcome_preview}</div>
+      ) : null}
+      {task.detector_kind ? (
+        <div className={styles.taskMeta}>detector · {task.detector_kind}</div>
+      ) : null}
+      {task.iterations !== null ? (
+        <div className={styles.taskMeta}>{String(task.iterations)} iterations</div>
+      ) : null}
+    </div>
+  )
 }
 
 function tierVariant(tier: string): PillVariant {
