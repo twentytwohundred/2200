@@ -78,6 +78,20 @@ import { createLogger, type Logger } from '../util/logger.js'
 
 const TOOL_BLOCK_RE = /```tool\s*\n([\s\S]*?)\n```/g
 
+/**
+ * Lenient fallback for models that open a ```tool fence and forget the
+ * closing one. We match an opening fence near end-of-text whose content
+ * has no subsequent ``` line. This caught a real Doug-vs-Hobby chat
+ * regression on 2026-05-07 where DeepSeek emitted the tool block but
+ * truncated before the closing fence; the strict regex skipped it and
+ * the loop treated the response as a final answer instead of
+ * dispatching the call. Treating an unclosed terminal block as a tool
+ * call lets the dispatch succeed (or fail loudly with a typed error
+ * the model can correct) rather than silently embedding the JSON in
+ * the chat reply.
+ */
+const TOOL_BLOCK_UNCLOSED_RE = /```tool\s*\n([\s\S]*?)$/
+
 // Fallback for models (notably Claude Code-trained Haiku) that revert to
 // Anthropic's native function_calls XML shape despite the system prompt
 // asking for fenced ```tool blocks. We capture the inner <invoke>...</invoke>
@@ -120,6 +134,7 @@ export function parseToolCalls(text: string): {
   const calls: ParsedToolCall[] = []
   const errors: string[] = []
   let match: RegExpExecArray | null
+  let textForXmlPass = text
   TOOL_BLOCK_RE.lastIndex = 0
   while ((match = TOOL_BLOCK_RE.exec(text))) {
     const raw = match[1]?.trim() ?? ''
@@ -147,8 +162,49 @@ export function parseToolCalls(text: string): {
     })
   }
 
+  // Lenient fallback: if no closed fence-blocks parsed, look for an
+  // unclosed one at the end of the response. Some models truncate the
+  // closing fence; if the JSON parses cleanly we treat it as a real
+  // call and let the dispatcher surface "tool not found" or arg errors
+  // back to the model, instead of silently shipping the JSON to the
+  // user as a final answer.
+  if (calls.length === 0 && errors.length === 0) {
+    TOOL_BLOCK_UNCLOSED_RE.lastIndex = 0
+    const unclosed = TOOL_BLOCK_UNCLOSED_RE.exec(text)
+    if (unclosed) {
+      const raw = unclosed[1]?.trim() ?? ''
+      // Only attempt if the captured tail doesn't already contain ```
+      // (which would mean we'd be re-matching a closed block we somehow
+      // missed earlier).
+      if (raw && !raw.includes('```')) {
+        try {
+          const json: unknown = JSON.parse(raw)
+          const parsed = ToolCallShape.safeParse(json)
+          if (parsed.success) {
+            calls.push({
+              tool: parsed.data.tool,
+              args: parsed.data.args,
+              predicted_outcome: parsed.data.predicted_outcome,
+              reason: parsed.data.reason,
+              precondition: parsed.data.precondition ?? null,
+            })
+            // Strip the unclosed block from the text we'll pass to the
+            // XML parser so it doesn't try to re-match.
+            textForXmlPass = text.slice(0, unclosed.index)
+          }
+        } catch {
+          // Not valid JSON; ignore. The strict regex would have raised
+          // an error too only if it had a closing fence; here the model
+          // emitted something that looks like a fence but isn't usable.
+        }
+      }
+    }
+  }
+
   FUNCTION_CALLS_RE.lastIndex = 0
-  while ((match = FUNCTION_CALLS_RE.exec(text))) {
+  // Use the (possibly trimmed) text for the XML pass so an unclosed tool
+  // block we already consumed doesn't bleed in.
+  while ((match = FUNCTION_CALLS_RE.exec(textForXmlPass))) {
     const inner = match[1] ?? ''
     INVOKE_RE.lastIndex = 0
     let invokeMatch: RegExpExecArray | null
