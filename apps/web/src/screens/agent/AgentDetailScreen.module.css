@@ -418,3 +418,102 @@
   overflow: auto;
   margin: 0;
 }
+
+.statusGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-4);
+}
+
+@media (max-width: 720px) {
+  .statusGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chatCard {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: filter var(--duration-fast) var(--ease-out);
+}
+
+.chatCard:hover {
+  filter: brightness(1.05);
+}
+
+.chatCardLabel {
+  font-family: var(--type-family-mono);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.chatCardBody {
+  font-size: 13px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.identityEditor {
+  width: 100%;
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: var(--space-3);
+  min-height: 360px;
+  max-height: 70vh;
+  resize: vertical;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  white-space: pre;
+}
+
+.identityEditor:focus {
+  outline: none;
+  border-color: var(--color-border-emphasis);
+}
+
+.identityPre {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: var(--space-3);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  max-height: 400px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.identityPencil {
+  font-size: 14px;
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.identityPencil:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}

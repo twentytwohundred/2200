@@ -286,6 +286,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'PATCH', path: '/api/v1/agents/:name/brain/note/:slug' },
       { method: 'DELETE', path: '/api/v1/agents/:name/brain/note/:slug' },
+      { method: 'GET', path: '/api/v1/agents/:name/identity' },
+      { method: 'PUT', path: '/api/v1/agents/:name/identity' },
       { method: 'GET', path: '/api/v1/agents/:name/chat' },
       { method: 'POST', path: '/api/v1/agents/:name/chat' },
       { method: 'GET', path: '/api/v1/notifications' },
@@ -826,6 +828,60 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return { slug: req.params.slug, deleted: true as const }
     },
   )
+
+  // -- agent identity raw read/write (Epic 15 Phase C) --------------------
+  // Lets the web client edit identity.md inline. Read returns the raw
+  // markdown; write validates that the new content parses as a valid
+  // Identity (catches syntax errors before they reach the agent loop)
+  // and atomic-writes it. The agent process must be bounced for changes
+  // to take effect; the response carries a hint to that effect.
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/identity', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const raw = await readFile(rec.identity_path, 'utf8')
+    return { path: rec.identity_path, content: raw }
+  })
+
+  const PutIdentityBody = z.object({
+    content: z.string().min(1),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/identity', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutIdentityBody.parse(req.body)
+    // Validate the new content parses as a real Identity before
+    // overwriting. Bad YAML or missing required fields would crash
+    // the agent on next bounce; surfacing the error here keeps the
+    // running agent unaffected.
+    const { writeFile } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    try {
+      await writeFile(tmpPath, body.content, 'utf8')
+      await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await (await import('node:fs/promises')).rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed identity failed to parse: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    // Move tmp to final atomically.
+    const { rename } = await import('node:fs/promises')
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      bytes_written: body.content.length,
+      restart_required: true,
+    }
+  })
 
   // -- agent chat (Epic 15 Phase C interaction surface) -------------------
   // Persistent conversation thread with the Agent. Each user message
