@@ -65,7 +65,7 @@ import {
 import { loadIdentity } from '../identity/loader.js'
 import { aggregateToolHealth } from '../tools/health.js'
 import { TaskStore } from '../agent/task/store.js'
-import { newPendingTask } from '../agent/task/types.js'
+import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import {
   ApiError,
@@ -279,6 +279,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'PATCH', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'GET', path: '/api/v1/agents/:name/tools' },
+      { method: 'GET', path: '/api/v1/agents/:name/tasks' },
       { method: 'POST', path: '/api/v1/agents/:name/tasks' },
       { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/notifications' },
@@ -591,6 +592,39 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       agent: req.params.name,
       mcp_servers: identityServers,
       health: healthSummary,
+    }
+  })
+
+  // -- agent tasks list (Epic 15 Phase C) ----------------------------------
+  // Read-only task observability for the AgentDetail screen. Backed by
+  // TaskStore.list which sorts most-recent-first; we apply optional
+  // state + limit filters here.
+  const TaskStateEnum = z.enum([
+    'pending',
+    'running',
+    'blocked_on_user',
+    'blocked_on_agent',
+    'blocked_on_detector',
+    'done',
+    'errored',
+  ])
+  const ListTasksQuery = z.object({
+    state: TaskStateEnum.optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/tasks', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = ListTasksQuery.parse(req.query)
+    const store = new TaskStore(home, req.params.name)
+    const all = await store.list()
+    const filtered = q.state ? all.filter((t) => t.frontmatter.state === q.state) : all
+    const limit = q.limit ?? 50
+    const items = filtered.slice(0, limit).map(toTaskListDto)
+    return {
+      items,
+      cursor: { next: null, limit: items.length },
     }
   })
 
@@ -1267,6 +1301,45 @@ function toMcpServerDto(spec: McpServerSpec): McpServerDto {
     transport: 'http',
     url: spec.url,
     auth_kind: spec.auth.type,
+  }
+}
+
+interface TaskListDto {
+  id: string
+  agent: string
+  state: TaskState
+  title: string
+  created: string
+  /** ISO of the most recent state change (terminal at, detector trip at, etc.). */
+  last_at: string | null
+  /** Detector kind when state === 'blocked_on_detector'. */
+  detector_kind: string | null
+  /** Iterations consumed when terminal. */
+  iterations: number | null
+  /** First 200 chars of outcome.summary when done; error.message when errored. */
+  outcome_preview: string | null
+}
+
+function toTaskListDto(rec: TaskRecord): TaskListDto {
+  const fm = rec.frontmatter
+  let lastAt: string | null = null
+  if (fm.outcome) lastAt = fm.outcome.at
+  else if (fm.error) lastAt = fm.error.at
+  else if (fm.detector_block) lastAt = fm.detector_block.at
+  let preview: string | null = null
+  if (fm.outcome) preview = fm.outcome.summary.slice(0, 200)
+  else if (fm.error) preview = `${fm.error.class}: ${fm.error.message}`.slice(0, 200)
+  else if (fm.detector_block) preview = fm.detector_block.detail.slice(0, 200)
+  return {
+    id: fm.id,
+    agent: fm.agent,
+    state: fm.state,
+    title: fm.title,
+    created: fm.created,
+    last_at: lastAt,
+    detector_kind: fm.detector_block?.kind ?? null,
+    iterations: fm.outcome?.iterations ?? null,
+    outcome_preview: preview,
   }
 }
 
