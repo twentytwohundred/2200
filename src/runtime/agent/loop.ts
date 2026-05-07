@@ -329,6 +329,8 @@ export class AgentLoop {
   private readonly events: LoopEvent[] = []
   private readonly history: Message[] = []
   private iteration = 0
+  /** Number of empty-response nudges issued for the current task. Caps at 1. */
+  private emptyResponseNudges = 0
   private readonly nowFn: () => Date
 
   private readonly pricingTable: PricingTable
@@ -389,6 +391,7 @@ export class AgentLoop {
 
     const systemPrompt = await this.buildSystemPrompt()
     this.history.length = 0
+    this.emptyResponseNudges = 0
     this.history.push({ role: 'user', content: task.body })
 
     while (this.iteration < this.maxIterations) {
@@ -484,14 +487,34 @@ export class AgentLoop {
 
       const parsed = parseToolCalls(response.text)
       // No tool calls means the model is finished; the response text is
-      // the final answer.
+      // the final answer. Empty/whitespace-only text is NOT a clean
+      // termination ... it leaves the user with nothing to read and the
+      // task with an empty outcome.summary. Nudge the model once for a
+      // final answer; if it still returns empty, surface as errored so
+      // the failure is visible instead of silent.
       if (parsed.calls.length === 0 && parsed.errors.length === 0) {
-        this.history.push({ role: 'assistant', content: response.text })
-        return {
-          kind: 'done',
-          summary: response.text,
-          iterations: this.iteration,
+        if (response.text.trim().length > 0) {
+          this.history.push({ role: 'assistant', content: response.text })
+          return {
+            kind: 'done',
+            summary: response.text,
+            iterations: this.iteration,
+          }
         }
+        if (this.emptyResponseNudges >= 1) {
+          // Already nudged once; this is a real refusal to respond.
+          throw new Error(
+            'agent terminated with empty response after nudge; no final answer produced',
+          )
+        }
+        this.emptyResponseNudges += 1
+        this.history.push({ role: 'assistant', content: response.text })
+        this.history.push({
+          role: 'tool',
+          content:
+            'Your previous turn produced no content and no tool calls. Please give the user a final answer summarizing what you did, what you found, or why you cannot proceed.',
+        })
+        continue
       }
 
       // Echo the assistant turn into history so subsequent calls have full
