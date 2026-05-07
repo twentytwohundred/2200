@@ -1,0 +1,173 @@
+.shell {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.scheduleList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.scheduleRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+
+.scheduleRow[data-disabled='true'] {
+  opacity: 0.55;
+}
+
+.scheduleHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.scheduleDescription {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.scheduleId {
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.scheduleTiming {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
+}
+
+.schedulePrompt {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+  margin-top: var(--space-2);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.scheduleMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+}
+
+.scheduleActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+
+.formRow {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.formInline {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+@media (max-width: 720px) {
+  .formInline {
+    grid-template-columns: 1fr;
+  }
+}
+
+.label {
+  display: grid;
+  gap: var(--space-1);
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.labelInputWrapper {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-primary);
+}
+
+.textarea {
+  width: 100%;
+  font-family: var(--type-family-mono);
+  font-size: 13px;
+  padding: var(--space-3);
+  min-height: 80px;
+  resize: vertical;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-border-emphasis);
+}
+
+.kindToggle {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.kindChip {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.kindChip[data-active='true'] {
+  border-color: var(--color-border-emphasis);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.formActions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.errorMessage {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-status-error);
+  background: var(--color-bg-elevated);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
