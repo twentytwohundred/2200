@@ -248,89 +248,7 @@ export function AgentDetailScreen(): ReactElement {
             </Card>
           ) : null}
 
-          <section>
-            <SectionHeader title="STATUS" />
-            <Card padding={20}>
-              <KV k="STATE" v={<span className={styles.mono}>{agent.status}</span>} />
-              <KV
-                k="PID"
-                v={
-                  <span className={styles.mono}>
-                    {agent.pid !== null ? String(agent.pid) : '—'}
-                  </span>
-                }
-              />
-              <KV
-                k="TASK"
-                v={
-                  <span className={styles.mono}>
-                    {agent.current_task_id ?? <span className={styles.muted}>none</span>}
-                  </span>
-                }
-              />
-              <KV
-                k="PULSE"
-                v={
-                  agent.pulse ? (
-                    <span
-                      className={styles.pulseRow}
-                      title={`activity intensity ${agent.pulse.intensity.toFixed(2)} of 1.00`}
-                    >
-                      <PulseDot
-                        state={agent.pulse.state}
-                        intensity={agent.pulse.intensity}
-                        size="sm"
-                      />
-                      <span className={styles.mono}>{agent.pulse.state.replace(/_/g, ' ')}</span>
-                    </span>
-                  ) : (
-                    <span className={styles.muted}>(no pulse data)</span>
-                  )
-                }
-              />
-              <KV
-                k="HEARTBEAT"
-                v={<span className={styles.mono}>{formatTimestamp(agent.last_heartbeat)}</span>}
-              />
-              <KV
-                k="SPAWNED"
-                v={<span className={styles.mono}>{formatTimestamp(agent.spawned_at)}</span>}
-              />
-              {agent.status === 'errored' && agent.errored_at ? (
-                <KV
-                  k="ERR AT"
-                  v={<span className={styles.mono}>{formatTimestamp(agent.errored_at)}</span>}
-                />
-              ) : null}
-            </Card>
-          </section>
-
-          <section>
-            <SectionHeader title="IDENTITY" />
-            <Card padding={20}>
-              <KV
-                k="PATH"
-                v={
-                  <span className={styles.monoPath} title={agent.identity_path}>
-                    {agent.identity_path}
-                  </span>
-                }
-                kw={64}
-              />
-              <p className={styles.advisory}>
-                The Agent record's identity is loaded from this path. Edit the markdown there and
-                bounce the Agent to pick up changes.
-              </p>
-            </Card>
-          </section>
-
           <SendTaskSection name={agent.name} />
-
-          <BudgetSection name={agent.name} query={budgetQuery} />
-
-          <TasksSection name={agent.name} />
-
-          <ActivitySection name={agent.name} query={notificationsQuery} />
 
           <section>
             <SectionHeader title="MORE FOR THIS AGENT" />
@@ -367,6 +285,84 @@ export function AgentDetailScreen(): ReactElement {
               </div>
             </Card>
           </section>
+
+          <section>
+            <SectionHeader title="CHAT" />
+            <Link to={`/agent/${encodeURIComponent(agent.name)}/chat`} className={styles.chatCard}>
+              <div className={styles.chatCardLabel}>Open chat with {agent.name} →</div>
+              <div className={styles.chatCardBody}>
+                Persistent conversation thread. Each turn carries the prior 20 messages of context
+                to the agent. Brain, fs, and pub tools are available — no idempotency gating.
+              </div>
+            </Link>
+          </section>
+
+          <section>
+            <SectionHeader title="STATUS" />
+            <Card padding={20}>
+              <div className={styles.statusGrid}>
+                <KV k="STATE" v={<span className={styles.mono}>{agent.status}</span>} />
+                <KV
+                  k="PID"
+                  v={
+                    <span className={styles.mono}>
+                      {agent.pid !== null ? String(agent.pid) : '—'}
+                    </span>
+                  }
+                />
+                <KV
+                  k="PULSE"
+                  v={
+                    agent.pulse ? (
+                      <span
+                        className={styles.pulseRow}
+                        title={`activity intensity ${agent.pulse.intensity.toFixed(2)} of 1.00`}
+                      >
+                        <PulseDot
+                          state={agent.pulse.state}
+                          intensity={agent.pulse.intensity}
+                          size="sm"
+                        />
+                        <span className={styles.mono}>{agent.pulse.state.replace(/_/g, ' ')}</span>
+                      </span>
+                    ) : (
+                      <span className={styles.muted}>(no pulse data)</span>
+                    )
+                  }
+                />
+                <KV
+                  k="TASK"
+                  v={
+                    <span className={styles.mono}>
+                      {agent.current_task_id ?? <span className={styles.muted}>none</span>}
+                    </span>
+                  }
+                />
+                <KV
+                  k="HEARTBEAT"
+                  v={<span className={styles.mono}>{formatTimestamp(agent.last_heartbeat)}</span>}
+                />
+                <KV
+                  k="SPAWNED"
+                  v={<span className={styles.mono}>{formatTimestamp(agent.spawned_at)}</span>}
+                />
+                {agent.status === 'errored' && agent.errored_at ? (
+                  <KV
+                    k="ERR AT"
+                    v={<span className={styles.mono}>{formatTimestamp(agent.errored_at)}</span>}
+                  />
+                ) : null}
+              </div>
+            </Card>
+          </section>
+
+          <BudgetSection name={agent.name} query={budgetQuery} />
+
+          <TasksSection name={agent.name} />
+
+          <ActivitySection name={agent.name} query={notificationsQuery} />
+
+          <IdentitySection name={agent.name} path={agent.identity_path} />
         </>
       ) : null}
     </main>
@@ -589,6 +585,133 @@ function ActivitySection({ name, query }: ActivitySectionProps): ReactElement {
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`
+}
+
+interface IdentitySectionProps {
+  name: string
+  path: string
+}
+
+function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const query = useQuery({
+    queryKey: ['identity', name],
+    queryFn: () => api.identityRead(name),
+    staleTime: 60_000,
+  })
+
+  const saveMutation = useMutation({
+    mutationFn: (content: string) => api.identityWrite(name, content),
+    onSuccess: () => {
+      setEditing(false)
+      void queryClient.invalidateQueries({ queryKey: ['identity', name] })
+    },
+  })
+
+  const beginEdit = (): void => {
+    setDraft(query.data?.content ?? '')
+    setEditing(true)
+  }
+
+  return (
+    <section>
+      <SectionHeader title="IDENTITY" />
+      <Card padding={20}>
+        <KV
+          k="PATH"
+          v={
+            <span className={styles.monoPath} title={path}>
+              {path}
+            </span>
+          }
+          kw={64}
+        />
+        {query.isLoading ? (
+          <LoadingState rows={4} />
+        ) : query.isError ? (
+          <ErrorState
+            title="Could not load identity"
+            body={
+              query.error instanceof ApiError
+                ? `${query.error.code}: ${query.error.message}`
+                : query.error instanceof Error
+                  ? query.error.message
+                  : String(query.error)
+            }
+          />
+        ) : editing ? (
+          <>
+            <textarea
+              className={styles.identityEditor}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value)
+              }}
+              disabled={saveMutation.isPending}
+              spellCheck={false}
+            />
+            {saveMutation.error ? (
+              <div className={styles.sendError}>
+                {saveMutation.error instanceof ApiError
+                  ? `${saveMutation.error.code}: ${saveMutation.error.message}`
+                  : saveMutation.error instanceof Error
+                    ? saveMutation.error.message
+                    : String(saveMutation.error)}
+              </div>
+            ) : null}
+            <div className={styles.sendActions}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setEditing(false)
+                }}
+                disabled={saveMutation.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={saveMutation.isPending || draft.trim().length === 0}
+                onClick={() => {
+                  saveMutation.mutate(draft)
+                }}
+              >
+                {saveMutation.isPending ? 'Saving…' : 'Save & restart required'}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <pre className={styles.identityPre}>{query.data?.content ?? ''}</pre>
+            <div className={styles.sendActions}>
+              <Button size="sm" onClick={beginEdit}>
+                Edit
+              </Button>
+            </div>
+            {saveMutation.isSuccess ? (
+              <p className={styles.advisory}>
+                Saved. The Agent must be restarted for changes to take effect:{' '}
+                <code>
+                  2200 agent stop {name} && 2200 agent start {name}
+                </code>{' '}
+                — or click Stop then Start in the header.
+              </p>
+            ) : (
+              <p className={styles.advisory}>
+                Edit the markdown then bounce the Agent to pick up changes. Validation runs before
+                write — bad YAML or schema errors are surfaced here, not at next start.
+              </p>
+            )}
+          </>
+        )}
+      </Card>
+    </section>
+  )
 }
 
 interface TasksSectionProps {

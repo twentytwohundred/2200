@@ -437,7 +437,7 @@ export interface RuntimeVersion {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
   signal?: AbortSignal
 }
@@ -583,6 +583,15 @@ export const api = {
       method: 'POST',
       body: { content },
     }),
+  identityRead: (name: string) =>
+    request<{ path: string; content: string }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/identity`,
+    ),
+  identityWrite: (name: string, content: string) =>
+    request<{ path: string; bytes_written: number; restart_required: boolean }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/identity`,
+      { method: 'PUT', body: { content } },
+    ),
   taskCreate: (name: string, body: TaskCreateBody) =>
     request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
       method: 'POST',
