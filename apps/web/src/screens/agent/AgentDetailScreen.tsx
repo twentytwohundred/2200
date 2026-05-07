@@ -148,6 +148,9 @@ export function AgentDetailScreen(): ReactElement {
             <Link to={`/agent/${encodeURIComponent(name ?? '')}/brain`} className={styles.back}>
               BRAIN →
             </Link>
+            <Link to={`/agent/${encodeURIComponent(name ?? '')}/schedules`} className={styles.back}>
+              SCHEDULES →
+            </Link>
             <ThemeSwitcher />
           </div>
         }

@@ -120,6 +120,35 @@ export interface BudgetResponse {
 }
 
 /**
+ * Schedule (Epic 6 + Epic 15 Phase C) wire shapes.
+ *
+ * Cron form: 5-field cron + IANA timezone.
+ * Interval form: every N seconds (>=5).
+ */
+export type ScheduleTiming =
+  | { kind: 'cron'; expression: string; timezone: string }
+  | { kind: 'interval'; interval_seconds: number }
+
+export interface ScheduleEntry {
+  id: string
+  agent: string
+  description: string
+  prompt: string
+  timing: ScheduleTiming
+  enabled: boolean
+  created_at: string
+  last_fired_at: string | null
+  next_fire_at: string | null
+}
+
+export interface ScheduleCreateBody {
+  description?: string
+  prompt: string
+  timing: ScheduleTiming
+  enabled?: boolean
+}
+
+/**
  * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
  * note list, FTS5 search, and single-note fetch via three endpoints
  * under /api/v1/agents/:name/brain.
@@ -379,6 +408,23 @@ export const api = {
   brainNote: (name: string, slug: string) =>
     request<BrainNote>(
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
+    ),
+  schedulesList: (name: string) =>
+    request<ListEnvelope<ScheduleEntry>>(`/api/v1/agents/${encodeURIComponent(name)}/schedules`),
+  scheduleCreate: (name: string, body: ScheduleCreateBody) =>
+    request<ScheduleEntry>(`/api/v1/agents/${encodeURIComponent(name)}/schedules`, {
+      method: 'POST',
+      body,
+    }),
+  scheduleSetEnabled: (name: string, id: string, enabled: boolean) =>
+    request<ScheduleEntry>(
+      `/api/v1/agents/${encodeURIComponent(name)}/schedules/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: { enabled } },
+    ),
+  scheduleDelete: (name: string, id: string) =>
+    request<{ id: string; deleted: true }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/schedules/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
     ),
   notifications: (params?: { state?: string; tier?: string; agent?: string }) => {
     const qs = new URLSearchParams()

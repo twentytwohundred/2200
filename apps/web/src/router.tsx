@@ -6,6 +6,7 @@ import { InboxScreen } from './screens/inbox/InboxScreen'
 import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
 import { BrainScreen } from './screens/brain/BrainScreen'
+import { SchedulesScreen } from './screens/schedules/SchedulesScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
@@ -36,6 +37,7 @@ export function Router(): ReactElement {
         <Route path="/budget" element={<BudgetScreen />} />
         <Route path="/onboarding" element={<OnboardingScreen />} />
         <Route path="/agent/:name/brain" element={<BrainScreen />} />
+        <Route path="/agent/:name/schedules" element={<SchedulesScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
