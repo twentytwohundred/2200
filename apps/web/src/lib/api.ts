@@ -120,7 +120,6 @@ export interface BudgetResponse {
 }
 
 /**
-<<<<<<< HEAD
  * Schedule (Epic 6 + Epic 15 Phase C) wire shapes.
  *
  * Cron form: 5-field cron + IANA timezone.
@@ -147,7 +146,9 @@ export interface ScheduleCreateBody {
   prompt: string
   timing: ScheduleTiming
   enabled?: boolean
-=======
+}
+
+/**
  * Tools (Epic 9 + Epic 15 Phase C) wire shapes. The runtime exposes
  * per-Agent MCP roster + tool-health summary at /api/v1/agents/:name/tools.
  */
@@ -190,7 +191,6 @@ export interface AgentToolsResponse {
   agent: string
   mcp_servers: McpServerInfo[]
   health: ToolHealthSummary | null
->>>>>>> c325366 (Epic 15 Phase C: Tools screen + GET /agents/:name/tools endpoint)
 }
 
 /**
