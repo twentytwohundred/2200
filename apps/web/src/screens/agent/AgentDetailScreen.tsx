@@ -146,6 +146,9 @@ export function AgentDetailScreen(): ReactElement {
             <Link to="/" className={styles.back}>
               ← Fleet
             </Link>
+            <Link to={`/agent/${encodeURIComponent(name ?? '')}/chat`} className={styles.back}>
+              CHAT →
+            </Link>
             <Link to={`/agent/${encodeURIComponent(name ?? '')}/brain`} className={styles.back}>
               BRAIN →
             </Link>
@@ -269,15 +272,16 @@ export function AgentDetailScreen(): ReactElement {
                 k="PULSE"
                 v={
                   agent.pulse ? (
-                    <span className={styles.pulseRow}>
+                    <span
+                      className={styles.pulseRow}
+                      title={`activity intensity ${agent.pulse.intensity.toFixed(2)} of 1.00`}
+                    >
                       <PulseDot
                         state={agent.pulse.state}
                         intensity={agent.pulse.intensity}
                         size="sm"
                       />
-                      <span className={styles.mono}>
-                        {agent.pulse.state} · {agent.pulse.intensity.toFixed(2)}
-                      </span>
+                      <span className={styles.mono}>{agent.pulse.state.replace(/_/g, ' ')}</span>
                     </span>
                   ) : (
                     <span className={styles.muted}>(no pulse data)</span>

@@ -6,6 +6,7 @@ import { InboxScreen } from './screens/inbox/InboxScreen'
 import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
 import { BrainScreen } from './screens/brain/BrainScreen'
+import { ChatScreen } from './screens/chat/ChatScreen'
 import { SchedulesScreen } from './screens/schedules/SchedulesScreen'
 import { SettingsScreen } from './screens/settings/SettingsScreen'
 import { ToolsScreen } from './screens/tools/ToolsScreen'
@@ -38,6 +39,7 @@ export function Router(): ReactElement {
         <Route path="/inbox" element={<InboxScreen />} />
         <Route path="/budget" element={<BudgetScreen />} />
         <Route path="/onboarding" element={<OnboardingScreen />} />
+        <Route path="/agent/:name/chat" element={<ChatScreen />} />
         <Route path="/agent/:name/brain" element={<BrainScreen />} />
         <Route path="/agent/:name/schedules" element={<SchedulesScreen />} />
         <Route path="/agent/:name/tools" element={<ToolsScreen />} />

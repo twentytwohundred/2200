@@ -67,6 +67,7 @@ import { aggregateToolHealth } from '../tools/health.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
+import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
 import {
   ApiError,
   envelope,
@@ -285,6 +286,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'PATCH', path: '/api/v1/agents/:name/brain/note/:slug' },
       { method: 'DELETE', path: '/api/v1/agents/:name/brain/note/:slug' },
+      { method: 'GET', path: '/api/v1/agents/:name/chat' },
+      { method: 'POST', path: '/api/v1/agents/:name/chat' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -823,6 +826,78 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return { slug: req.params.slug, deleted: true as const }
     },
   )
+
+  // -- agent chat (Epic 15 Phase C interaction surface) -------------------
+  // Persistent conversation thread with the Agent. Each user message
+  // appends to the chat log + spawns a task that sees the full prior
+  // history; on task completion the assistant message is appended.
+  // The web /chat screen polls (and listens to WS task events) to
+  // surface assistant turns as they land.
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/chat', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const chat = new ChatStore(home, req.params.name)
+    const messages = await chat.list()
+    return {
+      items: messages.map(toChatMessageDto),
+      cursor: { next: null, limit: messages.length },
+    }
+  })
+
+  const ChatPostBody = z.object({
+    content: z.string().min(1),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/chat', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = ChatPostBody.parse(req.body)
+    const chat = new ChatStore(home, req.params.name)
+
+    // Append the user turn first so the GET endpoint surfaces it
+    // immediately (the web client renders user messages instantly).
+    const userMsg = await chat.append({ role: 'user', content: body.content })
+
+    // Build the task body: prior conversation as plain context + the
+    // new user turn. The agent's task body is what the model sees as
+    // the user message; we concatenate the recent history above the
+    // new turn so the agent has continuity. We cap at the most recent
+    // 20 messages to keep the prompt bounded.
+    const history = await chat.list()
+    const recent = history.slice(-21).filter((m) => m.id !== userMsg.id)
+    const taskBody = buildChatTaskBody(recent, body.content, req.params.name)
+
+    const taskStore = new TaskStore(home, req.params.name)
+    const taskId = newTaskId()
+    const title = body.content.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
+    const task = newPendingTask({
+      id: taskId,
+      agent: req.params.name,
+      title,
+      body: taskBody,
+      priority: 0,
+      idempotency: 'checkpointed',
+    })
+    await taskStore.save(task)
+
+    // Spawn a background watcher: when the task transitions to a
+    // terminal state, append the assistant message back into the
+    // chat log. We poll the task store rather than reach into the
+    // agent process; the daemon watches its own filesystem.
+    void watchAndAppendChatReply({
+      home,
+      agent: req.params.name,
+      taskId,
+      chat,
+      log: log?.child('chat'),
+    })
+
+    void reply.status(201)
+    return {
+      message: toChatMessageDto(userMsg),
+      task_id: taskId,
+    }
+  })
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -1492,6 +1567,101 @@ interface TaskDetailDto extends TaskListDto {
   idempotency: string
   /** Priority (default 0). */
   priority: number
+}
+
+interface ChatMessageDto {
+  id: string
+  ts: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  task_id: string | null
+}
+
+function toChatMessageDto(m: ChatMessage): ChatMessageDto {
+  return {
+    id: m.id,
+    ts: m.ts,
+    role: m.role,
+    content: m.content,
+    task_id: m.task_id,
+  }
+}
+
+function buildChatTaskBody(
+  recent: ChatMessage[],
+  newUserContent: string,
+  agentName: string,
+): string {
+  if (recent.length === 0) {
+    // First turn: just the user's message (no preamble).
+    return newUserContent
+  }
+  const lines: string[] = []
+  lines.push(
+    `You are continuing a chat with the user. Below is the recent transcript; the line at the end is the user's new message. Read the prior turns for context, then respond to the new message. Do not repeat content already in the transcript.`,
+  )
+  lines.push('')
+  lines.push('--- recent transcript ---')
+  for (const m of recent) {
+    const speaker = m.role === 'user' ? 'user' : agentName
+    lines.push(`${speaker}: ${m.content.replace(/\n/g, ' ')}`)
+  }
+  lines.push('--- end transcript ---')
+  lines.push('')
+  lines.push(`user: ${newUserContent}`)
+  return lines.join('\n')
+}
+
+interface WatchAndAppendArgs {
+  home: string
+  agent: string
+  taskId: string
+  chat: ChatStore
+  log: Logger | undefined
+}
+
+/**
+ * Background watcher that polls the task store for `taskId` and, when
+ * the task reaches a terminal state, appends an assistant message
+ * into the chat log. Idempotent ... if the same taskId is already in
+ * the chat log, the watcher exits without re-appending.
+ */
+async function watchAndAppendChatReply(args: WatchAndAppendArgs): Promise<void> {
+  const { home, agent, taskId, chat, log } = args
+  const taskStore = new TaskStore(home, agent)
+  // Bounded poll: 5-second cadence, 20-minute timeout. Most chat
+  // turns finish in under 30s.
+  const deadline = Date.now() + 20 * 60_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5_000))
+    let task: TaskRecord | null
+    try {
+      task = await taskStore.get(taskId)
+    } catch {
+      task = null
+    }
+    if (!task) continue
+    const state = task.frontmatter.state
+    if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
+      continue
+    }
+    // Terminal. Append once.
+    const messages = await chat.list()
+    const already = messages.some((m) => m.task_id === taskId)
+    if (already) return
+    let content: string
+    if (state === 'done' && task.frontmatter.outcome) {
+      content = task.frontmatter.outcome.summary
+    } else if (state === 'errored' && task.frontmatter.error) {
+      content = `(error · ${task.frontmatter.error.class}) ${task.frontmatter.error.message}`
+    } else {
+      content = `(task ended in state '${state}' with no outcome)`
+    }
+    await chat.append({ role: 'assistant', content, taskId })
+    log?.info('chat reply appended', { agent, taskId, state })
+    return
+  }
+  log?.warn('chat reply watcher timed out', { agent, taskId })
 }
 
 function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {

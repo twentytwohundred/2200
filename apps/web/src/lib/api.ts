@@ -225,6 +225,24 @@ export interface BrainNoteCreateBody {
 }
 
 /**
+ * Chat (Epic 15 Phase C). Persistent conversation thread per Agent.
+ * GET returns the full message log; POST appends a user message and
+ * spawns a task whose outcome lands as the assistant reply.
+ */
+export interface ChatMessage {
+  id: string
+  ts: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  task_id: string | null
+}
+
+export interface ChatPostResponse {
+  message: ChatMessage
+  task_id: string
+}
+
+/**
  * Task list item (Epic 15 Phase C). Surfaces just enough to render a
  * "what has this Agent been working on" panel without leaking the
  * full task body / checkpoint payload.
@@ -558,6 +576,13 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
       { method: 'DELETE' },
     ),
+  chatList: (name: string) =>
+    request<ListEnvelope<ChatMessage>>(`/api/v1/agents/${encodeURIComponent(name)}/chat`),
+  chatSend: (name: string, content: string) =>
+    request<ChatPostResponse>(`/api/v1/agents/${encodeURIComponent(name)}/chat`, {
+      method: 'POST',
+      body: { content },
+    }),
   taskCreate: (name: string, body: TaskCreateBody) =>
     request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
       method: 'POST',
