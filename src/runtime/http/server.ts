@@ -619,6 +619,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const ListTasksQuery = z.object({
     state: TaskStateEnum.optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
+    /**
+     * Source filter. 'other' (default) excludes chat-spawned tasks;
+     * the chat screen already surfaces those. 'chat' returns only
+     * chat tasks. 'all' returns everything regardless of source.
+     */
+    include: z.enum(['other', 'chat', 'all']).optional(),
   })
 
   fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/tasks', async (req) => {
@@ -627,9 +633,14 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     const q = ListTasksQuery.parse(req.query)
     const store = new TaskStore(home, req.params.name)
     const all = await store.list()
-    const filtered = q.state ? all.filter((t) => t.frontmatter.state === q.state) : all
+    const stateFiltered = q.state ? all.filter((t) => t.frontmatter.state === q.state) : all
+    const include = q.include ?? 'other'
+    const sourceFiltered =
+      include === 'all'
+        ? stateFiltered
+        : stateFiltered.filter((t) => classifyTaskSource(t.body) === include)
     const limit = q.limit ?? 50
-    const items = filtered.slice(0, limit).map(toTaskListDto)
+    const items = sourceFiltered.slice(0, limit).map(toTaskListDto)
     return {
       items,
       cursor: { next: null, limit: items.length },
@@ -1577,6 +1588,20 @@ interface TaskListDto {
   iterations: number | null
   /** First 200 chars of outcome.summary when done; error.message when errored. */
   outcome_preview: string | null
+  /**
+   * Where the task came from. Inferred from the body shape (chat tasks
+   * carry a known preamble); 'web' or 'cli' otherwise. The web's RECENT
+   * TASKS panel filters out chat-sourced tasks by default since the
+   * chat screen surfaces them already.
+   */
+  source: 'chat' | 'other'
+}
+
+/** Marker prefix that identifies a chat-spawned task body. Kept in sync with buildChatTaskBody. */
+const CHAT_TASK_BODY_PREFIX = 'You are continuing a chat with the user.'
+
+function classifyTaskSource(body: string): 'chat' | 'other' {
+  return body.startsWith(CHAT_TASK_BODY_PREFIX) ? 'chat' : 'other'
 }
 
 function toTaskListDto(rec: TaskRecord): TaskListDto {
@@ -1598,6 +1623,7 @@ function toTaskListDto(rec: TaskRecord): TaskListDto {
     last_at: lastAt,
     detector_kind: fm.detector_block?.kind ?? null,
     iterations: fm.outcome?.iterations ?? null,
+    source: classifyTaskSource(rec.body),
     outcome_preview: preview,
   }
 }
