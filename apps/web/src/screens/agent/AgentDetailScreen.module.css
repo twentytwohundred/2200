@@ -495,3 +495,25 @@
   word-break: normal;
   overflow-wrap: normal;
 }
+
+.identityPencil {
+  font-size: 14px;
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.identityPencil:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}

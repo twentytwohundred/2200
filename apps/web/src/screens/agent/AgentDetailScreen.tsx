@@ -618,7 +618,22 @@ function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
 
   return (
     <section>
-      <SectionHeader title="IDENTITY" />
+      <SectionHeader
+        title="IDENTITY"
+        action={
+          !editing && !query.isLoading && !query.isError ? (
+            <button
+              type="button"
+              onClick={beginEdit}
+              className={styles.identityPencil}
+              title="Edit identity"
+              aria-label="Edit identity"
+            >
+              ✎
+            </button>
+          ) : null
+        }
+      />
       <Card padding={20}>
         <KV
           k="PATH"
@@ -630,7 +645,7 @@ function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
           kw={64}
         />
         {query.isLoading ? (
-          <LoadingState rows={4} />
+          <LoadingState rows={2} />
         ) : query.isError ? (
           <ErrorState
             title="Could not load identity"
@@ -687,12 +702,6 @@ function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
           </>
         ) : (
           <>
-            <pre className={styles.identityPre}>{query.data?.content ?? ''}</pre>
-            <div className={styles.sendActions}>
-              <Button size="sm" onClick={beginEdit}>
-                Edit
-              </Button>
-            </div>
             {saveMutation.isSuccess ? (
               <p className={styles.advisory}>
                 Saved. The Agent must be restarted for changes to take effect:{' '}
@@ -701,12 +710,7 @@ function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
                 </code>{' '}
                 — or click Stop then Start in the header.
               </p>
-            ) : (
-              <p className={styles.advisory}>
-                Edit the markdown then bounce the Agent to pick up changes. Validation runs before
-                write — bad YAML or schema errors are surfaced here, not at next start.
-              </p>
-            )}
+            ) : null}
           </>
         )}
       </Card>
