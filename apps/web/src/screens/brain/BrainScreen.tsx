@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApiError,
   NetworkError,
@@ -22,6 +22,7 @@ import {
   type BrainSearchHit,
 } from '../../lib/api'
 import {
+  Button,
   Card,
   EmptyState,
   ErrorState,
@@ -87,6 +88,8 @@ export function BrainScreen(): ReactElement {
   const { theme } = useTheme()
   const [query, setQuery] = useState('')
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
+  const [composeOpen, setComposeOpen] = useState(false)
+  const queryClient = useQueryClient()
 
   const trimmed = query.trim()
   const searchActive = trimmed.length > 0
@@ -187,7 +190,7 @@ export function BrainScreen(): ReactElement {
       <PageHeader
         eyebrow={eyebrow}
         title={`Brain · ${name ?? ''}`}
-        subtitle={`Read-only browser of this Agent's notes. ${totalLabel}.`}
+        subtitle={`Browse and add notes to this Agent's brain. ${totalLabel}.`}
         actions={
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <Link
@@ -202,10 +205,30 @@ export function BrainScreen(): ReactElement {
             >
               ← AGENT
             </Link>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                setComposeOpen((v) => !v)
+              }}
+            >
+              {composeOpen ? 'Close' : '+ Note'}
+            </Button>
             <ThemeSwitcher />
           </div>
         }
       />
+
+      {composeOpen && name ? (
+        <ComposeNote
+          name={name}
+          onSaved={(slug) => {
+            void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+            setComposeOpen(false)
+            setSelectedSlug(slug)
+          }}
+        />
+      ) : null}
 
       <div className={styles.searchRow}>
         <div className={styles.searchInput}>
@@ -347,4 +370,116 @@ function errorBody(err: unknown): string {
   }
   if (err instanceof ApiError) return `${err.code}: ${err.message}`
   return err instanceof Error ? err.message : String(err)
+}
+
+interface ComposeNoteProps {
+  name: string
+  onSaved: (slug: string) => void
+}
+
+function ComposeNote({ name, onSaved }: ComposeNoteProps): ReactElement {
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [tags, setTags] = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.brainWrite(name, {
+        title: title.trim(),
+        body: body.trim(),
+        ...(tags.trim()
+          ? {
+              tags: tags
+                .split(/[,\s]+/)
+                .map((t) => t.trim())
+                .filter(Boolean),
+            }
+          : {}),
+      }),
+    onSuccess: (note) => {
+      setTitle('')
+      setBody('')
+      setTags('')
+      onSaved(note.slug)
+    },
+  })
+
+  return (
+    <Card padding={20}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (title.trim().length === 0 || body.trim().length === 0) return
+          mutation.mutate()
+        }}
+        style={{ display: 'grid', gap: 'var(--space-3)' }}
+      >
+        <Input
+          type="text"
+          placeholder="Title"
+          value={title}
+          onChange={(e) => {
+            setTitle(e.target.value)
+          }}
+          disabled={mutation.isPending}
+        />
+        <textarea
+          style={{
+            width: '100%',
+            fontFamily: 'var(--type-family-mono)',
+            fontSize: '13px',
+            padding: 'var(--space-3)',
+            minHeight: '120px',
+            resize: 'vertical',
+            background: 'var(--color-bg-elevated)',
+            border: '1px solid var(--color-border-subtle)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--color-text-primary)',
+          }}
+          placeholder="Body. Markdown is fine."
+          value={body}
+          onChange={(e) => {
+            setBody(e.target.value)
+          }}
+          disabled={mutation.isPending}
+        />
+        <Input
+          type="text"
+          placeholder="Tags (optional, comma- or space-separated)"
+          value={tags}
+          onChange={(e) => {
+            setTags(e.target.value)
+          }}
+          disabled={mutation.isPending}
+        />
+        {mutation.error ? (
+          <div
+            style={{
+              fontFamily: 'var(--type-family-mono)',
+              fontSize: '12px',
+              color: 'var(--color-status-error)',
+              background: 'var(--color-bg-elevated)',
+              padding: 'var(--space-2) var(--space-3)',
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            {mutation.error instanceof ApiError
+              ? `${mutation.error.code}: ${mutation.error.message}`
+              : mutation.error instanceof Error
+                ? mutation.error.message
+                : String(mutation.error)}
+          </div>
+        ) : null}
+        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={mutation.isPending || title.trim().length === 0 || body.trim().length === 0}
+          >
+            {mutation.isPending ? 'Saving...' : 'Save note'}
+          </Button>
+        </div>
+      </form>
+    </Card>
+  )
 }

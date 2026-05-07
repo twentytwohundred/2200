@@ -149,6 +149,81 @@ export interface ScheduleCreateBody {
 }
 
 /**
+ * Tools (Epic 9 + Epic 15 Phase C) wire shapes. The runtime exposes
+ * per-Agent MCP roster + tool-health summary at /api/v1/agents/:name/tools.
+ */
+export interface McpServerInfo {
+  name: string
+  transport: 'stdio' | 'http'
+  command?: string
+  arg_count?: number
+  url?: string
+  env_keys?: string[]
+  auth_kind?: 'none' | 'bearer'
+}
+
+export interface ToolHealthEntry {
+  tool: string
+  total_calls: number
+  ok_calls: number
+  error_calls: number
+  last_called_at: string | null
+  last_error_at: string | null
+  recent_failure_rate: number
+  mean_duration_ms: number
+  dormant: boolean
+}
+
+export interface ToolHealthSummary {
+  agent: string
+  generated_at: string
+  total_records: number
+  tools: ToolHealthEntry[]
+  dormant: ToolHealthEntry[]
+  failing: ToolHealthEntry[]
+  options: {
+    dormant_threshold_days: number
+    recent_failure_window: number
+  }
+}
+
+export interface AgentToolsResponse {
+  agent: string
+  mcp_servers: McpServerInfo[]
+  health: ToolHealthSummary | null
+}
+
+/**
+ * Task interaction (Epic 15 Phase C). Posting `{ body }` enqueues a
+ * pending task; the running Agent's loop picks it up.
+ */
+export interface TaskCreateBody {
+  title?: string
+  body: string
+  priority?: number
+}
+
+export interface TaskCreateResponse {
+  id: string
+  agent: string
+  state: string
+  title: string
+  created: string
+}
+
+/**
+ * Brain note write (Epic 15 Phase C). POST `{ title, body, slug?, type?,
+ * tags? }` creates or upserts a note. Returns the resulting BrainNote.
+ */
+export interface BrainNoteCreateBody {
+  title: string
+  body: string
+  slug?: string
+  type?: string
+  tags?: string[]
+}
+
+/**
  * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
  * note list, FTS5 search, and single-note fetch via three endpoints
  * under /api/v1/agents/:name/brain.
@@ -388,6 +463,8 @@ export const api = {
     }),
   budget: (name: string) =>
     request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),
+  agentTools: (name: string) =>
+    request<AgentToolsResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tools`),
   brainList: (name: string, params?: { type?: string; tag?: string; limit?: number }) => {
     const qs = new URLSearchParams()
     if (params?.type) qs.set('type', params.type)
@@ -409,6 +486,16 @@ export const api = {
     request<BrainNote>(
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
     ),
+  brainWrite: (name: string, body: BrainNoteCreateBody) =>
+    request<BrainNote>(`/api/v1/agents/${encodeURIComponent(name)}/brain`, {
+      method: 'POST',
+      body,
+    }),
+  taskCreate: (name: string, body: TaskCreateBody) =>
+    request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
+      method: 'POST',
+      body,
+    }),
   schedulesList: (name: string) =>
     request<ListEnvelope<ScheduleEntry>>(`/api/v1/agents/${encodeURIComponent(name)}/schedules`),
   scheduleCreate: (name: string, body: ScheduleCreateBody) =>

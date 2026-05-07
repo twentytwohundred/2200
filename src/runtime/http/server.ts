@@ -26,7 +26,11 @@ import fastifyWebsocketImport from '@fastify/websocket'
 import { z, ZodError } from 'zod'
 import type { Supervisor } from '../supervisor/supervisor.js'
 import type { Logger } from '../util/logger.js'
-import { agentBrainIndexPath, homePaths } from '../storage/layout.js'
+import {
+  agentBrainIndexPath,
+  agentPaths as agentPathsHelper,
+  homePaths,
+} from '../storage/layout.js'
 
 import {
   listNotifications,
@@ -47,6 +51,7 @@ import {
 import { BrainStore } from '../brain/store.js'
 import { BrainIndex, BrainIndexNotFoundError } from '../brain/index-db.js'
 import type { BrainNote } from '../brain/types.js'
+import type { McpServerSpec } from '../identity/types.js'
 import {
   ScheduleError,
   ScheduleTimingSchema,
@@ -57,6 +62,11 @@ import {
   setScheduleEnabled,
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
+import { loadIdentity } from '../identity/loader.js'
+import { aggregateToolHealth } from '../tools/health.js'
+import { TaskStore } from '../agent/task/store.js'
+import { newPendingTask } from '../agent/task/types.js'
+import { newTaskId } from '../util/id.js'
 import {
   ApiError,
   envelope,
@@ -268,6 +278,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/schedules' },
       { method: 'PATCH', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
+      { method: 'GET', path: '/api/v1/agents/:name/tools' },
+      { method: 'POST', path: '/api/v1/agents/:name/tasks' },
+      { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -546,6 +559,108 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return { id: req.params.id, deleted: true as const }
     },
   )
+
+  // -- agent tools (Epic 15 Phase C) ---------------------------------------
+  // Surfaces the agent's MCP-server roster (from the Identity file) +
+  // a tool-health summary aggregated off the dispatcher's run records.
+  // Read-only; OAuth credential management still happens via the CLI.
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/tools', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+
+    let identityServers: ReturnType<typeof toMcpServerDto>[] = []
+    try {
+      const identity = await loadIdentity(rec.identity_path)
+      identityServers = identity.frontmatter.mcp_servers.map(toMcpServerDto)
+    } catch {
+      // Tolerate: a malformed Identity should not 500 the screen.
+    }
+
+    let healthSummary: Awaited<ReturnType<typeof aggregateToolHealth>> | null = null
+    try {
+      healthSummary = await aggregateToolHealth(
+        agentPathsHelper(home, req.params.name).brain,
+        req.params.name,
+      )
+    } catch {
+      // Tolerate: missing brain dir means no calls yet.
+    }
+
+    return {
+      agent: req.params.name,
+      mcp_servers: identityServers,
+      health: healthSummary,
+    }
+  })
+
+  // -- agent tasks (Epic 15 Phase C interaction surface) -------------------
+  // Lets a user enqueue a synthetic prompt-task for an Agent without
+  // dropping into the CLI. The task lands as a pending TaskRecord on
+  // disk; the running AgentLoop's task pipe picks it up next tick.
+  const CreateTaskBody = z.object({
+    title: z.string().min(1).max(200).optional(),
+    body: z.string().min(1),
+    priority: z.number().int().min(0).max(100).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/tasks', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = CreateTaskBody.parse(req.body)
+    const store = new TaskStore(home, req.params.name)
+    const id = newTaskId()
+    const titleArg =
+      body.title && body.title.length > 0
+        ? body.title
+        : body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'task from web'
+    const task = newPendingTask({
+      id,
+      agent: req.params.name,
+      title: titleArg,
+      body: body.body,
+      priority: body.priority ?? 0,
+    })
+    await store.save(task)
+    void reply.status(201)
+    return {
+      id,
+      agent: req.params.name,
+      state: task.frontmatter.state,
+      title: task.frontmatter.title,
+      created: task.frontmatter.created,
+    }
+  })
+
+  // -- agent brain write (Epic 15 Phase C interaction surface) ------------
+  // POST a note to an Agent's brain from the web. Supports a fixed
+  // slug (upsert) or auto-derives one from the title with collision
+  // suffix. Returns the resulting BrainNote DTO.
+  const CreateBrainNoteBody = z.object({
+    title: z.string().min(1).max(200),
+    body: z.string().min(1),
+    slug: z.string().min(1).max(120).optional(),
+    type: z.string().min(1).max(40).optional(),
+    tags: z.array(z.string().min(1).max(40)).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = CreateBrainNoteBody.parse(req.body)
+    const store = BrainStore.forAgent(home, req.params.name)
+    const writeArgs: Parameters<typeof store.write>[0] = {
+      title: body.title,
+      body: body.body,
+    }
+    if (body.slug !== undefined) writeArgs.slug = body.slug
+    if (body.type !== undefined) writeArgs.type = body.type
+    if (body.tags !== undefined) writeArgs.tags = body.tags
+    const result = await store.write(writeArgs)
+    const note = await store.read(result.slug)
+    void reply.status(result.created ? 201 : 200)
+    return toBrainNoteDto(note)
+  })
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -1113,6 +1228,45 @@ function toBrainNoteDto(n: BrainNote): BrainNoteDto {
   return {
     ...toBrainNoteListDto(n),
     body: n.body,
+  }
+}
+
+/**
+ * Lossy DTO for MCP server specs ... drops command-line args and
+ * static headers (potentially noisy / sensitive shape; the user
+ * doesn't need them in the UI for v1) and any SecretRef values.
+ * The shape of `env` and `auth` is preserved as a placeholder so
+ * the UI can show "uses GMAIL_OAUTH_TOKEN" without exposing values.
+ */
+interface McpServerDto {
+  name: string
+  transport: 'stdio' | 'http'
+  /** Stdio: command + arg-count summary (verbatim args omitted to keep the wire small). */
+  command?: string
+  arg_count?: number
+  /** HTTP: endpoint URL. */
+  url?: string
+  /** Stdio: env var names (values are SecretRefs and never returned). */
+  env_keys?: string[]
+  /** HTTP: auth shape descriptor. */
+  auth_kind?: 'none' | 'bearer'
+}
+
+function toMcpServerDto(spec: McpServerSpec): McpServerDto {
+  if (spec.transport === 'stdio') {
+    return {
+      name: spec.name,
+      transport: 'stdio',
+      command: spec.command,
+      arg_count: spec.args.length,
+      env_keys: Object.keys(spec.env),
+    }
+  }
+  return {
+    name: spec.name,
+    transport: 'http',
+    url: spec.url,
+    auth_kind: spec.auth.type,
   }
 }
 
