@@ -120,6 +120,42 @@ export interface BudgetResponse {
 }
 
 /**
+ * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
+ * note list, FTS5 search, and single-note fetch via three endpoints
+ * under /api/v1/agents/:name/brain.
+ */
+export interface BrainNoteListItem {
+  slug: string
+  title: string
+  type: string
+  tags: string[]
+  created: string
+  updated: string
+  links: string[]
+  preview: string
+}
+
+export interface BrainNote extends BrainNoteListItem {
+  body: string
+}
+
+export interface BrainSearchHit {
+  slug: string
+  title: string
+  type: string
+  tags: string[]
+  snippet: string
+  score: number
+}
+
+export interface BrainSearchResponse {
+  items: BrainSearchHit[]
+  cursor: { next: string | null; limit: number }
+  /** 'fts' = SQLite FTS5; 'fallback' = in-memory list scan when no index exists. */
+  mode: 'fts' | 'fallback'
+}
+
+/**
  * Onboarding (Epic 14 Phase A + Epic 15 Phase B) wire shapes.
  *
  * Driven by the server-side state machine at /api/v1/onboarding (the
@@ -323,6 +359,27 @@ export const api = {
     }),
   budget: (name: string) =>
     request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),
+  brainList: (name: string, params?: { type?: string; tag?: string; limit?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.type) qs.set('type', params.type)
+    if (params?.tag) qs.set('tag', params.tag)
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<ListEnvelope<BrainNoteListItem>>(
+      `/api/v1/agents/${encodeURIComponent(name)}/brain${suffix}`,
+    )
+  },
+  brainSearch: (name: string, query: string, limit?: number) => {
+    const qs = new URLSearchParams({ q: query })
+    if (limit !== undefined) qs.set('limit', String(limit))
+    return request<BrainSearchResponse>(
+      `/api/v1/agents/${encodeURIComponent(name)}/brain/search?${qs.toString()}`,
+    )
+  },
+  brainNote: (name: string, slug: string) =>
+    request<BrainNote>(
+      `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
+    ),
   notifications: (params?: { state?: string; tier?: string; agent?: string }) => {
     const qs = new URLSearchParams()
     if (params?.state) qs.set('state', params.state)

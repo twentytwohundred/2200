@@ -145,6 +145,9 @@ export function AgentDetailScreen(): ReactElement {
             <Link to="/" className={styles.back}>
               ← Fleet
             </Link>
+            <Link to={`/agent/${encodeURIComponent(name ?? '')}/brain`} className={styles.back}>
+              BRAIN →
+            </Link>
             <ThemeSwitcher />
           </div>
         }
