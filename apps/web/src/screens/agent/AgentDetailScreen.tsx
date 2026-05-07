@@ -321,12 +321,38 @@ export function AgentDetailScreen(): ReactElement {
           <ActivitySection name={agent.name} query={notificationsQuery} />
 
           <section>
-            <SectionHeader title="DEFERRED · ARRIVES IN A LATER PR" />
+            <SectionHeader title="MORE FOR THIS AGENT" />
             <Card padding={20}>
-              <p className={styles.advisory}>
-                Brain notes preview, schedule list, and tool list will land with their respective
-                backend endpoints.
-              </p>
+              <div className={styles.moreLinks}>
+                <Link
+                  to={`/agent/${encodeURIComponent(agent.name)}/brain`}
+                  className={styles.moreLink}
+                >
+                  <span className={styles.moreLinkLabel}>BRAIN →</span>
+                  <span className={styles.moreLinkBody}>
+                    Search this Agent's notes by title, tags, or full text. Read individual notes
+                    inline.
+                  </span>
+                </Link>
+                <Link
+                  to={`/agent/${encodeURIComponent(agent.name)}/schedules`}
+                  className={styles.moreLink}
+                >
+                  <span className={styles.moreLinkLabel}>SCHEDULES →</span>
+                  <span className={styles.moreLinkBody}>
+                    View, add, enable, disable, or delete cron + interval timers for this Agent.
+                  </span>
+                </Link>
+                <Link
+                  to={`/agent/${encodeURIComponent(agent.name)}/tools`}
+                  className={styles.moreLink}
+                >
+                  <span className={styles.moreLinkLabel}>TOOLS →</span>
+                  <span className={styles.moreLinkBody}>
+                    MCP servers from the Identity + tool-health summary across this Agent's runs.
+                  </span>
+                </Link>
+              </div>
             </Card>
           </section>
         </>

@@ -191,3 +191,37 @@
 .sectionLink:hover {
   color: var(--color-text-primary);
 }
+
+.moreLinks {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.moreLink {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: var(--color-text-primary);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.moreLink:hover {
+  background: var(--color-bg-hover);
+}
+
+.moreLinkLabel {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.moreLinkBody {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
