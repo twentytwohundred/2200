@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "as_of": "2026-04-28",
+  "as_of": "2026-05-07",
   "currency": "USD",
   "comment": "Per-million-token rates seeded from public pricing pages. Curated by the operator; auto-refresh is out of v1 scope. Models not listed here yield cost_usd=null in telemetry; the next-day usage report flags any unknown models seen in practice. Cached input is the discounted rate for tokens served from prompt cache (Anthropic cache_read_input_tokens, DeepSeek prompt_cache_hit_tokens, OpenAI prompt_tokens_details.cached_tokens).",
   "models": {
@@ -52,6 +52,16 @@
     "kimi/moonshot-v1-128k": {
       "input_per_mtok_usd": 0.45,
       "output_per_mtok_usd": 0.55
+    },
+    "xai/grok-4.3": {
+      "input_per_mtok_usd": 1.25,
+      "output_per_mtok_usd": 2.5,
+      "cached_input_per_mtok_usd": 0.31
+    },
+    "xai/grok-4-fast": {
+      "input_per_mtok_usd": 0.2,
+      "output_per_mtok_usd": 0.5,
+      "cached_input_per_mtok_usd": 0.05
     }
   }
 }

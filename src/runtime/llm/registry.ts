@@ -15,6 +15,12 @@
  *   kimi        → https://api.moonshot.ai            (Moonshot AI's Kimi)
  *   openrouter  → https://openrouter.ai/api          (model aggregator)
  *   gemini      → https://generativelanguage.googleapis.com (custom path)
+ *   local       → reads LOCAL_BASE_URL (default Ollama at :11434/v1)
+ *                  for self-hosted / on-device OpenAI-compatible
+ *                  endpoints (Ollama, LM Studio, vLLM, llama.cpp).
+ *                  API key optional; defaults to "ollama" when
+ *                  LOCAL_API_KEY is unset, since Ollama and most
+ *                  local stacks accept any non-empty bearer.
  *
  * SecretRef defaults: when an Identity does not specify
  * `provider_secret`, the registry falls back to a per-provider default
@@ -52,11 +58,21 @@ const OPENAI_COMPATIBLE_VENDORS: Record<string, OpenAICompatibleConfig> = {
   deepseek: { baseUrl: 'https://api.deepseek.com' },
   kimi: { baseUrl: 'https://api.moonshot.ai' },
   openrouter: { baseUrl: 'https://openrouter.ai/api' },
+  xai: { baseUrl: 'https://api.x.ai' },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com',
     endpointUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
   },
 }
+
+/**
+ * Default base URL for the `local` provider when `LOCAL_BASE_URL`
+ * is unset. Points at Ollama's OpenAI-compatible endpoint, the most
+ * common default on a developer workstation. LM Studio, vLLM, and
+ * llama.cpp's server expose the same shape on different ports;
+ * users override via `LOCAL_BASE_URL`.
+ */
+const LOCAL_DEFAULT_BASE_URL = 'http://localhost:11434/v1'
 
 /**
  * Resolve a provider name + optional SecretRef to a constructed
@@ -68,6 +84,22 @@ const OPENAI_COMPATIBLE_VENDORS: Record<string, OpenAICompatibleConfig> = {
  * Throws SecretResolveError on secret resolution failure.
  */
 export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLMProvider> {
+  // The `local` provider is special-cased: API key is optional (Ollama
+  // accepts any non-empty bearer; vLLM/LM Studio default to no auth)
+  // and the baseUrl is read from process env at resolve time so that
+  // editing LOCAL_BASE_URL only requires an agent restart, not a code
+  // change.
+  if (opts.providerName === 'local') {
+    const apiKey = process.env['LOCAL_API_KEY'] ?? 'ollama'
+    const baseUrl = process.env['LOCAL_BASE_URL'] ?? LOCAL_DEFAULT_BASE_URL
+    return new OpenAIProvider({
+      apiKey,
+      baseUrl,
+      providerName: 'local',
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    })
+  }
+
   const secretRef = opts.secret ?? defaultSecretFor(opts.providerName)
   const apiKey = await resolveSecret(secretRef)
 
@@ -91,9 +123,90 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
 
   throw new LlmError(
     'CONFIG_ERROR',
-    `provider '${opts.providerName}' is not supported. Known providers: anthropic, ${Object.keys(OPENAI_COMPATIBLE_VENDORS).join(', ')}.`,
+    `provider '${opts.providerName}' is not supported. Known providers: anthropic, local, ${Object.keys(OPENAI_COMPATIBLE_VENDORS).join(', ')}.`,
     opts.providerName,
   )
+}
+
+/**
+ * Catalog entry for a built-in provider. Used by the settings/web
+ * surface to list providers, their default env-var key, the kind of
+ * adapter (native Anthropic vs OpenAI-compatible vs local), and
+ * whether the URL is user-configurable.
+ */
+export interface ProviderCatalogEntry {
+  /** Provider name as it appears in `model.provider`. */
+  name: string
+  /** Human-readable label for the settings UI. */
+  label: string
+  /** Default env var that holds the API key. */
+  defaultEnvKey: string
+  /** Adapter family. */
+  kind: 'anthropic' | 'openai-compatible' | 'local'
+  /** Configured base URL (constant for cloud providers; env-driven for local). */
+  baseUrl: string
+  /** True when the user can change the base URL. Only `local` is mutable today. */
+  baseUrlEditable: boolean
+  /**
+   * Env var that holds the base URL when editable. Empty string for
+   * fixed-URL providers.
+   */
+  baseUrlEnvKey: string
+  /** True when the API key is optional (e.g. local Ollama). */
+  keyOptional: boolean
+}
+
+/**
+ * Return the static list of built-in providers in display order.
+ * Settings UI surfaces this list; the `local` entry's `baseUrl`
+ * reflects the current `LOCAL_BASE_URL` env (or the default).
+ */
+export function listKnownProviders(): ProviderCatalogEntry[] {
+  const out: ProviderCatalogEntry[] = [
+    {
+      name: 'anthropic',
+      label: 'Anthropic',
+      defaultEnvKey: 'ANTHROPIC_API_KEY',
+      kind: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      baseUrlEditable: false,
+      baseUrlEnvKey: '',
+      keyOptional: false,
+    },
+  ]
+  for (const [name, cfg] of Object.entries(OPENAI_COMPATIBLE_VENDORS)) {
+    out.push({
+      name,
+      label: PROVIDER_LABELS[name] ?? name,
+      defaultEnvKey: defaultSecretFor(name).id,
+      kind: 'openai-compatible',
+      baseUrl: cfg.baseUrl,
+      baseUrlEditable: false,
+      baseUrlEnvKey: '',
+      keyOptional: false,
+    })
+  }
+  out.push({
+    name: 'local',
+    label: 'Local (Ollama / LM Studio / vLLM)',
+    defaultEnvKey: 'LOCAL_API_KEY',
+    kind: 'local',
+    baseUrl: process.env['LOCAL_BASE_URL'] ?? LOCAL_DEFAULT_BASE_URL,
+    baseUrlEditable: true,
+    baseUrlEnvKey: 'LOCAL_BASE_URL',
+    keyOptional: true,
+  })
+  return out
+}
+
+/** Display labels for the cloud providers; the names alone are too terse for a settings UI. */
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  deepseek: 'DeepSeek',
+  kimi: 'Moonshot Kimi',
+  openrouter: 'OpenRouter',
+  xai: 'xAI (Grok)',
+  gemini: 'Google Gemini',
 }
 
 /** Default env var for providers that ship without an explicit SecretRef. */
@@ -109,6 +222,8 @@ function defaultSecretFor(providerName: string): SecretRef {
       return { source: 'env', id: 'KIMI_API_KEY' }
     case 'openrouter':
       return { source: 'env', id: 'OPENROUTER_API_KEY' }
+    case 'xai':
+      return { source: 'env', id: 'XAI_API_KEY' }
     case 'gemini':
       return { source: 'env', id: 'GEMINI_API_KEY' }
     default:

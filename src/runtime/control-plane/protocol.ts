@@ -189,7 +189,7 @@ export type StateSnapshotResult = z.infer<typeof StateSnapshotResultSchema>
  * records yet); exported here so downstream layers (plan-record writer,
  * Identity loader) share one source of truth.
  */
-export const ModelIdSchema = z.string().regex(/^[a-z0-9]+\/[a-z0-9-]+$/, {
+export const ModelIdSchema = z.string().regex(/^[a-z0-9]+\/[a-z0-9.-]+$/, {
   message: 'model identifier must be <provider>/<model_id>, e.g., "anthropic/claude-opus-4-7"',
 })
 export type ModelId = z.infer<typeof ModelIdSchema>

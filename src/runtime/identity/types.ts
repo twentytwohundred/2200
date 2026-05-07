@@ -31,11 +31,14 @@ export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+$/, {
 })
 
 /**
- * model_id portion of the model identifier. Lowercase alphanumeric or
- * dashes; whatever the provider calls the model, normalized.
+ * model_id portion of the model identifier. Lowercase alphanumeric,
+ * dashes, or dots; whatever the provider calls the model. Dots are
+ * permitted because real-world model ids contain them
+ * (`gemini-2.5-pro`, `grok-4.3`); the runtime passes this string
+ * verbatim to the provider's chat-completions endpoint.
  */
-export const ModelIdComponentSchema = z.string().regex(/^[a-z0-9-]+$/, {
-  message: 'model.model_id must be lowercase alphanumeric or dashes',
+export const ModelIdComponentSchema = z.string().regex(/^[a-z0-9.-]+$/, {
+  message: 'model.model_id must be lowercase alphanumeric, dashes, or dots',
 })
 
 export const ModelBindingSchema = z.object({

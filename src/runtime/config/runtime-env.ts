@@ -45,9 +45,9 @@
  *   - No multi-line values, no command substitution, no variable
  *     interpolation. This is a config file, not a shell script.
  */
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const KEY_RE = /^([A-Z_][A-Z0-9_]*)$/
 
@@ -131,4 +131,110 @@ export async function loadRuntimeEnv(path?: string): Promise<Record<string, stri
     throw err
   }
   return parseRuntimeEnv(text)
+}
+
+/**
+ * Read the raw runtime-env file contents. Returns empty string when
+ * the file does not exist. Used by the upsert/remove writers below
+ * so they can preserve unrelated lines (comments, blanks, other keys).
+ */
+async function readRaw(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
+    throw err
+  }
+}
+
+/**
+ * Format a single env-file line. Quotes the value if it contains a
+ * char that bash-source treats specially (whitespace, `#`, `"`, `'`,
+ * `$`, backtick). Always uses double quotes; embedded `"` are escaped
+ * with a backslash. Plain values stay unquoted to match the
+ * ergonomics of the existing files users may have hand-edited.
+ */
+function formatLine(key: string, value: string): string {
+  const needsQuote = /[\s#"'$`]/.test(value)
+  const escaped = needsQuote ? `"${value.replace(/"/g, '\\"')}"` : value
+  return `${key}=${escaped}`
+}
+
+/**
+ * Upsert a single key=value pair in the runtime-env file at `path`.
+ * Preserves all unrelated lines (comments, blanks, other keys). If
+ * the key already exists, replaces its line in place; otherwise
+ * appends a new line at end of file. Creates the parent directory
+ * and the file (mode 0600) when missing.
+ *
+ * Note: the supervisor reads runtime.env once at start; in-flight
+ * agent processes do NOT see the new value until they are restarted.
+ * Callers should surface this to the user.
+ */
+export async function upsertRuntimeEnvKey(
+  key: string,
+  value: string,
+  path?: string,
+): Promise<void> {
+  if (!KEY_RE.test(key)) {
+    throw new Error(
+      `upsertRuntimeEnvKey: key ${JSON.stringify(key)} must match /^[A-Z_][A-Z0-9_]*$/`,
+    )
+  }
+  const target = path ?? defaultRuntimeEnvPath()
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+  const raw = await readRaw(target)
+  const lines = raw === '' ? [] : raw.split('\n')
+  const newLine = formatLine(key, value)
+  const out: string[] = []
+  let replaced = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      out.push(line)
+      continue
+    }
+    const body = trimmed.startsWith('export ') ? trimmed.slice('export '.length) : trimmed
+    const eq = body.indexOf('=')
+    if (eq === -1) {
+      out.push(line)
+      continue
+    }
+    const lineKey = body.slice(0, eq).trim()
+    if (lineKey === key) {
+      replaced = true
+      out.push(newLine)
+    } else {
+      out.push(line)
+    }
+  }
+  if (!replaced) out.push(newLine)
+  // Ensure single trailing newline.
+  let serialized = out.join('\n')
+  if (!serialized.endsWith('\n')) serialized += '\n'
+  await writeFile(target, serialized, { mode: 0o600 })
+}
+
+/**
+ * Remove a single key from the runtime-env file. No-op if the file
+ * or the key does not exist. Preserves unrelated lines.
+ */
+export async function removeRuntimeEnvKey(key: string, path?: string): Promise<void> {
+  if (!KEY_RE.test(key)) return
+  const target = path ?? defaultRuntimeEnvPath()
+  const raw = await readRaw(target)
+  if (raw === '') return
+  const lines = raw.split('\n')
+  const out = lines.filter((line) => {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) return true
+    const body = trimmed.startsWith('export ') ? trimmed.slice('export '.length) : trimmed
+    const eq = body.indexOf('=')
+    if (eq === -1) return true
+    const lineKey = body.slice(0, eq).trim()
+    return lineKey !== key
+  })
+  let serialized = out.join('\n')
+  if (serialized !== '' && !serialized.endsWith('\n')) serialized += '\n'
+  await writeFile(target, serialized, { mode: 0o600 })
 }

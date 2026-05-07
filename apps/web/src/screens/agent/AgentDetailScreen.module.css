@@ -517,3 +517,72 @@
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
+
+.modelEditor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.modelLabel {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.modelLabelText {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.modelSelect,
+.modelInput {
+  font-family: var(--type-family-mono);
+  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.modelSelect:focus,
+.modelInput:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.modelSuggestions {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.modelSuggestionChip {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.modelSuggestionChip:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.modelWarning {
+  font-size: 12px;
+  color: var(--color-warning, var(--color-text-secondary));
+  font-style: italic;
+}
+
+.modelNote {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}

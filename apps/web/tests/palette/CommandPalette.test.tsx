@@ -43,6 +43,7 @@ function fakeAgent(name: string, status: string): Agent {
     errored_at: null,
     errored_reason: null,
     pulse: null,
+    model: null,
   }
 }
 
