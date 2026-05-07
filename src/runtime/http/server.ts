@@ -64,6 +64,9 @@ import {
 } from '../scheduler/schedule.js'
 import { loadIdentity } from '../identity/loader.js'
 import { aggregateToolHealth } from '../tools/health.js'
+import { TaskStore } from '../agent/task/store.js'
+import { newPendingTask } from '../agent/task/types.js'
+import { newTaskId } from '../util/id.js'
 import {
   ApiError,
   envelope,
@@ -276,6 +279,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'PATCH', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'GET', path: '/api/v1/agents/:name/tools' },
+      { method: 'POST', path: '/api/v1/agents/:name/tasks' },
+      { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -570,8 +575,6 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       identityServers = identity.frontmatter.mcp_servers.map(toMcpServerDto)
     } catch {
       // Tolerate: a malformed Identity should not 500 the screen.
-      // The web client renders an empty server list with the health
-      // summary still available.
     }
 
     let healthSummary: Awaited<ReturnType<typeof aggregateToolHealth>> | null = null
@@ -581,9 +584,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         req.params.name,
       )
     } catch {
-      // Same tolerance: a missing brain dir is fine, the agent has
-      // simply never recorded a tool call. The list view shows
-      // "no tool activity yet" rather than failing.
+      // Tolerate: missing brain dir means no calls yet.
     }
 
     return {
@@ -591,6 +592,74 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       mcp_servers: identityServers,
       health: healthSummary,
     }
+  })
+
+  // -- agent tasks (Epic 15 Phase C interaction surface) -------------------
+  // Lets a user enqueue a synthetic prompt-task for an Agent without
+  // dropping into the CLI. The task lands as a pending TaskRecord on
+  // disk; the running AgentLoop's task pipe picks it up next tick.
+  const CreateTaskBody = z.object({
+    title: z.string().min(1).max(200).optional(),
+    body: z.string().min(1),
+    priority: z.number().int().min(0).max(100).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/tasks', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = CreateTaskBody.parse(req.body)
+    const store = new TaskStore(home, req.params.name)
+    const id = newTaskId()
+    const titleArg =
+      body.title && body.title.length > 0
+        ? body.title
+        : body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'task from web'
+    const task = newPendingTask({
+      id,
+      agent: req.params.name,
+      title: titleArg,
+      body: body.body,
+      priority: body.priority ?? 0,
+    })
+    await store.save(task)
+    void reply.status(201)
+    return {
+      id,
+      agent: req.params.name,
+      state: task.frontmatter.state,
+      title: task.frontmatter.title,
+      created: task.frontmatter.created,
+    }
+  })
+
+  // -- agent brain write (Epic 15 Phase C interaction surface) ------------
+  // POST a note to an Agent's brain from the web. Supports a fixed
+  // slug (upsert) or auto-derives one from the title with collision
+  // suffix. Returns the resulting BrainNote DTO.
+  const CreateBrainNoteBody = z.object({
+    title: z.string().min(1).max(200),
+    body: z.string().min(1),
+    slug: z.string().min(1).max(120).optional(),
+    type: z.string().min(1).max(40).optional(),
+    tags: z.array(z.string().min(1).max(40)).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = CreateBrainNoteBody.parse(req.body)
+    const store = BrainStore.forAgent(home, req.params.name)
+    const writeArgs: Parameters<typeof store.write>[0] = {
+      title: body.title,
+      body: body.body,
+    }
+    if (body.slug !== undefined) writeArgs.slug = body.slug
+    if (body.type !== undefined) writeArgs.type = body.type
+    if (body.tags !== undefined) writeArgs.tags = body.tags
+    const result = await store.write(writeArgs)
+    const note = await store.read(result.slug)
+    void reply.status(result.created ? 201 : 200)
+    return toBrainNoteDto(note)
   })
 
   // -- notifications -------------------------------------------------------
