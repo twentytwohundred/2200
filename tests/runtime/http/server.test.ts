@@ -136,6 +136,30 @@ describe('HTTP server', () => {
     })
   })
 
+  it('GET /api/v1/agents/:name/brain returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/brain')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({
+      error: { code: 'agent_not_found' },
+    })
+  })
+
+  it('GET /api/v1/agents/:name/brain/search returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/brain/search?q=anything')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({
+      error: { code: 'agent_not_found' },
+    })
+  })
+
+  it('GET /api/v1/agents/:name/brain/note/:slug returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/brain/note/nope')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({
+      error: { code: 'agent_not_found' },
+    })
+  })
+
   it('GET /api/v1/notifications returns an empty list', async () => {
     const r = await get('/api/v1/notifications')
     expect(r.status).toBe(200)

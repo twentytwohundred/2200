@@ -26,7 +26,8 @@ import fastifyWebsocketImport from '@fastify/websocket'
 import { z, ZodError } from 'zod'
 import type { Supervisor } from '../supervisor/supervisor.js'
 import type { Logger } from '../util/logger.js'
-import { homePaths } from '../storage/layout.js'
+import { agentBrainIndexPath, homePaths } from '../storage/layout.js'
+
 import {
   listNotifications,
   markAnswered,
@@ -43,6 +44,9 @@ import {
   type BudgetState,
   type BudgetOverride,
 } from '../agent/budget-reader.js'
+import { BrainStore } from '../brain/store.js'
+import { BrainIndex, BrainIndexNotFoundError } from '../brain/index-db.js'
+import type { BrainNote } from '../brain/types.js'
 import {
   ApiError,
   envelope,
@@ -247,6 +251,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/start' },
       { method: 'POST', path: '/api/v1/agents/:name/stop' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
+      { method: 'GET', path: '/api/v1/agents/:name/brain' },
+      { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
+      { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -320,6 +327,109 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       history: history.map(toBudgetStateDto),
     }
   })
+
+  // -- agent brain (Epic 15 Phase C) --------------------------------------
+  // Read-only HTTP surface over the per-Agent brain. Reads cross the
+  // Agent's own filesystem only ... we open a fresh BrainStore +
+  // BrainIndex on each call rather than touching the AgentProcess's
+  // warm registry, so the supervisor stays decoupled from the
+  // child-process state. The principal is the user; permission checks
+  // (cross-Agent brain reads) live at the brain.* MCP tool layer and
+  // are not enforced here ... the user owns the instance.
+  const ListBrainQuery = z.object({
+    type: z.string().optional(),
+    tag: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = ListBrainQuery.parse(req.query)
+    const store = BrainStore.forAgent(home, req.params.name)
+    const filters: { type?: string; tag?: string; limit?: number } = {}
+    if (q.type !== undefined) filters.type = q.type
+    if (q.tag !== undefined) filters.tag = q.tag
+    if (q.limit !== undefined) filters.limit = q.limit
+    const notes = await store.list(filters)
+    return {
+      items: notes.map(toBrainNoteListDto),
+      cursor: { next: null, limit: notes.length },
+    }
+  })
+
+  const SearchBrainQuery = z.object({
+    q: z.string().min(1),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/brain/search', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const parsed = SearchBrainQuery.parse(req.query)
+    let index: BrainIndex
+    try {
+      index = BrainIndex.openReadOnlyAtPath(agentBrainIndexPath(home, req.params.name))
+    } catch (err) {
+      // Index missing: fall back to a one-shot in-memory list scan
+      // so the search box still works on a freshly-installed Agent
+      // whose AgentProcess has never run. This keeps the UI from
+      // surfacing a confusing 404 for an Agent that has notes on
+      // disk but no warm SQLite index yet.
+      if (err instanceof BrainIndexNotFoundError) {
+        const store = BrainStore.forAgent(home, req.params.name)
+        const all = await store.list({ limit: 1000 })
+        const matches = all
+          .filter((n) =>
+            [n.frontmatter.title, n.frontmatter.tags.join(' '), n.body]
+              .join('\n')
+              .toLowerCase()
+              .includes(parsed.q.toLowerCase()),
+          )
+          .slice(0, parsed.limit ?? 25)
+        return {
+          items: matches.map((n) => ({
+            slug: n.slug,
+            title: n.frontmatter.title,
+            type: n.frontmatter.type,
+            tags: n.frontmatter.tags,
+            snippet: n.body.slice(0, 200),
+            score: 0,
+          })),
+          cursor: { next: null, limit: matches.length },
+          mode: 'fallback' as const,
+        }
+      }
+      throw err
+    }
+    const opts: { limit?: number } = {}
+    if (parsed.limit !== undefined) opts.limit = parsed.limit
+    const hits = index.search(parsed.q, opts)
+    index.close()
+    return {
+      items: hits,
+      cursor: { next: null, limit: hits.length },
+      mode: 'fts' as const,
+    }
+  })
+
+  fastify.get<{ Params: { name: string; slug: string } }>(
+    '/api/v1/agents/:name/brain/note/:slug',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = BrainStore.forAgent(home, req.params.name)
+      const note = await store.tryRead(req.params.slug)
+      if (!note) {
+        throw new ApiError(
+          404,
+          'brain_note_not_found',
+          `No note with slug "${req.params.slug}" in agent "${req.params.name}".`,
+        )
+      }
+      return toBrainNoteDto(note)
+    },
+  )
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -851,6 +961,42 @@ function toBudgetOverrideDto(o: BudgetOverride): BudgetOverrideDto {
   return {
     until: o.until,
     reason: o.reason ?? null,
+  }
+}
+
+interface BrainNoteListDto {
+  slug: string
+  title: string
+  type: string
+  tags: string[]
+  created: string
+  updated: string
+  links: string[]
+  /** First 240 chars of the body, lossy preview for the list view. */
+  preview: string
+}
+
+interface BrainNoteDto extends BrainNoteListDto {
+  body: string
+}
+
+function toBrainNoteListDto(n: BrainNote): BrainNoteListDto {
+  return {
+    slug: n.slug,
+    title: n.frontmatter.title,
+    type: n.frontmatter.type,
+    tags: n.frontmatter.tags,
+    created: n.frontmatter.created,
+    updated: n.frontmatter.updated,
+    links: n.frontmatter.links,
+    preview: n.body.length > 240 ? n.body.slice(0, 240) + '…' : n.body,
+  }
+}
+
+function toBrainNoteDto(n: BrainNote): BrainNoteDto {
+  return {
+    ...toBrainNoteListDto(n),
+    body: n.body,
   }
 }
 
