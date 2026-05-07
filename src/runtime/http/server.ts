@@ -280,6 +280,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'GET', path: '/api/v1/agents/:name/tools' },
       { method: 'GET', path: '/api/v1/agents/:name/tasks' },
+      { method: 'GET', path: '/api/v1/agents/:name/tasks/:id' },
       { method: 'POST', path: '/api/v1/agents/:name/tasks' },
       { method: 'POST', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/notifications' },
@@ -627,6 +628,28 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       cursor: { next: null, limit: items.length },
     }
   })
+
+  // -- agent task detail (Epic 15 Phase C) --------------------------------
+  // Full TaskRecord for one task. Surfaces what list omits: full body,
+  // full outcome.summary, full error message, checkpoint info,
+  // detector trip context.
+  fastify.get<{ Params: { name: string; id: string } }>(
+    '/api/v1/agents/:name/tasks/:id',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new TaskStore(home, req.params.name)
+      const task = await store.get(req.params.id)
+      if (!task) {
+        throw new ApiError(
+          404,
+          'task_not_found',
+          `No task "${req.params.id}" for agent "${req.params.name}".`,
+        )
+      }
+      return toTaskDetailDto(task)
+    },
+  )
 
   // -- agent tasks (Epic 15 Phase C interaction surface) -------------------
   // Lets a user enqueue a synthetic prompt-task for an Agent without
@@ -1340,6 +1363,47 @@ function toTaskListDto(rec: TaskRecord): TaskListDto {
     detector_kind: fm.detector_block?.kind ?? null,
     iterations: fm.outcome?.iterations ?? null,
     outcome_preview: preview,
+  }
+}
+
+interface TaskDetailDto extends TaskListDto {
+  /** The full task body (the prompt the model sees). */
+  body: string
+  /** Full outcome.summary when state is 'done'; null otherwise. */
+  outcome_summary: string | null
+  /** Full error message when state is 'errored'; null otherwise. */
+  error_message: string | null
+  /** Error class when state is 'errored'; null otherwise. */
+  error_class: string | null
+  /** Detector trip detail when blocked_on_detector. */
+  detector_detail: string | null
+  /** Detector trip id when blocked_on_detector. */
+  detector_trip_id: string | null
+  /** Latest checkpoint iteration count when checkpointed; null otherwise. */
+  checkpoint_iteration: number | null
+  /** Latest checkpoint taken_at timestamp when checkpointed. */
+  checkpoint_taken_at: string | null
+  /** Idempotency mode (pure | checkpointed | destructive). */
+  idempotency: string
+  /** Priority (default 0). */
+  priority: number
+}
+
+function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {
+  const list = toTaskListDto(rec)
+  const fm = rec.frontmatter
+  return {
+    ...list,
+    body: rec.body,
+    outcome_summary: fm.outcome?.summary ?? null,
+    error_message: fm.error?.message ?? null,
+    error_class: fm.error?.class ?? null,
+    detector_detail: fm.detector_block?.detail ?? null,
+    detector_trip_id: fm.detector_block?.trip_id ?? null,
+    checkpoint_iteration: fm.checkpoint?.iteration ?? null,
+    checkpoint_taken_at: fm.checkpoint?.taken_at ?? null,
+    idempotency: fm.idempotency,
+    priority: fm.priority,
   }
 }
 

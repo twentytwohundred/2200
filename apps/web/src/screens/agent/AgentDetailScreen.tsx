@@ -7,7 +7,7 @@
  * actions (Pause / Resume) live in the page header. The status pill
  * updates live without a refresh via the WebSocket subscription.
  */
-import { useState, type FormEvent, type ReactElement } from 'react'
+import { useEffect, useState, type FormEvent, type ReactElement } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -566,6 +566,7 @@ interface TasksSectionProps {
 }
 
 function TasksSection({ name }: TasksSectionProps): ReactElement {
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null)
   const query = useQuery({
     queryKey: ['tasks', name],
     queryFn: () => api.agentTasks(name, { limit: 8 }),
@@ -601,17 +602,33 @@ function TasksSection({ name }: TasksSectionProps): ReactElement {
         ) : (
           <div className={styles.taskList}>
             {items.map((t) => (
-              <TaskRow key={t.id} task={t} />
+              <TaskRow
+                key={t.id}
+                task={t}
+                onOpen={() => {
+                  setOpenTaskId(t.id)
+                }}
+              />
             ))}
           </div>
         )}
       </Card>
+      {openTaskId ? (
+        <TaskDetailModal
+          agentName={name}
+          taskId={openTaskId}
+          onClose={() => {
+            setOpenTaskId(null)
+          }}
+        />
+      ) : null}
     </section>
   )
 }
 
 interface TaskRowProps {
   task: TaskListItem
+  onOpen: () => void
 }
 
 function taskPillVariant(state: string): PillVariant {
@@ -623,9 +640,21 @@ function taskPillVariant(state: string): PillVariant {
   return 'idle'
 }
 
-function TaskRow({ task }: TaskRowProps): ReactElement {
+function TaskRow({ task, onOpen }: TaskRowProps): ReactElement {
   return (
-    <div className={styles.taskRow}>
+    <div
+      className={styles.taskRow}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      style={{ cursor: 'pointer' }}
+    >
       <div className={styles.taskHead}>
         <Pill variant={taskPillVariant(task.state)}>
           {task.state.toUpperCase().replace(/_/g, ' ')}
@@ -642,6 +671,129 @@ function TaskRow({ task }: TaskRowProps): ReactElement {
       {task.iterations !== null ? (
         <div className={styles.taskMeta}>{String(task.iterations)} iterations</div>
       ) : null}
+    </div>
+  )
+}
+
+interface TaskDetailModalProps {
+  agentName: string
+  taskId: string
+  onClose: () => void
+}
+
+function TaskDetailModal({ agentName, taskId, onClose }: TaskDetailModalProps): ReactElement {
+  const query = useQuery({
+    queryKey: ['tasks', agentName, taskId],
+    queryFn: () => api.agentTask(agentName, taskId),
+    refetchInterval: 5_000,
+  })
+
+  // Esc closes the modal.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  return (
+    <div className={styles.modalBackdrop} onClick={onClose} role="presentation">
+      <div
+        className={styles.modalShell}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Task detail"
+        onClick={(e) => {
+          e.stopPropagation()
+        }}
+      >
+        {query.isLoading ? (
+          <LoadingState rows={5} />
+        ) : query.isError ? (
+          <ErrorState
+            title="Could not load task"
+            body={
+              query.error instanceof ApiError
+                ? `${query.error.code}: ${query.error.message}`
+                : query.error instanceof Error
+                  ? query.error.message
+                  : String(query.error)
+            }
+          />
+        ) : query.data ? (
+          <>
+            <div className={styles.modalHeader}>
+              <Pill variant={taskPillVariant(query.data.state)}>
+                {query.data.state.toUpperCase().replace(/_/g, ' ')}
+              </Pill>
+              <h3 className={styles.modalTitle}>{query.data.title}</h3>
+              <Button size="sm" variant="ghost" onClick={onClose} kbd="esc">
+                Close
+              </Button>
+            </div>
+            <div className={styles.modalMeta}>
+              <span>id · {query.data.id}</span>
+              <span>idempotency · {query.data.idempotency}</span>
+              <span>priority · {String(query.data.priority)}</span>
+              <span>created · {formatTimestamp(query.data.created)}</span>
+              {query.data.last_at ? (
+                <span>last · {formatTimestamp(query.data.last_at)}</span>
+              ) : null}
+              {query.data.iterations !== null ? (
+                <span>iterations · {String(query.data.iterations)}</span>
+              ) : null}
+            </div>
+            <SectionHeader title="PROMPT" />
+            <pre className={styles.modalBody}>{query.data.body}</pre>
+            {query.data.outcome_summary ? (
+              <>
+                <SectionHeader title="OUTCOME" />
+                <pre className={styles.modalBody}>{query.data.outcome_summary}</pre>
+              </>
+            ) : null}
+            {query.data.error_message ? (
+              <>
+                <SectionHeader title={`ERROR · ${query.data.error_class ?? '?'}`} />
+                <pre className={styles.modalBody}>{query.data.error_message}</pre>
+              </>
+            ) : null}
+            {query.data.detector_detail ? (
+              <>
+                <SectionHeader title={`DETECTOR · ${query.data.detector_kind ?? '?'}`} />
+                <pre className={styles.modalBody}>{query.data.detector_detail}</pre>
+                {query.data.detector_trip_id ? (
+                  <KV
+                    k="TRIP ID"
+                    v={<span className={styles.mono}>{query.data.detector_trip_id}</span>}
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {query.data.checkpoint_iteration !== null ? (
+              <>
+                <SectionHeader title="CHECKPOINT" />
+                <KV
+                  k="ITERATION"
+                  v={<span className={styles.mono}>{String(query.data.checkpoint_iteration)}</span>}
+                />
+                {query.data.checkpoint_taken_at ? (
+                  <KV
+                    k="TAKEN AT"
+                    v={
+                      <span className={styles.mono}>
+                        {formatTimestamp(query.data.checkpoint_taken_at)}
+                      </span>
+                    }
+                  />
+                ) : null}
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </div>
     </div>
   )
 }
