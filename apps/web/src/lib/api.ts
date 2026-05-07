@@ -64,6 +64,12 @@ export interface Pulse {
   updated_at: string
 }
 
+export interface AgentModel {
+  provider: string
+  model_id: string
+  followup_model_id: string | null
+}
+
 export interface Agent {
   name: string
   status: string
@@ -75,6 +81,7 @@ export interface Agent {
   errored_at: string | null
   errored_reason: string | null
   pulse: Pulse | null
+  model: AgentModel | null
 }
 
 /**
@@ -437,6 +444,26 @@ export interface RuntimeVersion {
   runtime: string
 }
 
+/**
+ * Settings page representation of a single LLM provider entry. Carries
+ * static catalog metadata (name, label, default env key) plus the
+ * runtime view (whether the key is set, masked tail, agents using it).
+ */
+export interface ProviderSettingsItem {
+  name: string
+  label: string
+  defaultEnvKey: string
+  kind: 'anthropic' | 'openai-compatible' | 'local'
+  baseUrl: string
+  baseUrlEditable: boolean
+  baseUrlEnvKey: string
+  keyOptional: boolean
+  key_set: boolean
+  key_masked: string | null
+  agents_using: string[]
+  suggested_models: string[]
+}
+
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
@@ -592,6 +619,43 @@ export const api = {
     request<{ path: string; bytes_written: number; restart_required: boolean }>(
       `/api/v1/agents/${encodeURIComponent(name)}/identity`,
       { method: 'PUT', body: { content } },
+    ),
+  agentModelSet: (
+    name: string,
+    body: { provider: string; model_id: string; followup_model_id?: string | null },
+  ) =>
+    request<{
+      path: string
+      provider: string
+      model_id: string
+      followup_model_id: string | null
+      restart_required: boolean
+    }>(`/api/v1/agents/${encodeURIComponent(name)}/model`, { method: 'PUT', body }),
+  settingsProvidersList: () =>
+    request<{
+      runtime_env_path: string
+      items: ProviderSettingsItem[]
+    }>('/api/v1/settings/providers'),
+  settingsProviderKeySet: (id: string, key: string) =>
+    request<{
+      provider: string
+      env_key: string
+      key_set: boolean
+      key_masked: string | null
+      restart_required: boolean
+    }>(`/api/v1/settings/providers/${encodeURIComponent(id)}/key`, {
+      method: 'PUT',
+      body: { key },
+    }),
+  settingsProviderKeyClear: (id: string) =>
+    request<{ provider: string; env_key: string; key_set: boolean; restart_required: boolean }>(
+      `/api/v1/settings/providers/${encodeURIComponent(id)}/key`,
+      { method: 'DELETE' },
+    ),
+  settingsLocalUrlSet: (baseUrl: string) =>
+    request<{ provider: 'local'; base_url: string; restart_required: boolean }>(
+      '/api/v1/settings/providers/local/url',
+      { method: 'PUT', body: { base_url: baseUrl } },
     ),
   taskCreate: (name: string, body: TaskCreateBody) =>
     request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {

@@ -63,6 +63,14 @@ import {
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
 import { loadIdentity } from '../identity/loader.js'
+import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import { loadPricingTable } from '../llm/pricing.js'
+import {
+  defaultRuntimeEnvPath,
+  loadRuntimeEnv,
+  removeRuntimeEnvKey,
+  upsertRuntimeEnvKey,
+} from '../config/runtime-env.js'
 import { aggregateToolHealth } from '../tools/health.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
@@ -288,6 +296,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'DELETE', path: '/api/v1/agents/:name/brain/note/:slug' },
       { method: 'GET', path: '/api/v1/agents/:name/identity' },
       { method: 'PUT', path: '/api/v1/agents/:name/identity' },
+      { method: 'PUT', path: '/api/v1/agents/:name/model' },
+      { method: 'GET', path: '/api/v1/settings/providers' },
+      { method: 'PUT', path: '/api/v1/settings/providers/:id/key' },
+      { method: 'DELETE', path: '/api/v1/settings/providers/:id/key' },
+      { method: 'PUT', path: '/api/v1/settings/providers/local/url' },
       { method: 'GET', path: '/api/v1/agents/:name/chat' },
       { method: 'POST', path: '/api/v1/agents/:name/chat' },
       { method: 'GET', path: '/api/v1/notifications' },
@@ -302,6 +315,137 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'WS', path: '/api/v1/ws' },
     ],
   }))
+
+  // -- settings: providers + keys (Epic 15 Phase C) ------------------------
+  // Web-side management for LLM provider credentials. Reads + writes
+  // ~/.config/2200/runtime.env in place. The supervisor reads that file
+  // once at boot, so adding/changing a key requires restarting the
+  // affected agents (the response carries `restart_required: true` to
+  // surface this in the UI).
+  //
+  // Power users still own the file directly. The web write path
+  // preserves comments and unrelated entries.
+
+  /** Mask all but the last 4 chars of a key for display. */
+  function maskKey(value: string): string {
+    if (value.length <= 4) return '*'.repeat(Math.max(value.length, 0))
+    return '*'.repeat(value.length - 4) + value.slice(-4)
+  }
+
+  /**
+   * Compose the provider snapshot returned by GET
+   * /api/v1/settings/providers. Combines the static catalog with the
+   * runtime.env file's current contents and the live agent fleet.
+   */
+  type ProviderDto = ProviderCatalogEntry & {
+    key_set: boolean
+    key_masked: string | null
+    agents_using: string[]
+    suggested_models: string[]
+  }
+  async function buildProvidersDto(): Promise<{
+    runtime_env_path: string
+    items: ProviderDto[]
+  }> {
+    const envPath = defaultRuntimeEnvPath()
+    const env = await loadRuntimeEnv(envPath)
+    const snap = supervisor.snapshot()
+    const pricing = loadPricingTable()
+
+    // Group pricing-known models by provider so the UI can offer chips.
+    const modelsByProvider: Record<string, string[]> = {}
+    for (const key of Object.keys(pricing.models)) {
+      const slash = key.indexOf('/')
+      if (slash === -1) continue
+      const prov = key.slice(0, slash)
+      const model = key.slice(slash + 1)
+      ;(modelsByProvider[prov] ??= []).push(model)
+    }
+
+    // Group running agents by provider so the user can see which
+    // agents will need a restart after a key change. We re-read each
+    // Identity from disk because the snapshot only carries the path;
+    // a malformed Identity is tolerated (skipped) so a single bad
+    // file does not break the settings page.
+    const agentsByProvider: Record<string, string[]> = {}
+    for (const rec of Object.values(snap.agents)) {
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        const prov = id.frontmatter.model.provider
+        ;(agentsByProvider[prov] ??= []).push(id.frontmatter.agent_name)
+      } catch {
+        /* skip unreadable Identity */
+      }
+    }
+
+    const items = listKnownProviders().map((cat) => {
+      const value = env[cat.defaultEnvKey] ?? ''
+      const keySet = value.length > 0
+      return {
+        ...cat,
+        // Reflect the live env value for the local provider's URL,
+        // since the catalog snapshot reads it once at module load.
+        baseUrl: cat.name === 'local' ? (env['LOCAL_BASE_URL'] ?? cat.baseUrl) : cat.baseUrl,
+        key_set: keySet,
+        key_masked: keySet ? maskKey(value) : null,
+        agents_using: (agentsByProvider[cat.name] ?? []).sort(),
+        suggested_models: (modelsByProvider[cat.name] ?? []).sort(),
+      }
+    })
+    return { runtime_env_path: envPath, items }
+  }
+
+  fastify.get('/api/v1/settings/providers', async () => {
+    return buildProvidersDto()
+  })
+
+  const PutProviderKeyBody = z.object({
+    /** Plain-text API key. Stored in runtime.env. Empty string = remove. */
+    key: z.string(),
+  })
+
+  fastify.put<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
+    const cat = listKnownProviders().find((c) => c.name === req.params.id)
+    if (!cat) throw notFound('provider', req.params.id)
+    const body = PutProviderKeyBody.parse(req.body)
+    if (body.key === '') {
+      await removeRuntimeEnvKey(cat.defaultEnvKey)
+    } else {
+      await upsertRuntimeEnvKey(cat.defaultEnvKey, body.key)
+    }
+    const env = await loadRuntimeEnv()
+    const value = env[cat.defaultEnvKey] ?? ''
+    return {
+      provider: cat.name,
+      env_key: cat.defaultEnvKey,
+      key_set: value.length > 0,
+      key_masked: value.length > 0 ? maskKey(value) : null,
+      restart_required: true,
+    }
+  })
+
+  fastify.delete<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
+    const cat = listKnownProviders().find((c) => c.name === req.params.id)
+    if (!cat) throw notFound('provider', req.params.id)
+    await removeRuntimeEnvKey(cat.defaultEnvKey)
+    return {
+      provider: cat.name,
+      env_key: cat.defaultEnvKey,
+      key_set: false,
+      restart_required: true,
+    }
+  })
+
+  const PutLocalUrlBody = z.object({
+    /** Full base URL for the local OpenAI-compatible endpoint. */
+    base_url: z.url(),
+  })
+
+  fastify.put('/api/v1/settings/providers/local/url', async (req) => {
+    const body = PutLocalUrlBody.parse(req.body)
+    await upsertRuntimeEnvKey('LOCAL_BASE_URL', body.base_url)
+    return { provider: 'local', base_url: body.base_url, restart_required: true }
+  })
 
   // -- agents --------------------------------------------------------------
   fastify.get('/api/v1/agents', async () => {
@@ -894,6 +1038,76 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- agent model switch (Epic 15 Phase C settings surface) --------------
+  // Targeted edit of the Identity's `model.provider` + `model.model_id`
+  // (and optional `followup_model_id`). The full identity PUT requires
+  // the operator to hand-edit YAML; this endpoint is the click-target
+  // for the AgentDetail model picker. We re-write the file via the
+  // same validate-tmp-rename flow so a malformed Identity never
+  // overwrites a good one.
+  const PutAgentModelBody = z.object({
+    provider: z.string().regex(/^[a-z0-9]+$/),
+    model_id: z.string().regex(/^[a-z0-9.-]+$/),
+    /** Optional follow-up model id; null clears the field. */
+    followup_model_id: z
+      .string()
+      .regex(/^[a-z0-9.-]+$/)
+      .nullable()
+      .optional(),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/model', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutAgentModelBody.parse(req.body)
+    // Reject unknown providers up front to keep the user out of a
+    // broken-identity-then-restart cycle.
+    const known = listKnownProviders().map((c) => c.name)
+    if (!known.includes(body.provider)) {
+      throw new ApiError(
+        422,
+        'unknown_provider',
+        `provider '${body.provider}' is not in the registry. Known: ${known.join(', ')}`,
+      )
+    }
+    const raw = await readFile(rec.identity_path, 'utf8')
+    const updated = applyModelEdit(raw, {
+      provider: body.provider,
+      model_id: body.model_id,
+      // Only forward the field when the client included it; omitting
+      // leaves the existing value alone, while explicit null clears it.
+      ...(body.followup_model_id !== undefined
+        ? { followup_model_id: body.followup_model_id }
+        : {}),
+    })
+    const { writeFile, rm, rename } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    try {
+      await writeFile(tmpPath, updated, 'utf8')
+      await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed model edit produced an invalid Identity: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      provider: body.provider,
+      model_id: body.model_id,
+      followup_model_id: body.followup_model_id ?? null,
+      restart_required: true,
+    }
+  })
+
   // -- agent chat (Epic 15 Phase C interaction surface) -------------------
   // Persistent conversation thread with the Agent. Each user message
   // appends to the chat log + spawns a task that sees the full prior
@@ -1431,6 +1645,18 @@ async function toAgentDto(
     // and the operator can chase the parse error in the supervisor
     // log on their own time.
   }
+  let model: { provider: string; model_id: string; followup_model_id: string | null } | null = null
+  try {
+    const id = await loadIdentity(rec.identity_path)
+    model = {
+      provider: id.frontmatter.model.provider,
+      model_id: id.frontmatter.model.model_id,
+      followup_model_id: id.frontmatter.model.followup_model_id ?? null,
+    }
+  } catch {
+    // Same tolerance as pulse: a broken Identity should not break
+    // the screen. The detail screen shows "?" for the model.
+  }
   return {
     name: rec.name,
     status: rec.state,
@@ -1442,6 +1668,7 @@ async function toAgentDto(
     errored_at: rec.errored_at,
     errored_reason: rec.errored_reason,
     pulse,
+    model,
   }
 }
 
@@ -1595,6 +1822,94 @@ interface TaskListDto {
    * chat screen surfaces them already.
    */
   source: 'chat' | 'other'
+}
+
+/**
+ * Rewrite the `model:` block of an Identity file's YAML frontmatter
+ * with a new provider / model_id / optional follow-up model. Pure
+ * string surgery against the YAML body, since round-tripping through
+ * a YAML parser would destroy the user's comments and key ordering.
+ *
+ * Contract: the input must contain a frontmatter block delimited by
+ * `---` lines and a `model:` mapping inside it (every Identity
+ * created by the runtime has both). Throws ApiError(422) if either
+ * assumption is violated; the PUT handler converts that into a
+ * surfaced error so the file is never mangled.
+ */
+function applyModelEdit(
+  raw: string,
+  edit: { provider: string; model_id: string; followup_model_id?: string | null },
+): string {
+  const fmStart = raw.indexOf('---')
+  if (fmStart === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no frontmatter delimiter')
+  }
+  const fmEnd = raw.indexOf('\n---', fmStart + 3)
+  if (fmEnd === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity frontmatter is not closed')
+  }
+  const head = raw.slice(0, fmStart + 3)
+  const fm = raw.slice(fmStart + 3, fmEnd + 1)
+  const tail = raw.slice(fmEnd + 1)
+
+  const lines = fm.split('\n')
+  const modelLineIdx = lines.findIndex((l) => /^model:\s*$/.test(l))
+  if (modelLineIdx === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no `model:` block to edit')
+  }
+  // Determine the indented block following `model:` and replace its
+  // provider, model_id, and (optionally) followup_model_id lines.
+  let blockEnd = modelLineIdx + 1
+  while (blockEnd < lines.length) {
+    const line = lines[blockEnd] ?? ''
+    if (line === '' || /^\s/.test(line)) blockEnd++
+    else break
+  }
+  const block = lines.slice(modelLineIdx + 1, blockEnd)
+  // Detect the indent (use the first non-empty child line; default to two spaces).
+  let indent = '  '
+  for (const line of block) {
+    const m = /^(\s+)\S/.exec(line)
+    if (m?.[1] !== undefined) {
+      indent = m[1]
+      break
+    }
+  }
+  const setLine = (key: string, value: string): string => `${indent}${key}: ${value}`
+  let providerSeen = false
+  let modelIdSeen = false
+  let followupSeen = false
+  const newBlock: string[] = []
+  for (const line of block) {
+    const stripped = line.trim()
+    if (stripped.startsWith('provider:')) {
+      newBlock.push(setLine('provider', edit.provider))
+      providerSeen = true
+    } else if (stripped.startsWith('model_id:')) {
+      newBlock.push(setLine('model_id', edit.model_id))
+      modelIdSeen = true
+    } else if (stripped.startsWith('followup_model_id:')) {
+      followupSeen = true
+      // Drop when explicitly cleared; otherwise replace.
+      if (edit.followup_model_id === null) {
+        // skip line
+      } else if (edit.followup_model_id !== undefined) {
+        newBlock.push(setLine('followup_model_id', edit.followup_model_id))
+      } else {
+        newBlock.push(line) // unchanged
+      }
+    } else {
+      newBlock.push(line)
+    }
+  }
+  if (!providerSeen) newBlock.unshift(setLine('provider', edit.provider))
+  if (!modelIdSeen) newBlock.unshift(setLine('model_id', edit.model_id))
+  if (!followupSeen && edit.followup_model_id !== null && edit.followup_model_id !== undefined) {
+    newBlock.push(setLine('followup_model_id', edit.followup_model_id))
+  }
+
+  const rebuilt = [...lines.slice(0, modelLineIdx + 1), ...newBlock, ...lines.slice(blockEnd)]
+  return head + rebuilt.join('\n') + tail
 }
 
 /** Marker prefix that identifies a chat-spawned task body. Kept in sync with buildChatTaskBody. */

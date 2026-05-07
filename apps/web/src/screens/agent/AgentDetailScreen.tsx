@@ -15,9 +15,11 @@ import {
   NetworkError,
   api,
   type Agent,
+  type AgentModel,
   type BudgetResponse,
   type ListEnvelope,
   type Notification,
+  type ProviderSettingsItem,
   type TaskListItem,
 } from '../../lib/api'
 import {
@@ -361,6 +363,8 @@ export function AgentDetailScreen(): ReactElement {
           <TasksSection name={agent.name} />
 
           <ActivitySection name={agent.name} query={notificationsQuery} />
+
+          <ModelSection name={agent.name} model={agent.model} />
 
           <IdentitySection name={agent.name} path={agent.identity_path} />
         </>
@@ -983,6 +987,176 @@ function errorBody(error: unknown): string {
     return `${error.code}: ${error.message}`
   }
   return error instanceof Error ? error.message : String(error)
+}
+
+function ModelSection({ name, model }: { name: string; model: AgentModel | null }): ReactElement {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draftProvider, setDraftProvider] = useState(model?.provider ?? '')
+  const [draftModelId, setDraftModelId] = useState(model?.model_id ?? '')
+
+  const providersQuery = useQuery({
+    queryKey: ['settings', 'providers'],
+    queryFn: () => api.settingsProvidersList(),
+    staleTime: 30_000,
+    enabled: editing,
+  })
+
+  const saveMutation = useMutation({
+    mutationFn: () => api.agentModelSet(name, { provider: draftProvider, model_id: draftModelId }),
+    onSuccess: () => {
+      setEditing(false)
+      void queryClient.invalidateQueries({ queryKey: ['agent', name] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+
+  const beginEdit = (): void => {
+    setDraftProvider(model?.provider ?? '')
+    setDraftModelId(model?.model_id ?? '')
+    setEditing(true)
+  }
+
+  const selectedProvider: ProviderSettingsItem | undefined = providersQuery.data?.items.find(
+    (p) => p.name === draftProvider,
+  )
+
+  return (
+    <section>
+      <SectionHeader
+        title="MODEL"
+        action={
+          !editing ? (
+            <button
+              type="button"
+              onClick={beginEdit}
+              className={styles.identityPencil}
+              title="Change model"
+              aria-label="Change model"
+            >
+              ✎
+            </button>
+          ) : null
+        }
+      />
+      <Card padding={20}>
+        {editing ? (
+          <div className={styles.modelEditor}>
+            <label className={styles.modelLabel}>
+              <span className={styles.modelLabelText}>PROVIDER</span>
+              <select
+                className={styles.modelSelect}
+                value={draftProvider}
+                onChange={(e) => {
+                  setDraftProvider(e.target.value)
+                }}
+              >
+                <option value="">— pick provider —</option>
+                {providersQuery.data?.items.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.label}
+                    {!p.key_set && !p.keyOptional ? ' (no key)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.modelLabel}>
+              <span className={styles.modelLabelText}>MODEL ID</span>
+              <input
+                className={styles.modelInput}
+                value={draftModelId}
+                onChange={(e) => {
+                  setDraftModelId(e.target.value)
+                }}
+                placeholder="e.g. claude-opus-4-7"
+                spellCheck={false}
+              />
+            </label>
+            {selectedProvider && selectedProvider.suggested_models.length > 0 ? (
+              <div className={styles.modelSuggestions}>
+                {selectedProvider.suggested_models.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={styles.modelSuggestionChip}
+                    onClick={() => {
+                      setDraftModelId(m)
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {selectedProvider && !selectedProvider.key_set && !selectedProvider.keyOptional ? (
+              <div className={styles.modelWarning}>
+                {selectedProvider.label} has no API key set. Add it on the Settings page first.
+              </div>
+            ) : null}
+            {saveMutation.error ? (
+              <div className={styles.sendError}>
+                {saveMutation.error instanceof ApiError
+                  ? `${saveMutation.error.code}: ${saveMutation.error.message}`
+                  : saveMutation.error instanceof Error
+                    ? saveMutation.error.message
+                    : String(saveMutation.error)}
+              </div>
+            ) : null}
+            <div className={styles.sendActions}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setEditing(false)
+                }}
+                disabled={saveMutation.isPending}
+              >
+                CANCEL
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  saveMutation.mutate()
+                }}
+                disabled={
+                  saveMutation.isPending ||
+                  draftProvider === '' ||
+                  draftModelId === '' ||
+                  (model !== null &&
+                    draftProvider === model.provider &&
+                    draftModelId === model.model_id)
+                }
+              >
+                {saveMutation.isPending ? 'SAVING…' : 'SAVE'}
+              </Button>
+            </div>
+            <div className={styles.modelNote}>Restart this agent to apply the change.</div>
+          </div>
+        ) : (
+          <>
+            <KV
+              k="PROVIDER"
+              v={<span className={styles.monoPath}>{model?.provider ?? '—'}</span>}
+              kw={64}
+            />
+            <KV
+              k="MODEL ID"
+              v={<span className={styles.monoPath}>{model?.model_id ?? '—'}</span>}
+              kw={64}
+            />
+            {model?.followup_model_id ? (
+              <KV
+                k="FOLLOW-UP"
+                v={<span className={styles.monoPath}>{model.followup_model_id}</span>}
+                kw={64}
+              />
+            ) : null}
+          </>
+        )}
+      </Card>
+    </section>
+  )
 }
 
 export type { Agent }
