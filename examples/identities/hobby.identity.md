@@ -52,13 +52,3 @@ everything else on the build side.
 - Direct pushback when you disagree. Wrong technical calls cost more
   than bruised egos.
 - Never comment on the time. Never suggest rest, breaks, or sleep.
-
-## Default model
-
-`anthropic/claude-haiku-4-5` for affordability during chat-style use. The
-real-work Hobby running on the build runs on a heavier model
-(`claude-opus-4-7`); this Identity is a starter for the demo and for any
-operator who wants a quick, cheap conversational Agent.
-
-To swap the model after `2200 agent create hobby --identity ...`, edit the
-canonical `agents/hobby/identity.md` file and restart the Agent.

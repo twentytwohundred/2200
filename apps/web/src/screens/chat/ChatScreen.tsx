@@ -125,7 +125,9 @@ export function ChatScreen(): ReactElement {
         ) : messages.length === 0 && !pendingTaskId ? (
           <div className={styles.empty}>No messages yet. Say hi and the agent will respond.</div>
         ) : (
-          messages.map((m: ChatMessage) => <ChatBubble key={m.id} message={m} />)
+          messages.map((m: ChatMessage) => (
+            <ChatBubble key={m.id} message={m} agentName={name ?? 'agent'} />
+          ))
         )}
         {pendingTaskId ? (
           <div className={styles.thinking}>
@@ -175,21 +177,26 @@ export function ChatScreen(): ReactElement {
 
 interface ChatBubbleProps {
   message: ChatMessage
+  agentName: string
 }
 
-function ChatBubble({ message }: ChatBubbleProps): ReactElement {
+function ChatBubble({ message, agentName }: ChatBubbleProps): ReactElement {
   const bubbleClass = cx(
     styles.bubble,
     message.role === 'user' && styles.bubbleUser,
     message.role === 'assistant' && styles.bubbleAgent,
     message.role === 'system' && styles.bubbleSystem,
   )
+  // Show the Agent's actual name in place of the generic "assistant"
+  // role so the user knows who is speaking. User and system stay
+  // labeled by role.
+  const speaker = message.role === 'assistant' ? agentName : message.role
   return (
     <div className={styles.messageRow} data-role={message.role}>
       <div>
         <div className={bubbleClass}>{message.content || '(empty response)'}</div>
         <div className={styles.meta}>
-          {message.role} · {formatTime(message.ts)}
+          {speaker} · {formatTime(message.ts)}
         </div>
       </div>
     </div>
