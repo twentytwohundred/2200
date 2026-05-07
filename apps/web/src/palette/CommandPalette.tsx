@@ -199,6 +199,17 @@ export function CommandPalette(): ReactElement {
         },
       },
       {
+        id: 'nav:settings',
+        group: 'NAVIGATE',
+        label: 'Settings',
+        hint: '/settings',
+        searchable: 'settings theme preferences about cli',
+        activate: () => {
+          void navigate('/settings')
+          close()
+        },
+      },
+      {
         id: 'nav:components',
         group: 'NAVIGATE',
         label: 'Component library',

@@ -84,6 +84,7 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Inbox')).toBeInTheDocument()
     expect(screen.getByText('Budget')).toBeInTheDocument()
     expect(screen.getByText('Component library')).toBeInTheDocument()
+    expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
   it('exposes a Spawn an Agent command pointing at /onboarding', async () => {

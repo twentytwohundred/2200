@@ -7,6 +7,7 @@ import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
 import { BrainScreen } from './screens/brain/BrainScreen'
 import { SchedulesScreen } from './screens/schedules/SchedulesScreen'
+import { SettingsScreen } from './screens/settings/SettingsScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
@@ -38,6 +39,7 @@ export function Router(): ReactElement {
         <Route path="/onboarding" element={<OnboardingScreen />} />
         <Route path="/agent/:name/brain" element={<BrainScreen />} />
         <Route path="/agent/:name/schedules" element={<SchedulesScreen />} />
+        <Route path="/settings" element={<SettingsScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
