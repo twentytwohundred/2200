@@ -48,6 +48,16 @@ import { BrainStore } from '../brain/store.js'
 import { BrainIndex, BrainIndexNotFoundError } from '../brain/index-db.js'
 import type { BrainNote } from '../brain/types.js'
 import {
+  ScheduleError,
+  ScheduleTimingSchema,
+  createSchedule,
+  deleteSchedule,
+  listSchedules,
+  readSchedule,
+  setScheduleEnabled,
+  type ScheduleEntry,
+} from '../scheduler/schedule.js'
+import {
   ApiError,
   envelope,
   genericEnvelope,
@@ -254,6 +264,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
+      { method: 'GET', path: '/api/v1/agents/:name/schedules' },
+      { method: 'POST', path: '/api/v1/agents/:name/schedules' },
+      { method: 'PATCH', path: '/api/v1/agents/:name/schedules/:id' },
+      { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -428,6 +442,108 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         )
       }
       return toBrainNoteDto(note)
+    },
+  )
+
+  // -- agent schedules (Epic 15 Phase C) -----------------------------------
+  // CRUD over the per-Agent schedule store. After every mutation we
+  // ask the live Scheduler service to reload so newly-written or
+  // disabled schedules pick up immediately without a daemon bounce.
+  // This mirrors the cli.scheduler.reload RPC the CLI uses.
+  const CreateScheduleBody = z.object({
+    description: z.string().optional(),
+    prompt: z.string().min(1),
+    timing: ScheduleTimingSchema,
+    enabled: z.boolean().optional(),
+  })
+
+  const PatchScheduleBody = z.object({
+    enabled: z.boolean(),
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/schedules', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const items = await listSchedules(home, req.params.name)
+    return {
+      items: items.map(toScheduleDto),
+      cursor: { next: null, limit: items.length },
+    }
+  })
+
+  fastify.post<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/schedules',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = CreateScheduleBody.parse(req.body)
+      let entry: ScheduleEntry
+      try {
+        const args: Parameters<typeof createSchedule>[0] = {
+          home,
+          agentName: req.params.name,
+          prompt: body.prompt,
+          timing: body.timing,
+        }
+        if (body.description !== undefined) args.description = body.description
+        if (body.enabled !== undefined) args.enabled = body.enabled
+        entry = await createSchedule(args)
+      } catch (err) {
+        if (err instanceof ScheduleError) {
+          throw new ApiError(422, 'schedule_invalid', err.message)
+        }
+        throw err
+      }
+      await supervisor.getScheduler().reload()
+      void reply.status(201)
+      return toScheduleDto(entry)
+    },
+  )
+
+  fastify.patch<{
+    Params: { name: string; id: string }
+    Body: { enabled: boolean }
+  }>('/api/v1/agents/:name/schedules/:id', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = PatchScheduleBody.parse(req.body)
+    try {
+      await readSchedule(home, req.params.name, req.params.id)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new ApiError(
+          404,
+          'schedule_not_found',
+          `No schedule "${req.params.id}" for agent "${req.params.name}".`,
+        )
+      }
+      throw err
+    }
+    const updated = await setScheduleEnabled(home, req.params.name, req.params.id, body.enabled)
+    await supervisor.getScheduler().reload()
+    return toScheduleDto(updated)
+  })
+
+  fastify.delete<{ Params: { name: string; id: string } }>(
+    '/api/v1/agents/:name/schedules/:id',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      try {
+        await readSchedule(home, req.params.name, req.params.id)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new ApiError(
+            404,
+            'schedule_not_found',
+            `No schedule "${req.params.id}" for agent "${req.params.name}".`,
+          )
+        }
+        throw err
+      }
+      await deleteSchedule(home, req.params.name, req.params.id)
+      await supervisor.getScheduler().reload()
+      return { id: req.params.id, deleted: true as const }
     },
   )
 
@@ -997,6 +1113,20 @@ function toBrainNoteDto(n: BrainNote): BrainNoteDto {
   return {
     ...toBrainNoteListDto(n),
     body: n.body,
+  }
+}
+
+function toScheduleDto(entry: ScheduleEntry) {
+  return {
+    id: entry.id,
+    agent: entry.agent,
+    description: entry.description,
+    prompt: entry.prompt,
+    timing: entry.timing,
+    enabled: entry.enabled,
+    created_at: entry.created_at,
+    last_fired_at: entry.last_fired_at,
+    next_fire_at: entry.next_fire_at,
   }
 }
 

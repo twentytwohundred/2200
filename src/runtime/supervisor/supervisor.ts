@@ -162,6 +162,15 @@ export class Supervisor {
    * in-flight interview, matching the CLI's `Ctrl-C aborts the spawn`
    * behavior.
    */
+  /**
+   * Expose the supervisor's Scheduler so the HTTP server can request
+   * a reload after a schedule mutation lands on disk. The CLI uses
+   * the same surface via the `cli.scheduler.reload` RPC.
+   */
+  getScheduler(): Scheduler {
+    return this.scheduler
+  }
+
   getOnboardingSessions(): OnboardingSessionStore {
     return this.onboardingSessions
   }
