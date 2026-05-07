@@ -1,0 +1,116 @@
+.shell {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.serverList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.serverCard {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+
+.serverHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.serverName {
+  font-family: var(--type-family-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.serverDetails {
+  display: grid;
+  gap: var(--space-1);
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.serverChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.envChip {
+  font-family: var(--type-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-subtle);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.healthGrid {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+}
+
+.healthGrid thead {
+  background: var(--color-bg-elevated);
+}
+
+.healthGrid th,
+.healthGrid td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.healthGrid th {
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.healthGrid tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.healthGrid td.numeric {
+  text-align: right;
+}
+
+.callout {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-elevated);
+  border-left: 3px solid var(--color-border-emphasis);
+  border-radius: var(--radius-sm);
+}
+
+.calloutLabel {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
+}
+
+.calloutBody {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+}

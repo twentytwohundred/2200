@@ -26,7 +26,11 @@ import fastifyWebsocketImport from '@fastify/websocket'
 import { z, ZodError } from 'zod'
 import type { Supervisor } from '../supervisor/supervisor.js'
 import type { Logger } from '../util/logger.js'
-import { agentBrainIndexPath, homePaths } from '../storage/layout.js'
+import {
+  agentBrainIndexPath,
+  agentPaths as agentPathsHelper,
+  homePaths,
+} from '../storage/layout.js'
 
 import {
   listNotifications,
@@ -47,6 +51,7 @@ import {
 import { BrainStore } from '../brain/store.js'
 import { BrainIndex, BrainIndexNotFoundError } from '../brain/index-db.js'
 import type { BrainNote } from '../brain/types.js'
+import type { McpServerSpec } from '../identity/types.js'
 import {
   ScheduleError,
   ScheduleTimingSchema,
@@ -57,6 +62,8 @@ import {
   setScheduleEnabled,
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
+import { loadIdentity } from '../identity/loader.js'
+import { aggregateToolHealth } from '../tools/health.js'
 import {
   ApiError,
   envelope,
@@ -268,6 +275,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/schedules' },
       { method: 'PATCH', path: '/api/v1/agents/:name/schedules/:id' },
       { method: 'DELETE', path: '/api/v1/agents/:name/schedules/:id' },
+      { method: 'GET', path: '/api/v1/agents/:name/tools' },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -546,6 +554,44 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return { id: req.params.id, deleted: true as const }
     },
   )
+
+  // -- agent tools (Epic 15 Phase C) ---------------------------------------
+  // Surfaces the agent's MCP-server roster (from the Identity file) +
+  // a tool-health summary aggregated off the dispatcher's run records.
+  // Read-only; OAuth credential management still happens via the CLI.
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/tools', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+
+    let identityServers: ReturnType<typeof toMcpServerDto>[] = []
+    try {
+      const identity = await loadIdentity(rec.identity_path)
+      identityServers = identity.frontmatter.mcp_servers.map(toMcpServerDto)
+    } catch {
+      // Tolerate: a malformed Identity should not 500 the screen.
+      // The web client renders an empty server list with the health
+      // summary still available.
+    }
+
+    let healthSummary: Awaited<ReturnType<typeof aggregateToolHealth>> | null = null
+    try {
+      healthSummary = await aggregateToolHealth(
+        agentPathsHelper(home, req.params.name).brain,
+        req.params.name,
+      )
+    } catch {
+      // Same tolerance: a missing brain dir is fine, the agent has
+      // simply never recorded a tool call. The list view shows
+      // "no tool activity yet" rather than failing.
+    }
+
+    return {
+      agent: req.params.name,
+      mcp_servers: identityServers,
+      health: healthSummary,
+    }
+  })
 
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
@@ -1113,6 +1159,45 @@ function toBrainNoteDto(n: BrainNote): BrainNoteDto {
   return {
     ...toBrainNoteListDto(n),
     body: n.body,
+  }
+}
+
+/**
+ * Lossy DTO for MCP server specs ... drops command-line args and
+ * static headers (potentially noisy / sensitive shape; the user
+ * doesn't need them in the UI for v1) and any SecretRef values.
+ * The shape of `env` and `auth` is preserved as a placeholder so
+ * the UI can show "uses GMAIL_OAUTH_TOKEN" without exposing values.
+ */
+interface McpServerDto {
+  name: string
+  transport: 'stdio' | 'http'
+  /** Stdio: command + arg-count summary (verbatim args omitted to keep the wire small). */
+  command?: string
+  arg_count?: number
+  /** HTTP: endpoint URL. */
+  url?: string
+  /** Stdio: env var names (values are SecretRefs and never returned). */
+  env_keys?: string[]
+  /** HTTP: auth shape descriptor. */
+  auth_kind?: 'none' | 'bearer'
+}
+
+function toMcpServerDto(spec: McpServerSpec): McpServerDto {
+  if (spec.transport === 'stdio') {
+    return {
+      name: spec.name,
+      transport: 'stdio',
+      command: spec.command,
+      arg_count: spec.args.length,
+      env_keys: Object.keys(spec.env),
+    }
+  }
+  return {
+    name: spec.name,
+    transport: 'http',
+    url: spec.url,
+    auth_kind: spec.auth.type,
   }
 }
 
