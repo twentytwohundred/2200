@@ -911,8 +911,16 @@ export class AgentLoop {
       '  /commons/reference/...   read-only shared reference (humans write)',
       '  /commons/scratch/...     ephemeral shared scratch (you and other Agents read+write)',
       '  /project/...             your private project workspace',
-      '  /brain/...               your Brain (notes, indexes); use brain.* tools for normal access',
+      '  /brain/...               your Brain (notes); use brain.* tools, NOT fs.*',
       '  /shared/...              your outbox to other Agents',
+      '',
+      '## Brain notes are managed only via brain.* tools',
+      '',
+      'There is exactly ONE brain. It is the set of slug-keyed notes you read with `brain.read`, list with `brain.list`, search with `brain.search`, write with `brain.write` (upsert when `slug` is supplied), and delete with `brain.delete`.',
+      '',
+      'NEVER use `fs.read`, `fs.write`, `fs.edit`, or `fs.delete` on `/brain/...` paths. There is no separate filesystem layer for the brain ... a successful `fs.edit` to a brain path would corrupt the index, but the dispatcher will refuse such calls before they execute. Use `brain.write` to update an existing note: pass the same `slug`, your new `title`, and the full `body`. brain.write is upsert.',
+      '',
+      'To revise an existing brain note: call `brain.read` first to load the current body, edit the body in your reasoning, then call `brain.write` with the same `slug`, the same (or revised) `title`, and the full revised `body`. Confirm with another `brain.read`.',
     ]
     if (this.opts.skillProvider) {
       const [skills, conflicts] = await Promise.all([
