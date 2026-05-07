@@ -1598,7 +1598,7 @@ function buildChatTaskBody(
   }
   const lines: string[] = []
   lines.push(
-    `You are continuing a chat with the user. Below is the recent transcript; the line at the end is the user's new message. Read the prior turns for context, then respond to the new message. Do not repeat content already in the transcript.`,
+    `You are continuing a chat with the user. The transcript below is for CONTEXT ONLY ... it shows what was said in earlier turns of this conversation, but tool effects from those turns are not carried into this turn. If a prior turn appears to describe a tool call (file write, brain.write, fs.edit, etc.), that effect either succeeded earlier or did not happen ... you should never assume an effect simply because the transcript discusses it. If the user is asking you to do something, perform the necessary tool calls IN THIS TURN. After any tool calls, write a short final answer summarizing what you actually did (or could not do).`,
   )
   lines.push('')
   lines.push('--- recent transcript ---')
