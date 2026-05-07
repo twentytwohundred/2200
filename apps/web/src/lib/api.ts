@@ -249,6 +249,19 @@ export interface TaskListItem {
   outcome_preview: string | null
 }
 
+export interface TaskDetail extends TaskListItem {
+  body: string
+  outcome_summary: string | null
+  error_message: string | null
+  error_class: string | null
+  detector_detail: string | null
+  detector_trip_id: string | null
+  checkpoint_iteration: number | null
+  checkpoint_taken_at: string | null
+  idempotency: string
+  priority: number
+}
+
 /**
  * Brain (Epic 15 Phase C) wire shapes. The runtime exposes per-Agent
  * note list, FTS5 search, and single-note fetch via three endpoints
@@ -500,6 +513,10 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/tasks${suffix}`,
     )
   },
+  agentTask: (name: string, id: string) =>
+    request<TaskDetail>(
+      `/api/v1/agents/${encodeURIComponent(name)}/tasks/${encodeURIComponent(id)}`,
+    ),
   brainList: (name: string, params?: { type?: string; tag?: string; limit?: number }) => {
     const qs = new URLSearchParams()
     if (params?.type) qs.set('type', params.type)

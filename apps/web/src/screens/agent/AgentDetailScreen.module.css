@@ -323,3 +323,67 @@
   letter-spacing: 0.05em;
   color: var(--color-text-muted);
 }
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-7);
+  z-index: 50;
+  overflow-y: auto;
+}
+
+.modalShell {
+  width: 100%;
+  max-width: 720px;
+  background: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-emphasis);
+  padding: var(--space-5);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.modalTitle {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin: 0;
+  flex: 1;
+  word-break: break-word;
+}
+
+.modalMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.modalBody {
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  max-height: 40vh;
+  overflow: auto;
+  margin: 0;
+}

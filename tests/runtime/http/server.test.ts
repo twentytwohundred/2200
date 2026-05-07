@@ -198,6 +198,12 @@ describe('HTTP server', () => {
     expect(r.body).toMatchObject({ error: { code: 'agent_not_found' } })
   })
 
+  it('GET /api/v1/agents/:name/tasks/:id returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/tasks/task_deadbeef')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({ error: { code: 'agent_not_found' } })
+  })
+
   it('GET /api/v1/notifications returns an empty list', async () => {
     const r = await get('/api/v1/notifications')
     expect(r.status).toBe(200)
