@@ -5,6 +5,7 @@ import { AgentDetailScreen } from './screens/agent/AgentDetailScreen'
 import { InboxScreen } from './screens/inbox/InboxScreen'
 import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
+import { BrainScreen } from './screens/brain/BrainScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
@@ -34,6 +35,7 @@ export function Router(): ReactElement {
         <Route path="/inbox" element={<InboxScreen />} />
         <Route path="/budget" element={<BudgetScreen />} />
         <Route path="/onboarding" element={<OnboardingScreen />} />
+        <Route path="/agent/:name/brain" element={<BrainScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
