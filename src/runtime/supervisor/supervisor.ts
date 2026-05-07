@@ -538,10 +538,16 @@ export class Supervisor {
       void this.handleAgentExit(name, code, signal)
     })
     this.startPulseWatcher(name)
+    // Clear any prior crash context on successful (re)start. The
+    // errored_at / errored_reason fields are sticky through stops,
+    // restarts, and snapshot reads; clearing them here keeps the
+    // AgentDetail hero honest about current state.
     await this.updateAgent(name, {
       pid: spawned.pid,
       spawned_at: new Date().toISOString(),
       state: 'running',
+      errored_at: null,
+      errored_reason: null,
     })
   }
 

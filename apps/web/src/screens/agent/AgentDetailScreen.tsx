@@ -198,7 +198,7 @@ export function AgentDetailScreen(): ReactElement {
                     />
                   )}
                 </div>
-                {agent.errored_reason ? (
+                {agent.status === 'errored' && agent.errored_reason ? (
                   <p className={styles.heroError}>
                     <span className={styles.heroErrorLabel}>ERRORED:</span> {agent.errored_reason}
                   </p>
@@ -292,7 +292,7 @@ export function AgentDetailScreen(): ReactElement {
                 k="SPAWNED"
                 v={<span className={styles.mono}>{formatTimestamp(agent.spawned_at)}</span>}
               />
-              {agent.errored_at ? (
+              {agent.status === 'errored' && agent.errored_at ? (
                 <KV
                   k="ERR AT"
                   v={<span className={styles.mono}>{formatTimestamp(agent.errored_at)}</span>}
