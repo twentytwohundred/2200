@@ -11,13 +11,12 @@
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { ApiError, NetworkError, api, type BudgetState } from '../../lib/api'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { api, type BudgetState } from '../../lib/api'
 import {
   AgentMark,
   Card,
   EmptyState,
-  ErrorState,
   KV,
   LoadingState,
   PageHeader,
@@ -48,6 +47,8 @@ function pillForState(state: BudgetState | null) {
 export function BudgetScreen(): ReactElement {
   const { theme } = useTheme()
   const live = useLiveSignal()
+  // Drill-in: when null, show the fleet-total + per-agent grid;
+  // when set, show that agent's detail view (today + history).
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
 
   const agentsQuery = useQuery({
@@ -56,22 +57,44 @@ export function BudgetScreen(): ReactElement {
     staleTime: 5_000,
   })
 
-  const budgetQuery = useQuery({
-    queryKey: ['budget', selectedAgent],
-    queryFn: () => {
-      if (!selectedAgent) throw new Error('no agent selected')
-      return api.budget(selectedAgent)
-    },
-    enabled: Boolean(selectedAgent),
-    staleTime: 10_000,
+  const agents = agentsQuery.data?.items ?? []
+
+  // Fan out one query per agent so we can show the fleet total at
+  // the top and a thumbnail per agent below. Tanstack Query
+  // dedups + caches per key; the per-agent detail view re-uses
+  // the same cache entries when the user drills in.
+  const perAgentBudget = useQueries({
+    queries: agents.map((a) => ({
+      queryKey: ['budget', a.name],
+      queryFn: () => api.budget(a.name),
+      staleTime: 10_000,
+    })),
   })
 
-  // Default the picker to the first agent in the list once loaded.
-  const agents = agentsQuery.data?.items ?? []
-  const effectiveAgent = useMemo(() => {
-    if (selectedAgent) return selectedAgent
-    return agents[0]?.name ?? null
-  }, [selectedAgent, agents])
+  // Fleet total: sum cumulative + cap across all agents that have
+  // a `today` row. Agents with no spend yet today contribute 0/0
+  // so the bar reflects the active fleet, not 0/<sum-of-caps> when
+  // nobody has called a model.
+  const fleetTotal = useMemo(() => {
+    let cumulative = 0
+    let cap = 0
+    let blocked = false
+    let warned = false
+    for (const q of perAgentBudget) {
+      const today = q.data?.today
+      if (!today) continue
+      cumulative += today.cumulative_usd
+      cap += today.cap_usd
+      if (today.blocked) blocked = true
+      if (today.warned_today) warned = true
+    }
+    return { cumulative, cap, blocked, warned }
+  }, [perAgentBudget])
+
+  const selectedBudget =
+    selectedAgent !== null
+      ? (perAgentBudget[agents.findIndex((a) => a.name === selectedAgent)]?.data ?? null)
+      : null
 
   const eyebrow = `2200 · BUDGET · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
 
@@ -104,64 +127,138 @@ export function BudgetScreen(): ReactElement {
         </Card>
       ) : (
         <>
+          {/* Fleet total: leads the screen so the operator sees
+              "what is the team spending today" before drilling
+              into a specific agent. */}
           <section>
-            <SectionHeader title="AGENT" />
+            <SectionHeader title={`FLEET TODAY · ${todayDay()}`} />
             <Card padding={20}>
-              <div className={styles.agentPicker}>
-                {agents.map((a) => (
-                  <button
-                    key={a.name}
-                    type="button"
-                    className={styles.agentChip}
-                    data-active={effectiveAgent === a.name}
-                    onClick={() => {
-                      setSelectedAgent(a.name)
-                    }}
-                  >
-                    <AgentMark id={a.name} name={a.name} size="sm" />
-                    <span className={styles.agentChipName}>{a.name}</span>
-                  </button>
-                ))}
-              </div>
+              {fleetTotal.cap === 0 ? (
+                <EmptyState
+                  title="No spend yet today"
+                  body="No Agent has made a model call today. The fleet total appears once any Agent records its first spend."
+                />
+              ) : (
+                <>
+                  <div className={styles.heroRow}>
+                    <div className={styles.heroPrimary}>
+                      <span className={styles.heroAmount}>{fmtUsd(fleetTotal.cumulative)}</span>
+                      <span className={styles.heroOf}>of {fmtUsd(fleetTotal.cap)}</span>
+                    </div>
+                    {fleetTotal.blocked ? (
+                      <Pill variant="error">BLOCKED</Pill>
+                    ) : fleetTotal.warned ? (
+                      <Pill variant="attention">WARNED</Pill>
+                    ) : (
+                      <Pill variant="info">OK</Pill>
+                    )}
+                  </div>
+                  <ProgressBar
+                    value={fleetTotal.cumulative}
+                    max={fleetTotal.cap}
+                    variant={
+                      fleetTotal.blocked ? 'error' : fleetTotal.warned ? 'attention' : 'auto'
+                    }
+                  />
+                  <div className={styles.totalSummary}>
+                    <span>
+                      AGENTS <strong>{String(agents.length)}</strong>
+                    </span>
+                    <span>
+                      REPORTING TODAY{' '}
+                      <strong>{String(perAgentBudget.filter((q) => q.data?.today).length)}</strong>
+                    </span>
+                    <span>
+                      REMAINING{' '}
+                      <strong>{fmtUsd(Math.max(0, fleetTotal.cap - fleetTotal.cumulative))}</strong>
+                    </span>
+                  </div>
+                </>
+              )}
             </Card>
           </section>
 
-          {budgetQuery.isLoading ? (
-            <Card padding={20}>
-              <LoadingState rows={6} />
-            </Card>
-          ) : budgetQuery.isError ? (
-            <Card padding={0}>
-              <ErrorState
-                title={errorTitle(budgetQuery.error)}
-                body={errorBody(budgetQuery.error)}
-              />
-            </Card>
-          ) : budgetQuery.data ? (
+          {/* Per-agent grid. Click a card to drill in. */}
+          <section>
+            <SectionHeader title="BY AGENT" />
+            <ul className={styles.agentGrid}>
+              {agents.map((a, i) => {
+                const today = perAgentBudget[i]?.data?.today ?? null
+                const cum = today?.cumulative_usd ?? 0
+                const cap = today?.cap_usd ?? 0
+                const variant: 'auto' | 'error' | 'attention' = today?.blocked
+                  ? 'error'
+                  : today?.warned_today
+                    ? 'attention'
+                    : 'auto'
+                return (
+                  <li key={a.name} className={styles.agentCard}>
+                    <button
+                      type="button"
+                      className={styles.agentCardLink}
+                      data-active={selectedAgent === a.name}
+                      onClick={() => {
+                        setSelectedAgent((curr) => (curr === a.name ? null : a.name))
+                      }}
+                      aria-label={`Open ${a.name} budget detail`}
+                    >
+                      <div className={styles.agentCardHeader}>
+                        <AgentMark id={a.name} name={a.name} size="sm" />
+                        <span className={styles.agentCardName}>{a.name}</span>
+                        {today ? (
+                          today.blocked ? (
+                            <Pill variant="error">BLOCKED</Pill>
+                          ) : today.warned_today ? (
+                            <Pill variant="attention">WARNED</Pill>
+                          ) : (
+                            <Pill variant="idle">OK</Pill>
+                          )
+                        ) : (
+                          <Pill variant="idle">QUIET</Pill>
+                        )}
+                      </div>
+                      {cap > 0 ? <ProgressBar value={cum} max={cap} variant={variant} /> : null}
+                      <div className={styles.agentCardSpend}>
+                        <span>
+                          <span className={styles.agentCardSpendAmount}>{fmtUsd(cum)}</span> spent
+                        </span>
+                        <span>cap {fmtUsd(cap)}</span>
+                      </div>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+
+          {/* Drill-in: today + history for the selected agent. */}
+          {selectedAgent && selectedBudget ? (
             <>
               <section>
-                <SectionHeader title={`TODAY · ${budgetQuery.data.today?.day ?? 'no spend yet'}`} />
+                <SectionHeader
+                  title={`${selectedAgent.toUpperCase()} · ${selectedBudget.today?.day ?? 'no spend yet'}`}
+                />
                 <Card padding={20}>
-                  {budgetQuery.data.today ? (
+                  {selectedBudget.today ? (
                     <>
                       <div className={styles.heroRow}>
                         <div className={styles.heroPrimary}>
                           <span className={styles.heroAmount}>
-                            {fmtUsd(budgetQuery.data.today.cumulative_usd)}
+                            {fmtUsd(selectedBudget.today.cumulative_usd)}
                           </span>
                           <span className={styles.heroOf}>
-                            of {fmtUsd(budgetQuery.data.today.cap_usd)}
+                            of {fmtUsd(selectedBudget.today.cap_usd)}
                           </span>
                         </div>
-                        {pillForState(budgetQuery.data.today)}
+                        {pillForState(selectedBudget.today)}
                       </div>
                       <ProgressBar
-                        value={budgetQuery.data.today.cumulative_usd}
-                        max={budgetQuery.data.today.cap_usd}
+                        value={selectedBudget.today.cumulative_usd}
+                        max={selectedBudget.today.cap_usd}
                         variant={
-                          budgetQuery.data.today.blocked
+                          selectedBudget.today.blocked
                             ? 'error'
-                            : budgetQuery.data.today.warned_today
+                            : selectedBudget.today.warned_today
                               ? 'attention'
                               : 'auto'
                         }
@@ -170,7 +267,7 @@ export function BudgetScreen(): ReactElement {
                         k="WARN AT"
                         v={
                           <span className={styles.mono}>
-                            {String(budgetQuery.data.today.warn_at_pct)}%
+                            {String(selectedBudget.today.warn_at_pct)}%
                           </span>
                         }
                       />
@@ -178,18 +275,18 @@ export function BudgetScreen(): ReactElement {
                         k="LAST RECORDED"
                         v={
                           <span className={styles.mono}>
-                            {budgetQuery.data.today.last_recorded_at ?? '—'}
+                            {selectedBudget.today.last_recorded_at ?? '—'}
                           </span>
                         }
                       />
-                      {budgetQuery.data.override ? (
+                      {selectedBudget.override ? (
                         <KV
                           k="OVERRIDE"
                           v={
                             <span className={styles.mono}>
-                              until {budgetQuery.data.override.until}
-                              {budgetQuery.data.override.reason
-                                ? ` · ${budgetQuery.data.override.reason}`
+                              until {selectedBudget.override.until}
+                              {selectedBudget.override.reason
+                                ? ` · ${selectedBudget.override.reason}`
                                 : ''}
                             </span>
                           }
@@ -199,18 +296,16 @@ export function BudgetScreen(): ReactElement {
                   ) : (
                     <EmptyState
                       title="No spend yet today"
-                      body="The Agent has not made a model call today. The state file lands after the first record."
+                      body={`${selectedAgent} has not made a model call today. The state file lands after the first record.`}
                     />
                   )}
                 </Card>
               </section>
 
               <section>
-                <SectionHeader
-                  title={`HISTORY · ${String(budgetQuery.data.history.length)} DAYS`}
-                />
+                <SectionHeader title={`HISTORY · ${String(selectedBudget.history.length)} DAYS`} />
                 <Card padding={0}>
-                  {budgetQuery.data.history.length === 0 ? (
+                  {selectedBudget.history.length === 0 ? (
                     <EmptyState
                       title="No history"
                       body="Each day's state will appear here as it accumulates."
@@ -227,7 +322,7 @@ export function BudgetScreen(): ReactElement {
                         </tr>
                       </thead>
                       <tbody>
-                        {[...budgetQuery.data.history].reverse().map((s) => {
+                        {[...selectedBudget.history].reverse().map((s) => {
                           const pct =
                             s.cap_usd > 0 ? Math.round((s.cumulative_usd / s.cap_usd) * 100) : 0
                           return (
@@ -261,19 +356,6 @@ export function BudgetScreen(): ReactElement {
   )
 }
 
-function errorTitle(error: unknown): string {
-  if (error instanceof ApiError && error.status === 404) return 'Agent not found'
-  if (error instanceof NetworkError) return 'Cannot reach the runtime'
-  return 'Could not load budget'
-}
-
-function errorBody(error: unknown): string {
-  if (error instanceof ApiError && error.status === 404) {
-    return 'No Agent with that name lives on this instance.'
-  }
-  if (error instanceof NetworkError) {
-    return 'The supervisor may not be running. Try `2200 daemon start` and refresh.'
-  }
-  if (error instanceof ApiError) return `${error.code}: ${error.message}`
-  return error instanceof Error ? error.message : String(error)
+function todayDay(): string {
+  return new Date().toISOString().slice(0, 10)
 }

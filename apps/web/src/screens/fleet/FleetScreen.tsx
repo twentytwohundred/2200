@@ -223,7 +223,12 @@ function Band({ title, agents, empty, density }: BandProps): ReactElement {
               >
                 <div className={styles.cardHeader}>
                   <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
-                  <span className={styles.rowName}>{a.name}</span>
+                  <span className={styles.rowName}>
+                    {a.name}
+                    {a.pid !== null ? (
+                      <span className={styles.namePid}>pid {String(a.pid)}</span>
+                    ) : null}
+                  </span>
                   {a.pulse && (
                     <PulseDot
                       state={a.pulse.state}
@@ -246,9 +251,6 @@ function Band({ title, agents, empty, density }: BandProps): ReactElement {
                         {density === 'compact' ? '—' : 'no current task'}
                       </span>
                     )}
-                  </span>
-                  <span className={styles.rowPid}>
-                    {a.pid !== null ? `pid ${String(a.pid)}` : '—'}
                   </span>
                 </div>
               </Link>
