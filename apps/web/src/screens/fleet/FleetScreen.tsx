@@ -221,32 +221,38 @@ function Band({ title, agents, empty, density }: BandProps): ReactElement {
                 className={styles.rowLink}
                 aria-label={`Open ${a.name}`}
               >
-                <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
-                <span className={styles.rowName}>{a.name}</span>
-                <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
-                {a.pulse && (
-                  <PulseDot
-                    state={a.pulse.state}
-                    intensity={a.pulse.intensity}
-                    size={density === 'compact' ? 'sm' : 'md'}
-                  />
-                )}
-                <span className={styles.rowActivity}>
-                  {a.current_task_id ? (
-                    <KV
-                      k="TASK"
-                      v={<span className={styles.mono}>{a.current_task_id.slice(0, 12)}</span>}
-                      kw={48}
+                <div className={styles.cardHeader}>
+                  <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
+                  <span className={styles.rowName}>
+                    {a.name}
+                    {a.pid !== null ? (
+                      <span className={styles.namePid}>pid {String(a.pid)}</span>
+                    ) : null}
+                  </span>
+                  {a.pulse && (
+                    <PulseDot
+                      state={a.pulse.state}
+                      intensity={a.pulse.intensity}
+                      size={density === 'compact' ? 'sm' : 'md'}
                     />
-                  ) : (
-                    <span className={styles.rowMuted}>
-                      {density === 'compact' ? '—' : 'no current task'}
-                    </span>
                   )}
-                </span>
-                <span className={styles.rowPid}>
-                  {a.pid !== null ? `pid ${String(a.pid)}` : '—'}
-                </span>
+                </div>
+                <div className={styles.cardMeta}>
+                  <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
+                  <span className={styles.rowActivity}>
+                    {a.current_task_id ? (
+                      <KV
+                        k="TASK"
+                        v={<span className={styles.mono}>{a.current_task_id.slice(0, 12)}</span>}
+                        kw={48}
+                      />
+                    ) : (
+                      <span className={styles.rowMuted}>
+                        {density === 'compact' ? '—' : 'no current task'}
+                      </span>
+                    )}
+                  </span>
+                </div>
               </Link>
             </li>
           ))}

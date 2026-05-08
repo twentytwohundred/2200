@@ -6,34 +6,113 @@
   margin: 0 auto;
 }
 
-.agentPicker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.agentChip {
+.headerActions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--color-border-subtle);
-  background: transparent;
+  gap: var(--space-3);
+}
+
+.back {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+}
+
+.back:hover {
+  background: var(--color-bg-hover);
   color: var(--color-text-primary);
+}
+
+/* Per-agent card grid below the fleet total. Each card is clickable
+   and surfaces an agent's current spend at a glance. Click drills
+   into the detail view (today + history). */
+.agentGrid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.agentCard {
+  display: block;
+}
+
+.agentCardLink {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
   cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.agentCardLink:hover {
+  border-color: var(--color-border-emphasis);
+  background: var(--color-bg-hover);
+}
+
+.agentCardLink[data-active='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+}
+
+.agentCardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--type-family-mono);
+  font-size: 13px;
+}
+
+.agentCardName {
+  flex: 1;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.agentCardSpend {
   font-family: var(--type-family-mono);
   font-size: 12px;
-  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.agentChip[data-active='true'] {
-  border-color: var(--color-border-emphasis);
-  background: var(--color-bg-elevated);
+.agentCardSpendAmount {
+  color: var(--color-text-primary);
 }
 
-.agentChipName {
-  text-transform: lowercase;
+.totalSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  font-family: var(--type-family-mono);
+  font-size: 12px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  margin-top: var(--space-3);
+}
+
+.totalSummary strong {
+  color: var(--color-text-primary);
+  font-weight: 500;
 }
 
 .heroRow {
