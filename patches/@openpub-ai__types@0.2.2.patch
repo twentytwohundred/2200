@@ -1,0 +1,12 @@
+diff --git a/dist/events.js b/dist/events.js
+index 04764359d64d54ff3f93a04547924dbf70f280d2..47f73f9ebba26b76916d3f9c065af68fa4d5d329 100644
+--- a/dist/events.js
++++ b/dist/events.js
+@@ -8,6 +8,7 @@ import { z } from 'zod';
+ export const ClientMessageEvent = z.object({
+     type: z.literal('message'),
+     content: z.string().min(1).max(4000),
++    in_reply_to: z.string().optional(),
+ });
+ export const ClientActionEvent = z.object({
+     type: z.literal('action'),

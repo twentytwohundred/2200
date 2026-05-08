@@ -68,7 +68,8 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "@openpub-ai/pub-server@0.3.3": "patches/@openpub-ai__pub-server@0.3.3.patch"
+      "@openpub-ai/pub-server@0.3.3": "patches/@openpub-ai__pub-server@0.3.3.patch",
+      "@openpub-ai/types@0.2.2": "patches/@openpub-ai__types@0.2.2.patch"
     }
   }
 }

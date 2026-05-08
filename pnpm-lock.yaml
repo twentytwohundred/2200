@@ -6,8 +6,11 @@ settings:
 
 patchedDependencies:
   '@openpub-ai/pub-server@0.3.3':
-    hash: 5z44hwuw5wcyihkoyimtg7fmji
+    hash: c2mjdkiyajocsrokfwepdstki4
     path: patches/@openpub-ai__pub-server@0.3.3.patch
+  '@openpub-ai/types@0.2.2':
+    hash: 7zp4b77nbxxtfxt6pboz4wv35i
+    path: patches/@openpub-ai__types@0.2.2.patch
 
 importers:
 
@@ -24,7 +27,7 @@ importers:
         version: 1.29.0(zod@4.3.6)
       '@openpub-ai/pub-server':
         specifier: 0.3.3
-        version: 0.3.3(patch_hash=5z44hwuw5wcyihkoyimtg7fmji)
+        version: 0.3.3(patch_hash=c2mjdkiyajocsrokfwepdstki4)
       better-sqlite3:
         specifier: ^12.9.0
         version: 12.9.0
@@ -3363,10 +3366,10 @@ snapshots:
 
   '@noble/ed25519@2.3.0': {}
 
-  '@openpub-ai/pub-server@0.3.3(patch_hash=5z44hwuw5wcyihkoyimtg7fmji)':
+  '@openpub-ai/pub-server@0.3.3(patch_hash=c2mjdkiyajocsrokfwepdstki4)':
     dependencies:
       '@noble/ed25519': 2.3.0
-      '@openpub-ai/types': 0.2.2
+      '@openpub-ai/types': 0.2.2(patch_hash=7zp4b77nbxxtfxt6pboz4wv35i)
       dotenv: 16.6.1
       fastify: 4.29.1
       gray-matter: 4.0.3
@@ -3382,7 +3385,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@openpub-ai/types@0.2.2':
+  '@openpub-ai/types@0.2.2(patch_hash=7zp4b77nbxxtfxt6pboz4wv35i)':
     dependencies:
       zod: 3.25.76
 
