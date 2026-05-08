@@ -1745,6 +1745,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       home,
       supervisor,
       today: new Date(),
+      seedFirstTask: true,
     })
     let transcriptPath: string | null = null
     try {

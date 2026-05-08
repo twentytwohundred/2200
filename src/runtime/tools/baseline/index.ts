@@ -35,7 +35,11 @@ import { chatTools } from './chat.js'
  * truth, not prompt-level assertion; bumped 24 → 25 with `chat.send`
  * so Agents can push unsolicited assistant-role messages into their
  * own per-Agent private chat thread (the inverse of the user → agent
- * direction the chat HTTP endpoint already supports).
+ * direction the chat HTTP endpoint already supports); bumped 25 → 29
+ * with `brain.read_shared`, `brain.search_shared`, `brain.list_shared`,
+ * and `brain.write_shared` so every Agent can see the instance's
+ * shared brain at <home>/shared/brain/ (platform overview, team
+ * roster, operator profile, conventions).
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
   'fs.read',
@@ -63,6 +67,10 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'notification.inform',
   'system.whoami',
   'chat.send',
+  'brain.read_shared',
+  'brain.search_shared',
+  'brain.list_shared',
+  'brain.write_shared',
 ]
 
 export interface BaselineServersOptions {

@@ -54,8 +54,8 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 25 tools (24 prior + chat.send)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(25)
+  it('exports exactly 29 tools (25 prior + 4 shared-brain tools)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(29)
   })
 
   it('baselineServers() builds nine servers (incl. chat from chat.send PR)', () => {

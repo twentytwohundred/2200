@@ -564,6 +564,7 @@ export function buildProgram(): Command {
               home,
               supervisor,
               today: new Date(),
+              seedFirstTask: true,
             })
             result = {
               agent_name: standaloneResult.agent_name,

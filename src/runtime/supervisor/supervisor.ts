@@ -19,6 +19,7 @@ import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { regenerateFleet } from './fleet.js'
+import { regenerateTeamNote, seedPlatformNote } from '../onboarding/starter-pack.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
@@ -131,6 +132,11 @@ export class Supervisor {
   private readonly pubStopRequested = new Set<string>()
   private readonly log: Logger
   private isShuttingDown = false
+  /** Fire-and-forget startup work (fleet regen, brain seed) that must
+   * settle before shutdown closes the brain DB handles. Tracked so a
+   * fast shutdown doesn't race the post-start work and surface
+   * "database connection is not open" warnings. */
+  private startupTasks: Promise<void>[] = []
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
   private readonly onboardingSessions: OnboardingSessionStore
@@ -247,7 +253,13 @@ export class Supervisor {
     // Regenerate Fleet.md at boot so agents that come online during
     // start-up see a fresh fleet, not whatever was on disk from the
     // last shutdown. The lifecycle hooks keep it current after that.
-    void this.regenerateFleetSafe()
+    // Same call also rewrites the shared brain's "team" note.
+    this.startupTasks.push(this.regenerateFleetSafe())
+    // Seed the platform overview into the shared brain on first
+    // boot. Idempotent ... if the note already exists, no-op. The
+    // operator (or any Agent) is free to edit it like any other
+    // markdown note; we don't overwrite their edits.
+    this.startupTasks.push(this.seedSharedBrainSafe())
   }
 
   /**
@@ -385,6 +397,20 @@ export class Supervisor {
         // best-effort
       }
     }
+    // Drain any startup tasks still in flight (fleet regen, shared
+    // brain seed) before closing brain handles, so a fast
+    // start/shutdown sequence doesn't surface
+    // "database connection is not open" warnings from racing writes.
+    if (this.startupTasks.length > 0) {
+      await Promise.allSettled(this.startupTasks)
+      this.startupTasks = []
+    }
+    // Close any cached brain handles (per-Agent + shared) so SQLite
+    // releases the DB files. Required for tests that rm -r the temp
+    // home in afterEach; otherwise SQLite's WAL/SHM aux files keep
+    // the directory non-empty and the cleanup fails.
+    const { closeAllBrains } = await import('../brain/registry.js')
+    closeAllBrains()
     await saveState(this.state)
     this.log.info('supervisor stopped')
   }
@@ -1353,6 +1379,7 @@ export class Supervisor {
           home: this.state.home,
           supervisor: this,
           today: new Date(),
+          seedFirstTask: true,
           ...(params.force === true ? { force: true } : {}),
         })
         this.log.info('agent spawned via cli.spawn.from-handoff', {
@@ -1452,6 +1479,33 @@ export class Supervisor {
       })
     } catch (err) {
       this.log.warn('fleet regeneration failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    // Mirror the fleet snapshot into the shared brain as the "team"
+    // note so freshly-spawned Agents can read it via brain.* without
+    // traversing the supervisor state file. Failures here are
+    // non-fatal: the fleet.md regen above already provides the
+    // ground-truth surface; this is the orientation surface for
+    // Agents.
+    try {
+      await regenerateTeamNote(this.state.home, this)
+    } catch (err) {
+      this.log.warn('team note regeneration failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /**
+   * Seed the shared brain's platform overview note if absent.
+   * Called once at supervisor.start(). Safe to re-run; idempotent.
+   */
+  private async seedSharedBrainSafe(): Promise<void> {
+    try {
+      await seedPlatformNote(this.state.home)
+    } catch (err) {
+      this.log.warn('shared brain platform-note seed failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
