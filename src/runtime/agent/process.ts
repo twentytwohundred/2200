@@ -142,7 +142,15 @@ export class AgentProcess {
     // close over `this.identity` so a future hot-reload of identity
     // (not yet implemented) would propagate without re-registering
     // tools.
-    for (const server of baselineServers({ getIdentity: () => this.identity })) {
+    for (const server of baselineServers({
+      getIdentity: () => this.identity,
+      // The schedule.* tools need the supervisor RPC client.
+      // process.start() opens this.client only after register-with-
+      // supervisor returns, which happens before any task loop spins
+      // up; tools execute in tasks, so by the time a schedule tool
+      // fires, this.client is non-undefined.
+      getSupervisorRpc: () => this.client,
+    })) {
       registry.register(server)
     }
 

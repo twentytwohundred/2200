@@ -21,6 +21,7 @@ import { pubTools } from './pub.js'
 import { notificationTools } from './notification.js'
 import { systemTools, type IdentityGetter } from './system.js'
 import { chatTools } from './chat.js'
+import { scheduleTools, type SupervisorRpcGetter } from './schedule.js'
 
 /**
  * All baseline tool names. Used by tool-in-set perm checks and
@@ -39,7 +40,10 @@ import { chatTools } from './chat.js'
  * with `brain.read_shared`, `brain.search_shared`, `brain.list_shared`,
  * and `brain.write_shared` so every Agent can see the instance's
  * shared brain at <home>/shared/brain/ (platform overview, team
- * roster, operator profile, conventions).
+ * roster, operator profile, conventions); bumped 29 → 34 with
+ * `schedule.add/list/remove/set_enabled/run_once` so Agents can
+ * manage their own cron / interval schedules at runtime instead
+ * of waiting for the operator to wire each one through the CLI.
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
   'fs.read',
@@ -71,6 +75,11 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'brain.search_shared',
   'brain.list_shared',
   'brain.write_shared',
+  'schedule.add',
+  'schedule.list',
+  'schedule.remove',
+  'schedule.set_enabled',
+  'schedule.run_once',
 ]
 
 export interface BaselineServersOptions {
@@ -85,11 +94,21 @@ export interface BaselineServersOptions {
    * The whoami tool will throw if invoked without a getter.
    */
   getIdentity?: IdentityGetter
+  /**
+   * Returns the agent's RPC client to the supervisor. Used by the
+   * `schedule.*` tools to invoke `cli.schedule.*` RPC methods.
+   * Returns undefined if the client has not yet connected; the
+   * tool throws a clean error in that case.
+   *
+   * Optional: tests that don't exercise schedule tools can omit it.
+   */
+  getSupervisorRpc?: SupervisorRpcGetter
 }
 
-/** Build the nine baseline MCP servers. */
+/** Build the ten baseline MCP servers. */
 export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] {
   const getIdentity: IdentityGetter = opts.getIdentity ?? (() => null)
+  const getSupervisorRpc: SupervisorRpcGetter = opts.getSupervisorRpc ?? (() => undefined)
   return [
     createInProcessServer('fs', fsTools),
     createInProcessServer('shell', shellTools),
@@ -100,5 +119,6 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('notification', notificationTools),
     createInProcessServer('system', systemTools(getIdentity)),
     createInProcessServer('chat', chatTools),
+    createInProcessServer('schedule', scheduleTools(getSupervisorRpc)),
   ]
 }

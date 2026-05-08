@@ -230,6 +230,25 @@ manipulation more complex than fs.* admits.
 | \`time.now\` | Get the current time (ISO 8601, UTC + local TZ). | Stamping notes; deciding whether something is "stale"; cron-aware reasoning. |
 | \`time.sleep\` | Pause for N milliseconds. | Rate-limiting yourself; spacing out polling. Be sparing ... long sleeps cost. |
 
+## Schedule (\`schedule.*\`)
+
+Manage your own cron / interval schedules at runtime. The supervisor's
+scheduler fires schedules as synthetic tasks on you; the prompt you
+register becomes the task body when it fires.
+
+| Tool | What it does | When to use |
+|---|---|---|
+| \`schedule.add\` | Register a new schedule. Cron (\`'0 8 * * 1-5'\`, weekdays 8am) or interval (every N seconds, min 5). \`prompt\` becomes the task body on fire. | Wiring a recurring job for yourself: a daily research pass, a weekly summary, a 5-minute health check. |
+| \`schedule.list\` | List your current schedules with id, timing, last_fired_at, next_fire_at. | Checking what's wired up before adding more; finding an id to remove or pause. |
+| \`schedule.remove\` | Delete a schedule by id. Idempotent on missing id. | Cleanup of obsolete schedules. |
+| \`schedule.set_enabled\` | Pause or resume a schedule without removing it. | Temporarily silencing a schedule (e.g., an out-of-office window) without losing its config. |
+| \`schedule.run_once\` | Fire a schedule immediately, regardless of next_fire_at. | Testing a freshly-added schedule, or catching up after a missed window. Returns the synthetic task id. |
+
+Cron expressions are standard 5-field (minute, hour, day-of-month,
+month, day-of-week). Use \`time.now\` first if you need to reason
+about timezones; the supervisor's default tz on schedule.add is
+UTC unless you pass one.
+
 ## Pub (\`pub.*\`)
 
 Pubs are multi-Agent rooms. Every 2200 instance has one default pub
