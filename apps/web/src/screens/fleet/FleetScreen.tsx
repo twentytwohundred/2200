@@ -102,6 +102,9 @@ export function FleetScreen(): ReactElement {
         subtitle="Mission control for the Agents on this instance. Status pills are live."
         actions={
           <div className={styles.headerActions}>
+            <Link to="/studio" className={styles.inboxLink}>
+              STUDIO
+            </Link>
             <Link to="/inbox" className={styles.inboxLink}>
               INBOX{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
             </Link>

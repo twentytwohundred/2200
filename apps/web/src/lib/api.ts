@@ -717,6 +717,57 @@ export const api = {
       `/api/v1/onboarding/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
     ),
+  pubsList: () => request<ListEnvelope<PubSummary>>('/api/v1/pubs'),
+  pub: (name: string) => request<PubDetail>(`/api/v1/pubs/${encodeURIComponent(name)}`),
+  pubMessages: (name: string, opts?: { limit?: number; since?: string }) => {
+    const qs = new URLSearchParams()
+    if (opts?.limit !== undefined) qs.set('limit', String(opts.limit))
+    if (opts?.since !== undefined) qs.set('since', opts.since)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<ListEnvelope<PubMessage>>(
+      `/api/v1/pubs/${encodeURIComponent(name)}/messages${suffix}`,
+    )
+  },
+}
+
+export interface PubSummary {
+  name: string
+  state: string
+  port: number
+  pid: number | null
+  spawned_at: string | null
+  errored_at: string | null
+  errored_reason: string | null
+}
+
+export interface PubMember {
+  agent_id: string
+  display_name: string
+  status: string
+}
+
+export interface PubAtmosphere {
+  tone?: string
+  energy?: string
+  active_topics?: string[]
+}
+
+export interface PubDetail extends PubSummary {
+  members: PubMember[]
+  atmosphere: PubAtmosphere | null
+}
+
+export interface PubMessage {
+  message_id: string
+  agent_id: string
+  display_name: string
+  timestamp: string
+  content: string
+  type: string
+  mentions: string[]
+  mention_names: string[]
+  directed_to: string | null
+  reply_to: string | null
 }
 
 /** Internal handle for tests and hooks that need to share the request helper. */

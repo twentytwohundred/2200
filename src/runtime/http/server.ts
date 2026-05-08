@@ -76,6 +76,7 @@ import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
+import { SupervisorPubBridge, PubBridgeError } from '../supervisor/pub-bridge.js'
 import {
   ApiError,
   envelope,
@@ -164,8 +165,20 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const host = options.host ?? '127.0.0.1'
   const log = options.logger
 
-  const tokens = new WebTokenStore(homePaths(home).stateWebTokens)
+  const paths = homePaths(home)
+  const tokens = new WebTokenStore(paths.stateWebTokens)
   await tokens.ensure('default')
+
+  // Supervisor-side PubClient bridge. Lazy-init: nothing happens until
+  // the first /api/v1/pubs/:name/messages call wakes a connection.
+  // Shut down with the rest of the HTTP server.
+  const bridgeLogger = log?.child('pub-bridge')
+  const pubBridge = new SupervisorPubBridge({
+    home,
+    paths,
+    supervisor,
+    ...(bridgeLogger ? { logger: bridgeLogger } : {}),
+  })
 
   const fastify = Fastify({
     logger: false,
@@ -307,6 +320,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
       { method: 'POST', path: '/api/v1/notifications/:id/dismiss' },
+      { method: 'GET', path: '/api/v1/pubs' },
+      { method: 'GET', path: '/api/v1/pubs/:name' },
+      { method: 'GET', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/onboarding' },
       { method: 'GET', path: '/api/v1/onboarding/:id' },
       { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
@@ -1180,6 +1196,106 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- pubs ----------------------------------------------------------------
+  // Read-only Studio surface (PR1). Lists pubs from the supervisor
+  // snapshot, exposes per-pub metadata + members, and proxies the
+  // rolling message buffer from the supervisor's bridge PubClient.
+  // POST send/react land in PR2/PR3.
+
+  fastify.get('/api/v1/pubs', () => {
+    const snap = supervisor.snapshot()
+    const items = Object.values(snap.pubs).map((p) => ({
+      name: p.name,
+      state: p.state,
+      port: p.port,
+      pid: p.pid,
+      spawned_at: p.spawned_at,
+      errored_at: p.errored_at,
+      errored_reason: p.errored_reason,
+    }))
+    return { items, cursor: { next: null, limit: items.length } }
+  })
+
+  const PubMessagesQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    since: z.string().optional(),
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/pubs/:name', async (req) => {
+    const snap = supervisor.snapshot()
+    const pub = snap.pubs[req.params.name]
+    if (!pub) throw notFound('pub', req.params.name)
+    let members: { agent_id: string; display_name: string; status: string }[] = []
+    let atmosphere: { tone?: string; energy?: string; active_topics?: string[] } | null = null
+    try {
+      const room = await pubBridge.getRoomState(req.params.name)
+      if (room) {
+        members = room.agents_present.map((a) => ({
+          agent_id: a.agent_id,
+          display_name: a.display_name,
+          status: a.status,
+        }))
+        atmosphere = room.atmosphere ?? null
+      }
+    } catch (err) {
+      if (err instanceof PubBridgeError) {
+        log?.warn('pub bridge unavailable', { pub: req.params.name, code: err.code })
+      } else {
+        throw err
+      }
+    }
+    return {
+      name: pub.name,
+      state: pub.state,
+      port: pub.port,
+      pid: pub.pid,
+      spawned_at: pub.spawned_at,
+      errored_at: pub.errored_at,
+      errored_reason: pub.errored_reason,
+      members,
+      atmosphere,
+    }
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/pubs/:name/messages', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    const pub = snap.pubs[req.params.name]
+    if (!pub) throw notFound('pub', req.params.name)
+    const q = PubMessagesQuery.parse(req.query)
+    try {
+      const items =
+        (await pubBridge.getMessages(req.params.name, {
+          ...(q.limit !== undefined ? { limit: q.limit } : {}),
+          since: q.since ?? null,
+        })) ?? []
+      return {
+        items: items.map((m) => ({
+          message_id: m.message_id,
+          agent_id: m.agent_id,
+          display_name: m.display_name,
+          timestamp: m.timestamp,
+          content: m.content,
+          type: m.type,
+          mentions: m.mentions,
+          mention_names: m.mention_names,
+          directed_to: m.directed_to,
+          reply_to: m.reply_to,
+        })),
+        cursor: { next: null, limit: items.length },
+      }
+    } catch (err) {
+      if (err instanceof PubBridgeError) {
+        void reply.status(503)
+        return {
+          items: [],
+          cursor: { next: null, limit: 0 },
+          error: { code: err.code, message: err.message },
+        }
+      }
+      throw err
+    }
+  })
+
   // -- notifications -------------------------------------------------------
   const NotificationStateValues = z.enum(['pending', 'answered', 'dismissed', 'expired'])
   const NotificationTierValues = z.enum(['passive', 'normal', 'important', 'critical'])
@@ -1545,6 +1661,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         }
       }
       wsClients.clear()
+      await pubBridge.close()
       await fastify.close()
     },
     broadcast: (event) => {
