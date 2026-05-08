@@ -275,6 +275,12 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
         title: 'Orientation: read the shared brain and brief the operator',
         body: taskBody,
         priority: 0,
+        // Orientation includes brain.write_shared (note-taking) and
+        // chat.send (delivering the brief), both of which fall under
+        // checkpointed/destructive. Mark the task destructive so the
+        // perm matrix doesn't block any baseline tool the Agent
+        // legitimately needs to complete it.
+        idempotency: 'destructive',
       })
       await taskStore.save(orientationTask)
     } catch (err) {
