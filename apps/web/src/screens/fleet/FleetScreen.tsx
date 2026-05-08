@@ -105,6 +105,9 @@ export function FleetScreen(): ReactElement {
             <Link to="/studio" className={styles.inboxLink}>
               STUDIO
             </Link>
+            <Link to="/fleet" className={styles.inboxLink}>
+              ROSTER
+            </Link>
             <Link to="/inbox" className={styles.inboxLink}>
               INBOX{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
             </Link>
