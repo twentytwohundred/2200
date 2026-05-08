@@ -7,7 +7,7 @@
  * without rewriting tool definitions or callers.
  *
  * Each tool declares:
- *   - `name`: dotted, e.g., `fs.read`. Matches the baseline-tool table
+ *   - `name`: dotted, e.g., `fs_read`. Matches the baseline-tool table
  *     in [[2026-04-25-tool-baseline]].
  *   - `idempotency`: `pure` / `checkpointed` / `destructive` per
  *     [[2026-04-25-tool-baseline]] (used by the

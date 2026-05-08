@@ -68,7 +68,7 @@ describe('tool_repetition', () => {
   it('fires when N consecutive ends share the same (tool, args_hash)', () => {
     const events: LoopEvent[] = []
     for (let i = 0; i < 5; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', args_hash: 'same' }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', args_hash: 'same' }))
     }
     const v = toolRepetition.evaluate(ctx(events))
     expect(v?.kind).toBe('tool_repetition')
@@ -78,7 +78,7 @@ describe('tool_repetition', () => {
   it('does not fire on fewer than N', () => {
     const events: LoopEvent[] = []
     for (let i = 0; i < 4; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', args_hash: 'same' }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', args_hash: 'same' }))
     }
     expect(toolRepetition.evaluate(ctx(events))).toBeNull()
   })
@@ -87,23 +87,23 @@ describe('tool_repetition', () => {
     const events: LoopEvent[] = []
     for (let i = 0; i < 5; i++) {
       events.push(
-        toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', args_hash: `h${String(i)}` }),
+        toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', args_hash: `h${String(i)}` }),
       )
     }
     expect(toolRepetition.evaluate(ctx(events))).toBeNull()
   })
 
   it('does not fire when tool differs', () => {
-    const tools = ['fs.read', 'fs.write', 'fs.read', 'fs.read', 'fs.read']
+    const tools = ['fs_read', 'fs_write', 'fs_read', 'fs_read', 'fs_read']
     const events = tools.map((t, i) => toolEnd({ call_id: `c${String(i)}`, tool: t }))
     expect(toolRepetition.evaluate(ctx(events))).toBeNull()
   })
 
   it('considers only the last N (sliding window)', () => {
     const events: LoopEvent[] = []
-    events.push(toolEnd({ call_id: 'a', tool: 'fs.read', args_hash: 'other' }))
+    events.push(toolEnd({ call_id: 'a', tool: 'fs_read', args_hash: 'other' }))
     for (let i = 0; i < 5; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', args_hash: 'same' }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', args_hash: 'same' }))
     }
     const v = toolRepetition.evaluate(ctx(events))
     expect(v?.kind).toBe('tool_repetition')
@@ -116,7 +116,7 @@ describe('no_progress', () => {
       { kind: 'brain_write', at: NOW, path: '/brain/note.md', iteration: 0 },
     ]
     for (let i = 1; i <= 60; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', iteration: i }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', iteration: i }))
     }
     const v = noProgress.evaluate(ctx(events))
     expect(v?.kind).toBe('no_progress')
@@ -125,7 +125,7 @@ describe('no_progress', () => {
   it('resets on a state_transition that is not a self-loop', () => {
     const events: LoopEvent[] = []
     for (let i = 0; i < 30; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', iteration: i }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', iteration: i }))
     }
     events.push({
       kind: 'state_transition',
@@ -135,13 +135,13 @@ describe('no_progress', () => {
       iteration: 30,
     })
     for (let i = 31; i < 60; i++) {
-      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', iteration: i }))
+      events.push(toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', iteration: i }))
     }
     expect(noProgress.evaluate(ctx(events))).toBeNull()
   })
 
   it('does not fire when iteration count below threshold', () => {
-    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'fs.read', iteration: 5 })]
+    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'fs_read', iteration: 5 })]
     expect(noProgress.evaluate(ctx(events))).toBeNull()
   })
 
@@ -152,21 +152,21 @@ describe('no_progress', () => {
 
 describe('tool_timeout', () => {
   it('fires when most recent tool_call_end exceeds threshold', () => {
-    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'shell.run', duration_ms: 130_000 })]
+    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'shell_run', duration_ms: 130_000 })]
     const v = toolTimeout.evaluate(ctx(events))
     expect(v?.kind).toBe('tool_timeout')
     expect(v?.triggers).toEqual(['c'])
   })
 
   it('does not fire when most recent end is under threshold', () => {
-    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'shell.run', duration_ms: 1000 })]
+    const events: LoopEvent[] = [toolEnd({ call_id: 'c', tool: 'shell_run', duration_ms: 1000 })]
     expect(toolTimeout.evaluate(ctx(events))).toBeNull()
   })
 
   it('only checks the most recent tool_call_end', () => {
     const events: LoopEvent[] = [
-      toolEnd({ call_id: 'old', tool: 'shell.run', duration_ms: 200_000, at: NOW - 1000 }),
-      toolEnd({ call_id: 'fresh', tool: 'fs.read', duration_ms: 5, at: NOW }),
+      toolEnd({ call_id: 'old', tool: 'shell_run', duration_ms: 200_000, at: NOW - 1000 }),
+      toolEnd({ call_id: 'fresh', tool: 'fs_read', duration_ms: 5, at: NOW }),
     ]
     expect(toolTimeout.evaluate(ctx(events))).toBeNull()
   })
@@ -223,7 +223,7 @@ describe('error_storm', () => {
     const events: LoopEvent[] = []
     for (let i = 0; i < 5; i++) {
       events.push(
-        toolEnd({ call_id: `c${String(i)}`, tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
+        toolEnd({ call_id: `c${String(i)}`, tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
       )
     }
     const v = errorStorm.evaluate(ctx(events))
@@ -233,21 +233,21 @@ describe('error_storm', () => {
 
   it('resets streak on a successful call between failures', () => {
     const events: LoopEvent[] = [
-      toolEnd({ call_id: 'a', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
-      toolEnd({ call_id: 'b', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
-      toolEnd({ call_id: 'c', tool: 'fs.read', ok: true }),
-      toolEnd({ call_id: 'd', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
-      toolEnd({ call_id: 'e', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'a', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'b', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'c', tool: 'fs_read', ok: true }),
+      toolEnd({ call_id: 'd', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'e', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
     ]
     expect(errorStorm.evaluate(ctx(events))).toBeNull()
   })
 
   it('resets streak when error_class changes', () => {
     const events: LoopEvent[] = [
-      toolEnd({ call_id: 'a', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
-      toolEnd({ call_id: 'b', tool: 'fs.read', ok: false, error_class: 'ENOENT' }),
-      toolEnd({ call_id: 'c', tool: 'fs.read', ok: false, error_class: 'EACCES' }),
-      toolEnd({ call_id: 'd', tool: 'fs.read', ok: false, error_class: 'EACCES' }),
+      toolEnd({ call_id: 'a', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'b', tool: 'fs_read', ok: false, error_class: 'ENOENT' }),
+      toolEnd({ call_id: 'c', tool: 'fs_read', ok: false, error_class: 'EACCES' }),
+      toolEnd({ call_id: 'd', tool: 'fs_read', ok: false, error_class: 'EACCES' }),
     ]
     expect(errorStorm.evaluate(ctx(events))).toBeNull()
   })
@@ -260,7 +260,7 @@ describe('evaluator', () => {
       events.push(
         toolEnd({
           call_id: `c${String(i)}`,
-          tool: 'fs.read',
+          tool: 'fs_read',
           args_hash: 'same',
           ok: false,
           error_class: 'ENOENT',

@@ -23,7 +23,7 @@ const ShellRunArgsSchema = z.object({
 })
 
 export const shellRun = defineTool({
-  name: 'shell.run',
+  name: 'shell_run',
   description:
     "Execute a shell command bounded to the Agent's project dir. Returns stdout, stderr, and exit code.",
   idempotency: 'destructive',

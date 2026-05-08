@@ -87,7 +87,7 @@ describe('ToolDispatcher (happy path)', () => {
 
     const dispatcher = buildDispatcher()
     const result = await dispatcher.dispatch({
-      tool: 'fs.read',
+      tool: 'fs_read',
       args: { path: '/commons/scratch/note.md' },
       taskId: 'task_test',
       taskIdempotency: 'pure',
@@ -113,7 +113,7 @@ describe('ToolDispatcher (happy path)', () => {
     await writeFile(join(homePaths(home).commonsScratch, 'a.md'), 'a')
     const dispatcher = buildDispatcher()
     await dispatcher.dispatch({
-      tool: 'fs.read',
+      tool: 'fs_read',
       args: { path: '/commons/scratch/a.md' },
       taskId: null,
       taskIdempotency: null,
@@ -131,7 +131,7 @@ describe('ToolDispatcher (perm denials)', () => {
     const dispatcher = buildDispatcher()
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.write',
+        tool: 'fs_write',
         args: { path: '/commons/reference/brand.md', content: 'tampering' },
         taskId: null,
         taskIdempotency: null,
@@ -158,7 +158,7 @@ describe('ToolDispatcher (perm denials)', () => {
     await writeFile(join(refDir, 'brand.md'), 'human-curated content')
     const dispatcher = buildDispatcher()
     const result = await dispatcher.dispatch({
-      tool: 'fs.read',
+      tool: 'fs_read',
       args: { path: '/commons/reference/brand.md' },
       taskId: null,
       taskIdempotency: null,
@@ -197,7 +197,7 @@ created: 2026-04-26
     const dispatcher = buildDispatcher()
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.read',
+        tool: 'fs_read',
         args: { path: '/agents/simon/shared/note.md' },
         taskId: null,
         taskIdempotency: null,
@@ -212,7 +212,7 @@ created: 2026-04-26
     const dispatcher = buildDispatcher()
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.write',
+        tool: 'fs_write',
         args: { path: '/commons/scratch/x.md', content: 'x' },
         taskId: 'task_pure',
         taskIdempotency: 'pure',
@@ -227,7 +227,7 @@ created: 2026-04-26
     const dispatcher = buildDispatcher({ allowed: [] })
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.read',
+        tool: 'fs_read',
         args: { path: '/commons/scratch/x.md' },
         taskId: null,
         taskIdempotency: null,
@@ -259,7 +259,7 @@ describe('ToolDispatcher (failure modes other than perm)', () => {
     const dispatcher = buildDispatcher()
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.read',
+        tool: 'fs_read',
         args: { wrong_field: 'x' },
         taskId: null,
         taskIdempotency: null,
@@ -274,7 +274,7 @@ describe('ToolDispatcher (failure modes other than perm)', () => {
     const dispatcher = buildDispatcher()
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.read',
+        tool: 'fs_read',
         args: { path: '/etc/passwd' },
         taskId: null,
         taskIdempotency: null,
@@ -288,7 +288,7 @@ describe('ToolDispatcher (failure modes other than perm)', () => {
   it('writes a run record with an error when execute throws', async () => {
     // Custom server with a tool that always throws.
     const failingTool = defineTool({
-      name: 'fs.always_throws',
+      name: 'fs_always_throws',
       description: 'test fixture',
       idempotency: 'pure',
       argsSchema: z.object({}),
@@ -300,7 +300,7 @@ describe('ToolDispatcher (failure modes other than perm)', () => {
     registry.register(createInProcessServer('fs', [failingTool]))
     const dispatcher = new ToolDispatcher({
       registry,
-      allowedToolNames: new Set(['fs.always_throws']),
+      allowedToolNames: new Set(['fs_always_throws']),
       home,
       callingAgent: 'hobby',
       brainDir,
@@ -309,7 +309,7 @@ describe('ToolDispatcher (failure modes other than perm)', () => {
 
     await expect(
       dispatcher.dispatch({
-        tool: 'fs.always_throws',
+        tool: 'fs_always_throws',
         args: {},
         taskId: 'task_e',
         taskIdempotency: 'pure',
@@ -332,7 +332,7 @@ describe('ToolDispatcher actually creates side effects', () => {
   it('fs.write creates the file under commons/scratch', async () => {
     const dispatcher = buildDispatcher()
     await dispatcher.dispatch({
-      tool: 'fs.write',
+      tool: 'fs_write',
       args: { path: '/commons/scratch/draft.md', content: 'agent wrote this' },
       taskId: null,
       taskIdempotency: null,
@@ -351,7 +351,7 @@ describe('ToolDispatcher actually creates side effects', () => {
     await mkdir(join(refDir, 'subdir'))
     const dispatcher = buildDispatcher()
     const result = await dispatcher.dispatch({
-      tool: 'fs.list',
+      tool: 'fs_list',
       args: { path: '/commons/reference' },
       taskId: null,
       taskIdempotency: null,

@@ -66,7 +66,7 @@ export type ModelBinding = z.infer<typeof ModelBindingSchema>
  * MCP server registered via the `mcp_servers` block. Two shapes:
  *
  *   - **Exact name**: `<namespace>.<verb>` ... lowercase, underscores
- *     allowed in either part (`shell.run`, `github.list_issues`). The
+ *     allowed in either part (`shell_run`, `github.list_issues`). The
  *     registry resolves to the named tool.
  *   - **Namespace wildcard**: `<namespace>.*` ... grants every tool in
  *     the namespace. Per the Epic 9 Phase A locked decision (2026-04-29),
@@ -79,9 +79,15 @@ export type ModelBinding = z.infer<typeof ModelBindingSchema>
  * only exact names continue to validate cleanly under v5 since the
  * wildcard form is purely additive.
  */
-export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*\.([a-z][a-z0-9_]*|\*)$/, {
+// Tool names use a single separator between namespace and verb. As of
+// session 13 (2026-05-08) the canonical form is underscored
+// (`shell_run`, `github_search`); the dotted legacy form (`shell.run`,
+// `github.search`) is still accepted for older Identity files that
+// haven't been migrated. Either separator parses; the dispatcher's
+// tolerant resolver translates between them at lookup time.
+export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*[._]([a-z][a-z0-9_]*|\*)$/, {
   message:
-    'tool name must be <namespace>.<verb> (e.g., shell.run) or <namespace>.* (e.g., github.*); lowercase with underscores',
+    'tool name must be <namespace>_<verb> (e.g., shell_run) or <namespace>_* (e.g., github_*); lowercase with underscores. Legacy dotted form still accepted.',
 })
 
 /**

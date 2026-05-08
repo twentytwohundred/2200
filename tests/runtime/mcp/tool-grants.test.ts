@@ -9,9 +9,9 @@ import { describe, expect, it } from 'vitest'
 import { expandToolGrants } from '../../../src/runtime/mcp/tool-grants.js'
 
 const REGISTRY = [
-  'shell.run',
-  'fs.read',
-  'fs.write',
+  'shell_run',
+  'fs_read',
+  'fs_write',
   'github.list_issues',
   'github.create_issue',
   'github.list_pull_requests',
@@ -21,8 +21,8 @@ const REGISTRY = [
 
 describe('expandToolGrants', () => {
   it('passes exact tool names through unchanged', () => {
-    const out = expandToolGrants(['shell.run', 'slack.send'], REGISTRY)
-    expect([...out].sort()).toEqual(['shell.run', 'slack.send'])
+    const out = expandToolGrants(['shell_run', 'slack.send'], REGISTRY)
+    expect([...out].sort()).toEqual(['shell_run', 'slack.send'])
   })
 
   it('expands a namespace wildcard to all tools in the namespace', () => {

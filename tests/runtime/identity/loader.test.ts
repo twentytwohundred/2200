@@ -85,13 +85,13 @@ describe('loadIdentity (happy path)', () => {
     expect(composeModelId(id.frontmatter.model)).toBe('anthropic/claude-opus-4-7')
   })
 
-  it('treats tools: [pub.send] as additive (still no validation against a baseline)', async () => {
+  it('treats tools: [pub_send] as additive (still no validation against a baseline)', async () => {
     const path = await writeAt(
       'hobby.md',
-      VALID.replace('tools: []', 'tools:\n  - pub.send\n  - pub.read'),
+      VALID.replace('tools: []', 'tools:\n  - pub_send\n  - pub_read'),
     )
     const id = await loadIdentity(path)
-    expect(id.frontmatter.tools).toEqual(['pub.send', 'pub.read'])
+    expect(id.frontmatter.tools).toEqual(['pub_send', 'pub_read'])
   })
 
   it('omitting tools entirely defaults to empty (baseline-only)', async () => {
@@ -165,8 +165,12 @@ describe('loadIdentity (error paths)', () => {
     await expect(loadIdentity(path)).rejects.toThrow(/created/)
   })
 
-  it('rejects a tool name without a namespace.verb shape', async () => {
-    const path = await writeAt('bad-tool.md', VALID.replace('tools: []', 'tools:\n  - just_a_word'))
+  it('rejects a tool name without a namespace separator', async () => {
+    // Under the session-13 underscored convention, `fs_read`,
+    // `brain_search_shared`, and `just_a_word` all parse (any
+    // underscore is treated as the namespace separator). What still
+    // fails is a name with no separator at all, like `singletoken`.
+    const path = await writeAt('bad-tool.md', VALID.replace('tools: []', 'tools:\n  - singletoken'))
     await expect(loadIdentity(path)).rejects.toThrow(/tool name/)
   })
 })

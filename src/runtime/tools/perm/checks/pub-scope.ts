@@ -28,7 +28,7 @@
 import type { CheckImpl } from '../types.js'
 
 export const pubScope: CheckImpl = (ctx) => {
-  if (!ctx.tool.name.startsWith('pub.')) {
+  if (!ctx.tool.name.startsWith('pub_')) {
     return { type: 'pub_scope', result: 'not_applicable', detail: null }
   }
 

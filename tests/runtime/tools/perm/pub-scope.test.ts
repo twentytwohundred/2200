@@ -27,14 +27,14 @@ function ctx(toolName: string): PermContext {
 
 describe('pubScope', () => {
   it('returns not_applicable for non-pub tools', () => {
-    expect(pubScope(ctx('fs.read')).result).toBe('not_applicable')
-    expect(pubScope(ctx('shell.run')).result).toBe('not_applicable')
-    expect(pubScope(ctx('brain.write')).result).toBe('not_applicable')
-    expect(pubScope(ctx('time.now')).result).toBe('not_applicable')
+    expect(pubScope(ctx('fs_read')).result).toBe('not_applicable')
+    expect(pubScope(ctx('shell_run')).result).toBe('not_applicable')
+    expect(pubScope(ctx('brain_write')).result).toBe('not_applicable')
+    expect(pubScope(ctx('time_now')).result).toBe('not_applicable')
   })
 
   it('returns pass with sub-check breakdown for pub tools', () => {
-    const out = pubScope(ctx('pub.send'))
+    const out = pubScope(ctx('pub_send'))
     expect(out.type).toBe('pub_scope')
     expect(out.result).toBe('pass')
     expect(out.detail).toContain('pub_membership=')
@@ -44,7 +44,7 @@ describe('pubScope', () => {
   })
 
   it('passes for each of the four pub tools', () => {
-    for (const name of ['pub.send', 'pub.read', 'pub.list_pubs', 'pub.react']) {
+    for (const name of ['pub_send', 'pub_read', 'pub_list_pubs', 'pub_react']) {
       expect(pubScope(ctx(name)).result).toBe('pass')
     }
   })

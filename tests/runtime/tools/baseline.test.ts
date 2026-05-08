@@ -84,7 +84,7 @@ describe('baseline tool registry', () => {
   })
 })
 
-describe('system.whoami', () => {
+describe('system_whoami', () => {
   it('returns agent_name + provider + model_id from the live identity getter', async () => {
     const servers = baselineServers({
       getIdentity: () =>
@@ -100,7 +100,7 @@ describe('system.whoami', () => {
     })
     const sys = servers.find((s) => s.name === 'system')
     expect(sys).toBeDefined()
-    const whoami = sys?.tools.get('system.whoami')
+    const whoami = sys?.tools.get('system_whoami')
     expect(whoami).toBeDefined()
     const result = await whoami!.execute({}, ctx())
     expect(result).toEqual({
@@ -128,7 +128,7 @@ describe('system.whoami', () => {
         }) as never,
     })
     const sys = servers.find((s) => s.name === 'system')!
-    const whoami = sys.tools.get('system.whoami')!
+    const whoami = sys.tools.get('system_whoami')!
     const result = (await whoami.execute({}, ctx())) as {
       followup_model_id: string | null
     }
@@ -138,7 +138,7 @@ describe('system.whoami', () => {
   it('throws when invoked without a live identity getter', async () => {
     const servers = baselineServers()
     const sys = servers.find((s) => s.name === 'system')!
-    const whoami = sys.tools.get('system.whoami')!
+    const whoami = sys.tools.get('system_whoami')!
     await expect(whoami.execute({}, ctx())).rejects.toThrow(/system\.whoami unavailable/)
   })
 })
@@ -204,7 +204,7 @@ describe('fs tools', () => {
   })
 })
 
-describe('shell.run', () => {
+describe('shell_run', () => {
   it('runs a command and returns stdout/exit', async () => {
     const result = await shellRun.execute(
       { command: 'echo hello', timeout_ms: 5000 },

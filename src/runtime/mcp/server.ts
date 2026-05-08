@@ -12,21 +12,23 @@ import type { ToolDefinition } from './tool.js'
 export interface McpServer {
   /** Server identity, e.g., "fs", "shell", "web", "brain", "time". */
   readonly name: string
-  /** Tools this server exposes. Keys are dotted tool names ("fs.read"). */
+  /** Tools this server exposes. Keys are underscored tool names ("fs_read"). */
   readonly tools: ReadonlyMap<string, ToolDefinition>
 }
 
 /**
  * Construct an in-process MCP server from a list of tool definitions.
- * The server's name is derived from the first dotted-prefix; all tools
- * MUST share the same prefix (enforced).
+ * The server's name is the namespace prefix; all tools MUST start with
+ * `<name>_` (enforced). Tool names are underscored throughout per the
+ * 2026-05-08 cross-model tool naming rule (so they pass Anthropic's
+ * and OpenAI's `^[a-zA-Z0-9_-]+$` validation directly).
  */
 export function createInProcessServer(name: string, tools: ToolDefinition[]): McpServer {
   const map = new Map<string, ToolDefinition>()
   for (const tool of tools) {
-    if (!tool.name.startsWith(`${name}.`)) {
+    if (!tool.name.startsWith(`${name}_`)) {
       throw new Error(
-        `tool '${tool.name}' does not match server prefix '${name}.'; cannot register`,
+        `tool '${tool.name}' does not match server prefix '${name}_'; cannot register`,
       )
     }
     if (map.has(tool.name)) {

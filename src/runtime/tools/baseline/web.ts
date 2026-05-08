@@ -39,7 +39,7 @@ const WebFetchArgsSchema = z.object({
 })
 
 export const webFetch = defineTool({
-  name: 'web.fetch',
+  name: 'web_fetch',
   description: 'GET a URL and return its body as text. Bounded by max_bytes and timeout_ms.',
   idempotency: 'pure',
   argsSchema: WebFetchArgsSchema,
@@ -83,7 +83,7 @@ const WebSearchArgsSchema = z.object({
 })
 
 export const webSearch = defineTool({
-  name: 'web.search',
+  name: 'web_search',
   description:
     'Search the web. v1 returns an empty result set if no provider is configured; provider wiring lands with the Agent loop integration PR.',
   idempotency: 'pure',

@@ -1,7 +1,7 @@
 /**
  * chat.* baseline tools.
  *
- * `chat.send` lets an Agent unilaterally push an assistant-role
+ * `chat_send` lets an Agent unilaterally push an assistant-role
  * message into its own per-Agent chat thread (the persistent 1:1
  * conversation surface at `<home>/agents/<name>/chat.jsonl`).
  *
@@ -13,7 +13,7 @@
  *   was no path for the Agent to say "hey, follow-up after my
  *   pub work" or "I just noticed X" without the user prompting
  *   first. This tool closes that gap: any time an Agent has
- *   something to tell the user privately, it calls `chat.send`
+ *   something to tell the user privately, it calls `chat_send`
  *   and the message lands in the chat log; the web client picks
  *   it up on the next 3s poll (or instantly via WS push when we
  *   wire that broadcast).
@@ -35,7 +35,7 @@ const ChatSendArgsSchema = z.object({
 })
 
 export const chatSend = defineTool({
-  name: 'chat.send',
+  name: 'chat_send',
   description:
     "Send an unsolicited assistant-role message to the user's private 1:1 chat with you. The message lands at <home>/agents/<your-name>/chat.jsonl and shows up in the web app's chat screen the next time the user opens or refreshes it. Use this when you want to tell the user something privately (a follow-up, a status update, a heads-up about something you noticed) without going through the pub. Only the user sees it; other Agents do not.",
   idempotency: 'checkpointed',

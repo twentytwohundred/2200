@@ -12,6 +12,11 @@
  * Providers without native tool-use ignore the field; the agent loop
  * falls back to fenced-text parsing of the response text.
  *
+ * Tool name convention: internal names use underscores throughout
+ * (`fs_read`, `brain_search_shared`, `schedule_add`) so they pass
+ * Anthropic's and OpenAI's `^[a-zA-Z0-9_-]+$` validation directly.
+ * No bidirectional translation. The internal name == the wire name.
+ *
  * Conversion notes:
  * - Zod 4's `z.toJSONSchema` produces draft 2020-12 with
  *   `additionalProperties: false`; both Anthropic and OpenAI accept
@@ -31,32 +36,14 @@ import type { NativeToolSpec } from './types.js'
  * warning rather than aborting the build; this happens roughly never
  * in practice and we'd rather lose native tool-use for one tool than
  * lose it for the whole agent.
- *
- * Tool names are translated from dotted internal form (`fs.read`)
- * to underscored wire form (`fs_read`) because both Anthropic and
- * OpenAI's native tool-use surfaces enforce `^[a-zA-Z0-9_-]+$` on
- * tool names. The translation is bidirectional via the
- * `internalName` field; the loop uses that to dispatch back to the
- * registry when a native tool call comes in.
  */
 export function toNativeToolSpecs(
   registry: ToolRegistry,
   allowedNames: ReadonlySet<string>,
 ): NativeToolSpec[] {
   const out: NativeToolSpec[] = []
-  const seen = new Set<string>()
   for (const { name, tool } of registry.allTools()) {
     if (!allowedNames.has(name)) continue
-    const wireName = toWireName(name)
-    if (seen.has(wireName)) {
-      // Two internal names mapped to the same wire name; rare but
-      // would silently break dispatch. Skip the second to keep
-      // collisions visible in the warning instead of corrupting the
-      // mapping.
-      console.warn(`tool-spec: wire-name collision on ${wireName}; skipping ${name}`)
-      continue
-    }
-    seen.add(wireName)
     let parametersJsonSchema: object
     try {
       const raw = z.toJSONSchema(tool.argsSchema)
@@ -72,21 +59,10 @@ export function toNativeToolSpecs(
       continue
     }
     out.push({
-      name: wireName,
-      internalName: name,
+      name,
       description: tool.description,
       parametersJsonSchema,
     })
   }
   return out
-}
-
-/**
- * Translate a registry tool name (dotted) to a wire name accepted by
- * Anthropic / OpenAI native tool-use (must match
- * `^[a-zA-Z0-9_-]+$`). Dots become underscores; everything else is
- * already in the safe set per our internal naming convention.
- */
-export function toWireName(internalName: string): string {
-  return internalName.replace(/\./g, '_')
 }

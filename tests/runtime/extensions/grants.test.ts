@@ -102,9 +102,9 @@ describe('writeGrants', () => {
 
 describe('hasGrant', () => {
   it('returns true only when the permission is in the persisted set', async () => {
-    const g = await writeGrants(home, 'check', ['network', 'pub.send'])
+    const g = await writeGrants(home, 'check', ['network', 'pub_send'])
     expect(hasGrant(g, 'network')).toBe(true)
-    expect(hasGrant(g, 'pub.send')).toBe(true)
+    expect(hasGrant(g, 'pub_send')).toBe(true)
     expect(hasGrant(g, 'fs.scratch')).toBe(false)
   })
 })

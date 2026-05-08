@@ -15,7 +15,7 @@ import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
 const TimeNowArgsSchema = z.object({}).strict()
 
 export const timeNow = defineTool({
-  name: 'time.now',
+  name: 'time_now',
   description: 'Return the current UTC timestamp in ISO 8601 form.',
   idempotency: 'pure',
   argsSchema: TimeNowArgsSchema,
@@ -33,7 +33,7 @@ const TimeSleepArgsSchema = z.object({
 })
 
 export const timeSleep = defineTool({
-  name: 'time.sleep',
+  name: 'time_sleep',
   description: 'Pause for N milliseconds. Non-burning; backed by setTimeout.',
   idempotency: 'pure',
   argsSchema: TimeSleepArgsSchema,

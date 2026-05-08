@@ -1,7 +1,7 @@
 /**
  * system.* baseline tools.
  *
- * `system.whoami` returns the live runtime identity of the calling
+ * `system_whoami` returns the live runtime identity of the calling
  * process: agent name, provider, model_id, optional follow-up model.
  *
  * Why a tool and not a system-prompt assertion? Some models (e.g.
@@ -9,7 +9,7 @@
  * parrot a famous-AI-assistant identity from RLHF training. A tool
  * call returns ground truth from the running process; the model
  * cannot hallucinate the result. Agents are directed by the system
- * prompt to call `system.whoami` when asked which model they are
+ * prompt to call `system_whoami` when asked which model they are
  * running.
  *
  * The identity returned is the in-memory copy held by the running
@@ -36,7 +36,7 @@ export type IdentityGetter = () => IdentityRecord | null | undefined
  */
 export function systemTools(getIdentity: IdentityGetter): ToolDefinition[] {
   const whoami = defineTool({
-    name: 'system.whoami',
+    name: 'system_whoami',
     description:
       'Return the live runtime identity of this Agent: agent_name, provider, model_id, and optional followup_model_id. Call this when asked which model you are running. Source of truth for model identity.',
     idempotency: 'pure',

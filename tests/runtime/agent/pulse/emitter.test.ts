@@ -174,7 +174,7 @@ describe('PulseEmitter', () => {
         kind: 'tool_call_end',
         at: 999_000 + i * 100,
         call_id: `c${String(i)}`,
-        tool: 'fs.read',
+        tool: 'fs_read',
         args_hash: 'h',
         iteration: 1,
         ok: true,

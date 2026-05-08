@@ -100,7 +100,7 @@ async function setup(agentName: string): Promise<ToolContext> {
   }
 }
 
-describe('pub.send', () => {
+describe('pub_send', () => {
   it('sends a message and returns the assigned message_id', async () => {
     const ctx = await setup('hobby')
     const result = await pubSend.execute({ content: 'hello pub' }, ctx)
@@ -188,7 +188,7 @@ describe('pub.read with watermark', () => {
   })
 })
 
-describe('pub.list_pubs', () => {
+describe('pub_list_pubs', () => {
   it('reports the running pub and its port', async () => {
     const ctx = await setup('hobby')
     const result = await pubListPubs.execute({}, ctx)
@@ -199,7 +199,7 @@ describe('pub.list_pubs', () => {
   })
 })
 
-describe('pub.react', () => {
+describe('pub_react', () => {
   it('reacts to a message without throwing', async () => {
     const ctx = await setup('hobby')
     const sent = await pubSend.execute({ content: 'hi' }, ctx)

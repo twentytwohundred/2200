@@ -47,7 +47,7 @@ const NotificationAskArgsSchema = z.object({
 })
 
 export const notificationAsk = defineTool({
-  name: 'notification.ask',
+  name: 'notification_ask',
   description:
     "Pause and ask the user a question. Returns the user's response when they answer via `2200 notification respond`. Throws if the user dismisses without answering.",
   idempotency: 'destructive',
@@ -88,7 +88,7 @@ export const notificationAsk = defineTool({
 
 const NotificationInformArgsSchema = z.object({
   /**
-   * Tier of the notification. Same gating as `notification.ask`:
+   * Tier of the notification. Same gating as `notification_ask`:
    * the calling Agent's `notification_policy.tiers_allowed` is
    * enforced (Agents cannot escalate their own priority per
    * CLAUDE.md "Notification tier gating").
@@ -105,7 +105,7 @@ const NotificationInformArgsSchema = z.object({
 })
 
 export const notificationInform = defineTool({
-  name: 'notification.inform',
+  name: 'notification_inform',
   description:
     "Surface a passive notification to the user without blocking the loop. Use for 'look at this' moments (inbox-message arrival, status updates, completion summaries) where you don't need a user response. Fire-and-forget: returns immediately with the new notification's id.",
   idempotency: 'destructive',
