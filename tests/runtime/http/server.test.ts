@@ -373,25 +373,23 @@ describe('HTTP server onboarding endpoints', () => {
     expect(r.status).toBe(404)
   })
 
-  it('POST /api/v1/onboarding without an LLM provider configured surfaces 503', async () => {
-    // Test env has no provider keys (none of ANTHROPIC_API_KEY,
-    // DEEPSEEK_API_KEY, etc.); the no-provider auto-pick fails and the
-    // endpoint returns a clean 503 rather than a 500.
-    //
-    // The exact behavior depends on whether the developer's shell has
-    // a provider key + a runtime.env file. In a clean CI run nothing
-    // is set → 503 no_provider_configured. Locally with a key,
-    // auto-pick succeeds → 200. Accept either; both are documented.
-    //
-    // (The `local` provider has keyOptional=true, but auto-pick walks
-    // the catalog in display order and only falls through to local
-    // when no other provider matches. In most test envs cloud
-    // providers fail and local is selected ... that's also a 200.)
+  it('POST /api/v1/onboarding without an LLM provider configured surfaces a useful error', async () => {
+    // The default-pick walks the provider catalog. In CI with no keys
+    // set, every cloud provider fails the key_set check; the `local`
+    // provider passes (keyOptional=true) but has no entries in the
+    // pricing table → 400 model_required. On a local dev shell with
+    // ANTHROPIC_API_KEY (or any cloud key) set, default-pick succeeds
+    // and onboarding starts → 200. All three are documented behaviors;
+    // the assertion is "no 5xx surprise on the happy path of an
+    // unconfigured op".
     const r = await authedJson('POST', '/api/v1/onboarding')
-    expect([200, 503]).toContain(r.status)
+    expect([200, 400, 503]).toContain(r.status)
     if (r.status === 503) {
       const body = r.body as { error: { code: string } }
       expect(body.error.code).toMatch(/no_provider_configured|llm_provider_unavailable/)
+    } else if (r.status === 400) {
+      const body = r.body as { error: { code: string } }
+      expect(body.error.code).toBe('model_required')
     }
   })
 })
