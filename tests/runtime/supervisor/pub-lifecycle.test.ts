@@ -66,6 +66,12 @@ describe('composePubMd', () => {
     expect(md).toContain('model:')
     expect(md).toContain('capacity: 10')
     expect(md).toContain('entry: open')
+    // Reactions are on by default so the agent persona's "react instead
+    // of low-content text reply" guidance actually works. Without this
+    // block, pub-server returns REACTIONS_DISABLED and silently drops
+    // every reaction call.
+    expect(md).toContain('reactions:')
+    expect(md).toContain('  enabled: true')
     expect(md).toContain('# ops')
   })
 
