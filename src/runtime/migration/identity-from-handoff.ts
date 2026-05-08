@@ -104,7 +104,11 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
     schema_version: 5,
     agent_name: fm.agent_name,
     agent_role: humanizeAgentType(fm.agent_type),
-    model: DEFAULT_MODEL_BINDING,
+    // Prefer the handoff's declared model when present (the onboarding
+    // flow populates this from the picker). Fall back to the
+    // hardcoded default for handoff documents that pre-date the field
+    // (older `agent migrate` exports).
+    model: fm.model ?? DEFAULT_MODEL_BINDING,
     tools: wildcardGrants,
     project_dir: `${args.home}/agents/${fm.agent_name}/project`,
     brain_dir: `${args.home}/agents/${fm.agent_name}/brain`,

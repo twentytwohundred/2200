@@ -377,9 +377,16 @@ Produce the next JSON message now.`
     const agentName = dryHandoff.frontmatter.agent_name
     const tools = suggestTools(transcript, agentName)
     const schedules = suggestSchedules(transcript)
+    // The picker's chosen provider+model also becomes the new
+    // Agent's day-to-day model (the intro card's stated promise).
+    // Identity-from-handoff uses this when present.
     const handoff = buildHandoffFromTranscript({
       transcript,
       mcpServers: tools.map((t) => t.server),
+      model: {
+        provider: this.provider.name,
+        model_id: this.modelId,
+      },
     })
 
     this.preview = {

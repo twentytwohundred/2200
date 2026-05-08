@@ -55,6 +55,14 @@ export interface BuildHandoffArgs {
    * automates OAuth credential capture).
    */
   mcpServers?: readonly McpServerSpec[]
+  /**
+   * Preferred LLM model for the new Agent. The onboarding flow
+   * passes the picker's selection here so the new Agent's Identity
+   * inherits the operator's choice rather than the hardcoded
+   * default. Tier defaults to 'frontier' when only provider+model
+   * are known.
+   */
+  model?: { tier?: 'frontier' | 'fast' | 'local'; provider: string; model_id: string }
 }
 
 /**
@@ -114,6 +122,15 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
       },
       schedules: [],
       mcp_servers: args.mcpServers !== undefined ? [...args.mcpServers] : [],
+      ...(args.model !== undefined
+        ? {
+            model: {
+              tier: args.model.tier ?? ('frontier' as const),
+              provider: args.model.provider,
+              model_id: args.model.model_id,
+            },
+          }
+        : {}),
       provenance: {
         source_system: '2200_onboarding',
         source_host: args.sourceHost ?? hostname(),
