@@ -717,6 +717,7 @@ export const api = {
       `/api/v1/onboarding/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
     ),
+  fleet: () => request<FleetResponse>('/api/v1/fleet'),
   pubsList: () => request<ListEnvelope<PubSummary>>('/api/v1/pubs'),
   pub: (name: string) => request<PubDetail>(`/api/v1/pubs/${encodeURIComponent(name)}`),
   pubMessages: (name: string, opts?: { limit?: number; since?: string }) => {
@@ -741,6 +742,12 @@ export const api = {
       method: 'POST',
       body,
     }),
+}
+
+export interface FleetResponse {
+  markdown: string
+  path: string
+  generated_at: string | null
 }
 
 export interface PubSummary {

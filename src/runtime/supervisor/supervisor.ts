@@ -18,6 +18,7 @@ import { listenUds } from '../control-plane/uds-server.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
+import { regenerateFleet } from './fleet.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
@@ -225,6 +226,10 @@ export class Supervisor {
       stateDir: this.state.state_dir,
       runtime_mode: this.runtimeMode,
     })
+    // Regenerate Fleet.md at boot so agents that come online during
+    // start-up see a fresh fleet, not whatever was on disk from the
+    // last shutdown. The lifecycle hooks keep it current after that.
+    void this.regenerateFleetSafe()
   }
 
   /**
@@ -385,6 +390,7 @@ export class Supervisor {
         payload: { agent: name },
       })
     }
+    void this.regenerateFleetSafe()
   }
 
   /**
@@ -1292,6 +1298,39 @@ export class Supervisor {
           old_status: existing.state,
           new_status: next.state,
         },
+      })
+    }
+    // Regenerate Fleet.md when membership-shaping fields change.
+    // Heartbeat-only updates (last_heartbeat, current_task_id, pid)
+    // do not influence the fleet's content, so we skip the rebuild
+    // for those. The regenerate function itself also no-ops on
+    // identical content, so this is a defensive fast-path.
+    if (
+      existing.state !== next.state ||
+      existing.identity_path !== next.identity_path ||
+      existing.errored_reason !== next.errored_reason
+    ) {
+      void this.regenerateFleetSafe()
+    }
+  }
+
+  /**
+   * Fire-and-forget fleet regeneration. Called after every event that
+   * could change the fleet's contents (agent create / start / stop /
+   * identity update). Logs failures but never propagates them ... a
+   * fleet write failure should never tank a lifecycle event.
+   */
+  private async regenerateFleetSafe(): Promise<void> {
+    try {
+      await regenerateFleet({
+        home: this.state.home,
+        paths: homePaths(this.state.home),
+        state: this.state,
+        logger: this.log.child('fleet'),
+      })
+    } catch (err) {
+      this.log.warn('fleet regeneration failed', {
+        error: err instanceof Error ? err.message : String(err),
       })
     }
   }
