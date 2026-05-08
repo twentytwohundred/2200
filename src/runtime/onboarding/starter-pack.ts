@@ -238,7 +238,7 @@ register becomes the task body when it fires.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`schedule.add\` | Register a new schedule. Cron (\`'0 8 * * 1-5'\`, weekdays 8am) or interval (every N seconds, min 5). \`prompt\` becomes the task body on fire. | Wiring a recurring job for yourself: a daily research pass, a weekly summary, a 5-minute health check. |
+| \`schedule.add\` | Register a new schedule. Pass either \`cron\` (a 5-field cron expression like \`'0 8 * * 1-5'\` for weekdays 8am, plus optional \`timezone\`) OR \`interval_seconds\` (every N seconds, min 5). \`prompt\` becomes the task body on fire. | Wiring a recurring job for yourself: a daily research pass, a weekly summary, a 5-minute health check. |
 | \`schedule.list\` | List your current schedules with id, timing, last_fired_at, next_fire_at. | Checking what's wired up before adding more; finding an id to remove or pause. |
 | \`schedule.remove\` | Delete a schedule by id. Idempotent on missing id. | Cleanup of obsolete schedules. |
 | \`schedule.set_enabled\` | Pause or resume a schedule without removing it. | Temporarily silencing a schedule (e.g., an out-of-office window) without losing its config. |

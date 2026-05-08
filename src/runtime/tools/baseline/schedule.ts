@@ -24,20 +24,11 @@ import type { JsonRpcClient } from '../../control-plane/client.js'
 
 export type SupervisorRpcGetter = () => JsonRpcClient | undefined
 
-const ScheduleAddTimingSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('cron'),
-    /** Standard 5-field cron expression. e.g. '0 8 * * 1-5' = weekdays 8am. */
-    expression: z.string().min(1),
-    /** IANA tz, e.g. 'America/New_York'. Defaults to UTC. */
-    timezone: z.string().default('UTC'),
-  }),
-  z.object({
-    kind: z.literal('interval'),
-    /** Minimum 5 seconds; supervisor enforces. */
-    interval_seconds: z.number().int().min(5),
-  }),
-])
+// Flattened timing shape. DeepSeek and Grok both struggle with Zod
+// discriminated unions ({kind: ..., ...}); they drop the kind tag,
+// mix branches, etc. Split into two top-level optional args and
+// validate "exactly one set" via refinement. Either ergonomic in
+// the tool surface AND robust to model-side JSON quirks.
 
 function requireClient(get: SupervisorRpcGetter): JsonRpcClient {
   const client = get()
@@ -49,28 +40,62 @@ function requireClient(get: SupervisorRpcGetter): JsonRpcClient {
   return client
 }
 
-const ScheduleAddArgsSchema = z.object({
-  /** What you want done when the schedule fires. Becomes the task body verbatim. */
-  prompt: z.string().min(1),
-  /** Optional human-friendly label for the schedule. Defaults to the first line of `prompt`. */
-  description: z.string().optional(),
-  timing: ScheduleAddTimingSchema,
-})
+const ScheduleAddArgsSchema = z
+  .object({
+    /** What you want done when the schedule fires. Becomes the task body verbatim. */
+    prompt: z.string().min(1),
+    /** Optional human-friendly label for the schedule. Defaults to the first line of `prompt`. */
+    description: z.string().optional(),
+    /**
+     * Standard 5-field cron expression in the chosen timezone. e.g.
+     * '0 8 * * 1-5' is weekdays at 8am. Pass either `cron` OR
+     * `interval_seconds`, not both.
+     */
+    cron: z.string().min(1).optional(),
+    /** IANA tz, e.g. 'America/New_York'. Defaults to UTC. Only used when `cron` is set. */
+    timezone: z.string().optional(),
+    /**
+     * Run every N seconds (minimum 5). Pass either `cron` OR
+     * `interval_seconds`, not both.
+     */
+    interval_seconds: z.number().int().min(5).optional(),
+  })
+  .refine(
+    (a) =>
+      (a.cron !== undefined && a.interval_seconds === undefined) ||
+      (a.cron === undefined && a.interval_seconds !== undefined),
+    { message: 'Pass exactly one of `cron` or `interval_seconds`' },
+  )
 
 export function makeScheduleAdd(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
     name: 'schedule.add',
     description:
-      "Add a new schedule for yourself. Cron-shaped windows ('0 8 * * 1-5' for weekdays 8am) or interval-based (every N seconds, min 5). The `prompt` is what gets handed to you as the task body when the schedule fires; write it as a complete instruction, not a label. Returns the schedule id and next_fire_at.",
+      "Add a new schedule for yourself. Pass either `cron` (a standard 5-field cron expression like '0 8 * * 1-5' for weekdays 8am, plus optional `timezone`) OR `interval_seconds` (minimum 5). The `prompt` is what gets handed to you as the task body when the schedule fires; write it as a complete instruction, not a label. Returns the schedule id and next_fire_at.",
     idempotency: 'destructive',
     argsSchema: ScheduleAddArgsSchema,
     execute: async (args, ctx) => {
       const client = requireClient(get)
+      let timing:
+        | { kind: 'cron'; expression: string; timezone: string }
+        | { kind: 'interval'; interval_seconds: number }
+      if (args.cron !== undefined) {
+        timing = {
+          kind: 'cron',
+          expression: args.cron,
+          timezone: args.timezone ?? 'UTC',
+        }
+      } else if (args.interval_seconds !== undefined) {
+        timing = { kind: 'interval', interval_seconds: args.interval_seconds }
+      } else {
+        // The Zod refine should have caught this, but narrow defensively.
+        throw new Error('schedule.add: pass exactly one of `cron` or `interval_seconds`')
+      }
       const result = await client.call('cli.schedule.add', {
         agent: ctx.callingAgent,
         prompt: args.prompt,
         ...(args.description !== undefined ? { description: args.description } : {}),
-        timing: args.timing,
+        timing,
       })
       return result
     },
