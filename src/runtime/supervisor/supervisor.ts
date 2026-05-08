@@ -19,7 +19,7 @@ import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { regenerateFleet } from './fleet.js'
-import { regenerateTeamNote, seedPlatformNote } from '../onboarding/starter-pack.js'
+import { regenerateTeamNote, seedStarterPack } from '../onboarding/starter-pack.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
@@ -1498,14 +1498,16 @@ export class Supervisor {
   }
 
   /**
-   * Seed the shared brain's platform overview note if absent.
-   * Called once at supervisor.start(). Safe to re-run; idempotent.
+   * Seed the shared brain's starter pack (platform overview, tool
+   * reference, conventions, workflows) if any are absent. Called
+   * once at supervisor.start(). Idempotent on re-run; existing
+   * notes are not overwritten.
    */
   private async seedSharedBrainSafe(): Promise<void> {
     try {
-      await seedPlatformNote(this.state.home)
+      await seedStarterPack(this.state.home)
     } catch (err) {
-      this.log.warn('shared brain platform-note seed failed', {
+      this.log.warn('shared brain starter-pack seed failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
