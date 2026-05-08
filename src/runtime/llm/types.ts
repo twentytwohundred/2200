@@ -23,9 +23,19 @@ export interface Message {
  * `parametersJsonSchema` is a JSON Schema (draft 2020-12) describing
  * the tool's argument shape. The agent loop derives this from each
  * tool's Zod schema via `z.toJSONSchema()`.
+ *
+ * Anthropic and OpenAI both require tool names to match
+ * `^[a-zA-Z0-9_-]+$` ... no dots. The runtime's internal tool names
+ * are dotted (`fs.read`, `brain.search_shared`); the wire `name`
+ * uses underscores (`fs_read`, `brain_search_shared`) and
+ * `internalName` carries the dotted form so the loop can dispatch
+ * back to the registry when a native tool call comes in.
  */
 export interface NativeToolSpec {
+  /** Wire name: matches `^[a-zA-Z0-9_-]+$` per Anthropic + OpenAI. */
   name: string
+  /** Internal dotted name used by the tool registry / dispatcher. */
+  internalName: string
   description: string
   parametersJsonSchema: object
 }

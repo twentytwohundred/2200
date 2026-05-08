@@ -686,13 +686,20 @@ export class AgentLoop {
       // didn't return native calls (DeepSeek / xAI / local Ollama
       // never do; Anthropic / OpenAI / Kimi / Gemini / OpenRouter do
       // when the model decides to call a tool).
-      const nativeCalls: ParsedToolCall[] = (response.toolCalls ?? []).map((c) => ({
-        tool: c.name,
-        args: c.args,
-        predicted_outcome: '',
-        reason: '',
-        precondition: null,
-      }))
+      //
+      // Tool names on the wire are underscored (Anthropic + OpenAI
+      // enforce `^[a-zA-Z0-9_-]+$`); translate them back to the
+      // dotted internal form via the spec map before dispatch.
+      const nativeCalls: ParsedToolCall[] = (response.toolCalls ?? []).map((c) => {
+        const spec = this.opts.nativeToolSpecs?.find((s) => s.name === c.name)
+        return {
+          tool: spec?.internalName ?? c.name,
+          args: c.args,
+          predicted_outcome: '',
+          reason: '',
+          precondition: null,
+        }
+      })
       const parsed =
         nativeCalls.length > 0
           ? { calls: nativeCalls, errors: [] as string[] }
