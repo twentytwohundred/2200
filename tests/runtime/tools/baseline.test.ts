@@ -54,11 +54,11 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 23 tools (14 from Epic 2 + 4 pub + 5 brain + 2 cross-Agent brain in Epic 8 Phase C + notification.ask + notification.inform Epic 7 Phase B)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(23)
+  it('exports exactly 24 tools (23 prior + system.whoami)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(24)
   })
 
-  it('baselineServers() builds seven servers (incl. notification from Epic 7 PR D)', () => {
+  it('baselineServers() builds eight servers (incl. system from whoami PR)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -66,6 +66,7 @@ describe('baseline tool registry', () => {
       'notification',
       'pub',
       'shell',
+      'system',
       'time',
       'web',
     ])
@@ -78,6 +79,65 @@ describe('baseline tool registry', () => {
     for (const name of BASELINE_TOOL_NAMES) {
       expect(allTools).toContain(name)
     }
+  })
+})
+
+describe('system.whoami', () => {
+  it('returns agent_name + provider + model_id from the live identity getter', async () => {
+    const servers = baselineServers({
+      getIdentity: () =>
+        ({
+          source_path: '/x',
+          body: '',
+          frontmatter: {
+            agent_name: 'hobby',
+            model: { provider: 'deepseek', model_id: 'deepseek-chat' },
+            // Cast: only the fields the tool reads need to be valid.
+          },
+        }) as never,
+    })
+    const sys = servers.find((s) => s.name === 'system')
+    expect(sys).toBeDefined()
+    const whoami = sys?.tools.get('system.whoami')
+    expect(whoami).toBeDefined()
+    const result = await whoami!.execute({}, ctx())
+    expect(result).toEqual({
+      agent_name: 'hobby',
+      provider: 'deepseek',
+      model_id: 'deepseek-chat',
+      followup_model_id: null,
+    })
+  })
+
+  it('includes followup_model_id when present', async () => {
+    const servers = baselineServers({
+      getIdentity: () =>
+        ({
+          source_path: '/x',
+          body: '',
+          frontmatter: {
+            agent_name: 'hobby',
+            model: {
+              provider: 'deepseek',
+              model_id: 'deepseek-chat',
+              followup_model_id: 'deepseek-reasoner',
+            },
+          },
+        }) as never,
+    })
+    const sys = servers.find((s) => s.name === 'system')!
+    const whoami = sys.tools.get('system.whoami')!
+    const result = (await whoami.execute({}, ctx())) as {
+      followup_model_id: string | null
+    }
+    expect(result.followup_model_id).toBe('deepseek-reasoner')
+  })
+
+  it('throws when invoked without a live identity getter', async () => {
+    const servers = baselineServers()
+    const sys = servers.find((s) => s.name === 'system')!
+    const whoami = sys.tools.get('system.whoami')!
+    await expect(whoami.execute({}, ctx())).rejects.toThrow(/system\.whoami unavailable/)
   })
 })
 
