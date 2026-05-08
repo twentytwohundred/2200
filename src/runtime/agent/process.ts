@@ -597,19 +597,65 @@ export class AgentProcess {
   }
 
   /**
-   * Send a single heartbeat. Errors are logged but not thrown; the next
-   * heartbeat tick will retry. If the connection is dead the supervisor
-   * will mark the Agent errored on its own.
+   * Send a single heartbeat. On RPC failure (typical cause: supervisor
+   * bounced and our UDS connection is broken), attempt one reconnect
+   * to the socket and re-register. If reconnect succeeds, the next
+   * heartbeat tick rolls forward as if nothing happened. If
+   * reconnect also fails, log and let the next tick try again ... the
+   * supervisor's liveness watcher will eventually flag us if we
+   * stay disconnected.
    */
   private async heartbeat(): Promise<void> {
     if (!this.client || this.isShuttingDown) return
     try {
       await this.client.call('agent.heartbeat', { state: this.machine.state })
     } catch (err) {
-      this.log.warn('heartbeat failed', {
+      this.log.warn('heartbeat failed; attempting reconnect to supervisor', {
         error: err instanceof Error ? err.message : String(err),
       })
+      try {
+        await this.reconnectToSupervisor()
+      } catch (reconnectErr) {
+        this.log.warn('supervisor reconnect failed; will retry on next heartbeat', {
+          error: reconnectErr instanceof Error ? reconnectErr.message : String(reconnectErr),
+        })
+      }
     }
+  }
+
+  /**
+   * Re-open the UDS connection to the supervisor and re-register.
+   * Called by the heartbeat when the existing connection breaks.
+   * Common cause: the supervisor daemon was restarted (graceful or
+   * via SIGKILL) and the previous socket is gone. Without this, the
+   * agent process keeps running with a dead RPC channel and the
+   * supervisor never sees it again ... the dreaded "supervisor says
+   * running but agent is silent" failure mode.
+   */
+  private async reconnectToSupervisor(): Promise<void> {
+    // Drop the old client; node leaves dangling sockets if we don't
+    // close them explicitly. The disposed client errors any in-flight
+    // calls instead of leaving them hanging.
+    if (this.client) {
+      try {
+        await this.client.close()
+      } catch {
+        // best-effort; the connection is probably already dead
+      }
+    }
+    const conn = await connectUds(this.options.socketPath)
+    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
+    const result = await this.client.call('agent.register', {
+      name: this.options.name,
+      pid: process.pid,
+    })
+    if (!result.accepted) {
+      throw new Error(`supervisor rejected re-registration: ${result.reason ?? 'no reason given'}`)
+    }
+    this.log.info('supervisor reconnect succeeded; re-registered', {
+      name: this.options.name,
+      pid: process.pid,
+    })
   }
 
   /**

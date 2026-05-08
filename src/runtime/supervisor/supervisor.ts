@@ -138,6 +138,15 @@ export class Supervisor {
    * fast shutdown doesn't race the post-start work and surface
    * "database connection is not open" warnings. */
   private startupTasks: Promise<void>[] = []
+  /**
+   * Periodic timer that scans state.agents for dead PIDs. Transitions
+   * silently-dead agents (running on disk, PID gone in OS) to errored
+   * so the fleet view reflects truth and the operator gets the
+   * surface to recover. Without this, an agent process can die from
+   * an unhandled exception and the supervisor reports "running"
+   * forever (the OpenClaw-tier brittleness Doug called out).
+   */
+  private livenessTimer: NodeJS.Timeout | undefined
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
   private readonly onboardingSessions: OnboardingSessionStore
@@ -261,6 +270,70 @@ export class Supervisor {
     // operator (or any Agent) is free to edit it like any other
     // markdown note; we don't overwrite their edits.
     this.startupTasks.push(this.seedSharedBrainSafe())
+    // Liveness watcher: every 30s, scan state.agents for dead PIDs
+    // and transition silently-dead agents to errored. Fixes the
+    // OpenClaw-tier "supervisor reports running while the agent
+    // process is gone" failure mode.
+    this.startLivenessWatcher()
+  }
+
+  /**
+   * Start the liveness watcher: a 30-second tick that walks every
+   * Agent record in state and verifies its PID is still alive.
+   * Agents whose state is `running`/`waiting` but whose PID has
+   * exited (or never existed) are transitioned to `errored` so the
+   * fleet view reflects truth and the operator gets the surface
+   * to recover.
+   */
+  private startLivenessWatcher(): void {
+    if (this.livenessTimer) return
+    const tick = (): void => {
+      void this.scanAgentLiveness().catch((err: unknown) => {
+        this.log.warn('liveness scan failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
+    this.livenessTimer = setInterval(tick, 30_000)
+    if (typeof this.livenessTimer === 'object' && 'unref' in this.livenessTimer) {
+      this.livenessTimer.unref()
+    }
+  }
+
+  private async scanAgentLiveness(): Promise<void> {
+    if (this.isShuttingDown) return
+    for (const [name, record] of Object.entries(this.state.agents)) {
+      if (record.state !== 'running' && record.state !== 'waiting') continue
+      if (record.pid === null) continue
+      if (isPidAlive(record.pid)) continue
+      this.log.warn('agent process is dead but state says running; transitioning to errored', {
+        name,
+        pid: record.pid,
+        last_heartbeat: record.last_heartbeat,
+      })
+      this.spawned.delete(name)
+      this.stopPulseWatcher(name)
+      const errored: AgentRecord = {
+        ...record,
+        state: 'errored',
+        pid: null,
+        errored_at: new Date().toISOString(),
+        errored_reason:
+          'supervisor liveness check found dead PID; agent process exited without notifying',
+      }
+      this.state = {
+        ...this.state,
+        agents: { ...this.state.agents, [name]: errored },
+      }
+      await saveState(this.state)
+      if (this.webHandle) {
+        this.webHandle.broadcast({
+          event: 'agent.state_changed',
+          payload: { agent: name, state: 'errored' },
+        })
+      }
+      void this.regenerateFleetSafe()
+    }
   }
 
   /**
@@ -366,6 +439,10 @@ export class Supervisor {
     this.scheduler.stop()
     this.tokenRefresh.stop()
     this.onboardingSessions.stop()
+    if (this.livenessTimer) {
+      clearInterval(this.livenessTimer)
+      this.livenessTimer = undefined
+    }
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
