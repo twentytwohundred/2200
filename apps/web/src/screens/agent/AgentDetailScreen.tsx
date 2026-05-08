@@ -364,7 +364,7 @@ export function AgentDetailScreen(): ReactElement {
 
           <ActivitySection name={agent.name} query={notificationsQuery} />
 
-          <ModelSection name={agent.name} model={agent.model} />
+          <ModelSection name={agent.name} model={agent.model} status={agent.status} />
 
           <IdentitySection name={agent.name} path={agent.identity_path} />
         </>
@@ -989,11 +989,23 @@ function errorBody(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function ModelSection({ name, model }: { name: string; model: AgentModel | null }): ReactElement {
+function ModelSection({
+  name,
+  model,
+  status,
+}: {
+  name: string
+  model: AgentModel | null
+  status: string
+}): ReactElement {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [draftProvider, setDraftProvider] = useState(model?.provider ?? '')
   const [draftModelId, setDraftModelId] = useState(model?.model_id ?? '')
+  // Drives the chained save+restart status text. The save mutation
+  // does identity write -> stop (if running) -> start; the running
+  // step is reflected here so the operator sees what's happening.
+  const [savePhase, setSavePhase] = useState<'idle' | 'saving' | 'stopping' | 'starting'>('idle')
 
   const providersQuery = useQuery({
     queryKey: ['settings', 'providers'],
@@ -1002,10 +1014,35 @@ function ModelSection({ name, model }: { name: string; model: AgentModel | null 
     enabled: editing,
   })
 
+  // Chain identity save + agent restart so a model switch takes
+  // effect immediately. Order matters: write identity first (so the
+  // new process boots from the new frontmatter), then stop the
+  // running process (if any), then start a fresh one. Stop is
+  // skipped when the agent isn't already running so we don't error
+  // on an idempotent stop.
   const saveMutation = useMutation({
-    mutationFn: () => api.agentModelSet(name, { provider: draftProvider, model_id: draftModelId }),
+    mutationFn: async () => {
+      setSavePhase('saving')
+      await api.agentModelSet(name, { provider: draftProvider, model_id: draftModelId })
+      const wasRunning = status === 'running' || status === 'waiting'
+      if (wasRunning) {
+        setSavePhase('stopping')
+        await api.agentStop(name, 'model_switch')
+      }
+      setSavePhase('starting')
+      await api.agentStart(name)
+    },
     onSuccess: () => {
+      setSavePhase('idle')
       setEditing(false)
+      void queryClient.invalidateQueries({ queryKey: ['agent', name] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+    onError: () => {
+      setSavePhase('idle')
+      // Leave the editor open so the operator can retry or cancel.
+      // The agent may be stopped at this point; the hero card's
+      // Start button can recover.
       void queryClient.invalidateQueries({ queryKey: ['agent', name] })
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
@@ -1128,10 +1165,15 @@ function ModelSection({ name, model }: { name: string; model: AgentModel | null 
                     draftModelId === model.model_id)
                 }
               >
-                {saveMutation.isPending ? 'SAVING…' : 'SAVE'}
+                {savePhase === 'saving'
+                  ? 'SAVING…'
+                  : savePhase === 'stopping'
+                    ? 'STOPPING…'
+                    : savePhase === 'starting'
+                      ? 'STARTING…'
+                      : 'SAVE & RESTART'}
               </Button>
             </div>
-            <div className={styles.modelNote}>Restart this agent to apply the change.</div>
           </div>
         ) : (
           <>
