@@ -468,13 +468,20 @@ export class Supervisor {
       }
     })
     await Promise.all([...stops, ...pubStops])
-    for (const conn of this.connections) {
-      try {
-        await conn.close()
-      } catch {
-        // best-effort
-      }
-    }
+    // Close every connection with a per-connection timeout. Without
+    // this, a single hung connection (typical cause: agent process
+    // stopped acking on its UDS read end but didn't close it) blocks
+    // the entire supervisor.shutdown() indefinitely. The shutdown
+    // path is hot during daemon bounces; we cannot afford to hang.
+    await Promise.all(
+      Array.from(this.connections).map(async (conn) => {
+        try {
+          await Promise.race([conn.close(), new Promise((resolve) => setTimeout(resolve, 1500))])
+        } catch {
+          // best-effort
+        }
+      }),
+    )
     // Drain any startup tasks still in flight (fleet regen, shared
     // brain seed) before closing brain handles, so a fast
     // start/shutdown sequence doesn't surface
