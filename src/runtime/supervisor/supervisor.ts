@@ -1341,6 +1341,32 @@ export class Supervisor {
         this.log.info('scheduler reloaded via cli', { armed })
         return { ok: true as const, armed }
       },
+
+      'cli.spawn.from-handoff': async (params) => {
+        const { migrateFromHandoff } = await import('../migration/orchestrator.js')
+        const result = await migrateFromHandoff({
+          handoff: {
+            frontmatter: params.handoff.frontmatter,
+            body: params.handoff.body,
+            source_path: params.handoff.source_path,
+          },
+          home: this.state.home,
+          supervisor: this,
+          today: new Date(),
+          ...(params.force === true ? { force: true } : {}),
+        })
+        this.log.info('agent spawned via cli.spawn.from-handoff', {
+          name: result.agent_name,
+          identity_path: result.identity_path,
+        })
+        return {
+          agent_name: result.agent_name,
+          identity_path: result.identity_path,
+          continuity_note_slug: result.continuity_note_slug,
+          brain_imported_count: result.brain_imported_count,
+          notification_id: result.notification_id,
+        }
+      },
     }
   }
 

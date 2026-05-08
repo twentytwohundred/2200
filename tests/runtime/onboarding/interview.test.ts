@@ -1,73 +1,42 @@
 /**
- * Tests for the interview module (Epic 14 Phase A PR B).
+ * Tests for the v2 LLM-driven interview module.
  *
- * Uses fake UserInput + fake LLMProvider so the tests are
- * deterministic and don't make network calls. Covers:
- *   - opening + branch flow happy path
- *   - keyword routing (email keywords pick the email branch)
- *   - default branch fallback when no keywords match
- *   - case-insensitive keyword matching
- *   - transcript carries question_id, question_text, answer,
- *     intent_tag, and asked_at for each entry
- *   - summary comes from the LLM
- *   - LLM returning empty text throws
- *   - injected `now()` produces deterministic timestamps
+ * The fake LLM provider plays back a scripted sequence of directives
+ * (question, question, ..., done, summary) so the test stays
+ * deterministic without network calls. Covers:
+ *
+ *   - opening + LLM-driven follow-ups produce a populated transcript
+ *   - intent_tag on each entry comes from the directive's `covering`
+ *     field
+ *   - max_turns hard-cap forces 'done' even if the LLM keeps asking
+ *   - LLM returning empty summary throws
+ *   - LLM error propagates
+ *   - malformed directive (non-JSON) is tolerated via re-prompt; a
+ *     persistent malformed response forces 'done'
  */
 import { describe, expect, it } from 'vitest'
-import {
-  pickBranch,
-  runInterview,
-  type UserInput,
-} from '../../../src/runtime/onboarding/interview.js'
+import { runInterview, type UserInput } from '../../../src/runtime/onboarding/interview.js'
+import { parseDirective } from '../../../src/runtime/onboarding/session.js'
 import type { CompletionRequest, CompletionResponse } from '../../../src/runtime/llm/types.js'
 import type { LLMProvider } from '../../../src/runtime/llm/provider.js'
 import type { QuestionScript } from '../../../src/runtime/onboarding/types.js'
 
 const SCRIPT: QuestionScript = {
-  script_schema_version: 1,
+  script_schema_version: 2,
   name: 'test-script',
   opening: {
     id: 'opening',
     text: 'What kind of Agent?',
     expects: 'free_form',
-    intent_tag: 'opening_purpose',
+    intent_tag: 'purpose',
   },
-  routing: [
-    { if_keywords: ['email', 'inbox'], next_branch: 'email_branch' },
-    { if_keywords: ['code', 'repo'], next_branch: 'project_branch' },
+  goals: [
+    { id: 'purpose', description: 'what the agent does', required: true },
+    { id: 'agent_name', description: 'what to call it', required: true },
+    { id: 'tools', description: 'integrations needed', required: true },
   ],
-  default_branch: 'freeform_branch',
-  branches: [
-    {
-      id: 'email_branch',
-      questions: [
-        {
-          id: 'email_account',
-          text: 'Which account?',
-          expects: 'email',
-          intent_tag: 'tool_email_account',
-        },
-        { id: 'cadence', text: 'How often?', expects: 'free_form', intent_tag: 'cadence_email' },
-      ],
-    },
-    {
-      id: 'project_branch',
-      questions: [
-        {
-          id: 'project_path',
-          text: 'Project path?',
-          expects: 'free_form',
-          intent_tag: 'tool_project_path',
-        },
-      ],
-    },
-    {
-      id: 'freeform_branch',
-      questions: [
-        { id: 'tools_needed', text: 'Tools?', expects: 'free_form', intent_tag: 'tools_freeform' },
-      ],
-    },
-  ],
+  target_turns: 4,
+  max_turns: 6,
 }
 
 function fakeInput(answers: readonly string[]): UserInput {
@@ -88,23 +57,39 @@ function fakeInput(answers: readonly string[]): UserInput {
   }
 }
 
-interface FakeProviderOptions {
+/**
+ * The fake provider plays back a scripted sequence of completion
+ * texts. The session calls complete() once per "what should I ask next?"
+ * turn (returning a directive JSON) and once for the final summary.
+ * Distinguish between them via the systemPrompt: interviewer prompts
+ * mention GOALS; the summary prompt is everything else.
+ */
+function scriptedProvider(opts: {
+  directives: readonly string[]
   summary?: string
-  empty?: boolean
-  throwError?: Error
-}
-
-function fakeProvider(options: FakeProviderOptions = {}): LLMProvider {
+  throwOnTurn?: number
+}): LLMProvider {
+  let interviewerCallCount = 0
   return {
     name: 'fake',
     baseUrl: 'http://fake',
-    complete: (_request: CompletionRequest): Promise<CompletionResponse> => {
-      if (options.throwError !== undefined) {
-        return Promise.reject(options.throwError)
+    complete: (request: CompletionRequest): Promise<CompletionResponse> => {
+      const isInterviewer = request.systemPrompt?.includes('GOALS')
+      if (isInterviewer) {
+        const directive = opts.directives[interviewerCallCount]
+        interviewerCallCount += 1
+        if (opts.throwOnTurn !== undefined && interviewerCallCount === opts.throwOnTurn) {
+          return Promise.reject(new Error('rate limited'))
+        }
+        return Promise.resolve({
+          text: directive ?? '{"kind":"done"}',
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 100, outputTokens: 50, estDollars: 0.001 },
+        })
       }
-      const text = options.empty === true ? '' : (options.summary ?? 'Summary text from the LLM.')
+      // Summary call.
       return Promise.resolve({
-        text,
+        text: opts.summary ?? 'I am an Agent. My job is X.',
         finishReason: 'stop',
         costMetrics: { inputTokens: 100, outputTokens: 50, estDollars: 0.001 },
       })
@@ -115,133 +100,143 @@ function fakeProvider(options: FakeProviderOptions = {}): LLMProvider {
 const FIXED_TIME = new Date('2026-04-29T12:00:00Z')
 const fixedNow = (): Date => FIXED_TIME
 
-describe('pickBranch', () => {
-  it('routes by the first matching keyword', () => {
-    const branch = pickBranch(SCRIPT, 'I want an email assistant')
-    expect(branch.id).toBe('email_branch')
+describe('parseDirective', () => {
+  it('parses bare JSON', () => {
+    expect(parseDirective('{"kind":"done"}')).toEqual({ kind: 'done' })
   })
 
-  it('matches case-insensitively', () => {
-    const branch = pickBranch(SCRIPT, 'EMAIL assistant please')
-    expect(branch.id).toBe('email_branch')
+  it('parses fenced JSON', () => {
+    const text = '```json\n{"kind":"question","text":"hi","covering":"purpose"}\n```'
+    expect(parseDirective(text)).toEqual({
+      kind: 'question',
+      text: 'hi',
+      covering: 'purpose',
+    })
   })
 
-  it('falls back to default_branch when no keywords match', () => {
-    const branch = pickBranch(SCRIPT, 'something completely unrelated')
-    expect(branch.id).toBe('freeform_branch')
+  it('extracts JSON from prose', () => {
+    expect(parseDirective('Sure thing. {"kind":"done"} (final answer.)')).toEqual({ kind: 'done' })
   })
 
-  it('first matching rule wins (rules in order)', () => {
-    const branch = pickBranch(SCRIPT, 'an email tool that watches my code repo')
-    expect(branch.id).toBe('email_branch') // email rule comes first
+  it('returns null on unparseable input', () => {
+    expect(parseDirective('lol no json here')).toBeNull()
   })
 
-  it('throws when default_branch points at a non-existent branch', () => {
-    const broken: QuestionScript = { ...SCRIPT, default_branch: 'ghost' }
-    expect(() => pickBranch(broken, 'no match')).toThrow(/default_branch.*ghost/)
+  it('returns null on a question with empty text', () => {
+    expect(parseDirective('{"kind":"question","text":"","covering":"purpose"}')).toBeNull()
   })
 })
 
 describe('runInterview', () => {
-  it('runs opening + branch flow and returns a populated transcript', async () => {
+  it('runs opening + LLM-driven follow-ups and returns a populated transcript', async () => {
     const transcript = await runInterview({
       script: SCRIPT,
-      provider: fakeProvider({ summary: 'I am an email Agent. I will watch doug@example.com.' }),
+      provider: scriptedProvider({
+        directives: [
+          '{"kind":"question","text":"What should I call you?","covering":"agent_name"}',
+          '{"kind":"question","text":"Which integrations?","covering":"tools"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am Emma, an email Agent. I will watch doug@example.com.',
+      }),
       modelId: 'claude-opus-4-7',
       input: fakeInput([
         'I want an email assistant', // opening
-        'doug@example.com', // email_account
-        'every weekday at 8am', // cadence
+        'emma', // agent_name
+        'gmail', // tools
       ]),
       now: fixedNow,
     })
 
-    expect(transcript.interview_schema_version).toBe(1)
+    expect(transcript.interview_schema_version).toBe(2)
     expect(transcript.script_name).toBe('test-script')
-    expect(transcript.chosen_branch).toBe('email_branch')
+    expect(transcript.chosen_branch).toBe('llm_driven')
     expect(transcript.entries).toHaveLength(3)
     expect(transcript.entries[0]?.question_id).toBe('opening')
-    expect(transcript.entries[0]?.intent_tag).toBe('opening_purpose')
-    expect(transcript.entries[1]?.question_id).toBe('email_account')
-    expect(transcript.entries[1]?.answer).toBe('doug@example.com')
-    expect(transcript.entries[2]?.question_id).toBe('cadence')
+    expect(transcript.entries[0]?.intent_tag).toBe('purpose')
+    expect(transcript.entries[1]?.intent_tag).toBe('agent_name')
+    expect(transcript.entries[1]?.answer).toBe('emma')
+    expect(transcript.entries[2]?.intent_tag).toBe('tools')
     expect(transcript.summary).toContain('email Agent')
-    expect(transcript.started_at).toBe('2026-04-29T12:00:00.000Z')
-    expect(transcript.finished_at).toBe('2026-04-29T12:00:00.000Z')
   })
 
-  it('uses the default branch when no keywords match', async () => {
+  it('forces done when max_turns is reached', async () => {
+    // The LLM keeps asking; the session should hit max_turns=6 and
+    // summarize anyway.
+    const directives = Array.from({ length: 10 }).map(
+      () => '{"kind":"question","text":"another?","covering":"purpose"}',
+    )
+    const answers = Array.from({ length: 10 }).map((_, i) => `answer ${String(i)}`)
     const transcript = await runInterview({
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives,
+        summary: 'forced summary',
+      }),
       modelId: 'claude-opus-4-7',
-      input: fakeInput([
-        'something completely unrelated', // opening (no match)
-        'GitHub, Slack', // tools_needed (freeform branch)
-      ]),
+      input: fakeInput(answers),
       now: fixedNow,
     })
-    expect(transcript.chosen_branch).toBe('freeform_branch')
-    expect(transcript.entries).toHaveLength(2)
-    expect(transcript.entries[1]?.question_id).toBe('tools_needed')
-  })
-
-  it('routes to project_branch on code keywords', async () => {
-    const transcript = await runInterview({
-      script: SCRIPT,
-      provider: fakeProvider(),
-      modelId: 'claude-opus-4-7',
-      input: fakeInput(['I want an Agent that watches my code repo', '/home/user/project']),
-      now: fixedNow,
-    })
-    expect(transcript.chosen_branch).toBe('project_branch')
-    expect(transcript.entries[1]?.question_id).toBe('project_path')
+    // Opening + at most max_turns-1 generated questions ... we cap at
+    // max_turns total entries.
+    expect(transcript.entries.length).toBeLessThanOrEqual(SCRIPT.max_turns)
+    expect(transcript.summary).toBe('forced summary')
   })
 
   it('throws when the LLM returns an empty summary', async () => {
     await expect(
       runInterview({
         script: SCRIPT,
-        provider: fakeProvider({ empty: true }),
+        provider: scriptedProvider({
+          directives: ['{"kind":"done"}'],
+          summary: '',
+        }),
         modelId: 'claude-opus-4-7',
-        input: fakeInput(['something unrelated', 'nothing in particular']),
+        input: fakeInput(['I want an Agent']),
         now: fixedNow,
       }),
     ).rejects.toThrow(/empty summary/)
   })
 
-  it('propagates LLM errors', async () => {
+  it('propagates LLM errors during the interview', async () => {
     await expect(
       runInterview({
         script: SCRIPT,
-        provider: fakeProvider({ throwError: new Error('rate limited') }),
+        provider: scriptedProvider({
+          directives: ['{"kind":"question","text":"q","covering":"purpose"}'],
+          throwOnTurn: 1,
+        }),
         modelId: 'claude-opus-4-7',
-        input: fakeInput(['something unrelated', 'nothing']),
+        input: fakeInput(['I want an Agent']),
         now: fixedNow,
       }),
     ).rejects.toThrow(/rate limited/)
   })
 
-  it('snapshots question_text and intent_tag at ask-time (script edits do not retro-mutate transcripts)', async () => {
+  it('snapshots question_text and intent_tag at ask-time', async () => {
     const transcript = await runInterview({
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives: ['{"kind":"question","text":"Q1?","covering":"agent_name"}', '{"kind":"done"}'],
+      }),
       modelId: 'claude-opus-4-7',
-      input: fakeInput(['email please', 'a@b.com', 'daily']),
+      input: fakeInput(['I want an Agent', 'emma']),
       now: fixedNow,
     })
     expect(transcript.entries[0]?.question_text).toBe('What kind of Agent?')
-    expect(transcript.entries[1]?.question_text).toBe('Which account?')
+    expect(transcript.entries[1]?.question_text).toBe('Q1?')
   })
 
-  it('answers preserve the user input verbatim', async () => {
+  it('preserves user answers verbatim (whitespace and all)', async () => {
     const transcript = await runInterview({
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+      }),
       modelId: 'claude-opus-4-7',
-      input: fakeInput(['  trailing  whitespace  email  ', '  spaced  ', 'spaced']),
+      input: fakeInput(['  trailing  whitespace  email  ']),
       now: fixedNow,
     })
-    expect(transcript.entries[1]?.answer).toBe('  spaced  ')
+    expect(transcript.entries[0]?.answer).toBe('  trailing  whitespace  email  ')
   })
 })

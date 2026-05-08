@@ -317,13 +317,15 @@ export function buildProgram(): Command {
     )
     .option(
       '--script <path>',
-      'override the YAML question script (defaults to the bundled default-v1.yaml)',
+      'override the YAML question script (defaults to the bundled default-v2.yaml)',
     )
-    .option('--provider <name>', 'LLM provider for the interview (default: anthropic)', 'anthropic')
+    .option(
+      '--provider <name>',
+      'LLM provider for the interview (default: first provider with an API key configured)',
+    )
     .option(
       '--model <id>',
-      'model id for the interview (default: claude-opus-4-7)',
-      'claude-opus-4-7',
+      'model id for the interview (default: first canonical model for the chosen provider)',
     )
     .option('--yes', 'auto-confirm at the preview step (non-interactive)')
     .option('--dry-run', 'run the interview, print the preview, do not create')
@@ -334,27 +336,21 @@ export function buildProgram(): Command {
     .action(
       async (opts: {
         script?: string
-        provider: string
-        model: string
+        provider?: string
+        model?: string
         yes?: boolean
         dryRun?: boolean
         replay?: string
       }) => {
-        // Daemon-running guard runs FIRST so the operator gets the
-        // stop-the-daemon hint immediately, not after sitting through
-        // a 5-10 minute interview + LLM summary call. The --dry-run
-        // mode skips the materialization step entirely so it does
-        // not need this check; we still gate it here to keep the
-        // top-of-action contract simple.
+        // Daemon detection. When the daemon is up we keep its
+        // Supervisor as the single state-file writer and run the
+        // spawn's materialization step over RPC ("cli.spawn.from-
+        // handoff"). When it is down, the CLI opens a standalone
+        // Supervisor itself. Both paths run the interview locally in
+        // this CLI process.
         const home = await resolveHomeFromOpts(program)
-        const probe = await connectToDaemon(home)
-        if (probe) {
-          await probe.close()
-          console.error(
-            `agent spawn cannot run while the supervisor daemon is up (state-file race risk). Stop with "2200 daemon stop" first, run spawn, then restart the daemon.`,
-          )
-          process.exit(1)
-        }
+        const daemonClient = await connectToDaemon(home)
+        const daemonUp = daemonClient !== null
 
         const { loadScriptFile } = await import('../runtime/onboarding/script-loader.js')
         const { runInterview } = await import('../runtime/onboarding/interview.js')
@@ -396,7 +392,7 @@ export function buildProgram(): Command {
             'runtime',
             'onboarding',
             'scripts',
-            'default-v1.yaml',
+            'default-v2.yaml',
           )
           const scriptPath = opts.script ?? defaultScriptPath
           const script = await loadScriptFile(scriptPath)
@@ -412,13 +408,59 @@ export function buildProgram(): Command {
               }),
           }
 
+          // Default-pick: if the operator did not pass --provider, walk
+          // the catalog and pick the first one with a configured key
+          // (or with keyOptional=true). Same shape the web flow uses.
+          const { listKnownProviders } = await import('../runtime/llm/registry.js')
+          const { loadRuntimeEnv, defaultRuntimeEnvPath } =
+            await import('../runtime/config/runtime-env.js')
+          const { loadPricingTable } = await import('../runtime/llm/pricing.js')
+
+          let providerName = opts.provider
+          if (!providerName) {
+            const env = await loadRuntimeEnv(defaultRuntimeEnvPath())
+            const configured = listKnownProviders().find((p) => {
+              if (p.keyOptional) return true
+              const v = env[p.defaultEnvKey] ?? ''
+              return v.length > 0
+            })
+            if (!configured) {
+              rl.close()
+              console.error(
+                'No LLM provider has an API key configured. Set ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, XAI_API_KEY, or another provider key, or use the web Settings → Providers screen.',
+              )
+              process.exit(1)
+            }
+            providerName = configured.name
+            console.log(
+              `Using provider "${providerName}" (auto-picked; pass --provider to override).`,
+            )
+          }
+          let modelIdOpt = opts.model
+          if (!modelIdOpt) {
+            const pricing = loadPricingTable()
+            const candidates = Object.keys(pricing.models)
+              .filter((k) => k.startsWith(providerName + '/'))
+              .map((k) => k.slice(providerName.length + 1))
+              .sort()
+            modelIdOpt = candidates[0]
+            if (!modelIdOpt) {
+              rl.close()
+              console.error(
+                `Provider "${providerName}" has no default model in the pricing table. Pass --model.`,
+              )
+              process.exit(1)
+            }
+            console.log(`Using model "${modelIdOpt}" (auto-picked; pass --model to override).`)
+          }
+
           let provider
           try {
-            provider = await resolveProvider({ providerName: opts.provider })
+            provider = await resolveProvider({ providerName })
           } catch (err) {
             rl.close()
             console.error(
-              `Could not resolve LLM provider "${opts.provider}": ${err instanceof Error ? err.message : String(err)}`,
+              `Could not resolve LLM provider "${providerName}": ${err instanceof Error ? err.message : String(err)}`,
             )
             console.error(
               `Set the appropriate API-key env var (e.g., ANTHROPIC_API_KEY for anthropic) before running.`,
@@ -433,7 +475,7 @@ export function buildProgram(): Command {
             transcript = await runInterview({
               script,
               provider,
-              modelId: opts.model,
+              modelId: modelIdOpt,
               input: stdinInput,
             })
           } finally {
@@ -485,65 +527,100 @@ export function buildProgram(): Command {
           return
         }
 
-        // Materialize the Agent via the migration orchestrator. The
-        // orchestrator handles Identity write (with mcp_servers
-        // baked in), supervisor.createAgent, brain inline-note
-        // write, and the summary notification.
-        const { migrateFromHandoff } = await import('../runtime/migration/orchestrator.js')
-        const { Supervisor: SupCls } = await import('../runtime/supervisor/supervisor.js')
-        const supervisor = await SupCls.create({ home })
-        try {
-          const result = await migrateFromHandoff({
-            handoff,
-            home,
-            supervisor,
-            today: new Date(),
-          })
-          // Persist the full interview transcript for audit + future
-          // replay. Failures here do not block agent creation; the
-          // Agent is already on disk.
-          let transcriptPath: string | null = null
+        // Materialize the Agent. When the daemon is up, route
+        // through cli.spawn.from-handoff so the daemon's Supervisor
+        // owns state writes; when it is down, open a standalone
+        // Supervisor here.
+        interface SpawnResult {
+          agent_name: string
+          identity_path: string
+          continuity_note_slug: string
+        }
+        let result: SpawnResult
+        if (daemonClient) {
           try {
-            transcriptPath = await saveTranscript({
-              home,
-              agentName: result.agent_name,
-              transcript,
+            const rpcResult = await daemonClient.call('cli.spawn.from-handoff', {
+              handoff: {
+                frontmatter: handoff.frontmatter,
+                body: handoff.body,
+                source_path: handoff.source_path,
+              },
             })
-          } catch (err) {
-            console.warn(
-              `note: could not save transcript: ${err instanceof Error ? err.message : String(err)}`,
-            )
+            result = {
+              agent_name: rpcResult.agent_name,
+              identity_path: rpcResult.identity_path,
+              continuity_note_slug: rpcResult.continuity_note_slug,
+            }
+          } finally {
+            await daemonClient.close()
           }
-          console.log(`\nAgent "${result.agent_name}" created.`)
-          console.log(`  identity:           ${result.identity_path}`)
-          console.log(`  continuity note:    ${result.continuity_note_slug}`)
-          if (transcriptPath) {
-            console.log(`  transcript:         ${transcriptPath}`)
+        } else {
+          const { migrateFromHandoff } = await import('../runtime/migration/orchestrator.js')
+          const { Supervisor: SupCls } = await import('../runtime/supervisor/supervisor.js')
+          const supervisor = await SupCls.create({ home })
+          try {
+            const standaloneResult = await migrateFromHandoff({
+              handoff,
+              home,
+              supervisor,
+              today: new Date(),
+            })
+            result = {
+              agent_name: standaloneResult.agent_name,
+              identity_path: standaloneResult.identity_path,
+              continuity_note_slug: standaloneResult.continuity_note_slug,
+            }
+          } finally {
+            await supervisor.shutdown()
           }
+        }
 
-          if (tools.length > 0) {
+        // Persist the full interview transcript for audit + future
+        // replay. Failures here do not block agent creation; the
+        // Agent is already on disk.
+        let transcriptPath: string | null = null
+        try {
+          transcriptPath = await saveTranscript({
+            home,
+            agentName: result.agent_name,
+            transcript,
+          })
+        } catch (err) {
+          console.warn(
+            `note: could not save transcript: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        console.log(`\nAgent "${result.agent_name}" created.`)
+        console.log(`  identity:           ${result.identity_path}`)
+        console.log(`  continuity note:    ${result.continuity_note_slug}`)
+        if (transcriptPath) {
+          console.log(`  transcript:         ${transcriptPath}`)
+        }
+
+        if (tools.length > 0) {
+          console.log(
+            `\nMCP servers written into the Identity. Set the env vars below before "agent start" (OAuth automation lands in Epic 9 Phase B):`,
+          )
+          for (const tool of tools) {
+            console.log(`  - ${tool.server.name}: ${tool.env_hint}`)
+          }
+        }
+
+        if (schedules.length > 0) {
+          console.log(`\nNext steps for schedules (operator runs after agent start):`)
+          for (const sched of schedules) {
             console.log(
-              `\nMCP servers written into the Identity. Set the env vars below before "agent start" (OAuth automation lands in Epic 9 Phase B):`,
+              `  - ${sched.id}: 2200 schedule add ${result.agent_name} --cron "${sched.cron}" --tz ${sched.tz} --description "${sched.task.replace(/"/g, '\\"')}"`,
             )
-            for (const tool of tools) {
-              console.log(`  - ${tool.server.name}: ${tool.env_hint}`)
-            }
           }
+        }
 
-          if (schedules.length > 0) {
-            console.log(`\nNext steps for schedules (operator runs after agent start):`)
-            for (const sched of schedules) {
-              console.log(
-                `  - ${sched.id}: 2200 schedule add ${result.agent_name} --cron "${sched.cron}" --tz ${sched.tz} --description "${sched.task.replace(/"/g, '\\"')}"`,
-              )
-            }
-          }
-
+        if (daemonUp) {
+          console.log(`\nRun "2200 agent start ${result.agent_name}" to bring it up.`)
+        } else {
           console.log(
             `\nRun "2200 daemon start" then "2200 agent start ${result.agent_name}" to bring it up.`,
           )
-        } finally {
-          await supervisor.shutdown()
         }
       },
     )

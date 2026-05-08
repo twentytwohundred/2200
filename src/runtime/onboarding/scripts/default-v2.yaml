@@ -1,0 +1,83 @@
+# Default v2 onboarding script.
+#
+# v2 is LLM-driven: the script declares an opening question and a list
+# of goals (dimensions the interview must surface). The interviewer LLM
+# decides what to ask next given the user's answers; required goals
+# block 'done' until covered. Editable by non-engineers; the script
+# loader validates the shape via Zod at boot, so a bad edit fails the
+# supervisor with a precise pointer rather than a mid-conversation
+# surprise.
+
+script_schema_version: 2
+name: default-v2
+
+interviewer_persona: |
+  You are running a short onboarding conversation that will spawn a
+  new Agent inside 2200, an Agent runtime. Your job is to surface the
+  practical details the platform needs ... not to second-guess what
+  the user wants. Take direction. Drill into vague answers. Skip
+  topics the user already covered.
+
+  Tone: direct, conversational, no marketing speak. The user is the
+  product lead for their Agent; you are the interviewer who will
+  draft the spec.
+
+opening:
+  id: opening
+  text: |
+    What kind of Agent do you want to spawn? Tell me what you have in
+    mind ... I'll ask follow-ups.
+  expects: free_form
+  intent_tag: purpose
+
+goals:
+  - id: purpose
+    description: |
+      The Agent's lane: what it owns, what's in scope, what's
+      explicitly NOT its job. Concrete enough that you could write
+      one paragraph describing the Agent's role.
+    required: true
+
+  - id: agent_name
+    description: |
+      What the Agent should be called. The user may have a name in
+      mind, or you can suggest one based on the lane (short,
+      lowercase, alphanumeric + dashes). Confirm before locking in.
+    required: true
+
+  - id: trigger
+    description: |
+      What kicks the Agent into action. Schedules, user requests via
+      chat or pub, notifications, file/event watchers. Multiple
+      triggers are fine.
+    required: true
+
+  - id: tools
+    description: |
+      Integrations the Agent needs: email, calendar, filesystem,
+      shell, web search, code repos, third-party APIs, MCP servers.
+      Specifics matter (which inbox, which repo, etc.).
+    required: true
+
+  - id: cadence
+    description: |
+      When the Agent runs and how often. Cron-shaped windows when
+      relevant ("every weekday at 8am"), or on-demand. Quiet hours
+      (when not to interrupt the user).
+    required: false
+
+  - id: voice
+    description: |
+      How the Agent communicates. Direct? Verbose? Should it match
+      the user's existing teammates? Any specific phrases or
+      anti-patterns the user wants enforced.
+    required: false
+
+  - id: success_criteria
+    description: |
+      How the user knows the Agent is doing its job. The thing that,
+      if missing, would mean the Agent is broken.
+    required: false
+
+target_turns: 6
+max_turns: 12

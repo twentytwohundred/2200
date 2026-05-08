@@ -12,7 +12,7 @@
  * Extraction:
  *   - agent_name: the answer to the question whose intent_tag is
  *     'agent_name'. v1 expects the question to exist in every branch
- *     (the default-v1.yaml script enforces this); if missing, the
+ *     (the default-v2.yaml script enforces this); if missing, the
  *     translator throws ... a script without an agent_name question
  *     is an operator-fixable bug.
  *   - agent_type: derived from the chosen branch id ('email_agent_branch'
@@ -65,15 +65,27 @@ export interface BuildHandoffArgs {
 export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocument {
   const t = args.transcript
 
-  const agentName = findAnswerByTag(t, AGENT_NAME_TAG)
-  if (agentName === undefined || agentName.trim().length === 0) {
-    throw new Error(
-      `interview transcript is missing an answer for intent_tag "${AGENT_NAME_TAG}"; the onboarding script must include this question in every branch`,
-    )
-  }
-  const cleanName = normalizeAgentName(agentName)
+  const agentNameRaw = findAnswerByTag(t, AGENT_NAME_TAG)
+  // Soft fallback for v2 LLM-driven interviews: if the interviewer
+  // never reached the agent_name goal (model timed out, forced
+  // 'done' on a malformed directive, etc.), synthesize a name from
+  // the opening answer so the spawn can still produce an Identity
+  // the operator can rename later. The v1 (retired) scripts always
+  // included an agent_name question, so this path didn't apply.
+  const cleanName =
+    agentNameRaw !== undefined && agentNameRaw.trim().length > 0
+      ? normalizeAgentName(agentNameRaw)
+      : synthesizeAgentName(t)
 
-  const agentType = stripBranchSuffix(t.chosen_branch)
+  // agent_type derivation:
+  //   - v1 (scripted, retired): the chosen branch id mapped one-to-one
+  //     ('email_agent_branch' → 'email_agent')
+  //   - v2 (LLM-driven): chosen_branch is always 'llm_driven', which
+  //     is a poor user-facing tag. Default to a generic 'agent'; the
+  //     downstream 'humanizeAgentType' renders that as "agent" cleanly,
+  //     and operators can edit the Identity post-spawn if they want a
+  //     more specific role.
+  const agentType = t.chosen_branch === 'llm_driven' ? 'agent' : stripBranchSuffix(t.chosen_branch)
 
   return {
     frontmatter: {
@@ -153,4 +165,29 @@ function normalizeAgentName(raw: string): string {
     )
   }
   return cleaned
+}
+
+/**
+ * v2 fallback: derive an agent name from the opening answer when no
+ * explicit agent_name turn was captured. Takes the first 24 chars of
+ * the opening answer (or the first transcript entry's answer),
+ * normalizes, and prefixes with 'agent-' if the result doesn't start
+ * with a letter. The operator can rename in the preview before
+ * confirming.
+ */
+function synthesizeAgentName(t: InterviewTranscript): string {
+  const seed = (t.entries[0]?.answer ?? '').slice(0, 24).trim()
+  if (seed.length > 0) {
+    try {
+      const normalized = normalizeAgentName(seed)
+      // Cap length so unwieldy openings don't yield 24-char-prefix
+      // names; 16 is comfortable for an Identity slug.
+      return normalized.slice(0, 16)
+    } catch {
+      // fall through
+    }
+  }
+  // Last-resort name: timestamp suffix keeps it unique enough that
+  // re-spawning back-to-back doesn't collide.
+  return `agent-${Date.now().toString(36).slice(-6)}`
 }

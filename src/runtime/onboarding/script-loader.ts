@@ -82,40 +82,20 @@ export function parseScriptString(text: string, source_path: string | null): Que
     throw err
   }
 
-  // Referential integrity: routing rules must point at known branches,
-  // and `default_branch` must name a branch that exists. The loader is
-  // the right place to catch these (Zod cannot, since the rules are
-  // structural across fields). A bad cross-reference fails the operator
-  // at boot rather than mid-interview.
-  const branchIds = new Set(parsed.branches.map((b) => b.id))
-  if (!branchIds.has(parsed.default_branch)) {
-    throw new ScriptLoadError(
-      `default_branch "${parsed.default_branch}" does not match any branch id`,
-      source_path,
-    )
-  }
-  for (let i = 0; i < parsed.routing.length; i++) {
-    const rule = parsed.routing[i]
-    if (rule === undefined) continue
-    if (!branchIds.has(rule.next_branch)) {
-      throw new ScriptLoadError(
-        `routing[${String(i)}].next_branch "${rule.next_branch}" does not match any branch id`,
-        source_path,
-      )
-    }
-  }
-
-  // Branch ids must be unique. Two branches with the same id would
-  // make routing ambiguous.
+  // Referential integrity for v2: goal ids must be unique. The
+  // interviewer LLM tags each question with the goal it covers, and
+  // the downstream pipeline (tool-suggestions / schedule-suggestions /
+  // identity-from-interview) treats goal ids as intent_tags. Two
+  // goals with the same id would make those mappings ambiguous.
   const seen = new Set<string>()
-  for (const branch of parsed.branches) {
-    if (seen.has(branch.id)) {
+  for (const goal of parsed.goals) {
+    if (seen.has(goal.id)) {
       throw new ScriptLoadError(
-        `duplicate branch id "${branch.id}"; branch ids must be unique within a script`,
+        `duplicate goal id "${goal.id}"; goal ids must be unique within a script`,
         source_path,
       )
     }
-    seen.add(branch.id)
+    seen.add(goal.id)
   }
 
   return parsed

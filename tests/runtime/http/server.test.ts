@@ -373,18 +373,23 @@ describe('HTTP server onboarding endpoints', () => {
     expect(r.status).toBe(404)
   })
 
-  it('POST /api/v1/onboarding without an LLM provider configured surfaces 503', async () => {
-    // Test env has no ANTHROPIC_API_KEY etc. unset by initHome; the
-    // anthropic provider resolution fails and the endpoint returns
-    // a clean 503 rather than a 500.
+  it('POST /api/v1/onboarding without an LLM provider configured surfaces a useful error', async () => {
+    // The default-pick walks the provider catalog. In CI with no keys
+    // set, every cloud provider fails the key_set check; the `local`
+    // provider passes (keyOptional=true) but has no entries in the
+    // pricing table → 400 model_required. On a local dev shell with
+    // ANTHROPIC_API_KEY (or any cloud key) set, default-pick succeeds
+    // and onboarding starts → 200. All three are documented behaviors;
+    // the assertion is "no 5xx surprise on the happy path of an
+    // unconfigured op".
     const r = await authedJson('POST', '/api/v1/onboarding')
-    // The exact status code depends on whether the test env has
-    // ANTHROPIC_API_KEY set. In a clean CI run it's missing → 503.
-    // Locally with a key, it succeeds → 200. Accept either; both are
-    // documented behaviors.
-    expect([200, 503]).toContain(r.status)
+    expect([200, 400, 503]).toContain(r.status)
     if (r.status === 503) {
-      expect(r.body).toMatchObject({ error: { code: 'llm_provider_unavailable' } })
+      const body = r.body as { error: { code: string } }
+      expect(body.error.code).toMatch(/no_provider_configured|llm_provider_unavailable/)
+    } else if (r.status === 400) {
+      const body = r.body as { error: { code: string } }
+      expect(body.error.code).toBe('model_required')
     }
   })
 })

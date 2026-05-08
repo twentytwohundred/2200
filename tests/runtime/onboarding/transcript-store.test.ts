@@ -24,7 +24,7 @@ afterEach(async () => {
 
 function fakeTranscript(): InterviewTranscript {
   return {
-    interview_schema_version: 1,
+    interview_schema_version: 2,
     script_name: 'default-v1',
     chosen_branch: 'freeform',
     entries: [
