@@ -13,7 +13,7 @@
  */
 import { LlmError } from './errors.js'
 import type { LLMProvider } from './provider.js'
-import type { CompletionRequest, CompletionResponse, Message } from './types.js'
+import type { CompletionRequest, CompletionResponse, Message, NativeToolCall } from './types.js'
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com'
 const ANTHROPIC_VERSION = '2023-06-01'
@@ -27,17 +27,33 @@ export interface AnthropicProviderOptions {
   fetchImpl?: typeof fetch
 }
 
+interface AnthropicTool {
+  name: string
+  description: string
+  input_schema: object
+}
+
 interface AnthropicMessagesRequest {
   model: string
   max_tokens: number
   messages: { role: 'user' | 'assistant'; content: string }[]
   system?: string
   temperature?: number
+  tools?: AnthropicTool[]
+}
+
+interface AnthropicContentBlock {
+  type: string
+  text?: string
+  /** tool_use block fields */
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
 }
 
 interface AnthropicMessagesResponse {
   id: string
-  content: { type: string; text?: string }[]
+  content: AnthropicContentBlock[]
   stop_reason: string | null
   usage: {
     input_tokens: number
@@ -69,6 +85,13 @@ export class AnthropicProvider implements LLMProvider {
     }
     if (request.systemPrompt !== undefined) body.system = request.systemPrompt
     if (request.temperature !== undefined) body.temperature = request.temperature
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parametersJsonSchema,
+      }))
+    }
 
     let response: Response
     try {
@@ -121,6 +144,22 @@ export class AnthropicProvider implements LLMProvider {
       .map((block) => block.text ?? '')
       .join('')
 
+    const toolCalls: NativeToolCall[] = []
+    for (const block of parsed.content) {
+      if (
+        block.type === 'tool_use' &&
+        typeof block.name === 'string' &&
+        typeof block.input === 'object'
+      ) {
+        const call: NativeToolCall = {
+          name: block.name,
+          args: block.input,
+        }
+        if (typeof block.id === 'string') call.id = block.id
+        toolCalls.push(call)
+      }
+    }
+
     const costMetrics: CompletionResponse['costMetrics'] = {
       inputTokens: parsed.usage.input_tokens,
       outputTokens: parsed.usage.output_tokens,
@@ -128,12 +167,14 @@ export class AnthropicProvider implements LLMProvider {
     if (typeof parsed.usage.cache_read_input_tokens === 'number') {
       costMetrics.cachedTokens = parsed.usage.cache_read_input_tokens
     }
-    return {
+    const result: CompletionResponse = {
       text,
       finishReason: mapAnthropicStopReason(parsed.stop_reason),
       costMetrics,
       providerResponseId: parsed.id,
     }
+    if (toolCalls.length > 0) result.toolCalls = toolCalls
+    return result
   }
 }
 

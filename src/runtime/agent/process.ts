@@ -295,6 +295,13 @@ export class AgentProcess {
     const { FilesystemSkillProvider } = await import('../skills/provider.js')
     const { resolveRuntimeMode } = await import('../config/runtime-mode.js')
     const runtimeMode = resolveRuntimeMode(process.env)
+    // Build native tool-use specs from the registry: one per
+    // tool the agent is permitted to call. Providers with native
+    // tool-use forward these as `tools: [...]`; providers without
+    // ignore them and the loop falls back to fenced-text parsing.
+    const { toNativeToolSpecs } = await import('../llm/tool-spec.js')
+    const nativeToolSpecs = toNativeToolSpecs(registry, allowedToolNames)
+
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -303,6 +310,7 @@ export class AgentProcess {
       home: this.options.home,
       brainDir: ap.brain,
       availableToolNames: [...allowedToolNames],
+      nativeToolSpecs,
       logger: this.log.child('loop'),
       telemetryWriter,
       budgetTracker,

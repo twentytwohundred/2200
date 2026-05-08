@@ -11,7 +11,7 @@
  */
 import { LlmError } from './errors.js'
 import type { LLMProvider } from './provider.js'
-import type { CompletionRequest, CompletionResponse, Message } from './types.js'
+import type { CompletionRequest, CompletionResponse, Message, NativeToolCall } from './types.js'
 
 const DEFAULT_BASE_URL = 'https://api.openai.com'
 
@@ -39,17 +39,42 @@ export interface OpenAIProviderOptions {
   fetchImpl?: typeof fetch
 }
 
+interface OpenAITool {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: object
+  }
+}
+
 interface OpenAIChatRequest {
   model: string
   messages: { role: string; content: string }[]
   max_tokens?: number
   temperature?: number
+  tools?: OpenAITool[]
+  tool_choice?: 'auto' | 'none' | 'required'
+}
+
+interface OpenAIToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    /** JSON-encoded arguments string (per OpenAI's spec). */
+    arguments: string
+  }
 }
 
 interface OpenAIChatResponse {
   id: string
   choices: {
-    message: { role: string; content: string | null }
+    message: {
+      role: string
+      content: string | null
+      tool_calls?: OpenAIToolCall[]
+    }
     finish_reason: string | null
   }[]
   usage: {
@@ -93,6 +118,23 @@ export class OpenAIProvider implements LLMProvider {
     }
     if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens
     if (request.temperature !== undefined) body.temperature = request.temperature
+    // Native tool-use surface. OpenAI-compatible vendors that DO
+    // implement function calling (OpenAI itself, kimi, openrouter
+    // pass-through, gemini's openai-compatible endpoint) accept this
+    // shape; vendors that do NOT implement it (DeepSeek, xAI, local
+    // Ollama) silently ignore the field. The agent loop's fenced-text
+    // parser is the universal fallback.
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools.map<OpenAITool>((t) => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parametersJsonSchema,
+        },
+      }))
+      body.tool_choice = 'auto'
+    }
 
     let response: Response
     try {
@@ -169,12 +211,37 @@ export class OpenAIProvider implements LLMProvider {
     if (cached !== undefined) {
       costMetrics.cachedTokens = cached
     }
-    return {
+    const toolCalls: NativeToolCall[] = []
+    if (Array.isArray(firstChoice.message.tool_calls)) {
+      for (const tc of firstChoice.message.tool_calls) {
+        if (typeof tc.function.name !== 'string') continue
+        let args: unknown
+        try {
+          args = JSON.parse(tc.function.arguments)
+        } catch {
+          // The model emitted malformed JSON in the arguments string.
+          // Skip silently; the loop will treat this as no native call
+          // and fall through to text-fenced parsing (which won't find
+          // anything either, surfacing the error path naturally).
+          continue
+        }
+        if (typeof args !== 'object' || args === null) continue
+        toolCalls.push({
+          id: tc.id,
+          name: tc.function.name,
+          args: args as Record<string, unknown>,
+        })
+      }
+    }
+
+    const result: CompletionResponse = {
       text: firstChoice.message.content ?? '',
       finishReason: mapOpenAIFinishReason(firstChoice.finish_reason),
       costMetrics,
       providerResponseId: parsed.id,
     }
+    if (toolCalls.length > 0) result.toolCalls = toolCalls
+    return result
   }
 }
 
