@@ -77,6 +77,7 @@ import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/t
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
 import { SupervisorPubBridge, PubBridgeError } from '../supervisor/pub-bridge.js'
+import { readRoster } from '../pub/roster.js'
 import {
   ApiError,
   envelope,
@@ -1230,15 +1231,52 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     let members: { agent_id: string; display_name: string; status: string }[] = []
     let atmosphere: { tone?: string; energy?: string; active_topics?: string[] } | null = null
     try {
+      // Build the members list from two sources merged:
+      //
+      //  1. The live `room_state.agents_present` (whoever is currently
+      //     subscribed via WebSocket ... typically includes the user).
+      //  2. The pub's `roster.json` (every Agent ever created against
+      //     this pub).
+      //
+      // OpenPub does not always re-broadcast `room_state` to the
+      // bridge when a new agent connects after the bridge, so reading
+      // only `room_state` understates the room. Merging with roster
+      // gives us the complete-roster perspective the architecture
+      // expects (per the multi-agent chatter lessons memory).
+      //
+      // Also: filter out the OpenPub Bartender (`agent_id: 'house'`).
+      // It is a server-side moderator persona meant for greeting
+      // visitors in public pubs; in the Studio (the install's
+      // default private-team pub) it is just noise.
       const room = await pubBridge.getRoomState(req.params.name)
+      const roster = await readRoster(home, req.params.name)
+      const presentIds = new Set<string>()
+      const merged = new Map<string, { agent_id: string; display_name: string; status: string }>()
       if (room) {
-        members = room.agents_present.map((a) => ({
-          agent_id: a.agent_id,
-          display_name: a.display_name,
-          status: a.status,
-        }))
+        for (const a of room.agents_present) {
+          if (a.agent_id === 'house') continue
+          presentIds.add(a.agent_id)
+          merged.set(a.agent_id, {
+            agent_id: a.agent_id,
+            display_name: a.display_name,
+            status: a.status || 'active',
+          })
+        }
         atmosphere = room.atmosphere ?? null
       }
+      const runningAgentIds = new Set<string>()
+      for (const ag of Object.values(snap.agents)) {
+        if (ag.state === 'running') runningAgentIds.add(ag.name)
+      }
+      for (const r of roster.agents) {
+        if (merged.has(r.agent_id)) continue
+        merged.set(r.agent_id, {
+          agent_id: r.agent_id,
+          display_name: r.display_name,
+          status: runningAgentIds.has(r.agent_name) ? 'idle' : 'offline',
+        })
+      }
+      members = Array.from(merged.values())
     } catch (err) {
       if (err instanceof PubBridgeError) {
         log?.warn('pub bridge unavailable', { pub: req.params.name, code: err.code })

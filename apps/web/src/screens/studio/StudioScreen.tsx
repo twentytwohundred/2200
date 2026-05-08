@@ -219,9 +219,9 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
         title={`Studio · ${pubName}`}
         subtitle="Multi-agent room. Tag with @, react with one click."
         actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Link to="/" style={{ color: 'var(--color-text-muted)' }}>
-              ← Fleet
+          <div className={styles.headerActions}>
+            <Link to="/" className={styles.back}>
+              ← FLEET
             </Link>
             <ThemeSwitcher />
           </div>
@@ -234,9 +234,9 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
         </Card>
       ) : null}
 
-      <aside className={styles.sidebar}>
-        <Card padding={16}>
-          <div className={styles.sidebarSection}>
+      <div className={styles.body}>
+        <aside className={styles.sidebar}>
+          <Card padding={16}>
             <div className={styles.sidebarLabel}>Members</div>
             {members.length ? (
               members.map((m) => (
@@ -248,51 +248,51 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
                 </div>
               ))
             ) : (
-              <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+              <div className={styles.atmosphere}>
                 {pubQuery.isLoading ? 'Loading…' : 'No members reported yet.'}
               </div>
             )}
-          </div>
+          </Card>
           {pubQuery.data?.atmosphere ? (
-            <div className={styles.sidebarSection}>
+            <Card padding={16}>
               <div className={styles.sidebarLabel}>Atmosphere</div>
               <div className={styles.atmosphere}>
                 {pubQuery.data.atmosphere.tone ?? '—'}
                 {pubQuery.data.atmosphere.energy ? ` · ${pubQuery.data.atmosphere.energy}` : ''}
               </div>
               {pubQuery.data.atmosphere.active_topics?.length ? (
-                <div className={styles.atmosphere}>
+                <div className={cx(styles.atmosphere, styles.atmosphereTopics)}>
                   Topics: {pubQuery.data.atmosphere.active_topics.join(', ')}
                 </div>
               ) : null}
-            </div>
+            </Card>
           ) : null}
-        </Card>
-      </aside>
+        </aside>
 
-      <div ref={timelineRef} className={styles.timeline}>
-        {messagesQuery.isLoading && messages.length === 0 ? (
-          <LoadingState rows={4} />
-        ) : messages.length === 0 ? (
-          <div className={styles.empty}>No messages in {pubName} yet. Say hi below.</div>
-        ) : (
-          messages.map((m) => (
-            <MessageItem
-              key={m.message_id}
-              message={m}
-              onReact={(emoji) => {
-                reactMutation.mutate({ message_id: m.message_id, emoji })
-              }}
-              reactPending={reactMutation.isPending}
-            />
-          ))
-        )}
+        <div ref={timelineRef} className={styles.timeline}>
+          {messagesQuery.isLoading && messages.length === 0 ? (
+            <LoadingState rows={4} />
+          ) : messages.length === 0 ? (
+            <div className={styles.empty}>No messages in {pubName} yet. Say hi below.</div>
+          ) : (
+            messages.map((m) => (
+              <MessageItem
+                key={m.message_id}
+                message={m}
+                onReact={(emoji) => {
+                  reactMutation.mutate({ message_id: m.message_id, emoji })
+                }}
+                reactPending={reactMutation.isPending}
+              />
+            ))
+          )}
+        </div>
       </div>
 
       <form className={styles.composer} onSubmit={handleSubmit}>
         {members.length > 0 ? (
           <div className={styles.composerChips}>
-            <span className={styles.composerChipsLabel}>Tag</span>
+            <span className={styles.composerChipsLabel}>TAG</span>
             {members.map((m) => (
               <button
                 key={m.agent_id}
@@ -332,7 +332,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           <div className={styles.composerError}>{formatError(sendMutation.error)}</div>
         ) : (
           <div className={styles.composerHint}>
-            Enter to send · Shift+Enter for a new line · click a chip to insert @-mention
+            ENTER TO SEND · SHIFT+ENTER FOR NEWLINE · CLICK A CHIP TO INSERT @-MENTION
           </div>
         )}
       </form>
