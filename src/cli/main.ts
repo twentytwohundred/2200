@@ -181,6 +181,12 @@ export function buildProgram(): Command {
       console.log(`  schema:      v${String(snapshot.schema_version)}`)
       console.log(`  agents:      ${String(Object.keys(snapshot.agents).length)}`)
       console.log(`Layout: commons/{reference,scratch}, agents/, state/, config/`)
+      console.log('')
+      console.log('Next:')
+      console.log('  2200 daemon start')
+      console.log('  2200 pub create        # creates the default "studio" pub')
+      console.log('  2200 user init --display-name "Your Name"')
+      console.log('  2200 agent create <name> --identity examples/identities/<name>.identity.md')
     })
 
   // ---------------------------------------------------------------------------
@@ -1725,8 +1731,10 @@ export function buildProgram(): Command {
     .description('manage local OpenPub instances (create, list, start, stop, status)')
 
   pub
-    .command('create <name>')
-    .description('create a new pub on this 2200 instance')
+    .command('create [name]')
+    .description(
+      'create a new pub on this 2200 instance (defaults to "studio", the canonical install-level Studio pub every Agent auto-joins)',
+    )
     .option('--description <text>', 'human-readable pub description')
     .option('--capacity <n>', 'max number of agents allowed in the pub', (v) => parseInt(v, 10))
     .option('--port <n>', 'override the supervisor-allocated port', (v) => parseInt(v, 10))
@@ -1734,7 +1742,7 @@ export function buildProgram(): Command {
     .option('--hub-url <url>', 'hub URL when --issuer hub')
     .action(
       async (
-        pubName: string,
+        pubNameArg: string | undefined,
         opts: {
           description?: string
           capacity?: number
@@ -1743,6 +1751,12 @@ export function buildProgram(): Command {
           hubUrl?: string
         },
       ) => {
+        // Default to "studio" when no name is supplied. Studio is the
+        // install-level pub every Agent auto-joins ... see
+        // wiki/decisions for the canonical-default-pub call. Existing
+        // installs that already have an "ops" or other pub are
+        // unaffected; this only biases new installs.
+        const pubName = pubNameArg ?? 'studio'
         const home = await resolveHomeFromOpts(program)
         const client = await connectToDaemon(home)
         if (!client) {

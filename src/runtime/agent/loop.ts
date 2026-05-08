@@ -389,6 +389,16 @@ export class AgentLoop {
   private iteration = 0
   /** Number of empty-response nudges issued for the current task. Caps at 1. */
   private emptyResponseNudges = 0
+  /**
+   * True once a `pub.send` or `pub.react` tool call has been dispatched
+   * during the current task. Used by the wake-task enforcement path:
+   * when the runtime fires a synthetic task because a peer addressed
+   * us in a pub, the loop must produce a `pub.*` call before
+   * terminating, otherwise the room sees no response.
+   */
+  private pubToolCallsThisTask = 0
+  /** Number of "you must call pub.* before terminating" nudges. Caps at 1. */
+  private pubWakeNudges = 0
   private readonly nowFn: () => Date
 
   private readonly pricingTable: PricingTable
@@ -450,6 +460,8 @@ export class AgentLoop {
     const systemPrompt = await this.buildSystemPrompt()
     this.history.length = 0
     this.emptyResponseNudges = 0
+    this.pubToolCallsThisTask = 0
+    this.pubWakeNudges = 0
     this.history.push({ role: 'user', content: task.body })
 
     while (this.iteration < this.maxIterations) {
@@ -552,6 +564,23 @@ export class AgentLoop {
       // the failure is visible instead of silent.
       if (parsed.calls.length === 0 && parsed.errors.length === 0) {
         if (response.text.trim().length > 0) {
+          // Wake-task enforcement: when the runtime spawned this task
+          // because a peer addressed us in a pub, the agent owes the
+          // room a `pub.send` or `pub.react`. Final-answer text without
+          // either call leaves the room silent (the model thinks it
+          // responded; the room never sees anything). Nudge once with
+          // a directive prompt that says exactly which tool to call;
+          // if the next iteration still doesn't comply, the loop
+          // terminates as before so the operator can see the gap.
+          if (isPubWakeTask(task) && this.pubToolCallsThisTask === 0 && this.pubWakeNudges < 1) {
+            this.pubWakeNudges += 1
+            this.history.push({ role: 'assistant', content: response.text })
+            this.history.push({
+              role: 'tool',
+              content: composeWakeNudge(task),
+            })
+            continue
+          }
           this.history.push({ role: 'assistant', content: response.text })
           return {
             kind: 'done',
@@ -651,6 +680,13 @@ export class AgentLoop {
         class: err instanceof Error ? err.name : 'UnknownError',
         message: err instanceof Error ? err.message : String(err),
       }
+    }
+    // Track pub.* dispatches so the wake-task enforcement path knows
+    // whether the agent actually responded to the pub. Counts only
+    // calls that succeeded (the ones the room sees); a permission
+    // denial or tool error still leaves the loop owing a response.
+    if ((call.tool === 'pub.send' || call.tool === 'pub.react') && dispatchError === null) {
+      this.pubToolCallsThisTask += 1
     }
     const tEnd = this.nowFn().getTime()
     const durationMs = result?.durationMs ?? tEnd - tStart
@@ -1145,6 +1181,47 @@ export class AgentLoop {
  * on any read error so a missing fleet doc never blocks a task ...
  * the loop falls back to the legacy "no fleet block" prompt shape.
  */
+/**
+ * Is this task a pub-wake synthetic task? We key off the title prefix
+ * the wake source uses (`pub.handle: <pub> ← <agent_id> (<rule>)`),
+ * so the loop can distinguish a wake-driven task from a normal
+ * user-driven one without needing a new schema field. Wake tasks
+ * have a contract: the loop must produce a `pub.send` or `pub.react`
+ * before terminating.
+ */
+function isPubWakeTask(task: TaskRecord): boolean {
+  return task.frontmatter.title.startsWith('pub.handle:')
+}
+
+/**
+ * Directive nudge appended to the loop history when a wake task tries
+ * to terminate without calling `pub.send` or `pub.react`. Include the
+ * trigger message_id so the model can react to the right message.
+ */
+function composeWakeNudge(task: TaskRecord): string {
+  const idMatch = /Message id:\s*(\S+)/.exec(task.body)
+  const messageId = idMatch?.[1] ?? '<message_id from the task body>'
+  return [
+    'You produced a final-answer response without calling `pub.send` or `pub.react`.',
+    'This task was generated because a peer addressed you in a pub; your final-answer text is NOT delivered to the pub.',
+    'Choose ONE now and emit a single fenced ```tool block:',
+    '',
+    '  - If you would react to ack the message: emit',
+    '',
+    '    ```tool',
+    `    { "tool": "pub.react", "args": { "message_id": "${messageId}", "emoji": "✓" }, "predicted_outcome": "reaction landed", "reason": "ack the message I was woken on" }`,
+    '    ```',
+    '',
+    '  - If you have a substantive text reply: emit',
+    '',
+    '    ```tool',
+    `    { "tool": "pub.send", "args": { "content": "<your reply>", "in_reply_to": "${messageId}" }, "predicted_outcome": "reply delivered", "reason": "responding to the wake message" }`,
+    '    ```',
+    '',
+    'This is your last chance ... if you produce another response without one of those calls, the task terminates and the room sees no response.',
+  ].join('\n')
+}
+
 async function readFleetSafe(home: string): Promise<string | null> {
   try {
     const md = await readFile(join(home, 'state', 'fleet.md'), 'utf8')
