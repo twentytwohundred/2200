@@ -54,14 +54,15 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 24 tools (23 prior + system.whoami)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(24)
+  it('exports exactly 25 tools (24 prior + chat.send)', () => {
+    expect(BASELINE_TOOL_NAMES).toHaveLength(25)
   })
 
-  it('baselineServers() builds eight servers (incl. system from whoami PR)', () => {
+  it('baselineServers() builds nine servers (incl. chat from chat.send PR)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
+      'chat',
       'fs',
       'notification',
       'pub',

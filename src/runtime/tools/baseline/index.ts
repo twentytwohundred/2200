@@ -20,6 +20,7 @@ import { timeTools } from './time.js'
 import { pubTools } from './pub.js'
 import { notificationTools } from './notification.js'
 import { systemTools, type IdentityGetter } from './system.js'
+import { chatTools } from './chat.js'
 
 /**
  * All baseline tool names. Used by tool-in-set perm checks and
@@ -31,7 +32,10 @@ import { systemTools, type IdentityGetter } from './system.js'
  * include `notification.inform` for Epic 7 Phase B (fire-and-forget
  * passive notification surface); bumped 23 → 24 with `system.whoami`
  * so Agents can introspect their live runtime model with ground
- * truth, not prompt-level assertion.
+ * truth, not prompt-level assertion; bumped 24 → 25 with `chat.send`
+ * so Agents can push unsolicited assistant-role messages into their
+ * own per-Agent private chat thread (the inverse of the user → agent
+ * direction the chat HTTP endpoint already supports).
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
   'fs.read',
@@ -58,6 +62,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'notification.ask',
   'notification.inform',
   'system.whoami',
+  'chat.send',
 ]
 
 export interface BaselineServersOptions {
@@ -74,7 +79,7 @@ export interface BaselineServersOptions {
   getIdentity?: IdentityGetter
 }
 
-/** Build the eight baseline MCP servers. */
+/** Build the nine baseline MCP servers. */
 export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] {
   const getIdentity: IdentityGetter = opts.getIdentity ?? (() => null)
   return [
@@ -86,5 +91,6 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('pub', pubTools),
     createInProcessServer('notification', notificationTools),
     createInProcessServer('system', systemTools(getIdentity)),
+    createInProcessServer('chat', chatTools),
   ]
 }

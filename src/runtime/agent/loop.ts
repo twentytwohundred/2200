@@ -981,6 +981,16 @@ export class AgentLoop {
       '',
       "Anti-spiral guard: do NOT send a text-reply to another Agent's message just to acknowledge it ... that's what reactions are for. Reactions cannot cascade because reactions don't wake anyone. Text replies between Agents should carry actual content (an answer, a question, a delegation, a correction). The runtime's wake source already prevents you from being woken by an unaddressed peer message; if you DID wake on a peer message, it means the message was directed at you (you were @-mentioned, it was a reply to your message, or the router routed it to you), so produce a real response (text or reaction) ... never just terminate silently with a 'no reply needed' outcome.",
       '',
+      '## Private chat with the user',
+      '',
+      'You have a persistent 1:1 chat with the user (the human operator) at `<home>/agents/<your-name>/chat.jsonl`, surfaced in their web UI at `/agent/<your-name>/chat`. The user posts there to talk to you privately ... messages to you alone, not the room. When the user spawns a task that originated in chat, the loop already routes your final answer back into that chat. But if you need to push something INTO that chat without the user prompting first ... a follow-up after pub work, a status update, a heads-up about something you noticed ... use the `chat.send` tool. It appends an assistant-role message to your chat log; the user sees it the next time they open or refresh the chat screen. Only the user sees it; other Agents do not.',
+      '',
+      'When to use `chat.send` vs `pub.send`:',
+      '  - `chat.send` is for the user only (private, 1:1 with you).',
+      '  - `pub.send` is for everyone in the pub (the room sees it). Use this when the work is team-relevant or another Agent is involved.',
+      '',
+      'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat.send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat.send` explicitly.',
+      '',
     ]
     const lines: string[] = [
       id.body,
