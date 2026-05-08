@@ -20,6 +20,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, resolve as resolvePath } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import fastifyWebsocketImport from '@fastify/websocket'
@@ -185,7 +186,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const fastify = Fastify({
     logger: false,
     trustProxy: false,
-    bodyLimit: 1024 * 1024, // 1 MB
+    // 16 MB. Pub message bodies can carry attachments inline as
+    // base64-encoded blobs (text files + small images). 16 MB covers
+    // a few attachments per message after the ~33% base64 overhead.
+    // Per-attachment + total caps still enforced at the route level.
+    bodyLimit: 16 * 1024 * 1024,
   })
 
   fastify.decorateRequest('principal', null)
@@ -1394,19 +1399,81 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // Per-attachment + total-message caps. Attachments land in
+  // <home>/commons/scratch/attachments/<id>/<filename> so they show
+  // up on the agents' /commons/scratch/... virtual prefix and are
+  // readable via fs.read.
+  const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024 // 5 MB per file
+  const ATTACHMENTS_MAX_PER_MESSAGE = 6
+  const TEXT_INLINE_MAX_BYTES = 8 * 1024 // inline text content under 8 KB so the agent sees it without an fs.read
+
+  const PubAttachmentInput = z.object({
+    filename: z
+      .string()
+      .min(1)
+      .max(255)
+      .refine((s) => !s.includes('/') && !s.includes('\\') && !s.includes('..'), {
+        message: 'filename must not contain path separators or ..',
+      }),
+    content_type: z.string().min(1).max(200),
+    base64: z.string().min(1),
+  })
+
   const PubSendBody = z.object({
     content: z.string().min(1).max(8000),
     mentions: z.array(z.string()).optional(),
     reply_to: z.string().nullable().optional(),
+    attachments: z.array(PubAttachmentInput).max(ATTACHMENTS_MAX_PER_MESSAGE).optional(),
   })
 
   fastify.post<{ Params: { name: string } }>('/api/v1/pubs/:name/messages', async (req, reply) => {
     const snap = supervisor.snapshot()
     if (!snap.pubs[req.params.name]) throw notFound('pub', req.params.name)
     const body = PubSendBody.parse(req.body)
+
+    // Attachments (if any) are written under
+    // <home>/commons/scratch/attachments/<short>/. Agents see the
+    // path via the /commons/scratch/... virtual prefix and can read
+    // text files via fs.read. We also inline small text payloads in
+    // the message itself so the agent has the content without a
+    // tool round-trip.
+    let renderedContent = body.content
+    if (body.attachments && body.attachments.length > 0) {
+      const attachmentDir = `attachments/${newAttachmentId()}`
+      const absDir = join(home, 'commons', 'scratch', attachmentDir)
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      await mkdir(absDir, { recursive: true })
+      const lines: string[] = ['Attached files:']
+      const inlines: string[] = []
+      for (const att of body.attachments) {
+        const buf = Buffer.from(att.base64, 'base64')
+        if (buf.byteLength > ATTACHMENT_MAX_BYTES) {
+          throw new ApiError(
+            413,
+            'attachment_too_large',
+            `attachment "${att.filename}" is ${String(buf.byteLength)} bytes, max ${String(ATTACHMENT_MAX_BYTES)}`,
+          )
+        }
+        await writeFile(join(absDir, att.filename), buf)
+        const virtualPath = `/commons/scratch/${attachmentDir}/${att.filename}`
+        lines.push(`- ${virtualPath} (${att.content_type}, ${formatBytes(buf.byteLength)})`)
+        // Inline text under the threshold so agents see it directly.
+        const isText =
+          att.content_type.startsWith('text/') ||
+          /\b(json|yaml|yml|markdown|md|csv|xml)\b/i.test(att.content_type) ||
+          /\b(application\/(json|xml|x-yaml|yaml))/i.test(att.content_type)
+        if (isText && buf.byteLength <= TEXT_INLINE_MAX_BYTES) {
+          inlines.push(
+            `\n--- ${att.filename} (inline) ---\n${buf.toString('utf8')}\n--- end ${att.filename} ---`,
+          )
+        }
+      }
+      renderedContent = `${lines.join('\n')}${inlines.length > 0 ? `\n${inlines.join('\n')}` : ''}\n\n${body.content}`
+    }
+
     try {
       const result = await pubBridge.send(req.params.name, {
-        content: body.content,
+        content: renderedContent,
         ...(body.mentions !== undefined ? { mentions: body.mentions } : {}),
         ...(body.reply_to !== undefined ? { reply_to: body.reply_to } : {}),
       })
@@ -1846,6 +1913,18 @@ const MIME: Record<string, string> = {
 function extractGeneratedAt(markdown: string): string | null {
   const m = /^generated_at:\s*(.+)$/m.exec(markdown)
   return m ? (m[1]?.trim() ?? null) : null
+}
+
+/** Short URL-safe id for attachment directories. */
+function newAttachmentId(): string {
+  // 12 random hex chars; collision risk negligible for the use case.
+  return randomBytes(6).toString('hex')
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${String(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
 
 async function tryServeStatic(reply: FastifyReply, root: string, url: string): Promise<boolean> {

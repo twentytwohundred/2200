@@ -26,6 +26,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactElement,
@@ -126,13 +127,50 @@ export function StudioScreen(): ReactElement {
   return <StudioPubView pubName={pubParam} />
 }
 
+interface StagedAttachment {
+  filename: string
+  content_type: string
+  size_bytes: number
+  base64: string
+}
+
+const ATTACH_MAX_BYTES = 5 * 1024 * 1024
+const ATTACH_MAX_COUNT = 6
+
+async function readFileAsAttachment(file: File): Promise<StagedAttachment> {
+  const buf = await file.arrayBuffer()
+  // Browser-native base64 encoding via btoa on a binary string.
+  // Chunked to avoid stack overflow on large files.
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return {
+    filename: file.name,
+    content_type: file.type || 'application/octet-stream',
+    size_bytes: file.size,
+    base64: btoa(binary),
+  }
+}
+
+function formatAttachmentSize(n: number): string {
+  if (n < 1024) return `${String(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
 function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   const { theme } = useTheme()
   const live = useLiveSignal()
   const queryClient = useQueryClient()
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [draft, setDraft] = useState('')
+  const [staged, setStaged] = useState<StagedAttachment[]>([])
+  const [stageError, setStageError] = useState<string | null>(null)
 
   const pubQuery = useQuery({
     queryKey: ['pub', pubName],
@@ -151,17 +189,36 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data])
   const members = pubQuery.data?.members ?? []
 
+  // Track the last-sent content so we can restore the draft on
+  // failure without clobbering anything the user may have typed
+  // since.
+  const lastSentContentRef = useRef<string>('')
+
   const sendMutation = useMutation({
-    mutationFn: (content: string) => {
-      const mentions = extractMentions(content, members)
+    mutationFn: (input: { content: string; attachments: StagedAttachment[] }) => {
+      const mentions = extractMentions(input.content, members)
       return api.pubSend(pubName, {
-        content,
+        content: input.content,
         ...(mentions.length > 0 ? { mentions } : {}),
+        ...(input.attachments.length > 0
+          ? {
+              attachments: input.attachments.map((a) => ({
+                filename: a.filename,
+                content_type: a.content_type,
+                base64: a.base64,
+              })),
+            }
+          : {}),
       })
     },
     onSuccess: () => {
-      setDraft('')
+      lastSentContentRef.current = ''
       void queryClient.invalidateQueries({ queryKey: ['pub', pubName, 'messages'] })
+    },
+    onError: () => {
+      // Restore what we cleared on submit (only if user hasn't already
+      // typed something new).
+      setDraft((current) => (current.length === 0 ? lastSentContentRef.current : current))
     },
   })
 
@@ -202,7 +259,49 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     e?.preventDefault()
     const content = draft.trim()
     if (content.length === 0 || sendMutation.isPending) return
-    sendMutation.mutate(content)
+    // Optimistic clear so the user can keep typing immediately.
+    // Refocus the textarea on the next tick so Enter doesn't lose
+    // the cursor (the form submit blurs by default).
+    lastSentContentRef.current = content
+    const attachments = staged
+    setDraft('')
+    setStaged([])
+    setStageError(null)
+    sendMutation.mutate({ content, attachments })
+    setTimeout(() => composerRef.current?.focus(), 0)
+  }
+
+  const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    setStageError(null)
+    const files = event.target.files ? Array.from(event.target.files) : []
+    if (files.length === 0) return
+    const next: StagedAttachment[] = [...staged]
+    for (const file of files) {
+      if (next.length >= ATTACH_MAX_COUNT) {
+        setStageError(`Up to ${String(ATTACH_MAX_COUNT)} attachments per message.`)
+        break
+      }
+      if (file.size > ATTACH_MAX_BYTES) {
+        setStageError(
+          `"${file.name}" is too large (max ${formatAttachmentSize(ATTACH_MAX_BYTES)}).`,
+        )
+        continue
+      }
+      try {
+        next.push(await readFileAsAttachment(file))
+      } catch (err) {
+        setStageError(
+          `Failed to read "${file.name}": ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    setStaged(next)
+    // Reset the input so selecting the same file again re-fires onChange.
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleRemoveAttachment = (idx: number): void => {
+    setStaged((prev) => prev.filter((_, i) => i !== idx))
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -307,6 +406,31 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
             ))}
           </div>
         ) : null}
+        {staged.length > 0 || stageError ? (
+          <div className={styles.attachmentsRow}>
+            <span className={styles.attachmentsLabel}>FILES</span>
+            {staged.map((att, idx) => (
+              <span key={`${att.filename}-${String(idx)}`} className={styles.attachmentChip}>
+                <span>{att.filename}</span>
+                <span className={styles.attachmentChipSize}>
+                  ({formatAttachmentSize(att.size_bytes)})
+                </span>
+                <button
+                  type="button"
+                  className={styles.attachmentChipRemove}
+                  onClick={() => {
+                    handleRemoveAttachment(idx)
+                  }}
+                  aria-label={`Remove ${att.filename}`}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {stageError ? <span className={styles.composerError}>{stageError}</span> : null}
+          </div>
+        ) : null}
         <div className={styles.composerRow}>
           <textarea
             ref={composerRef}
@@ -317,7 +441,26 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
             }}
             onKeyDown={handleKeyDown}
             placeholder={`Message ${pubName} … use @<name> to direct it.`}
-            disabled={sendMutation.isPending}
+          />
+          <button
+            type="button"
+            className={styles.attachButton}
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="Attach files"
+            title="Attach files"
+            disabled={staged.length >= ATTACH_MAX_COUNT}
+          >
+            📎
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="text/*,image/*,application/json,application/yaml,application/x-yaml,application/pdf,.md,.csv,.log,.yml,.yaml"
+            className={styles.hiddenInput}
+            onChange={(e) => {
+              void handleFileSelect(e)
+            }}
           />
           <Button
             type="submit"
@@ -332,7 +475,8 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           <div className={styles.composerError}>{formatError(sendMutation.error)}</div>
         ) : (
           <div className={styles.composerHint}>
-            ENTER TO SEND · SHIFT+ENTER FOR NEWLINE · CLICK A CHIP TO INSERT @-MENTION
+            ENTER TO SEND · SHIFT+ENTER FOR NEWLINE · 📎 ATTACHES FILES (up to{' '}
+            {String(ATTACH_MAX_COUNT)} files, {formatAttachmentSize(ATTACH_MAX_BYTES)} each)
           </div>
         )}
       </form>
