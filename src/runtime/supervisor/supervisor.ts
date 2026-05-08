@@ -23,6 +23,7 @@ import { regenerateTeamNote, seedStarterPack } from '../onboarding/starter-pack.
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
+import type { AgentPubBlock } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
 import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
@@ -468,17 +469,28 @@ export class Supervisor {
     await initAgentDirs(this.state.home, name, identity.source_path)
     const canonical = agentPaths(this.state.home, name).identity
 
-    // Pub identity provisioning (Epic 3 PR B follow-up). If the source
-    // Identity declares a pub: block and the Agent has not been
-    // pre-provisioned (pub.identity is empty), mint a keypair, register
-    // against the picked pub if one is running, and patch the canonical
-    // identity.md to fill in pub.identity / pub.issuer_url. If pub:
-    // block is absent, skip entirely (non-pub Agent).
-    if (identity.frontmatter.pub) {
+    // Pub identity provisioning (Epic 3 PR B follow-up). Every Agent
+    // joins the Studio (the default pub on this instance) by default;
+    // if the source Identity does not declare a pub: block we
+    // synthesize one from the agent name so the supervisor still
+    // mints a keypair, registers it, and patches the canonical
+    // identity.md. Operators who explicitly want a pub-less Agent
+    // can author an Identity with `pub: null` ... but the v1 default
+    // is "every Agent at all times in the Studio."
+    const identityWithPub = identity.frontmatter.pub
+      ? identity
+      : {
+          ...identity,
+          frontmatter: {
+            ...identity.frontmatter,
+            pub: synthesizeDefaultPubBlock(this.state.home, name),
+          },
+        }
+    if (identityWithPub.frontmatter.pub) {
       await this.provisionAgentPubIdentity({
         agentName: name,
         canonicalIdentityPath: canonical,
-        loadedIdentity: identity,
+        loadedIdentity: identityWithPub,
         pickPub: opts.pub,
         identityClientFactory: opts.identityClientFactory,
       })
@@ -1569,6 +1581,32 @@ export class Supervisor {
  *
  * Returns the matching record or null. Throws on ambiguity.
  */
+/**
+ * Build a default pub block for an Agent whose Identity does not
+ * declare one. Used by createAgent so every Agent gets a pub
+ * provisioning pass by default ... "every Agent at all times in
+ * the Studio."
+ *
+ * The supervisor's provisionAgentPubIdentity fills in the runtime
+ * fields (identity UUID, issuer_url) once the keypair is minted and
+ * registered with the chosen pub.
+ */
+function synthesizeDefaultPubBlock(home: string, agentName: string): AgentPubBlock {
+  return {
+    identity: '',
+    display_name: agentName,
+    handle: `@${agentName}`,
+    credentials: {
+      source: 'file' as const,
+      id: agentPaths(home, agentName).pubSecret,
+    },
+    key_version: 1,
+    issuer_url: '',
+    domains: [],
+    member_of: [],
+  }
+}
+
 function pickTargetPub(
   pubs: Readonly<Record<string, PubRecord>>,
   requested: string | undefined,
