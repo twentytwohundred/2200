@@ -24,7 +24,10 @@ pub:
   key_version: 1
   issuer_url: ''
   domains: []
-  member_of: []
+  # Auto-join the install-level Studio pub. Every Agent on every 2200
+  # install belongs to "studio" by default; the team uses it as the
+  # persistent multi-agent coordination room.
+  member_of: ['studio']
 ---
 
 # Hobby
