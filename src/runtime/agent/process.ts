@@ -389,16 +389,27 @@ export class AgentProcess {
       return
     }
 
-    // Build an optional ambient-routing Router from env. Operators
-    // opt-in by setting ROUTER_PROVIDER + ROUTER_MODEL_ID; without
-    // them the wake source falls back to deterministic rules only
-    // (pre-Epic-3.6 behavior).
-    const routerProvider = process.env['ROUTER_PROVIDER']
-    const routerModelId = process.env['ROUTER_MODEL_ID']
+    // Build the ambient-routing Router. Default: use the Agent's own
+    // model + provider for routing decisions. Operators can override
+    // with ROUTER_PROVIDER + ROUTER_MODEL_ID (e.g. to point all
+    // routing at a cheaper Haiku) or disable entirely with
+    // ROUTER_DISABLED=true. Without a router, only deterministic
+    // directed_to rules wake the Agent ... open-room questions like
+    // "guys, what should we test?" never reach anyone.
+    const routerDisabled = (process.env['ROUTER_DISABLED'] ?? '').toLowerCase() === 'true'
+    const routerProvider =
+      process.env['ROUTER_PROVIDER'] ?? this.identity.frontmatter.model.provider
+    const routerModelId = process.env['ROUTER_MODEL_ID'] ?? this.identity.frontmatter.model.model_id
     let router: Router | undefined
-    if (routerProvider && routerModelId) {
+    if (!routerDisabled) {
       try {
-        const provider = await resolveProvider({ providerName: routerProvider })
+        const provider = await resolveProvider({
+          providerName: routerProvider,
+          ...(this.identity.frontmatter.provider_secret &&
+          routerProvider === this.identity.frontmatter.model.provider
+            ? { secret: this.identity.frontmatter.provider_secret }
+            : {}),
+        })
         router = new Router({
           provider,
           modelId: routerModelId,
@@ -407,17 +418,20 @@ export class AgentProcess {
         this.log.info('ambient router enabled', {
           provider: routerProvider,
           model_id: routerModelId,
+          source:
+            process.env['ROUTER_PROVIDER'] || process.env['ROUTER_MODEL_ID']
+              ? 'env-override'
+              : 'agent-default',
         })
       } catch (err) {
-        this.log.warn(
-          'ROUTER_PROVIDER/ROUTER_MODEL_ID set but provider build failed; running without router',
-          {
-            provider: routerProvider,
-            model_id: routerModelId,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        )
+        this.log.warn('router provider build failed; running without router', {
+          provider: routerProvider,
+          model_id: routerModelId,
+          error: err instanceof Error ? err.message : String(err),
+        })
       }
+    } else {
+      this.log.info('ambient router disabled (ROUTER_DISABLED=true)')
     }
 
     for (const pub of targetPubs) {
