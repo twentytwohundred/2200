@@ -1,24 +1,52 @@
 /**
- * Read-only Studio: a live view of one pub's conversation.
+ * Studio: a multi-agent room with composer + reactions.
  *
- * PR1 of the Studio sequence. Doug watches Hobby and Simon (and any
- * other agents in the pub) talk. No composer here yet ... PR2 wires
- * `@-tagging` and posts. PR3 adds reactions.
+ * Doug, Hobby, Simon, and any other pub members all in one threaded
+ * view. Routing: `/studio` redirects to the install's first running
+ * pub; `/studio/:pub` opens that pub specifically.
  *
- * Routing: `/studio` redirects to the install's first running pub.
- * `/studio/:pub` opens that pub specifically. The supervisor's pub
- * bridge (one PubClient per pub, authenticated as the local user)
- * holds the rolling buffer this screen polls every 3s.
+ * Substrate: the supervisor's `SupervisorPubBridge` owns one
+ * PubClient per pub authenticated as the local user. This screen
+ * polls `/api/v1/pubs/:name/messages` (3s), and posts via
+ * `/api/v1/pubs/:name/messages` and `/api/v1/pubs/:name/reactions`.
+ *
+ * Tagging: clicking a member chip inserts `@<display_name> ` into
+ * the composer. On send we extract @-tokens from the content and
+ * resolve them against the live members list to populate
+ * `mentions[]` (agent_ids); the pub-server uses `mentions[]` as
+ * the canonical wake-source for `@<handle>` direction.
+ *
+ * Reactions: each message has a small picker (✓ 👍 👀 ❤️). Clicking
+ * one POSTs to /reactions; the pub-server upserts (agent_id,
+ * message_id) so reacting again with the same emoji is a no-op,
+ * with a different emoji replaces.
  */
-import { useEffect, useMemo, useRef, type ReactElement } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactElement,
+} from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { ApiError, NetworkError, api } from '../../lib/api'
-import { Card, ErrorState, LoadingState, PageHeader, cx } from '../../primitives'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  ApiError,
+  NetworkError,
+  api,
+  type PubMember,
+  type PubMessage,
+  type PubReactionDto,
+} from '../../lib/api'
+import { Button, Card, ErrorState, LoadingState, PageHeader, cx } from '../../primitives'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
 import styles from './StudioScreen.module.css'
+
+const REACTION_OPTIONS = ['✓', '👍', '👀', '❤️'] as const
 
 function formatTime(value: string): string {
   try {
@@ -32,6 +60,24 @@ function formatError(err: unknown): string {
   if (err instanceof ApiError) return `${err.code}: ${err.message}`
   if (err instanceof NetworkError) return 'Cannot reach the runtime.'
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Extract @<token> mentions from message content and resolve to
+ * agent_ids. Lookups are case-insensitive against display_name.
+ * Tokens that don't match any member are dropped silently; the pub
+ * server's @<handle> fallback parser will catch them server-side if
+ * they correspond to a known agent in the room.
+ */
+function extractMentions(content: string, members: PubMember[]): string[] {
+  const tokens = content.match(/(?:^|\s)@([\w.-]+)/g) ?? []
+  const ids = new Set<string>()
+  for (const tok of tokens) {
+    const handle = tok.trim().slice(1).toLowerCase()
+    const match = members.find((m) => m.display_name.toLowerCase() === handle)
+    if (match) ids.add(match.agent_id)
+  }
+  return Array.from(ids)
 }
 
 export function StudioScreen(): ReactElement {
@@ -83,13 +129,16 @@ export function StudioScreen(): ReactElement {
 function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   const { theme } = useTheme()
   const live = useLiveSignal()
+  const queryClient = useQueryClient()
   const timelineRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const [draft, setDraft] = useState('')
 
   const pubQuery = useQuery({
     queryKey: ['pub', pubName],
     queryFn: () => api.pub(pubName),
-    staleTime: 10_000,
-    refetchInterval: 10_000,
+    staleTime: 5_000,
+    refetchInterval: 8_000,
   })
 
   const messagesQuery = useQuery({
@@ -100,6 +149,28 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   })
 
   const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data])
+  const members = pubQuery.data?.members ?? []
+
+  const sendMutation = useMutation({
+    mutationFn: (content: string) => {
+      const mentions = extractMentions(content, members)
+      return api.pubSend(pubName, {
+        content,
+        ...(mentions.length > 0 ? { mentions } : {}),
+      })
+    },
+    onSuccess: () => {
+      setDraft('')
+      void queryClient.invalidateQueries({ queryKey: ['pub', pubName, 'messages'] })
+    },
+  })
+
+  const reactMutation = useMutation({
+    mutationFn: (input: { message_id: string; emoji: string }) => api.pubReact(pubName, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['pub', pubName, 'messages'] })
+    },
+  })
 
   // Autoscroll to the bottom on new messages.
   useEffect(() => {
@@ -109,12 +180,44 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
 
   const eyebrow = `2200 · STUDIO · ${pubName.toUpperCase()} · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
 
+  const handleInsertMention = (handle: string): void => {
+    const insert = `@${handle} `
+    const ta = composerRef.current
+    if (!ta) {
+      setDraft((d) => (d.endsWith(' ') || d.length === 0 ? d : `${d} `) + insert)
+      return
+    }
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const next = draft.slice(0, start) + insert + draft.slice(end)
+    setDraft(next)
+    setTimeout(() => {
+      ta.focus()
+      const cursor = start + insert.length
+      ta.setSelectionRange(cursor, cursor)
+    }, 0)
+  }
+
+  const handleSubmit = (e?: FormEvent<HTMLFormElement>): void => {
+    e?.preventDefault()
+    const content = draft.trim()
+    if (content.length === 0 || sendMutation.isPending) return
+    sendMutation.mutate(content)
+  }
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSubmit()
+    }
+  }
+
   return (
     <main className={styles.shell}>
       <PageHeader
         eyebrow={eyebrow}
         title={`Studio · ${pubName}`}
-        subtitle="Read-only timeline. Composer + reactions land in PR2/PR3."
+        subtitle="Multi-agent room. Tag with @, react with one click."
         actions={
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <Link to="/" style={{ color: 'var(--color-text-muted)' }}>
@@ -135,8 +238,8 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
         <Card padding={16}>
           <div className={styles.sidebarSection}>
             <div className={styles.sidebarLabel}>Members</div>
-            {pubQuery.data?.members.length ? (
-              pubQuery.data.members.map((m) => (
+            {members.length ? (
+              members.map((m) => (
                 <div key={m.agent_id} className={styles.memberRow}>
                   <span
                     className={cx(styles.memberDot, m.status !== 'active' && styles.memberDotIdle)}
@@ -171,27 +274,137 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
         {messagesQuery.isLoading && messages.length === 0 ? (
           <LoadingState rows={4} />
         ) : messages.length === 0 ? (
-          <div className={styles.empty}>
-            No messages in {pubName} yet. Try <code>2200 chat {pubName}</code> from a terminal to
-            kick things off.
-          </div>
+          <div className={styles.empty}>No messages in {pubName} yet. Say hi below.</div>
         ) : (
           messages.map((m) => (
-            <div key={m.message_id} className={styles.message}>
-              <div className={styles.messageMeta}>
-                <span className={styles.sender}>{m.display_name}</span>
-                <span className={styles.timestamp}>{formatTime(m.timestamp)}</span>
-                {m.mention_names.length > 0 ? (
-                  <span className={styles.mentions}>
-                    {m.mention_names.map((n) => `@${n}`).join(' ')}
-                  </span>
-                ) : null}
-              </div>
-              <div className={styles.content}>{m.content}</div>
-            </div>
+            <MessageItem
+              key={m.message_id}
+              message={m}
+              onReact={(emoji) => {
+                reactMutation.mutate({ message_id: m.message_id, emoji })
+              }}
+              reactPending={reactMutation.isPending}
+            />
           ))
         )}
       </div>
+
+      <form className={styles.composer} onSubmit={handleSubmit}>
+        {members.length > 0 ? (
+          <div className={styles.composerChips}>
+            <span className={styles.composerChipsLabel}>Tag</span>
+            {members.map((m) => (
+              <button
+                key={m.agent_id}
+                type="button"
+                className={styles.composerChip}
+                onClick={() => {
+                  handleInsertMention(m.display_name)
+                }}
+              >
+                @{m.display_name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className={styles.composerRow}>
+          <textarea
+            ref={composerRef}
+            className={styles.composerInput}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value)
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={`Message ${pubName} … use @<name> to direct it.`}
+            disabled={sendMutation.isPending}
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={sendMutation.isPending || draft.trim().length === 0}
+          >
+            {sendMutation.isPending ? 'SENDING…' : 'SEND'}
+          </Button>
+        </div>
+        {sendMutation.error ? (
+          <div className={styles.composerError}>{formatError(sendMutation.error)}</div>
+        ) : (
+          <div className={styles.composerHint}>
+            Enter to send · Shift+Enter for a new line · click a chip to insert @-mention
+          </div>
+        )}
+      </form>
     </main>
+  )
+}
+
+function MessageItem({
+  message,
+  onReact,
+  reactPending,
+}: {
+  message: PubMessage
+  onReact: (emoji: string) => void
+  reactPending: boolean
+}): ReactElement {
+  // Aggregate reactions by emoji: { '👍': [agent_id, ...], ... }
+  const grouped = useMemo(() => {
+    const map = new Map<string, PubReactionDto[]>()
+    for (const r of message.reactions) {
+      const arr = map.get(r.emoji) ?? []
+      arr.push(r)
+      map.set(r.emoji, arr)
+    }
+    return Array.from(map.entries())
+  }, [message.reactions])
+
+  return (
+    <div className={styles.message}>
+      <div className={styles.messageMeta}>
+        <span className={styles.sender}>{message.display_name}</span>
+        <span className={styles.timestamp}>{formatTime(message.timestamp)}</span>
+        {message.mention_names.length > 0 ? (
+          <span className={styles.mentions}>
+            {message.mention_names.map((n) => `@${n}`).join(' ')}
+          </span>
+        ) : null}
+      </div>
+      <div className={styles.content}>{message.content}</div>
+      <div className={styles.reactionsRow}>
+        {grouped.map(([emoji, list]) => (
+          <button
+            key={emoji}
+            type="button"
+            className={styles.reactionChip}
+            disabled={reactPending}
+            title={list.map((r) => r.display_name).join(', ')}
+            onClick={() => {
+              onReact(emoji)
+            }}
+          >
+            <span>{emoji}</span>
+            <span>{list.length}</span>
+          </button>
+        ))}
+        <span className={styles.reactPicker}>
+          {REACTION_OPTIONS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              className={styles.reactPickerButton}
+              title={`React with ${emoji}`}
+              disabled={reactPending}
+              onClick={() => {
+                onReact(emoji)
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+        </span>
+      </div>
+    </div>
   )
 }

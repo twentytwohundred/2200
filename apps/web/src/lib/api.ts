@@ -728,6 +728,19 @@ export const api = {
       `/api/v1/pubs/${encodeURIComponent(name)}/messages${suffix}`,
     )
   },
+  pubSend: (
+    name: string,
+    body: { content: string; mentions?: string[]; reply_to?: string | null },
+  ) =>
+    request<{ message_id: string; timestamp: string }>(
+      `/api/v1/pubs/${encodeURIComponent(name)}/messages`,
+      { method: 'POST', body },
+    ),
+  pubReact: (name: string, body: { message_id: string; emoji: string }) =>
+    request<null>(`/api/v1/pubs/${encodeURIComponent(name)}/reactions`, {
+      method: 'POST',
+      body,
+    }),
 }
 
 export interface PubSummary {
@@ -757,6 +770,13 @@ export interface PubDetail extends PubSummary {
   atmosphere: PubAtmosphere | null
 }
 
+export interface PubReactionDto {
+  agent_id: string
+  display_name: string
+  emoji: string
+  timestamp: string
+}
+
 export interface PubMessage {
   message_id: string
   agent_id: string
@@ -768,6 +788,7 @@ export interface PubMessage {
   mention_names: string[]
   directed_to: string | null
   reply_to: string | null
+  reactions: PubReactionDto[]
 }
 
 /** Internal handle for tests and hooks that need to share the request helper. */

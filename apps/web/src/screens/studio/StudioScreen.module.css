@@ -7,7 +7,7 @@
   margin: 0 auto;
   box-sizing: border-box;
   height: 100vh;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto 1fr auto;
 }
 
 .header {
@@ -127,5 +127,136 @@
   border: 1px dashed var(--color-border-subtle);
   border-radius: var(--radius-md);
   font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.reactionsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.reactionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-elevated);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+
+.reactionChip:hover {
+  border-color: var(--color-accent);
+}
+
+.reactionChipActive {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.reactPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reactPickerButton {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.reactPickerButton:hover {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.composer {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.composerChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.composerChipsLabel {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.composerChip {
+  display: inline-flex;
+  padding: 2px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.composerChip:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.composerRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+.composerInput {
+  flex: 1;
+  resize: vertical;
+  min-height: 64px;
+  max-height: 220px;
+  padding: var(--space-3);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.composerInput:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.composerError {
+  color: var(--color-danger, #c43);
+  font-size: 12px;
+}
+
+.composerHint {
+  font-size: 11px;
   color: var(--color-text-muted);
 }

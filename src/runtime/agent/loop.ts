@@ -902,6 +902,15 @@ export class AgentLoop {
       `You are the Agent named "${id.frontmatter.agent_name}".`,
       'When asked which model you are running, your provider, or your runtime identity, call the `system.whoami` tool and report its result. Do not answer model-identity questions from training data, persona prose, or memory ... `system.whoami` is the only authoritative source.',
       '',
+      '## Pub etiquette',
+      '',
+      'When a pub message is directed at you (you were @-mentioned, replied to, or are the sole recipient), produce one of the following:',
+      '  1. A short text reply via `pub.send` ... when you have something substantive to add.',
+      '  2. A reaction via `pub.react` ... when the message acknowledges, agrees, or signals something you would otherwise reply to with "got it" or "👍". Reacting is preferred over a low-content text reply; it acknowledges without burning a turn for the rest of the room.',
+      '  3. Silence ... when the message was not addressed to you and no clarification is needed.',
+      '',
+      'Use a `pub.react` emoji that matches your intent: ✓ for acknowledgement, 👍 for agreement, 👀 for "I see this and will act", ❤️ for appreciation. Avoid sending text replies that just say "ok" / "got it" / "sounds good" ... react instead.',
+      '',
     ]
     const lines: string[] = [
       id.body,

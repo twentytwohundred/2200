@@ -1,18 +1,18 @@
 /**
  * Supervisor-side PubClient bridge.
  *
- * The web app needs a way to read pub messages and (PR2/PR3) post
- * messages and reactions. OpenPub's HTTP surface only exposes
- * `/info` and `/health`; the conversation stream is WebSocket-only.
- * Each Agent process holds its own `PubClient` for its own pub
+ * The web app needs a way to read pub messages and to post
+ * messages + reactions. OpenPub's HTTP surface only exposes `/info`
+ * and `/health`; the conversation stream is WebSocket-only. Each
+ * Agent process holds its own `PubClient` for its own pub
  * memberships, but those clients are not addressable from outside
  * the agent process.
  *
  * This bridge gives the supervisor a long-lived `PubClient` per pub,
  * authenticated as the local user (Doug, per `<home>/config/user.md`).
  * The web app's `/api/v1/pubs/...` routes read the bridge's rolling
- * buffer; future PRs route POSTs (send + react) through the same
- * client.
+ * buffer; POSTs (send + react) route through the same client so the
+ * pub server attributes them to `@doug`.
  *
  * Lifecycle:
  *   - Bridges are lazy: the first call to `getMessages(pub)` (or
@@ -28,9 +28,12 @@
 import type { HomePaths } from '../storage/layout.js'
 import { loadUserIdentityIfExists } from '../user/loader.js'
 import { readCredentialFile, type PubCredential } from '../pub/keypair.js'
-import { PubClient, type PubMessage, type RoomState } from '../pub/client.js'
+import { PubClient, type PubMessage, type PubReaction, type RoomState } from '../pub/client.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import type { Supervisor } from './supervisor.js'
+
+/** Cap reactions tracked per pub. Older entries get dropped FIFO. */
+const REACTIONS_CAP = 500
 
 export interface SupervisorPubBridgeOptions {
   home: string
@@ -43,6 +46,14 @@ interface PubBridgeEntry {
   client: PubClient
   /** Connect promise; resolved once the handshake completes. */
   ready: Promise<void>
+  /**
+   * Per-pub reaction store keyed by message_id. The pub-server upserts
+   * (agent_id, message_id) → emoji, so newer events replace older ones
+   * with the same agent. We mirror that semantic here.
+   */
+  reactions: Map<string, PubReaction[]>
+  /** Insertion order of message_ids in `reactions`, used for FIFO eviction. */
+  reactionOrder: string[]
 }
 
 export class SupervisorPubBridge {
@@ -87,6 +98,65 @@ export class SupervisorPubBridge {
   }
 
   /**
+   * Reactions tracked per message in this pub since the bridge connected.
+   * Returns an empty map for unknown / unreached pubs.
+   */
+  async getReactions(pubName: string): Promise<ReadonlyMap<string, PubReaction[]>> {
+    const entry = await this.acquire(pubName)
+    if (!entry) return new Map()
+    return entry.reactions
+  }
+
+  /**
+   * Send a message to the pub on behalf of the local user. The
+   * pub-server stamps the sender as `@doug` (or whatever the user
+   * identity declares) and broadcasts to all members.
+   */
+  async send(
+    pubName: string,
+    input: { content: string; mentions?: string[]; reply_to?: string | null },
+  ): Promise<{ message_id: string; timestamp: string }> {
+    const entry = await this.acquire(pubName)
+    if (!entry) {
+      throw new PubBridgeError('pub_not_running', `pub "${pubName}" is not running`)
+    }
+    const sendInput: Parameters<PubClient['send']>[0] = { content: input.content }
+    if (input.mentions !== undefined) sendInput.mentions = input.mentions
+    if (input.reply_to !== undefined) sendInput.in_reply_to = input.reply_to
+    return entry.client.send(sendInput)
+  }
+
+  /**
+   * React to a message. The pub-server upserts (agent_id, message_id)
+   * → emoji; re-reacting with the same emoji is a no-op, with a
+   * different emoji replaces the existing entry.
+   *
+   * Side effect: we also mirror the reaction into our local map.
+   * OpenPub does not consistently echo `pub_reaction` events back to
+   * the sender, so without this mirror the web UI would not see its
+   * own reactions until another reactor caused a refresh.
+   */
+  async react(pubName: string, messageId: string, emoji: string): Promise<void> {
+    const entry = await this.acquire(pubName)
+    if (!entry) {
+      throw new PubBridgeError('pub_not_running', `pub "${pubName}" is not running`)
+    }
+    await entry.client.react(messageId, emoji)
+    if (this.cred) {
+      const synthetic: PubReaction = {
+        reaction_id: `local:${Date.now().toString()}`,
+        pub_id: '',
+        message_id: messageId,
+        agent_id: this.cred.agent_id ?? 'self',
+        display_name: this.cred.display_name,
+        emoji,
+        timestamp: new Date().toISOString(),
+      }
+      mirrorReaction(entry, synthetic)
+    }
+  }
+
+  /**
    * Close all bridge connections. Called from the supervisor's
    * shutdown path so the WS clients exit cleanly.
    */
@@ -123,6 +193,16 @@ export class SupervisorPubBridge {
     }
     const baseUrl = `http://127.0.0.1:${String(pub.port)}`
     const client = new PubClient({ baseUrl, cred })
+    const reactions = new Map<string, PubReaction[]>()
+    const reactionOrder: string[] = []
+    // Track reactions in-band: every time the pub-server broadcasts
+    // a `pub_reaction` event, we upsert (agent_id, message_id) → emoji
+    // into the per-pub map. The pub-server treats this as the source
+    // of truth, so we follow its semantic.
+    client.onEvent((ev) => {
+      if (ev.type !== 'pub_reaction') return
+      mirrorReaction({ client, ready: Promise.resolve(), reactions, reactionOrder }, ev.data)
+    })
     const ready = client
       .connect()
       .then(() => {
@@ -135,7 +215,7 @@ export class SupervisorPubBridge {
         this.log.warn('supervisor pub bridge connect failed', { pub: pubName, error: message })
         throw new PubBridgeError('connect_failed', message)
       })
-    const entry: PubBridgeEntry = { client, ready }
+    const entry: PubBridgeEntry = { client, ready, reactions, reactionOrder }
     this.entries.set(pubName, entry)
     await ready
     return entry
@@ -153,9 +233,27 @@ export class SupervisorPubBridge {
   }
 }
 
+function mirrorReaction(entry: PubBridgeEntry, r: PubReaction): void {
+  const list = entry.reactions.get(r.message_id) ?? []
+  const existing = list.findIndex((x) => x.agent_id === r.agent_id)
+  if (existing >= 0) {
+    list[existing] = r
+  } else {
+    list.push(r)
+  }
+  if (!entry.reactions.has(r.message_id)) {
+    entry.reactionOrder.push(r.message_id)
+  }
+  entry.reactions.set(r.message_id, list)
+  while (entry.reactionOrder.length > REACTIONS_CAP) {
+    const drop = entry.reactionOrder.shift()
+    if (drop) entry.reactions.delete(drop)
+  }
+}
+
 export class PubBridgeError extends Error {
   constructor(
-    readonly code: 'no_user_identity' | 'connect_failed',
+    readonly code: 'no_user_identity' | 'connect_failed' | 'pub_not_running',
     message: string,
   ) {
     super(message)

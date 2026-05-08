@@ -323,6 +323,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/pubs' },
       { method: 'GET', path: '/api/v1/pubs/:name' },
       { method: 'GET', path: '/api/v1/pubs/:name/messages' },
+      { method: 'POST', path: '/api/v1/pubs/:name/messages' },
+      { method: 'POST', path: '/api/v1/pubs/:name/reactions' },
       { method: 'POST', path: '/api/v1/onboarding' },
       { method: 'GET', path: '/api/v1/onboarding/:id' },
       { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
@@ -1268,6 +1270,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           ...(q.limit !== undefined ? { limit: q.limit } : {}),
           since: q.since ?? null,
         })) ?? []
+      const reactions = await pubBridge.getReactions(req.params.name)
       return {
         items: items.map((m) => ({
           message_id: m.message_id,
@@ -1280,6 +1283,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           mention_names: m.mention_names,
           directed_to: m.directed_to,
           reply_to: m.reply_to,
+          reactions: (reactions.get(m.message_id) ?? []).map((r) => ({
+            agent_id: r.agent_id,
+            display_name: r.display_name,
+            emoji: r.emoji,
+            timestamp: r.timestamp,
+          })),
         })),
         cursor: { next: null, limit: items.length },
       }
@@ -1291,6 +1300,55 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           cursor: { next: null, limit: 0 },
           error: { code: err.code, message: err.message },
         }
+      }
+      throw err
+    }
+  })
+
+  const PubSendBody = z.object({
+    content: z.string().min(1).max(8000),
+    mentions: z.array(z.string()).optional(),
+    reply_to: z.string().nullable().optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/pubs/:name/messages', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.pubs[req.params.name]) throw notFound('pub', req.params.name)
+    const body = PubSendBody.parse(req.body)
+    try {
+      const result = await pubBridge.send(req.params.name, {
+        content: body.content,
+        ...(body.mentions !== undefined ? { mentions: body.mentions } : {}),
+        ...(body.reply_to !== undefined ? { reply_to: body.reply_to } : {}),
+      })
+      void reply.status(201)
+      return result
+    } catch (err) {
+      if (err instanceof PubBridgeError) {
+        void reply.status(err.code === 'pub_not_running' ? 409 : 503)
+        return { error: { code: err.code, message: err.message } }
+      }
+      throw err
+    }
+  })
+
+  const PubReactBody = z.object({
+    message_id: z.string().min(1),
+    emoji: z.string().min(1).max(32),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/pubs/:name/reactions', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.pubs[req.params.name]) throw notFound('pub', req.params.name)
+    const body = PubReactBody.parse(req.body)
+    try {
+      await pubBridge.react(req.params.name, body.message_id, body.emoji)
+      void reply.status(204)
+      return null
+    } catch (err) {
+      if (err instanceof PubBridgeError) {
+        void reply.status(err.code === 'pub_not_running' ? 409 : 503)
+        return { error: { code: err.code, message: err.message } }
       }
       throw err
     }
