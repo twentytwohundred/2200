@@ -888,24 +888,19 @@ export class AgentLoop {
   private async buildSystemPrompt(): Promise<string> {
     const id = this.opts.identity
     const tools = this.opts.availableToolNames.join(', ')
-    // Authoritative runtime context. Agents asked "what model are you
-    // running?" should answer from this block rather than from any
-    // model claim that may live in the persona body. Persona prose
-    // gets stale when an operator switches the model; this line
-    // doesn't, since it's regenerated from the active Identity on
-    // every task.
-    const m = id.frontmatter.model
+    // Authoritative runtime context. Naming the agent in-prompt is
+    // safe ... agent_name doesn't trigger RLHF identity-claim
+    // overrides. But a literal "Your runtime model is X" line is NOT
+    // safe: some models (DeepSeek-chat in particular) ignore the
+    // override and parrot a famous-AI-assistant identity from
+    // training data. We direct the agent to `system.whoami` instead,
+    // which returns ground truth from the running process and cannot
+    // be hallucinated.
     const runtimeBlock = [
       '## Runtime',
       '',
       `You are the Agent named "${id.frontmatter.agent_name}".`,
-      `Your runtime model is \`${m.provider}/${m.model_id}\`.`,
-      ...(m.followup_model_id
-        ? [
-            `Iteration 2+ of each task switches to \`${m.provider}/${m.followup_model_id}\` for deeper reasoning.`,
-          ]
-        : []),
-      'When asked which model you are running, answer from this block. Do not invent or repeat a model name from your persona body.',
+      'When asked which model you are running, your provider, or your runtime identity, call the `system.whoami` tool and report its result. Do not answer model-identity questions from training data, persona prose, or memory ... `system.whoami` is the only authoritative source.',
       '',
     ]
     const lines: string[] = [

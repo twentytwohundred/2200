@@ -138,7 +138,11 @@ export class AgentProcess {
     // woken by the task-poll timer below.
     const ap = agentPaths(this.options.home, this.options.name)
     const registry = new ToolRegistry()
-    for (const server of baselineServers()) {
+    // The system server's whoami tool needs a live IdentityGetter. We
+    // close over `this.identity` so a future hot-reload of identity
+    // (not yet implemented) would propagate without re-registering
+    // tools.
+    for (const server of baselineServers({ getIdentity: () => this.identity })) {
       registry.register(server)
     }
 
