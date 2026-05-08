@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactElement } from '
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type ChatMessage } from '../../lib/api'
-import { Button, Card, cx, ErrorState, LoadingState, PageHeader } from '../../primitives'
+import { Button, Card, cx, ErrorState, LoadingState, PageHeader, PulseDot } from '../../primitives'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
@@ -53,6 +53,26 @@ export function ChatScreen(): ReactElement {
     staleTime: 1_000,
     refetchInterval: 3_000,
   })
+
+  // Live pulse for the agent: drives the header indicator and the
+  // "thinking…" affordance. Polls faster than the chat list so the
+  // dot tracks short bursts of activity.
+  const agentQuery = useQuery({
+    queryKey: ['agent-pulse', name],
+    queryFn: () => {
+      if (!name) throw new Error('agent name missing from route')
+      return api.agent(name)
+    },
+    enabled: Boolean(name),
+    staleTime: 1_000,
+    refetchInterval: 2_000,
+  })
+
+  const pulse = agentQuery.data?.pulse ?? null
+  const isWorking =
+    pulse?.state === 'working_light' ||
+    pulse?.state === 'working_medium' ||
+    pulse?.state === 'working_hard'
 
   const messages = query.data?.items ?? []
 
@@ -97,7 +117,25 @@ export function ChatScreen(): ReactElement {
         title={`Chat · ${name ?? ''}`}
         subtitle={`Persistent conversation with ${name ?? 'the agent'}. Each turn is a checkpointed task.`}
         actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            {pulse ? (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontFamily: 'var(--type-family-mono)',
+                  fontSize: '11px',
+                  letterSpacing: '0.08em',
+                  color: 'var(--color-text-muted)',
+                  textTransform: 'uppercase',
+                }}
+                title={`${name ?? 'agent'} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
+              >
+                <PulseDot state={pulse.state} intensity={pulse.intensity} size="md" />
+                <span>{isWorking ? 'thinking…' : pulse.state.replace('_', ' ')}</span>
+              </span>
+            ) : null}
             <Link
               to={`/agent/${encodeURIComponent(name ?? '')}`}
               style={{
@@ -129,7 +167,7 @@ export function ChatScreen(): ReactElement {
             <ChatBubble key={m.id} message={m} agentName={name ?? 'agent'} />
           ))
         )}
-        {pendingTaskId ? (
+        {pendingTaskId || isWorking ? (
           <div className={styles.thinking}>
             <span className={styles.thinkingDot} />
             <span>{name ?? 'agent'} is thinking…</span>

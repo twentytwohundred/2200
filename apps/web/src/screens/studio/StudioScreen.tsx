@@ -41,7 +41,7 @@ import {
   type PubMessage,
   type PubReactionDto,
 } from '../../lib/api'
-import { Button, Card, ErrorState, LoadingState, PageHeader, cx } from '../../primitives'
+import { Button, Card, ErrorState, LoadingState, PageHeader, PulseDot, cx } from '../../primitives'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
@@ -186,8 +186,30 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     staleTime: 1_000,
   })
 
+  // Polled agents list gives us live pulse for each member. The
+  // bridge polls every 2s (faster than the pub query) so the dot
+  // tracks short bursts of activity without lagging the user's
+  // message arrival.
+  const agentsQuery = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.agents(),
+    refetchInterval: 2_000,
+    staleTime: 1_000,
+  })
+
   const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data])
   const members = pubQuery.data?.members ?? []
+
+  // Map display_name → agent (for pulse lookup). Pub members are
+  // identified by display_name; the agents API keys by agent name,
+  // which equals display_name for the seed-team identities.
+  const agentByName = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof agentsQuery.data>['items'][number]>()
+    for (const a of agentsQuery.data?.items ?? []) {
+      map.set(a.name, a)
+    }
+    return map
+  }, [agentsQuery.data])
 
   // Track the last-sent content so we can restore the draft on
   // failure without clobbering anything the user may have typed
@@ -338,14 +360,30 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           <Card padding={16}>
             <div className={styles.sidebarLabel}>Members</div>
             {members.length ? (
-              members.map((m) => (
-                <div key={m.agent_id} className={styles.memberRow}>
-                  <span
-                    className={cx(styles.memberDot, m.status !== 'active' && styles.memberDotIdle)}
-                  />
-                  <span>{m.display_name}</span>
-                </div>
-              ))
+              members.map((m) => {
+                const agent = agentByName.get(m.display_name)
+                const pulse = agent?.pulse ?? null
+                return (
+                  <div key={m.agent_id} className={styles.memberRow}>
+                    {pulse ? (
+                      <PulseDot
+                        state={pulse.state}
+                        intensity={pulse.intensity}
+                        size="md"
+                        title={`${m.display_name} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
+                      />
+                    ) : (
+                      <span
+                        className={cx(
+                          styles.memberDot,
+                          m.status !== 'active' && styles.memberDotIdle,
+                        )}
+                      />
+                    )}
+                    <span>{m.display_name}</span>
+                  </div>
+                )
+              })
             ) : (
               <div className={styles.atmosphere}>
                 {pubQuery.isLoading ? 'Loading…' : 'No members reported yet.'}
@@ -385,6 +423,27 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               />
             ))
           )}
+          {/* Inline "thinking..." rows for any pub member whose pulse is in a working_* state. */}
+          {members.map((m) => {
+            const agent = agentByName.get(m.display_name)
+            const p = agent?.pulse
+            if (!p) return null
+            const working =
+              p.state === 'working_light' ||
+              p.state === 'working_medium' ||
+              p.state === 'working_hard'
+            if (!working) return null
+            return (
+              <div
+                key={`thinking-${m.agent_id}`}
+                className={styles.thinkingRow}
+                title={`${m.display_name} · ${p.state} (intensity ${p.intensity.toFixed(2)})`}
+              >
+                <PulseDot state={p.state} intensity={p.intensity} size="sm" />
+                <span>{m.display_name} is thinking…</span>
+              </div>
+            )
+          })}
         </div>
       </div>
 
