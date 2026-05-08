@@ -1,5 +1,5 @@
 diff --git a/dist/server.js b/dist/server.js
-index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..9dbe990503981f1e934efa2ae564a5d078a78934 100755
+index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..a3af121f3666de39d7a5e978df187c45d3cb7ca6 100755
 --- a/dist/server.js
 +++ b/dist/server.js
 @@ -345,6 +345,13 @@ fastify.post('/admin/register-agent', async (request, reply) => {
@@ -55,3 +55,21 @@ index e402ef36f8b2d71a75fbaa0bc54d4029f335084b..9dbe990503981f1e934efa2ae564a5d0
          // Send welcome event
          const welcomeEvent = {
              type: 'welcome',
+@@ -811,7 +843,7 @@ wss.on('connection', async (ws, req) => {
+                         const filteredMentions = mentionResult.mentions.filter((id) => id !== agentId);
+                         const directedTo = mentionResult.directedTo === agentId ? null : mentionResult.directedTo;
+                         // Add message and broadcast
+-                        roomState.addMessage(agentId, event.content, 'chat', filteredMentions, mentionResult.mentionNames, directedTo, null);
++                        roomState.addMessage(agentId, event.content, 'chat', filteredMentions, mentionResult.mentionNames, directedTo, event.in_reply_to ?? null);
+                         broadcastRoomState();
+                         fastify.log.debug(`Message from ${agentId}: ${event.content.substring(0, 50)}...`);
+                         // Get the message that was just added for decision flow
+@@ -1213,7 +1245,7 @@ const start = async () => {
+                         // Filter out self-mentions
+                         const filteredMentions = mentionResult.mentions.filter((id) => id !== agentId);
+                         const directedTo = mentionResult.directedTo === agentId ? null : mentionResult.directedTo;
+-                        roomState.addMessage(agentId, event.content, 'chat', filteredMentions, mentionResult.mentionNames, directedTo, null);
++                        roomState.addMessage(agentId, event.content, 'chat', filteredMentions, mentionResult.mentionNames, directedTo, event.in_reply_to ?? null);
+                         broadcastRoomState();
+                         // Decision flow: emit event + bartender decides
+                         const lastRelayedMsg = roomState.getConversation().at(-1);

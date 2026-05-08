@@ -191,7 +191,10 @@ export async function startFakePub(
             mentions: (parsed['mentions'] as string[] | undefined) ?? [],
             mention_names: [],
             directed_to: null,
-            reply_to: (parsed['reply_to'] as string | null | undefined) ?? null,
+            // OpenPub's wire schema names this `in_reply_to` on the
+            // client→server frame; the broadcast surface exposes it
+            // back as `reply_to`. Mirror that shape here.
+            reply_to: (parsed['in_reply_to'] as string | null | undefined) ?? null,
           }
           // Cache in the rolling window for future connectors' room_state.
           conversationWindow.push(data)

@@ -275,7 +275,13 @@ export class PubClient {
     }
     if (input.mentions && input.mentions.length > 0) payload['mentions'] = input.mentions
     if (input.in_reply_to !== undefined && input.in_reply_to !== null) {
-      payload['reply_to'] = input.in_reply_to
+      // OpenPub's ClientMessageEvent wire schema names the field
+      // `in_reply_to`. The stored message exposes it back as `reply_to`
+      // (per addMessage in pub-server's room-state.js). Earlier code
+      // sent `reply_to` on the wire; that key is not in the schema, so
+      // Zod stripped it and every reply landed with reply_to=null,
+      // which silently broke the directed_to "reply_to_mine" wake rule.
+      payload['in_reply_to'] = input.in_reply_to
     }
     if (input.client_message_id) payload['client_message_id'] = input.client_message_id
 

@@ -104,6 +104,21 @@ export class PubWakeSource {
   // ---------------------------------------------------------------------------
 
   private async handleEvent(event: PubEvent): Promise<void> {
+    // Track sends from room_state too. Pub-server v0.3.x does NOT
+    // echo the sender with a 'message' event ... it broadcasts a
+    // fresh `room_state` instead. Without scanning room_state for our
+    // own message_ids, the `sentMessageIds` set stays empty and the
+    // `reply_to_mine` directed_to rule never matches, so we never
+    // wake on a peer's reply to our question.
+    if (event.type === 'room_state') {
+      for (const m of event.data.conversation) {
+        if (m.agent_id === this.opts.agent.agent_id) {
+          this.recordSent(m.message_id)
+        }
+      }
+      return
+    }
+
     if (event.type !== 'message' && event.type !== 'conversation_event') return
 
     const cachedRoom = this.opts.client.roomState()
@@ -132,7 +147,12 @@ export class PubWakeSource {
             display_name: event.data.from.display_name,
             content: cachedFull?.content ?? event.data.preview,
             mentions: event.data.mentions,
-            reply_to: null,
+            // ConversationEvent's wire shape does not include reply_to.
+            // Pull it from the cached full message (which arrived via
+            // the same room_state broadcast that produced this event)
+            // so the directed_to resolver's reply_to_mine rule has the
+            // information it needs.
+            reply_to: cachedFull?.reply_to ?? null,
           }
 
     // Track our own sends for rule 2.
