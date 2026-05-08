@@ -731,7 +731,12 @@ export const api = {
   },
   pubSend: (
     name: string,
-    body: { content: string; mentions?: string[]; reply_to?: string | null },
+    body: {
+      content: string
+      mentions?: string[]
+      reply_to?: string | null
+      attachments?: { filename: string; content_type: string; base64: string }[]
+    },
   ) =>
     request<{ message_id: string; timestamp: string }>(
       `/api/v1/pubs/${encodeURIComponent(name)}/messages`,
