@@ -18,7 +18,7 @@ function makeTranscript(
   entries: { id: string; tag?: string; answer: string }[],
 ): InterviewTranscript {
   return {
-    interview_schema_version: 1,
+    interview_schema_version: 2,
     script_name: 'test',
     chosen_branch: 'test_branch',
     entries: entries.map((e) => ({

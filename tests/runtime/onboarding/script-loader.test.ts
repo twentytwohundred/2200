@@ -1,12 +1,10 @@
 /**
- * Tests for the onboarding script loader (Epic 14 Phase A PR A).
+ * Tests for the onboarding script loader (v2: LLM-driven).
  *
  * Cover:
- *   - the canonical default-v1.yaml loads cleanly
- *   - schema version enforced
- *   - referential integrity: default_branch + routing[].next_branch must
- *     name a known branch
- *   - duplicate branch ids rejected
+ *   - the canonical default-v2.yaml loads cleanly
+ *   - schema version enforced (must be 2)
+ *   - duplicate goal ids rejected
  *   - malformed YAML produces ScriptLoadError with the source path
  */
 import { describe, expect, it } from 'vitest'
@@ -18,7 +16,7 @@ import {
   ScriptLoadError,
 } from '../../../src/runtime/onboarding/script-loader.js'
 
-const DEFAULT_V1_PATH = join(
+const DEFAULT_SCRIPT_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
@@ -27,38 +25,36 @@ const DEFAULT_V1_PATH = join(
   'runtime',
   'onboarding',
   'scripts',
-  'default-v1.yaml',
+  'default-v2.yaml',
 )
 
 const MINIMAL_YAML = `
-script_schema_version: 1
+script_schema_version: 2
 name: test-minimal
 opening:
   id: opening
   text: "What do you want?"
-  intent_tag: opening_purpose
-routing: []
-default_branch: only_branch
-branches:
-  - id: only_branch
-    questions:
-      - id: q1
-        text: "Tell me more."
-        intent_tag: more
+  intent_tag: purpose
+goals:
+  - id: purpose
+    description: "what the agent does"
+    required: true
+  - id: agent_name
+    description: "what to call the agent"
+    required: true
 `
 
 describe('loadScriptFile', () => {
-  it('loads the canonical default-v1.yaml', async () => {
-    const script = await loadScriptFile(DEFAULT_V1_PATH)
-    expect(script.name).toBe('default-v1')
-    expect(script.script_schema_version).toBe(1)
-    expect(script.branches.length).toBeGreaterThanOrEqual(4)
-    const branchIds = script.branches.map((b) => b.id).sort()
-    expect(branchIds).toContain('email_agent_branch')
-    expect(branchIds).toContain('project_agent_branch')
-    expect(branchIds).toContain('ops_agent_branch')
-    expect(branchIds).toContain('freeform_branch')
-    expect(script.default_branch).toBe('freeform_branch')
+  it('loads the canonical default-v2.yaml', async () => {
+    const script = await loadScriptFile(DEFAULT_SCRIPT_PATH)
+    expect(script.name).toBe('default-v2')
+    expect(script.script_schema_version).toBe(2)
+    expect(script.goals.length).toBeGreaterThanOrEqual(4)
+    const goalIds = script.goals.map((g) => g.id).sort()
+    expect(goalIds).toContain('purpose')
+    expect(goalIds).toContain('agent_name')
+    expect(goalIds).toContain('trigger')
+    expect(goalIds).toContain('tools')
   })
 
   it('throws ScriptLoadError on a missing file', async () => {
@@ -69,68 +65,43 @@ describe('loadScriptFile', () => {
 })
 
 describe('parseScriptString', () => {
-  it('parses a minimum viable script', () => {
+  it('parses a minimum viable v2 script', () => {
     const script = parseScriptString(MINIMAL_YAML, null)
     expect(script.name).toBe('test-minimal')
     expect(script.opening.id).toBe('opening')
-    expect(script.branches[0]?.questions[0]?.id).toBe('q1')
+    expect(script.goals[0]?.id).toBe('purpose')
+    expect(script.goals[0]?.required).toBe(true)
   })
 
   it('rejects a wrong schema_version', () => {
-    const text = MINIMAL_YAML.replace('script_schema_version: 1', 'script_schema_version: 2')
+    const text = MINIMAL_YAML.replace('script_schema_version: 2', 'script_schema_version: 1')
     expect(() => parseScriptString(text, null)).toThrow(/script_schema_version/)
   })
 
-  it('rejects a default_branch that does not match any branch id', () => {
-    const text = MINIMAL_YAML.replace('default_branch: only_branch', 'default_branch: ghost')
-    expect(() => parseScriptString(text, null)).toThrow(/default_branch.*ghost.*does not match/)
-  })
-
-  it('rejects a routing rule whose next_branch does not match any branch id', () => {
+  it('rejects duplicate goal ids', () => {
     const text = `
-script_schema_version: 1
-name: bad-routing
-opening:
-  id: opening
-  text: "x"
-routing:
-  - if_keywords: [foo]
-    next_branch: ghost_branch
-default_branch: real
-branches:
-  - id: real
-    questions:
-      - id: q1
-        text: "real q"
-`
-    expect(() => parseScriptString(text, null)).toThrow(/routing\[0\]\.next_branch.*ghost_branch/)
-  })
-
-  it('rejects duplicate branch ids', () => {
-    const text = `
-script_schema_version: 1
+script_schema_version: 2
 name: dup
 opening:
   id: opening
   text: "x"
-routing: []
-default_branch: dup_branch
-branches:
-  - id: dup_branch
-    questions:
-      - id: q1
-        text: "first"
-  - id: dup_branch
-    questions:
-      - id: q2
-        text: "second"
+goals:
+  - id: same_id
+    description: "first"
+  - id: same_id
+    description: "second"
 `
-    expect(() => parseScriptString(text, null)).toThrow(/duplicate branch id/)
+    expect(() => parseScriptString(text, null)).toThrow(/duplicate goal id/)
   })
 
-  it('rejects an invalid agent_name regex on a question id', () => {
-    const text = MINIMAL_YAML.replace('id: q1', 'id: "Q1-Bad"')
+  it('rejects an invalid id regex on a question id', () => {
+    const text = MINIMAL_YAML.replace('id: opening', 'id: "Opening-Bad"')
     expect(() => parseScriptString(text, null)).toThrow(/question id/)
+  })
+
+  it('rejects an invalid id regex on a goal id', () => {
+    const text = MINIMAL_YAML.replace('id: purpose', 'id: "Purpose-Bad"')
+    expect(() => parseScriptString(text, null)).toThrow(/goal id/)
   })
 
   it('throws ScriptLoadError on malformed YAML', () => {
@@ -147,8 +118,9 @@ branches:
     }
   })
 
-  it('admits the routing list being empty (everything goes to default_branch)', () => {
+  it('defaults target_turns and max_turns when unspecified', () => {
     const script = parseScriptString(MINIMAL_YAML, null)
-    expect(script.routing).toEqual([])
+    expect(script.target_turns).toBeGreaterThan(0)
+    expect(script.max_turns).toBeGreaterThan(0)
   })
 })

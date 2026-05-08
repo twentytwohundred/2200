@@ -17,6 +17,7 @@
  * This keeps the protocol observable and lets tests assert outcomes.
  */
 import { z } from 'zod'
+import { HandoffFrontmatterSchema } from '../migration/types.js'
 
 // ---------------------------------------------------------------------------
 // Shared schemas
@@ -539,6 +540,44 @@ export const CliSchedulerReloadResultSchema = z.object({
 })
 export type CliSchedulerReloadResult = z.infer<typeof CliSchedulerReloadResultSchema>
 
+/**
+ * cli.spawn.from-handoff
+ *
+ * Run the migration orchestrator (the same path used by `agent
+ * migrate` and `agent spawn`'s standalone branch) inside the running
+ * supervisor. The CLI uses this when the daemon is up so the spawn
+ * pipeline goes through the daemon's Supervisor instance instead of
+ * opening a second one (which would race on state files).
+ *
+ * The CLI runs the interview and tool/schedule suggestion steps
+ * locally, then ships the resulting HandoffDocument over the wire.
+ * The daemon does Identity-write, agent registration, brain notes,
+ * and the summary notification.
+ */
+
+export const HandoffDocumentInputSchema = z.object({
+  frontmatter: HandoffFrontmatterSchema,
+  body: z.string(),
+  source_path: z.string().nullable(),
+})
+export type HandoffDocumentInput = z.infer<typeof HandoffDocumentInputSchema>
+
+export const CliSpawnFromHandoffParamsSchema = z.object({
+  handoff: HandoffDocumentInputSchema,
+  /** Replace any existing Agent of the same name. Destructive. */
+  force: z.boolean().optional(),
+})
+export type CliSpawnFromHandoffParams = z.infer<typeof CliSpawnFromHandoffParamsSchema>
+
+export const CliSpawnFromHandoffResultSchema = z.object({
+  agent_name: z.string(),
+  identity_path: z.string(),
+  continuity_note_slug: z.string(),
+  brain_imported_count: z.number().int().nonnegative(),
+  notification_id: z.string(),
+})
+export type CliSpawnFromHandoffResult = z.infer<typeof CliSpawnFromHandoffResultSchema>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -641,6 +680,10 @@ export const METHODS = {
   'cli.scheduler.reload': {
     params: CliSchedulerReloadParamsSchema,
     result: CliSchedulerReloadResultSchema,
+  },
+  'cli.spawn.from-handoff': {
+    params: CliSpawnFromHandoffParamsSchema,
+    result: CliSpawnFromHandoffResultSchema,
   },
 } as const
 

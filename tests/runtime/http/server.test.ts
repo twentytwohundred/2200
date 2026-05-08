@@ -374,17 +374,24 @@ describe('HTTP server onboarding endpoints', () => {
   })
 
   it('POST /api/v1/onboarding without an LLM provider configured surfaces 503', async () => {
-    // Test env has no ANTHROPIC_API_KEY etc. unset by initHome; the
-    // anthropic provider resolution fails and the endpoint returns
-    // a clean 503 rather than a 500.
+    // Test env has no provider keys (none of ANTHROPIC_API_KEY,
+    // DEEPSEEK_API_KEY, etc.); the no-provider auto-pick fails and the
+    // endpoint returns a clean 503 rather than a 500.
+    //
+    // The exact behavior depends on whether the developer's shell has
+    // a provider key + a runtime.env file. In a clean CI run nothing
+    // is set → 503 no_provider_configured. Locally with a key,
+    // auto-pick succeeds → 200. Accept either; both are documented.
+    //
+    // (The `local` provider has keyOptional=true, but auto-pick walks
+    // the catalog in display order and only falls through to local
+    // when no other provider matches. In most test envs cloud
+    // providers fail and local is selected ... that's also a 200.)
     const r = await authedJson('POST', '/api/v1/onboarding')
-    // The exact status code depends on whether the test env has
-    // ANTHROPIC_API_KEY set. In a clean CI run it's missing → 503.
-    // Locally with a key, it succeeds → 200. Accept either; both are
-    // documented behaviors.
     expect([200, 503]).toContain(r.status)
     if (r.status === 503) {
-      expect(r.body).toMatchObject({ error: { code: 'llm_provider_unavailable' } })
+      const body = r.body as { error: { code: string } }
+      expect(body.error.code).toMatch(/no_provider_configured|llm_provider_unavailable/)
     }
   })
 })

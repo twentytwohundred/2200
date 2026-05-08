@@ -6,12 +6,12 @@ import type { LLMProvider } from '../../../src/runtime/llm/provider.js'
 import type { QuestionScript } from '../../../src/runtime/onboarding/types.js'
 
 const SCRIPT: QuestionScript = {
-  script_schema_version: 1,
+  script_schema_version: 2,
   name: 's',
   opening: { id: 'opening', text: 'q', expects: 'free_form' },
-  routing: [],
-  default_branch: 'b',
-  branches: [{ id: 'b', questions: [{ id: 'q1', text: 'q', expects: 'free_form' }] }],
+  goals: [{ id: 'purpose', description: 'd', required: true }],
+  target_turns: 4,
+  max_turns: 6,
 }
 
 const fakeProvider: LLMProvider = {

@@ -23,7 +23,7 @@ function transcript(opts: {
     { id: 'email_account', tag: 'tool_email_account', answer: 'doug@example.com' },
   ]
   return {
-    interview_schema_version: 1,
+    interview_schema_version: 2,
     script_name: 'test-script',
     chosen_branch: opts.branch ?? 'email_agent_branch',
     entries: entries.map((e) => ({
@@ -92,18 +92,20 @@ describe('buildHandoffFromTranscript', () => {
     expect(handoff.frontmatter.agent_type).toBe('custom_id')
   })
 
-  it('throws when the transcript has no agent_name answer', () => {
-    expect(() =>
-      buildHandoffFromTranscript({
-        transcript: transcript({
-          entries: [
-            { id: 'opening', tag: 'opening_purpose', answer: 'something' },
-            { id: 'q1', answer: 'no tag' },
-          ],
-        }),
-        sourceHost: 'test-host',
+  it('synthesizes a name from the opening answer when no agent_name tag is captured', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({
+        entries: [
+          { id: 'opening', tag: 'purpose', answer: 'research assistant for genomics' },
+          { id: 'q1', answer: 'no tag' },
+        ],
       }),
-    ).toThrow(/intent_tag "agent_name"/)
+      sourceHost: 'test-host',
+    })
+    // The synthesizer takes the first 24 chars of the opening answer
+    // and normalizes; we accept any name derived from that prefix.
+    expect(handoff.frontmatter.agent_name).toMatch(/^[a-z][a-z0-9_-]*$/)
+    expect(handoff.frontmatter.agent_name.length).toBeGreaterThan(0)
   })
 
   it('normalizes a free-form name to a valid agent identifier', () => {

@@ -1,3 +1,12 @@
+/**
+ * Tests for OnboardingSession (v2: LLM-driven).
+ *
+ * The fake provider plays back a scripted sequence of directive JSONs
+ * for the interviewer system-prompt calls; the summary call returns
+ * configurable text. We distinguish interviewer vs summary calls by
+ * matching on systemPrompt content (the interviewer prompt always
+ * contains the literal string "GOALS").
+ */
 import { describe, expect, it } from 'vitest'
 import {
   OnboardingSession,
@@ -8,44 +17,56 @@ import type { LLMProvider } from '../../../src/runtime/llm/provider.js'
 import type { QuestionScript } from '../../../src/runtime/onboarding/types.js'
 
 const SCRIPT: QuestionScript = {
-  script_schema_version: 1,
+  script_schema_version: 2,
   name: 'test-session-script',
   opening: {
     id: 'opening',
     text: 'What kind of Agent?',
     expects: 'free_form',
-    intent_tag: 'opening_purpose',
+    intent_tag: 'purpose',
   },
-  routing: [{ if_keywords: ['email', 'inbox'], next_branch: 'email_branch' }],
-  default_branch: 'freeform_branch',
-  branches: [
-    {
-      id: 'email_branch',
-      questions: [
-        { id: 'q_name', text: 'Name?', expects: 'free_form', intent_tag: 'agent_name' },
-        { id: 'q_account', text: 'Which account?', expects: 'free_form' },
-        { id: 'q_cadence', text: 'How often?', expects: 'free_form' },
-      ],
-    },
-    {
-      id: 'freeform_branch',
-      questions: [
-        { id: 'q_name', text: 'Name?', expects: 'free_form', intent_tag: 'agent_name' },
-        { id: 'q_freeform', text: 'Tools?', expects: 'free_form' },
-      ],
-    },
+  goals: [
+    { id: 'purpose', description: 'what it does', required: true },
+    { id: 'agent_name', description: 'name', required: true },
+    { id: 'tools', description: 'integrations', required: true },
   ],
+  target_turns: 4,
+  max_turns: 6,
 }
 
-function fakeProvider(
-  opts: { summary?: string; empty?: boolean; error?: Error } = {},
-): LLMProvider {
+interface ScriptedProviderOpts {
+  directives: readonly string[]
+  summary?: string
+  emptySummary?: boolean
+  errorOnSummary?: Error
+  errorOnInterviewerTurn?: number
+}
+
+function scriptedProvider(opts: ScriptedProviderOpts): LLMProvider {
+  let interviewerCalls = 0
   return {
     name: 'fake',
     baseUrl: 'http://fake',
-    complete: (_req: CompletionRequest): Promise<CompletionResponse> => {
-      if (opts.error) return Promise.reject(opts.error)
-      const text = opts.empty ? '' : (opts.summary ?? 'I am the Agent. I help with email.')
+    complete: (request: CompletionRequest): Promise<CompletionResponse> => {
+      const isInterviewer = request.systemPrompt?.includes('GOALS')
+      if (isInterviewer) {
+        interviewerCalls += 1
+        if (
+          opts.errorOnInterviewerTurn !== undefined &&
+          interviewerCalls === opts.errorOnInterviewerTurn
+        ) {
+          return Promise.reject(new Error('llm down'))
+        }
+        const directive = opts.directives[interviewerCalls - 1] ?? '{"kind":"done"}'
+        return Promise.resolve({
+          text: directive,
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 100, outputTokens: 50, estDollars: 0.001 },
+        })
+      }
+      // Summary call.
+      if (opts.errorOnSummary) return Promise.reject(opts.errorOnSummary)
+      const text = opts.emptySummary === true ? '' : (opts.summary ?? 'I am the Agent.')
       return Promise.resolve({
         text,
         finishReason: 'stop',
@@ -57,100 +78,116 @@ function fakeProvider(
 
 const FIXED = new Date('2026-05-06T12:00:00.000Z')
 
-describe('OnboardingSession', () => {
+describe('OnboardingSession (v2)', () => {
   it('starts in awaiting_opening with the opening question', () => {
     const session = new OnboardingSession({
       id: 'onb_1',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({ directives: ['{"kind":"done"}'] }),
       modelId: 'm',
       now: () => FIXED,
     })
     expect(session.getState()).toBe('awaiting_opening')
     const q = session.currentQuestion()
     expect(q?.question.id).toBe('opening')
-    expect(q?.index).toBe(0)
-    expect(q?.total).toBeNull()
+    expect(q?.index).toBe(1)
+    expect(q?.total).toBe(SCRIPT.target_turns)
   })
 
-  it('routes via opening keyword and walks the branch questions in order', async () => {
+  it('walks the LLM-driven follow-ups until the LLM signals done', async () => {
     const session = new OnboardingSession({
       id: 'onb_2',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives: [
+          '{"kind":"question","text":"What should I call you?","covering":"agent_name"}',
+          '{"kind":"question","text":"Which integrations?","covering":"tools"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am Emma.',
+      }),
       modelId: 'm',
       now: () => FIXED,
     })
     const r1 = await session.submitAnswer('I want an email Agent')
     expect(r1.kind).toBe('next')
     if (r1.kind !== 'next') throw new Error('expected next')
-    expect(r1.question.question.id).toBe('q_name')
-    expect(r1.question.index).toBe(1)
-    expect(r1.question.total).toBe(4)
-    expect(session.getState()).toBe('awaiting_branch_question')
+    expect(r1.question.question.text).toBe('What should I call you?')
+    expect(r1.question.question.intent_tag).toBe('agent_name')
+    expect(session.getState()).toBe('awaiting_response')
 
     const r2 = await session.submitAnswer('emma')
     if (r2.kind !== 'next') throw new Error('expected next')
-    expect(r2.question.question.id).toBe('q_account')
+    expect(r2.question.question.text).toBe('Which integrations?')
 
-    const r3 = await session.submitAnswer('user@example.com')
-    if (r3.kind !== 'next') throw new Error('expected next')
-    expect(r3.question.question.id).toBe('q_cadence')
-
-    const r4 = await session.submitAnswer('Every morning')
-    expect(r4.kind).toBe('done')
+    const r3 = await session.submitAnswer('gmail')
+    expect(r3.kind).toBe('done')
     expect(session.getState()).toBe('done')
   })
 
-  it('falls back to default_branch when no keyword matches', async () => {
+  it('forces done at max_turns even when the LLM keeps asking', async () => {
+    const directives = Array.from({ length: 10 }).map(
+      () => '{"kind":"question","text":"another?","covering":"purpose"}',
+    )
     const session = new OnboardingSession({
       id: 'onb_3',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives,
+        summary: 'capped summary',
+      }),
       modelId: 'm',
       now: () => FIXED,
     })
-    const r1 = await session.submitAnswer('something completely unrelated')
-    if (r1.kind !== 'next') throw new Error('expected next')
-    expect(r1.question.question.id).toBe('q_name')
+    for (let i = 0; i < SCRIPT.max_turns; i++) {
+      const r = await session.submitAnswer(`answer ${String(i)}`)
+      if (r.kind === 'done') {
+        expect(i).toBeGreaterThanOrEqual(SCRIPT.max_turns - 1)
+        return
+      }
+    }
+    expect(session.getState()).toBe('done')
   })
 
-  it('builds a transcript with the captured Q&A and chosen branch', async () => {
+  it('builds a transcript with intent_tag from the directive covering field', async () => {
     const session = new OnboardingSession({
       id: 'onb_4',
       script: SCRIPT,
-      provider: fakeProvider({ summary: 'I track email.' }),
+      provider: scriptedProvider({
+        directives: [
+          '{"kind":"question","text":"Name?","covering":"agent_name"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am Emma.',
+      }),
       modelId: 'm',
       now: () => FIXED,
     })
-    await session.submitAnswer('email')
+    await session.submitAnswer('email Agent')
     await session.submitAnswer('emma')
-    await session.submitAnswer('user@example.com')
-    await session.submitAnswer('daily')
     const t = session.getTranscript()
-    expect(t.chosen_branch).toBe('email_branch')
-    expect(t.entries.map((e) => e.question_id)).toEqual([
-      'opening',
-      'q_name',
-      'q_account',
-      'q_cadence',
-    ])
-    expect(t.entries.map((e) => e.answer)).toEqual(['email', 'emma', 'user@example.com', 'daily'])
-    expect(t.summary).toBe('I track email.')
+    expect(t.chosen_branch).toBe('llm_driven')
+    expect(t.entries.map((e) => e.intent_tag)).toEqual(['purpose', 'agent_name'])
+    expect(t.entries.map((e) => e.answer)).toEqual(['email Agent', 'emma'])
+    expect(t.summary).toBe('I am Emma.')
   })
 
   it('produces a preview with handoff + tools + schedules + agent_name on done', async () => {
     const session = new OnboardingSession({
       id: 'onb_5',
       script: SCRIPT,
-      provider: fakeProvider({ summary: 'I am the email agent.' }),
+      provider: scriptedProvider({
+        directives: [
+          '{"kind":"question","text":"Name?","covering":"agent_name"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am Emma.',
+      }),
       modelId: 'm',
       now: () => FIXED,
     })
     await session.submitAnswer('email')
-    await session.submitAnswer('emma')
-    await session.submitAnswer('user@example.com')
-    const r = await session.submitAnswer('daily')
+    const r = await session.submitAnswer('emma')
     if (r.kind !== 'done') throw new Error('expected done')
     expect(r.preview.agent_name).toBeTypeOf('string')
     expect(r.preview.agent_name.length).toBeGreaterThan(0)
@@ -164,13 +201,13 @@ describe('OnboardingSession', () => {
     const session = new OnboardingSession({
       id: 'onb_6',
       script: SCRIPT,
-      provider: fakeProvider({ error: new Error('llm down') }),
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+        errorOnSummary: new Error('llm down'),
+      }),
       modelId: 'm',
     })
-    await session.submitAnswer('email')
-    await session.submitAnswer('emma')
-    await session.submitAnswer('user@example.com')
-    await expect(session.submitAnswer('daily')).rejects.toThrow(/llm down/)
+    await expect(session.submitAnswer('email')).rejects.toThrow(/llm down/)
     expect(session.getState()).toBe('errored')
   })
 
@@ -178,13 +215,13 @@ describe('OnboardingSession', () => {
     const session = new OnboardingSession({
       id: 'onb_7',
       script: SCRIPT,
-      provider: fakeProvider({ empty: true }),
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+        emptySummary: true,
+      }),
       modelId: 'm',
     })
-    await session.submitAnswer('email')
-    await session.submitAnswer('emma')
-    await session.submitAnswer('user@example.com')
-    await expect(session.submitAnswer('daily')).rejects.toThrow(/empty summary/)
+    await expect(session.submitAnswer('email')).rejects.toThrow(/empty summary/)
     expect(session.getState()).toBe('errored')
   })
 
@@ -192,13 +229,12 @@ describe('OnboardingSession', () => {
     const session = new OnboardingSession({
       id: 'onb_8',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+      }),
       modelId: 'm',
     })
-    // freeform branch: opening -> name -> tools (2 branch q + 1 opening = 3 answers)
-    await session.submitAnswer('something else')
-    await session.submitAnswer('emma')
-    await session.submitAnswer('answer')
+    await session.submitAnswer('email')
     expect(session.getState()).toBe('done')
     await expect(session.submitAnswer('extra')).rejects.toBeInstanceOf(OnboardingSessionError)
   })
@@ -207,7 +243,7 @@ describe('OnboardingSession', () => {
     const session = new OnboardingSession({
       id: 'onb_9',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({ directives: ['{"kind":"done"}'] }),
       modelId: 'm',
     })
     session.cancel()
@@ -221,18 +257,31 @@ describe('OnboardingSession', () => {
     const session = new OnboardingSession({
       id: 'onb_10',
       script: SCRIPT,
-      provider: fakeProvider(),
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+      }),
       modelId: 'm',
     })
     await session.submitAnswer('email')
-    await session.submitAnswer('emma')
-    await session.submitAnswer('user@example.com')
-    await session.submitAnswer('daily')
     expect(session.getState()).toBe('done')
     session.markConfirmed()
     expect(session.getState()).toBe('confirmed')
     expect(() => {
       session.markConfirmed()
     }).toThrow(OnboardingSessionError)
+  })
+
+  it('forces done after a malformed directive even on re-prompt', async () => {
+    const session = new OnboardingSession({
+      id: 'onb_11',
+      script: SCRIPT,
+      provider: scriptedProvider({
+        directives: ['lol no json', 'still not json'],
+        summary: 'fallback summary',
+      }),
+      modelId: 'm',
+    })
+    const r = await session.submitAnswer('I want an Agent')
+    expect(r.kind).toBe('done')
   })
 })

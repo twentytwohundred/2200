@@ -1600,16 +1600,59 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
 
   fastify.post('/api/v1/onboarding', async (req) => {
     const body = StartOnboardingBodySchema.parse(req.body) ?? {}
-    const providerName = body.provider ?? 'anthropic'
-    const modelId = body.model ?? 'claude-opus-4-7'
+
+    // Default-pick policy: if the caller did not name a provider/model
+    // (CLI legacy behavior, or a misconfigured client), walk
+    // listKnownProviders() and pick the first one whose env key is set
+    // (or whose key is optional, e.g. local Ollama). The hardcoded
+    // anthropic+opus default in earlier versions failed every install
+    // that used a different provider; auto-default to the first
+    // configured one and let the operator override via the picker.
+    const env = await loadRuntimeEnv(defaultRuntimeEnvPath())
+    let providerName = body.provider
+    let modelId = body.model
+    if (!providerName) {
+      const configured = listKnownProviders().find((p) => {
+        if (p.keyOptional) return true
+        const v = env[p.defaultEnvKey] ?? ''
+        return v.length > 0
+      })
+      if (!configured) {
+        throw new ApiError(
+          503,
+          'no_provider_configured',
+          'No LLM provider has an API key configured. Visit Settings → Providers to add one before starting onboarding.',
+        )
+      }
+      providerName = configured.name
+    }
 
     const { loadScriptFile } = await import('../onboarding/script-loader.js')
     const { resolveProvider } = await import('../llm/registry.js')
     const { OnboardingSession } = await import('../onboarding/session.js')
     const { newRequestId: newId } = await import('./errors.js')
 
+    if (!modelId) {
+      // Pull from pricing table the first canonical model for this
+      // provider so a caller can omit `model` entirely and still get
+      // a sensible default.
+      const pricing = loadPricingTable()
+      const candidates = Object.keys(pricing.models)
+        .filter((k) => k.startsWith(providerName + '/'))
+        .map((k) => k.slice(providerName.length + 1))
+        .sort()
+      modelId = candidates[0] ?? ''
+      if (!modelId) {
+        throw new ApiError(
+          400,
+          'model_required',
+          `Provider "${providerName}" has no default model registered. Pass an explicit model id.`,
+        )
+      }
+    }
+
     const cliDir = dirname(fileURLToPath(import.meta.url))
-    const defaultScriptPath = join(cliDir, '..', 'onboarding', 'scripts', 'default-v1.yaml')
+    const defaultScriptPath = join(cliDir, '..', 'onboarding', 'scripts', 'default-v2.yaml')
     const scriptPath = body.script ?? defaultScriptPath
     const script = await loadScriptFile(scriptPath)
     let provider

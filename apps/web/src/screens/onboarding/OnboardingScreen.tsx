@@ -17,9 +17,9 @@
  * is intentional v1 per the API design); it can be added later via
  * URL fragment or storage if the UX warrants it.
  */
-import { useCallback, useState, type FormEvent, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactElement } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ApiError,
   NetworkError,
@@ -31,6 +31,7 @@ import {
   type OnboardingSessionResponse,
   type OnboardingToolSuggestion,
   type OnboardingTranscriptEntry,
+  type ProviderSettingsItem,
 } from '../../lib/api'
 import { Button, Card, PageHeader, SectionHeader } from '../../primitives'
 import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
@@ -65,6 +66,35 @@ export function OnboardingScreen(): ReactElement {
   const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>({ kind: 'intro' })
   const [draft, setDraft] = useState<string>('')
+  const [providerName, setProviderName] = useState<string>('')
+  const [modelId, setModelId] = useState<string>('')
+
+  const providersQuery = useQuery({
+    queryKey: ['settings', 'providers'],
+    queryFn: () => api.settingsProvidersList(),
+    staleTime: 30_000,
+  })
+
+  const configuredProviders = useMemo<ProviderSettingsItem[]>(
+    () => (providersQuery.data?.items ?? []).filter((p) => p.key_set || p.keyOptional),
+    [providersQuery.data],
+  )
+
+  // Once providers load, auto-pick the first configured one and its
+  // first suggested model so the user can hit Begin without touching
+  // the dropdowns. They can override before clicking Begin.
+  useEffect(() => {
+    if (providerName !== '' || configuredProviders.length === 0) return
+    const first = configuredProviders[0]
+    if (!first) return
+    setProviderName(first.name)
+    setModelId(first.suggested_models[0] ?? '')
+  }, [configuredProviders, providerName])
+
+  const selectedProvider = useMemo(
+    () => configuredProviders.find((p) => p.name === providerName),
+    [configuredProviders, providerName],
+  )
 
   const handleSessionResponse = useCallback(
     (sessionId: string, transcript: OnboardingTranscriptEntry[], answer: string | null) =>
@@ -91,7 +121,8 @@ export function OnboardingScreen(): ReactElement {
   )
 
   const startMutation = useMutation({
-    mutationFn: () => api.onboardingStart(),
+    mutationFn: ({ provider, model }: { provider: string; model: string }) =>
+      api.onboardingStart({ provider, model }),
     onSuccess: (res: OnboardingSessionResponse): void => {
       handleSessionResponse(res.session_id, [], null)(res)
     },
@@ -154,10 +185,82 @@ export function OnboardingScreen(): ReactElement {
         <Card padding={20}>
           <div className={styles.intro}>
             <p className={styles.introBody}>
-              The interview takes 5 to 7 questions. You will see a preview of the resulting Agent
-              ... summary, name, suggested MCP tools, schedules ... before anything is written to
-              disk. Confirm only when the preview matches what you intended.
+              The interview takes a few minutes. You will see a preview of the resulting Agent ...
+              summary, name, suggested MCP tools, schedules ... before anything is written to disk.
+              Confirm only when the preview matches what you intended.
             </p>
+
+            <div className={styles.pickerBlock}>
+              <div className={styles.pickerLabel}>MODEL FOR THIS INTERVIEW</div>
+              <p className={styles.pickerHelp}>
+                The provider that runs the interview is also a strong default for the new Agent's
+                day-to-day model. You can change the Agent's model later from its Identity.
+              </p>
+              {providersQuery.isLoading ? (
+                <div className={styles.pickerMeta}>Loading available providers...</div>
+              ) : providersQuery.isError ? (
+                <div className={styles.errorMessage}>{formatError(providersQuery.error)}</div>
+              ) : configuredProviders.length === 0 ? (
+                <div className={styles.errorMessage}>
+                  No LLM provider has an API key configured. Visit{' '}
+                  <Link to="/settings" className={styles.tag}>
+                    Settings → Providers
+                  </Link>{' '}
+                  to add one before spawning.
+                </div>
+              ) : (
+                <div className={styles.pickerRow}>
+                  <label className={styles.pickerField}>
+                    <span className={styles.pickerFieldLabel}>PROVIDER</span>
+                    <select
+                      className={styles.pickerSelect}
+                      value={providerName}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setProviderName(next)
+                        const p = configuredProviders.find((cp) => cp.name === next)
+                        setModelId(p?.suggested_models[0] ?? '')
+                      }}
+                    >
+                      {configuredProviders.map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className={styles.pickerField}>
+                    <span className={styles.pickerFieldLabel}>MODEL</span>
+                    {selectedProvider && selectedProvider.suggested_models.length > 0 ? (
+                      <select
+                        className={styles.pickerSelect}
+                        value={modelId}
+                        onChange={(e) => {
+                          setModelId(e.target.value)
+                        }}
+                      >
+                        {selectedProvider.suggested_models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        className={styles.pickerInput}
+                        value={modelId}
+                        placeholder="model id (e.g. deepseek-chat)"
+                        onChange={(e) => {
+                          setModelId(e.target.value)
+                        }}
+                      />
+                    )}
+                  </label>
+                </div>
+              )}
+            </div>
+
             {startMutation.error ? (
               <div className={styles.errorMessage}>{formatError(startMutation.error)}</div>
             ) : null}
@@ -165,9 +268,14 @@ export function OnboardingScreen(): ReactElement {
               <Button
                 variant="primary"
                 onClick={() => {
-                  startMutation.mutate()
+                  startMutation.mutate({ provider: providerName, model: modelId })
                 }}
-                disabled={startMutation.isPending}
+                disabled={
+                  startMutation.isPending ||
+                  providersQuery.isLoading ||
+                  providerName === '' ||
+                  modelId === ''
+                }
               >
                 {startMutation.isPending ? 'Starting...' : 'Begin'}
               </Button>
