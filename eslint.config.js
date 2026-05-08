@@ -61,4 +61,17 @@ export default tseslint.config(
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
+  {
+    // One-off operator helpers under scripts/ run against ESM bundles
+    // and parse loose JSON state files; the strict-type rules add
+    // friction without value here. Keep them parsed and basic-checked.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+      '@typescript-eslint/restrict-plus-operands': 'off',
+      '@typescript-eslint/prefer-optional-chain': 'off',
+    },
+  },
 )

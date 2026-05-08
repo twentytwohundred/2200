@@ -18,7 +18,7 @@
  */
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
-import { getOrOpenBrain } from '../../brain/registry.js'
+import { getOrOpenBrain, getOrOpenSharedBrain } from '../../brain/registry.js'
 import { BrainIndex, BrainIndexNotFoundError } from '../../brain/index-db.js'
 import { BrainStore } from '../../brain/store.js'
 import { BrainPermissionDeniedError, canReadBrain } from '../../brain/permissions.js'
@@ -275,6 +275,129 @@ export const brainListAgent = defineTool({
   },
 })
 
+// ---------------------------------------------------------------------------
+// brain.{read,search,list,write}_shared — shared brain at <home>/shared/brain
+// ---------------------------------------------------------------------------
+//
+// One shared note pool every Agent on this instance can read and write.
+// Used for instance-level context the whole fleet should see: platform
+// overview, team roster, operator profile, conventions. Markdown files
+// on disk; humans can edit them too.
+
+const BrainReadSharedArgsSchema = z.object({
+  slug: z.string().min(1),
+})
+
+export const brainReadShared = defineTool({
+  name: 'brain.read_shared',
+  description:
+    "Read a shared brain note by slug from <home>/shared/brain/. The shared brain is one note pool every Agent on this instance can read and write; it's the place to look for the platform overview, team roster, operator profile, and shared conventions.",
+  idempotency: 'pure',
+  argsSchema: BrainReadSharedArgsSchema,
+  execute: async (args, ctx) => {
+    const { store } = await getOrOpenSharedBrain(ctx.home)
+    const note = await store.read(args.slug)
+    return {
+      slug: note.slug,
+      title: note.frontmatter.title,
+      type: note.frontmatter.type,
+      tags: note.frontmatter.tags,
+      created: note.frontmatter.created,
+      updated: note.frontmatter.updated,
+      links: note.frontmatter.links,
+      body: note.body,
+    }
+  },
+})
+
+const BrainSearchSharedArgsSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().positive().max(100).default(20),
+  types: z.array(z.string()).optional(),
+  any_tag: z.array(z.string()).optional(),
+})
+
+export const brainSearchShared = defineTool({
+  name: 'brain.search_shared',
+  description:
+    "Full-text search the shared brain at <home>/shared/brain/ via SQLite FTS5. Returns hits sorted by relevance. Start any orientation pass here ('platform', 'team', 'operator') ... the shared brain holds instance-level context every Agent should know about.",
+  idempotency: 'pure',
+  argsSchema: BrainSearchSharedArgsSchema,
+  execute: async (args, ctx) => {
+    const { index } = await getOrOpenSharedBrain(ctx.home)
+    const hits = index.search(args.query, {
+      limit: args.limit,
+      ...(args.types !== undefined ? { types: args.types } : {}),
+      ...(args.any_tag !== undefined ? { anyTag: args.any_tag } : {}),
+    })
+    return { query: args.query, hits }
+  },
+})
+
+const BrainListSharedArgsSchema = z.object({
+  type: z.string().optional(),
+  tag: z.string().optional(),
+  limit: z.number().int().positive().max(500).default(50),
+})
+
+export const brainListShared = defineTool({
+  name: 'brain.list_shared',
+  description:
+    'Enumerate shared brain notes at <home>/shared/brain/ (no body), sorted by updated descending. Filter by type or tag.',
+  idempotency: 'pure',
+  argsSchema: BrainListSharedArgsSchema,
+  execute: async (args, ctx) => {
+    const { store } = await getOrOpenSharedBrain(ctx.home)
+    const notes = await store.list({
+      limit: args.limit,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.tag !== undefined ? { tag: args.tag } : {}),
+    })
+    return {
+      items: notes.map((n) => ({
+        slug: n.slug,
+        title: n.frontmatter.title,
+        type: n.frontmatter.type,
+        tags: n.frontmatter.tags,
+        updated: n.frontmatter.updated,
+      })),
+    }
+  },
+})
+
+const BrainWriteSharedArgsSchema = z.object({
+  title: z.string().min(1),
+  body: z.string(),
+  type: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  slug: z.string().optional(),
+})
+
+export const brainWriteShared = defineTool({
+  name: 'brain.write_shared',
+  description:
+    'Write a note into the shared brain at <home>/shared/brain/. Upsert-style. The shared brain is community-writable at v1; reserve it for instance-level context everyone benefits from (conventions, decisions, runbooks). Per-Agent state should live in your own brain via brain.write.',
+  idempotency: 'checkpointed',
+  argsSchema: BrainWriteSharedArgsSchema,
+  execute: async (args, ctx) => {
+    const { store, index } = await getOrOpenSharedBrain(ctx.home)
+    const result = await store.write({
+      title: args.title,
+      body: args.body,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.tags !== undefined ? { tags: args.tags } : {}),
+      ...(args.slug !== undefined ? { slug: args.slug } : {}),
+    })
+    const note = await store.read(result.slug)
+    index.upsert(note)
+    return {
+      slug: result.slug,
+      created_or_updated: result.created ? 'created' : 'updated',
+      path: result.path,
+    }
+  },
+})
+
 export const brainTools: ToolDefinition[] = [
   brainWrite,
   brainRead,
@@ -283,4 +406,8 @@ export const brainTools: ToolDefinition[] = [
   brainDelete,
   brainSearchAgent,
   brainListAgent,
+  brainReadShared,
+  brainSearchShared,
+  brainListShared,
+  brainWriteShared,
 ]

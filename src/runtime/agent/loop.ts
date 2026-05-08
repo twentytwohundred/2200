@@ -39,7 +39,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { LLMProvider } from '../llm/provider.js'
 import { computeCostUsd, defaultPricingTable, type PricingTable } from '../llm/pricing.js'
-import type { CompletionResponse, Message } from '../llm/types.js'
+import type { CompletionResponse, Message, NativeToolSpec } from '../llm/types.js'
 import type { IdentityRecord } from '../identity/types.js'
 import type { TelemetryWriter } from '../telemetry/writer.js'
 import type { BudgetTracker } from './budget-tracker.js'
@@ -78,7 +78,14 @@ import {
 } from './detectors/trip-record.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
-const TOOL_BLOCK_RE = /```tool\s*\n([\s\S]*?)\n```/g
+// Match a fenced ```tool block. The leading `\s*` after `tool` admits
+// either a newline or any whitespace before the JSON; the trailing
+// `\s*` before the closing fence admits the same. Earlier shape
+// required `\n` on both sides, which silently rejected blocks where
+// the model jammed the JSON closing brace next to the fence
+// (`}```` with no newline) ... a real DeepSeek/Grok pattern that
+// caused the JSON to ship as final-text instead of dispatching.
+const TOOL_BLOCK_RE = /```tool\s*([\s\S]*?)\s*```/g
 
 /**
  * Lenient fallback for models that open a ```tool fence and forget the
@@ -164,7 +171,31 @@ export function parseToolCalls(text: string): {
     })
   }
 
-  // Lenient fallback: if no closed fence-blocks parsed, look for an
+  // Lenient fallback #1: tool-shaped JSON in any position, no fences.
+  // Some providers (DeepSeek/Grok in particular) emit
+  // `{"tool":"foo","args":{...}}` as plain text without wrapping it
+  // in a ```tool fence. Or they wrap it in a code-fence with the
+  // wrong language tag (```json). We scan for the first JSON object
+  // whose top-level shape matches a tool call and treat it as one.
+  // This is a no-op on responses that don't contain tool-shaped JSON
+  // (the LLM's normal final answer).
+  if (calls.length === 0 && errors.length === 0) {
+    const extracted = extractToolShapedJson(text)
+    if (extracted) {
+      const parsed = ToolCallShape.safeParse(extracted)
+      if (parsed.success) {
+        calls.push({
+          tool: parsed.data.tool,
+          args: parsed.data.args,
+          predicted_outcome: parsed.data.predicted_outcome,
+          reason: parsed.data.reason,
+          precondition: parsed.data.precondition ?? null,
+        })
+      }
+    }
+  }
+
+  // Lenient fallback #2: if no closed fence-blocks parsed, look for an
   // unclosed one at the end of the response. Some models truncate the
   // closing fence; if the JSON parses cleanly we treat it as a real
   // call and let the dispatcher surface "tool not found" or arg errors
@@ -266,6 +297,84 @@ export function parseToolCalls(text: string): {
   return { calls, errors }
 }
 
+/**
+ * Scan a response for JSON-shaped text that looks like a tool call,
+ * regardless of fencing. Looks for the first JSON object containing
+ * a string `tool` field and an object `args` field; returns it if
+ * found, undefined otherwise. Used as the final fallback before the
+ * loop treats a response as a final-answer text.
+ *
+ * Handles:
+ *   - bare JSON: `{"tool":"x","args":{...}}` with prose around it
+ *   - mis-tagged fences: ```json\n{...}\n```
+ *   - JSON inside markdown lists, blockquotes, etc.
+ *
+ * Does NOT match the canonical ```tool fenced shape (those go through
+ * the strict parser earlier). The whole point of this helper is to
+ * rescue dispatches the strict parser missed.
+ */
+function extractToolShapedJson(text: string): unknown {
+  // Walk through every `{` looking for a balanced object that parses
+  // as JSON and has the tool-call shape. Scanning from left ensures
+  // we match the earliest qualifying object.
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue
+    const candidate = readBalancedJsonObject(text, i)
+    if (!candidate) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(candidate)
+    } catch {
+      continue
+    }
+    if (looksLikeToolCall(parsed)) return parsed
+  }
+  return undefined
+}
+
+/**
+ * Read a balanced `{...}` JSON object from `text` starting at index
+ * `start` (which must point at `{`). Returns the substring including
+ * both braces, or null if not balanced. Tolerates strings (including
+ * escapes) but not block comments (JSON doesn't have them).
+ */
+function readBalancedJsonObject(text: string, start: number): string | null {
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (escape) {
+        escape = false
+        continue
+      }
+      if (c === '\\') {
+        escape = true
+        continue
+      }
+      if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') depth += 1
+    else if (c === '}') {
+      depth -= 1
+      if (depth === 0) return text.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
+function looksLikeToolCall(parsed: unknown): boolean {
+  if (typeof parsed !== 'object' || parsed === null) return false
+  const obj = parsed as Record<string, unknown>
+  return typeof obj['tool'] === 'string' && typeof obj['args'] === 'object' && obj['args'] !== null
+}
+
 /** Stable args hash for the tool_repetition detector. */
 export function hashArgs(tool: string, args: Record<string, unknown>): string {
   const canonical = canonicalize(args)
@@ -291,6 +400,18 @@ export interface AgentLoopOptions {
   brainDir: string
   /** Names of all tools the dispatcher will accept (baseline + Identity additions). */
   availableToolNames: readonly string[]
+  /**
+   * Native tool-use specs forwarded to providers that support
+   * structured tool calling (Anthropic's `tool_use`, OpenAI's
+   * `function_calling`). Built from the same registry as the
+   * dispatcher; one entry per tool the agent is permitted to call.
+   * Providers without native tool-use silently ignore this field
+   * and the loop's fenced-text parser is the universal fallback.
+   *
+   * Optional: when omitted (or empty), the loop falls back to the
+   * fenced-text protocol for every provider.
+   */
+  nativeToolSpecs?: readonly NativeToolSpec[]
   /** Per-Agent thresholds. Defaults to spec defaults. */
   thresholds?: DetectorThresholds
   /** Hard ceiling on iterations per task; safety belt above the no_progress detector. */
@@ -493,6 +614,9 @@ export class AgentLoop {
           modelId: activeModelId,
           systemPrompt,
           messages: this.history,
+          ...(this.opts.nativeToolSpecs && this.opts.nativeToolSpecs.length > 0
+            ? { tools: [...this.opts.nativeToolSpecs] }
+            : {}),
         })
       } catch (err) {
         const finishedAt = this.nowFn().getTime()
@@ -555,7 +679,31 @@ export class AgentLoop {
       const trip = this.evaluate(task)
       if (trip) return await this.tripped(task, trip)
 
-      const parsed = parseToolCalls(response.text)
+      // Native tool-use comes first. Anthropic's tool_use blocks and
+      // OpenAI's tool_calls land here as `response.toolCalls`; we
+      // promote them straight into the same shape parseToolCalls
+      // produces. Fenced-text parsing only runs when the provider
+      // didn't return native calls (DeepSeek / xAI / local Ollama
+      // never do; Anthropic / OpenAI / Kimi / Gemini / OpenRouter do
+      // when the model decides to call a tool).
+      //
+      // Tool names on the wire are underscored (Anthropic + OpenAI
+      // enforce `^[a-zA-Z0-9_-]+$`); translate them back to the
+      // dotted internal form via the spec map before dispatch.
+      const nativeCalls: ParsedToolCall[] = (response.toolCalls ?? []).map((c) => {
+        const spec = this.opts.nativeToolSpecs?.find((s) => s.name === c.name)
+        return {
+          tool: spec?.internalName ?? c.name,
+          args: c.args,
+          predicted_outcome: '',
+          reason: '',
+          precondition: null,
+        }
+      })
+      const parsed =
+        nativeCalls.length > 0
+          ? { calls: nativeCalls, errors: [] as string[] }
+          : parseToolCalls(response.text)
       // No tool calls means the model is finished; the response text is
       // the final answer. Empty/whitespace-only text is NOT a clean
       // termination ... it leaves the user with nothing to read and the

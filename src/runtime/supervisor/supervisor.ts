@@ -19,9 +19,11 @@ import type { Connection, Listener } from '../control-plane/transport.js'
 import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { regenerateFleet } from './fleet.js'
+import { regenerateTeamNote, seedStarterPack } from '../onboarding/starter-pack.js'
 import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
+import type { AgentPubBlock } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
 import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
@@ -131,6 +133,20 @@ export class Supervisor {
   private readonly pubStopRequested = new Set<string>()
   private readonly log: Logger
   private isShuttingDown = false
+  /** Fire-and-forget startup work (fleet regen, brain seed) that must
+   * settle before shutdown closes the brain DB handles. Tracked so a
+   * fast shutdown doesn't race the post-start work and surface
+   * "database connection is not open" warnings. */
+  private startupTasks: Promise<void>[] = []
+  /**
+   * Periodic timer that scans state.agents for dead PIDs. Transitions
+   * silently-dead agents (running on disk, PID gone in OS) to errored
+   * so the fleet view reflects truth and the operator gets the
+   * surface to recover. Without this, an agent process can die from
+   * an unhandled exception and the supervisor reports "running"
+   * forever (the OpenClaw-tier brittleness Doug called out).
+   */
+  private livenessTimer: NodeJS.Timeout | undefined
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
   private readonly onboardingSessions: OnboardingSessionStore
@@ -247,7 +263,77 @@ export class Supervisor {
     // Regenerate Fleet.md at boot so agents that come online during
     // start-up see a fresh fleet, not whatever was on disk from the
     // last shutdown. The lifecycle hooks keep it current after that.
-    void this.regenerateFleetSafe()
+    // Same call also rewrites the shared brain's "team" note.
+    this.startupTasks.push(this.regenerateFleetSafe())
+    // Seed the platform overview into the shared brain on first
+    // boot. Idempotent ... if the note already exists, no-op. The
+    // operator (or any Agent) is free to edit it like any other
+    // markdown note; we don't overwrite their edits.
+    this.startupTasks.push(this.seedSharedBrainSafe())
+    // Liveness watcher: every 30s, scan state.agents for dead PIDs
+    // and transition silently-dead agents to errored. Fixes the
+    // OpenClaw-tier "supervisor reports running while the agent
+    // process is gone" failure mode.
+    this.startLivenessWatcher()
+  }
+
+  /**
+   * Start the liveness watcher: a 30-second tick that walks every
+   * Agent record in state and verifies its PID is still alive.
+   * Agents whose state is `running`/`waiting` but whose PID has
+   * exited (or never existed) are transitioned to `errored` so the
+   * fleet view reflects truth and the operator gets the surface
+   * to recover.
+   */
+  private startLivenessWatcher(): void {
+    if (this.livenessTimer) return
+    const tick = (): void => {
+      void this.scanAgentLiveness().catch((err: unknown) => {
+        this.log.warn('liveness scan failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
+    this.livenessTimer = setInterval(tick, 30_000)
+    if (typeof this.livenessTimer === 'object' && 'unref' in this.livenessTimer) {
+      this.livenessTimer.unref()
+    }
+  }
+
+  private async scanAgentLiveness(): Promise<void> {
+    if (this.isShuttingDown) return
+    for (const [name, record] of Object.entries(this.state.agents)) {
+      if (record.state !== 'running' && record.state !== 'waiting') continue
+      if (record.pid === null) continue
+      if (isPidAlive(record.pid)) continue
+      this.log.warn('agent process is dead but state says running; transitioning to errored', {
+        name,
+        pid: record.pid,
+        last_heartbeat: record.last_heartbeat,
+      })
+      this.spawned.delete(name)
+      this.stopPulseWatcher(name)
+      const errored: AgentRecord = {
+        ...record,
+        state: 'errored',
+        pid: null,
+        errored_at: new Date().toISOString(),
+        errored_reason:
+          'supervisor liveness check found dead PID; agent process exited without notifying',
+      }
+      this.state = {
+        ...this.state,
+        agents: { ...this.state.agents, [name]: errored },
+      }
+      await saveState(this.state)
+      if (this.webHandle) {
+        this.webHandle.broadcast({
+          event: 'agent.state_changed',
+          payload: { agent: name, state: 'errored' },
+        })
+      }
+      void this.regenerateFleetSafe()
+    }
   }
 
   /**
@@ -353,6 +439,10 @@ export class Supervisor {
     this.scheduler.stop()
     this.tokenRefresh.stop()
     this.onboardingSessions.stop()
+    if (this.livenessTimer) {
+      clearInterval(this.livenessTimer)
+      this.livenessTimer = undefined
+    }
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()
     const stops = Array.from(this.spawned.values()).map(async (sa) => {
@@ -385,6 +475,20 @@ export class Supervisor {
         // best-effort
       }
     }
+    // Drain any startup tasks still in flight (fleet regen, shared
+    // brain seed) before closing brain handles, so a fast
+    // start/shutdown sequence doesn't surface
+    // "database connection is not open" warnings from racing writes.
+    if (this.startupTasks.length > 0) {
+      await Promise.allSettled(this.startupTasks)
+      this.startupTasks = []
+    }
+    // Close any cached brain handles (per-Agent + shared) so SQLite
+    // releases the DB files. Required for tests that rm -r the temp
+    // home in afterEach; otherwise SQLite's WAL/SHM aux files keep
+    // the directory non-empty and the cleanup fails.
+    const { closeAllBrains } = await import('../brain/registry.js')
+    closeAllBrains()
     await saveState(this.state)
     this.log.info('supervisor stopped')
   }
@@ -442,17 +546,28 @@ export class Supervisor {
     await initAgentDirs(this.state.home, name, identity.source_path)
     const canonical = agentPaths(this.state.home, name).identity
 
-    // Pub identity provisioning (Epic 3 PR B follow-up). If the source
-    // Identity declares a pub: block and the Agent has not been
-    // pre-provisioned (pub.identity is empty), mint a keypair, register
-    // against the picked pub if one is running, and patch the canonical
-    // identity.md to fill in pub.identity / pub.issuer_url. If pub:
-    // block is absent, skip entirely (non-pub Agent).
-    if (identity.frontmatter.pub) {
+    // Pub identity provisioning (Epic 3 PR B follow-up). Every Agent
+    // joins the Studio (the default pub on this instance) by default;
+    // if the source Identity does not declare a pub: block we
+    // synthesize one from the agent name so the supervisor still
+    // mints a keypair, registers it, and patches the canonical
+    // identity.md. Operators who explicitly want a pub-less Agent
+    // can author an Identity with `pub: null` ... but the v1 default
+    // is "every Agent at all times in the Studio."
+    const identityWithPub = identity.frontmatter.pub
+      ? identity
+      : {
+          ...identity,
+          frontmatter: {
+            ...identity.frontmatter,
+            pub: synthesizeDefaultPubBlock(this.state.home, name),
+          },
+        }
+    if (identityWithPub.frontmatter.pub) {
       await this.provisionAgentPubIdentity({
         agentName: name,
         canonicalIdentityPath: canonical,
-        loadedIdentity: identity,
+        loadedIdentity: identityWithPub,
         pickPub: opts.pub,
         identityClientFactory: opts.identityClientFactory,
       })
@@ -1353,6 +1468,7 @@ export class Supervisor {
           home: this.state.home,
           supervisor: this,
           today: new Date(),
+          seedFirstTask: true,
           ...(params.force === true ? { force: true } : {}),
         })
         this.log.info('agent spawned via cli.spawn.from-handoff', {
@@ -1455,6 +1571,35 @@ export class Supervisor {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+    // Mirror the fleet snapshot into the shared brain as the "team"
+    // note so freshly-spawned Agents can read it via brain.* without
+    // traversing the supervisor state file. Failures here are
+    // non-fatal: the fleet.md regen above already provides the
+    // ground-truth surface; this is the orientation surface for
+    // Agents.
+    try {
+      await regenerateTeamNote(this.state.home, this)
+    } catch (err) {
+      this.log.warn('team note regeneration failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /**
+   * Seed the shared brain's starter pack (platform overview, tool
+   * reference, conventions, workflows) if any are absent. Called
+   * once at supervisor.start(). Idempotent on re-run; existing
+   * notes are not overwritten.
+   */
+  private async seedSharedBrainSafe(): Promise<void> {
+    try {
+      await seedStarterPack(this.state.home)
+    } catch (err) {
+      this.log.warn('shared brain starter-pack seed failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1513,6 +1658,32 @@ export class Supervisor {
  *
  * Returns the matching record or null. Throws on ambiguity.
  */
+/**
+ * Build a default pub block for an Agent whose Identity does not
+ * declare one. Used by createAgent so every Agent gets a pub
+ * provisioning pass by default ... "every Agent at all times in
+ * the Studio."
+ *
+ * The supervisor's provisionAgentPubIdentity fills in the runtime
+ * fields (identity UUID, issuer_url) once the keypair is minted and
+ * registered with the chosen pub.
+ */
+function synthesizeDefaultPubBlock(home: string, agentName: string): AgentPubBlock {
+  return {
+    identity: '',
+    display_name: agentName,
+    handle: `@${agentName}`,
+    credentials: {
+      source: 'file' as const,
+      id: agentPaths(home, agentName).pubSecret,
+    },
+    key_version: 1,
+    issuer_url: '',
+    domains: [],
+    member_of: [],
+  }
+}
+
 function pickTargetPub(
   pubs: Readonly<Record<string, PubRecord>>,
   requested: string | undefined,

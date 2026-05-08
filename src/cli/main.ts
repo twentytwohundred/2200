@@ -364,6 +364,12 @@ export function buildProgram(): Command {
           await import('../runtime/onboarding/transcript-store.js')
 
         let transcript
+        // Hoisted so the handoff builder (after the if/else) can read
+        // them. Replay mode leaves both undefined ... the resulting
+        // Identity falls back to the hardcoded default model, which
+        // the operator can edit post-spawn.
+        let interviewProvider: string | undefined
+        let interviewModelId: string | undefined
         if (opts.replay !== undefined) {
           // Replay path: skip the interview entirely. Load the saved
           // transcript JSON and re-run the rest of the spawn flow
@@ -478,6 +484,8 @@ export function buildProgram(): Command {
               modelId: modelIdOpt,
               input: stdinInput,
             })
+            interviewProvider = providerName
+            interviewModelId = modelIdOpt
           } finally {
             rl.close()
           }
@@ -501,6 +509,9 @@ export function buildProgram(): Command {
         const handoff = buildHandoffFromTranscript({
           transcript,
           mcpServers: tools.map((t) => t.server),
+          ...(interviewProvider !== undefined && interviewModelId !== undefined
+            ? { model: { provider: interviewProvider, model_id: interviewModelId } }
+            : {}),
         })
 
         console.log('\n' + renderPreview({ handoff, tools, schedules }) + '\n')
@@ -564,6 +575,7 @@ export function buildProgram(): Command {
               home,
               supervisor,
               today: new Date(),
+              seedFirstTask: true,
             })
             result = {
               agent_name: standaloneResult.agent_name,

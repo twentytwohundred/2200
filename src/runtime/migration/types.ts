@@ -204,6 +204,21 @@ export const HandoffFrontmatterSchema = z.object({
    * without the field.
    */
   mcp_servers: z.array(McpServerSpecSchema).default([]),
+  /**
+   * Preferred LLM model for the new Agent's day-to-day work. The
+   * onboarding flow populates this from the picker on the intro card
+   * (the same provider+model that ran the interview). Identity-from-
+   * handoff uses this when present and falls back to a hardcoded
+   * default when absent (keeps `agent migrate` from older handoffs
+   * working without a schema break).
+   */
+  model: z
+    .object({
+      tier: z.enum(['frontier', 'fast', 'local']),
+      provider: z.string().min(1),
+      model_id: z.string().min(1),
+    })
+    .optional(),
   provenance: HandoffProvenanceSchema.default({}),
 })
 export type HandoffFrontmatter = z.infer<typeof HandoffFrontmatterSchema>

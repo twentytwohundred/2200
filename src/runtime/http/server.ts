@@ -1197,7 +1197,14 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       title,
       body: taskBody,
       priority: 0,
-      idempotency: 'checkpointed',
+      // Chat-originated tasks are classified destructive: a user asking
+      // an Agent to do something via chat is implicit authorization to
+      // run any tool the Agent has, including destructive ones
+      // (schedule.add, shell.run, fs.delete, brain.delete). Earlier
+      // 'checkpointed' default blocked legitimate Agent action; the
+      // user wouldn't be asking via chat if they didn't want the
+      // Agent to act on their behalf.
+      idempotency: 'destructive',
     })
     await taskStore.save(task)
 
@@ -1745,6 +1752,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       home,
       supervisor,
       today: new Date(),
+      seedFirstTask: true,
     })
     let transcriptPath: string | null = null
     try {

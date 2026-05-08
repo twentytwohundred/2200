@@ -45,6 +45,10 @@ import { importFromDir, type ImportResult } from '../brain/import.js'
 import { emitNotification } from '../notifications/writer.js'
 import { buildIdentityFromHandoff } from './identity-from-handoff.js'
 import { CONTINUITY_NOTE_SLUG, type HandoffDocument } from './types.js'
+import { TaskStore } from '../agent/task/store.js'
+import { newPendingTask } from '../agent/task/types.js'
+import { newTaskId } from '../util/id.js'
+import { buildOrientationTaskBody } from '../onboarding/starter-pack.js'
 
 export interface MigrateArgs {
   handoff: HandoffDocument
@@ -74,6 +78,21 @@ export interface MigrateArgs {
    * behind an explicit --force flag.
    */
   force?: boolean
+  /**
+   * When true, seed an orientation task on the new Agent so its
+   * first wake reads the shared brain (platform overview, team
+   * roster), reads its own continuity note, and chat.send's a brief
+   * back to the operator. The onboarding flow opts in; the
+   * `agent migrate` flow does not (migrating Agents bring their
+   * own continuity).
+   */
+  seedFirstTask?: boolean
+  /**
+   * How to address the operator in the orientation task body.
+   * Defaults to "the operator". Onboarding can pass "Doug" or
+   * "@doug" if it captured the operator's preferred handle.
+   */
+  operatorAddressing?: string
 }
 
 export interface MigrateResult {
@@ -235,6 +254,49 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
       ...(scutError !== null ? { scut_error: scutError } : {}),
     },
   })
+
+  // Seed the orientation task if the caller opted in (onboarding
+  // path). The task tells the new Agent to read the shared brain
+  // and chat.send a brief back; it lands in pending state so the
+  // first time the operator runs `2200 agent start <name>` (or the
+  // supervisor auto-starts), the wake immediately picks it up.
+  if (args.seedFirstTask === true) {
+    try {
+      const role = built.frontmatter.agent_role
+      const taskStore = new TaskStore(args.home, agentName)
+      const taskBody = buildOrientationTaskBody({
+        agentName,
+        agentRole: role,
+        operatorAddressing: args.operatorAddressing ?? 'the operator',
+      })
+      const orientationTask = newPendingTask({
+        id: newTaskId(),
+        agent: agentName,
+        title: 'Orientation: read the shared brain and brief the operator',
+        body: taskBody,
+        priority: 0,
+        // Orientation includes brain.write_shared (note-taking) and
+        // chat.send (delivering the brief), both of which fall under
+        // checkpointed/destructive. Mark the task destructive so the
+        // perm matrix doesn't block any baseline tool the Agent
+        // legitimately needs to complete it.
+        idempotency: 'destructive',
+      })
+      await taskStore.save(orientationTask)
+    } catch (err) {
+      // Non-fatal: the Agent exists; the operator can submit a task
+      // by hand if the seed failed.
+      // (We don't have a logger handle here; emit through the
+      // notification path instead.)
+      await emitNotification({
+        home: args.home,
+        agentName,
+        tier: 'passive',
+        kind: 'agent.orientation_task_seed_failed',
+        body: `# Orientation task seed failed\n\nThe orchestrator created \`${agentName}\` but could not seed its first orientation task: ${err instanceof Error ? err.message : String(err)}\n\nYou can submit it manually with \`2200 task submit ${agentName} ...\` or just talk to the Agent directly via the web UI.`,
+      })
+    }
+  }
 
   return {
     agent_name: agentName,

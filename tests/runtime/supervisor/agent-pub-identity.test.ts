@@ -157,18 +157,34 @@ async function setup(): Promise<void> {
 }
 
 describe('createAgent — no pub block in source Identity', () => {
-  it('does not mint a keypair or write a credential file', async () => {
+  it('synthesizes a default pub block, mints a keypair, and patches the canonical identity.md', async () => {
+    // Per Doug's "every Agent at all times in the Studio" rule, a
+    // source Identity that does not declare a pub: block now gets
+    // a synthesized default pub block (display_name + handle from
+    // agent_name; credentials.id at the canonical pub.secret path).
+    // The supervisor mints a keypair as if the operator had hand-
+    // authored a pub block. With no pub running on this test, the
+    // mint goes through the deferred-registration path: identity is
+    // empty, issuer_url is local://unregistered, credentials.id is
+    // canonicalized.
     await setup()
     const src = await writeIdentitySource('hobby', false)
     await client!.call('cli.agent.create', { name: 'hobby', identity_path: src })
 
     const credPath = agentPaths(home, 'hobby').pubSecret
-    await expect(stat(credPath)).rejects.toThrow(/ENOENT/)
+    const cred = await readCredentialFile(credPath)
+    expect(cred.display_name).toBe('hobby')
+    expect(cred.agent_id).toBeNull()
+    expect(cred.issuer_url).toBe('local://unregistered')
 
-    // Canonical identity.md exists and has no pub block.
     const canonical = agentPaths(home, 'hobby').identity
     const ident = await loadIdentity(canonical)
-    expect(ident.frontmatter.pub).toBeUndefined()
+    expect(ident.frontmatter.pub).toBeDefined()
+    expect(ident.frontmatter.pub?.display_name).toBe('hobby')
+    expect(ident.frontmatter.pub?.handle).toBe('@hobby')
+    expect(ident.frontmatter.pub?.identity).toBe('')
+    expect(ident.frontmatter.pub?.issuer_url).toBe('local://unregistered')
+    expect(ident.frontmatter.pub?.credentials.id).toBe(credPath)
   })
 })
 

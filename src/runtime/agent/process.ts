@@ -142,7 +142,15 @@ export class AgentProcess {
     // close over `this.identity` so a future hot-reload of identity
     // (not yet implemented) would propagate without re-registering
     // tools.
-    for (const server of baselineServers({ getIdentity: () => this.identity })) {
+    for (const server of baselineServers({
+      getIdentity: () => this.identity,
+      // The schedule.* tools need the supervisor RPC client.
+      // process.start() opens this.client only after register-with-
+      // supervisor returns, which happens before any task loop spins
+      // up; tools execute in tasks, so by the time a schedule tool
+      // fires, this.client is non-undefined.
+      getSupervisorRpc: () => this.client,
+    })) {
       registry.register(server)
     }
 
@@ -287,6 +295,13 @@ export class AgentProcess {
     const { FilesystemSkillProvider } = await import('../skills/provider.js')
     const { resolveRuntimeMode } = await import('../config/runtime-mode.js')
     const runtimeMode = resolveRuntimeMode(process.env)
+    // Build native tool-use specs from the registry: one per
+    // tool the agent is permitted to call. Providers with native
+    // tool-use forward these as `tools: [...]`; providers without
+    // ignore them and the loop falls back to fenced-text parsing.
+    const { toNativeToolSpecs } = await import('../llm/tool-spec.js')
+    const nativeToolSpecs = toNativeToolSpecs(registry, allowedToolNames)
+
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -295,6 +310,7 @@ export class AgentProcess {
       home: this.options.home,
       brainDir: ap.brain,
       availableToolNames: [...allowedToolNames],
+      nativeToolSpecs,
       logger: this.log.child('loop'),
       telemetryWriter,
       budgetTracker,
@@ -581,19 +597,65 @@ export class AgentProcess {
   }
 
   /**
-   * Send a single heartbeat. Errors are logged but not thrown; the next
-   * heartbeat tick will retry. If the connection is dead the supervisor
-   * will mark the Agent errored on its own.
+   * Send a single heartbeat. On RPC failure (typical cause: supervisor
+   * bounced and our UDS connection is broken), attempt one reconnect
+   * to the socket and re-register. If reconnect succeeds, the next
+   * heartbeat tick rolls forward as if nothing happened. If
+   * reconnect also fails, log and let the next tick try again ... the
+   * supervisor's liveness watcher will eventually flag us if we
+   * stay disconnected.
    */
   private async heartbeat(): Promise<void> {
     if (!this.client || this.isShuttingDown) return
     try {
       await this.client.call('agent.heartbeat', { state: this.machine.state })
     } catch (err) {
-      this.log.warn('heartbeat failed', {
+      this.log.warn('heartbeat failed; attempting reconnect to supervisor', {
         error: err instanceof Error ? err.message : String(err),
       })
+      try {
+        await this.reconnectToSupervisor()
+      } catch (reconnectErr) {
+        this.log.warn('supervisor reconnect failed; will retry on next heartbeat', {
+          error: reconnectErr instanceof Error ? reconnectErr.message : String(reconnectErr),
+        })
+      }
     }
+  }
+
+  /**
+   * Re-open the UDS connection to the supervisor and re-register.
+   * Called by the heartbeat when the existing connection breaks.
+   * Common cause: the supervisor daemon was restarted (graceful or
+   * via SIGKILL) and the previous socket is gone. Without this, the
+   * agent process keeps running with a dead RPC channel and the
+   * supervisor never sees it again ... the dreaded "supervisor says
+   * running but agent is silent" failure mode.
+   */
+  private async reconnectToSupervisor(): Promise<void> {
+    // Drop the old client; node leaves dangling sockets if we don't
+    // close them explicitly. The disposed client errors any in-flight
+    // calls instead of leaving them hanging.
+    if (this.client) {
+      try {
+        await this.client.close()
+      } catch {
+        // best-effort; the connection is probably already dead
+      }
+    }
+    const conn = await connectUds(this.options.socketPath)
+    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
+    const result = await this.client.call('agent.register', {
+      name: this.options.name,
+      pid: process.pid,
+    })
+    if (!result.accepted) {
+      throw new Error(`supervisor rejected re-registration: ${result.reason ?? 'no reason given'}`)
+    }
+    this.log.info('supervisor reconnect succeeded; re-registered', {
+      name: this.options.name,
+      pid: process.pid,
+    })
   }
 
   /**

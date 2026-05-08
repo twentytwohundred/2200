@@ -39,4 +39,14 @@ export class ToolRegistry {
   serverList(): readonly McpServer[] {
     return this.servers
   }
+
+  /** All registered tools, sorted by name. Used to enumerate the tool surface for native tool-use specs. */
+  allTools(): { name: string; tool: ToolDefinition }[] {
+    const out: { name: string; tool: ToolDefinition }[] = []
+    for (const name of this.toolNames()) {
+      const tool = this.tools.get(name)
+      if (tool) out.push({ name, tool })
+    }
+    return out
+  }
 }
