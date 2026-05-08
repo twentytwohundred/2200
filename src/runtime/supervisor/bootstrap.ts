@@ -64,6 +64,10 @@ async function main(): Promise<void> {
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
     runtimeMode,
+    // Production daemon: revive pubs and agents that were running
+    // before the previous incarnation went down. Off by default in
+    // tests; the daemon bootstrap is the one place that wants it.
+    recoverFromState: true,
   })
   await writePidFile(args.home, process.pid)
 

@@ -75,6 +75,16 @@ export interface SupervisorOptions {
     host: string
   }
   /**
+   * On boot, walk on-disk state and revive previously-running pubs
+   * (after killing any port-holding orphans) and respawn agents
+   * that were running. Default false ... only the production
+   * daemon bootstrap opts in. Tests construct Supervisors against
+   * leftover on-disk state without expecting child processes to
+   * appear; flipping this on would fork those children and trip
+   * the test pool.
+   */
+  recoverFromState?: boolean
+  /**
    * Deployment tier this Supervisor is running in (Epic 17 substrate;
    * see [[../../wiki/decisions/2026-05-05-managed-service]] and
    * [[../../wiki/conventions/security-architecture-hosted-mode]]).
@@ -226,10 +236,96 @@ export class Supervisor {
       stateDir: this.state.state_dir,
       runtime_mode: this.runtimeMode,
     })
+    // Recover from the previous incarnation: revive pubs and
+    // respawn agents that were running. Off by default so tests
+    // that construct a Supervisor don't accidentally fork child
+    // processes from leftover on-disk state. Production bootstrap
+    // opts in (`recoverFromState: true`).
+    if (options.recoverFromState === true) {
+      void this.recoverFromState()
+    }
     // Regenerate Fleet.md at boot so agents that come online during
     // start-up see a fresh fleet, not whatever was on disk from the
     // last shutdown. The lifecycle hooks keep it current after that.
     void this.regenerateFleetSafe()
+  }
+
+  /**
+   * Walk supervisor.json on boot and revive previously-running pubs
+   * and agents.
+   *
+   * Pubs: anything in 'running' or 'errored' state gets a fresh
+   * spawn. Before spawning, we kill any orphan process listening on
+   * the recorded port (left over when a prior supervisor was
+   * SIGKILL'd before its child cleanup ran). This is the cure for
+   * the "pub-server is alive but supervisor.json says errored, so
+   * agent connects go into a zombie state" pattern that bit us
+   * repeatedly during session-13 testing.
+   *
+   * Agents: anything previously in 'running' state is checked for a
+   * live pid. If still alive, adopt; if dead, respawn through the
+   * normal spawnAgent path (which clears errored_* fields).
+   *
+   * All failures are warned-and-continue, never thrown ... boot
+   * proceeds even if a single pub or agent fails to revive, so the
+   * operator can fix the broken one without losing the rest.
+   */
+  private async recoverFromState(): Promise<void> {
+    const reviveStart = Date.now()
+    let pubsRevived = 0
+    let agentsRevived = 0
+    let agentsAdopted = 0
+
+    for (const [name, record] of Object.entries(this.state.pubs)) {
+      if (record.state !== 'running' && record.state !== 'errored') continue
+      try {
+        await killOrphanOnPort(record.port, this.log)
+        await this.startPub(name)
+        pubsRevived += 1
+      } catch (err) {
+        this.log.warn('boot: failed to revive pub', {
+          name,
+          port: record.port,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    // Brief settle so newly-spawned pub-servers have bound their
+    // ports before agents try to connect. The agent's PubClient
+    // also retries on connect failure but biasing toward "pub is
+    // already up" reduces wake-source warnings on first boot.
+    if (pubsRevived > 0) {
+      await new Promise((r) => setTimeout(r, 800))
+    }
+
+    for (const [name, record] of Object.entries(this.state.agents)) {
+      if (record.state !== 'running') continue
+      if (record.pid !== null && isPidAlive(record.pid)) {
+        this.log.info('boot: agent process still alive; adopting', {
+          name,
+          pid: record.pid,
+        })
+        agentsAdopted += 1
+        continue
+      }
+      try {
+        await this.startAgent(name)
+        agentsRevived += 1
+      } catch (err) {
+        this.log.warn('boot: failed to revive agent', {
+          name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    this.log.info('boot: state recovery complete', {
+      pubs_revived: pubsRevived,
+      agents_revived: agentsRevived,
+      agents_adopted: agentsAdopted,
+      duration_ms: Date.now() - reviveStart,
+    })
   }
 
   /**
@@ -1414,6 +1510,65 @@ function defaultHandleFor(displayName: string): string {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/**
+ * Cheap process-alive probe: signal 0 just checks permission to
+ * signal the pid, doesn't actually deliver one. Returns false on
+ * ESRCH (no such process) or any other error.
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * SIGKILL whatever is listening on `port`. Used during boot recovery
+ * to clear a pub-server orphan left over from a force-killed prior
+ * supervisor before re-spawning a fresh one on the same port.
+ *
+ * Best-effort: if `lsof` is missing or returns nothing, we no-op.
+ * Failures are logged at warn but never thrown.
+ */
+async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
+  try {
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const exec = promisify(execFile)
+    const { stdout } = await exec('lsof', ['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-t'])
+    const pids = stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n > 0)
+    if (pids.length === 0) return
+    for (const pid of pids) {
+      log.info('boot: killing orphan process holding pub port', { pid, port })
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone; race with the OS reaper, fine.
+      }
+    }
+    // Settle for the kernel to actually release the listener so the
+    // imminent spawn doesn't hit EADDRINUSE.
+    await new Promise((r) => setTimeout(r, 400))
+  } catch (err) {
+    // lsof is missing or otherwise failed. Probably non-fatal: if
+    // there really is an orphan, the spawn that follows will hit
+    // EADDRINUSE and surface a clear error. Linux/Alpine images
+    // sometimes lack lsof; that's a packaging concern, not a runtime
+    // one.
+    log.warn('boot: lsof failed; cannot reclaim orphan port', {
+      port,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 function toListEntry(e: ScheduleEntry): ScheduleListEntry {
