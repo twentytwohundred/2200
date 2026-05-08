@@ -6,6 +6,27 @@
   margin: 0 auto;
 }
 
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.back {
+  font-family: var(--type-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+}
+
+.back:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
 .agentPicker {
   display: flex;
   flex-wrap: wrap;

@@ -10,6 +10,7 @@
  * companion API endpoint.
  */
 import { useMemo, useState, type ReactElement } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type BudgetState } from '../../lib/api'
 import {
@@ -80,7 +81,14 @@ export function BudgetScreen(): ReactElement {
         eyebrow={eyebrow}
         title="Budget"
         subtitle="Daily spend per Agent. Cap, cumulative, override, and per-day history."
-        actions={<ThemeSwitcher />}
+        actions={
+          <div className={styles.headerActions}>
+            <Link to="/" className={styles.back}>
+              ← FLEET
+            </Link>
+            <ThemeSwitcher />
+          </div>
+        }
       />
 
       {agentsQuery.isLoading ? (
