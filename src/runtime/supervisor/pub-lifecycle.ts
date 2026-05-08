@@ -273,6 +273,15 @@ export function composePubMd(opts: PubMdOptions): string {
   lines.push(`model: ${quoteIfNeeded(opts.model ?? 'anthropic/claude-haiku-4-5')}`)
   lines.push(`capacity: ${String(capacity)}`)
   lines.push('entry: open')
+  // Reactions on by default. Without this block, pub-server rejects
+  // every `pub.react` call with REACTIONS_DISABLED and silently drops
+  // the reaction; the agent's tool returns ok: true (the WS frame
+  // sent fine) but nothing lands. The bartender / Hobby / Simon
+  // persona prompts all assume reactions are available, so the
+  // default should match.
+  lines.push('reactions:')
+  lines.push('  enabled: true')
+  lines.push('  set: ["✓", "👍", "👀", "❤️", "🎉", "🤔", "👏", "🙏"]')
   lines.push('---')
   lines.push('')
   lines.push(`# ${opts.name}`)

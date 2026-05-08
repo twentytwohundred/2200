@@ -331,11 +331,62 @@ export class PubClient {
    * Add a reaction to a message. Per Poe's contract, server-side this
    * is an upsert per (agent_id, message_id): re-react with the same
    * emoji is a no-op; re-react with a different emoji replaces.
+   *
+   * Confirmed: the reaction is considered delivered when one of:
+   *   - a `pub_reaction` event broadcast back to this client matches
+   *     our (message_id, emoji). The pub-server broadcasts to ALL
+   *     connections including the sender.
+   *   - timeout (default 1500ms) without an error event ... we treat
+   *     this as best-effort success rather than indefinite hang.
+   *
+   * Rejected: an `error` event arrives with code `REACTIONS_DISABLED`,
+   * `INVALID_REACTION`, or any other code. The pub-server emits
+   * these on the same WS in response to bad reaction frames; without
+   * waiting for one, the previous fire-and-forget react() returned ok
+   * even when the server silently dropped the call.
    */
-  async react(message_id: string, emoji: string): Promise<void> {
+  async react(message_id: string, emoji: string, timeoutMs = 1500): Promise<void> {
     await this.connect()
     const ws = this.requireOpenSocket()
+    const settled = new Promise<void>((resolve, reject) => {
+      let done = false
+      const unsub = this.onEvent((ev) => {
+        if (done) return
+        if (
+          ev.type === 'pub_reaction' &&
+          ev.data.message_id === message_id &&
+          ev.data.emoji === emoji
+        ) {
+          done = true
+          unsub()
+          clearTimeout(timer)
+          resolve()
+          return
+        }
+        if (ev.type === 'error') {
+          done = true
+          unsub()
+          clearTimeout(timer)
+          reject(
+            new PubClientError(
+              `pub-server rejected reaction (${ev.data.code}): ${ev.data.message}`,
+            ),
+          )
+          return
+        }
+      })
+      const timer = setTimeout(() => {
+        if (done) return
+        done = true
+        unsub()
+        // Treat timeout as best-effort success: the pub-server may
+        // simply not echo, the broadcast may be late, etc. We only
+        // hard-fail when the server explicitly rejects.
+        resolve()
+      }, timeoutMs)
+    })
     ws.send(JSON.stringify({ type: 'reaction', message_id, emoji }))
+    await settled
   }
 
   /**
