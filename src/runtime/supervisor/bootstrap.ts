@@ -74,12 +74,15 @@ async function main(): Promise<void> {
   log.info('supervisor daemon up', { pid: process.pid, home: args.home, runtime_mode: runtimeMode })
 
   let shuttingDown = false
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+  const shutdown = async (
+    signal: NodeJS.Signals,
+    options: { preserveChildren?: boolean } = {},
+  ): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
-    log.info('shutdown signal received', { signal })
+    log.info('shutdown signal received', { signal, preserveChildren: options.preserveChildren })
     try {
-      await supervisor.shutdown()
+      await supervisor.shutdown(5000, { preserveChildren: options.preserveChildren ?? false })
       await removePidFile(args.home)
     } catch (err) {
       log.error('error during shutdown', {
@@ -89,11 +92,24 @@ async function main(): Promise<void> {
     process.exit(0)
   }
 
+  // SIGTERM and SIGINT: full stop. Operator's intent for `2200 daemon
+  // stop` ... agents and pubs are gracefully stopped along with the
+  // supervisor.
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM')
   })
   process.on('SIGINT', () => {
     void shutdown('SIGINT')
+  })
+
+  // SIGHUP: bounce mode. The supervisor exits but Agent and pub
+  // child processes are LEFT ALIVE. Used by `2200 daemon restart` so
+  // the operator can restart the supervisor (e.g., to pick up a new
+  // build) without flapping the fleet. Each surviving Agent's
+  // heartbeat-reconnect path picks up the new supervisor when it
+  // comes back up on the same UDS socket.
+  process.on('SIGHUP', () => {
+    void shutdown('SIGHUP', { preserveChildren: true })
   })
 
   // Stay alive until a signal arrives. The supervisor keeps the event
