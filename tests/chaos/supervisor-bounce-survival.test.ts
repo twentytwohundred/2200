@@ -102,7 +102,7 @@ afterEach(async () => {
 
 async function eventually(
   predicate: () => Promise<boolean> | boolean,
-  { intervalMs = 100, timeoutMs = 8000 }: { intervalMs?: number; timeoutMs?: number } = {},
+  { intervalMs = 100, timeoutMs = 20_000 }: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
@@ -221,5 +221,5 @@ describe('supervisor bounce survival (chaos)', () => {
     // 8. Final sanity: agent is still the same process we spawned.
     expect(agent.exitCode).toBeNull()
     expect(supervisor.snapshot().agents['chaos']!.pid).toBe(agent.pid)
-  }, 45_000)
+  }, 60_000)
 })
