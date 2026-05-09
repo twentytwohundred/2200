@@ -418,10 +418,27 @@ export class Supervisor {
    * Stop accepting new connections, send agent.stop to every running Agent,
    * persist final state, and clean up. Idempotent.
    */
-  async shutdown(timeoutMs = 5000): Promise<void> {
+  /**
+   * Shut the supervisor down.
+   *
+   * Two modes via `preserveChildren`:
+   *
+   * - `false` (default): full stop. Sends `agent.stop` to every running
+   *   Agent, waits for them to exit gracefully, then closes everything.
+   *   The operator's intent for `2200 daemon stop` (and tests).
+   *
+   * - `true`: bounce mode. Stops listening on the UDS socket, runs
+   *   teardown, but does NOT signal Agents to stop. Agent processes
+   *   keep running; their heartbeat-reconnect path picks up the new
+   *   supervisor when it boots. Pub-server children are also
+   *   preserved. The operator's intent for "restart the daemon
+   *   without flapping the fleet."
+   */
+  async shutdown(timeoutMs = 5000, options: { preserveChildren?: boolean } = {}): Promise<void> {
     if (this.isShuttingDown) return
     this.isShuttingDown = true
-    this.log.info('supervisor shutting down')
+    const preserveChildren = options.preserveChildren === true
+    this.log.info('supervisor shutting down', { preserveChildren })
     if (this.listener) {
       await this.listener.close()
       this.listener = undefined
@@ -445,28 +462,32 @@ export class Supervisor {
     }
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()
-    const stops = Array.from(this.spawned.values()).map(async (sa) => {
-      try {
-        await sa.stop(timeoutMs)
-      } catch (err) {
-        this.log.warn('error stopping agent', {
-          name: sa.name,
-          error: err instanceof Error ? err.message : String(err),
+    const stops = preserveChildren
+      ? []
+      : Array.from(this.spawned.values()).map(async (sa) => {
+          try {
+            await sa.stop(timeoutMs)
+          } catch (err) {
+            this.log.warn('error stopping agent', {
+              name: sa.name,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
         })
-      }
-    })
-    const pubStops = Array.from(this.spawnedPubs.values()).map(async (sp) => {
-      // Mark intent so `handlePubExit` routes to 'stopped', not 'errored'.
-      this.pubStopRequested.add(sp.name)
-      try {
-        await sp.stop(timeoutMs)
-      } catch (err) {
-        this.log.warn('error stopping pub', {
-          name: sp.name,
-          error: err instanceof Error ? err.message : String(err),
+    const pubStops = preserveChildren
+      ? []
+      : Array.from(this.spawnedPubs.values()).map(async (sp) => {
+          // Mark intent so `handlePubExit` routes to 'stopped', not 'errored'.
+          this.pubStopRequested.add(sp.name)
+          try {
+            await sp.stop(timeoutMs)
+          } catch (err) {
+            this.log.warn('error stopping pub', {
+              name: sp.name,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
         })
-      }
-    })
     await Promise.all([...stops, ...pubStops])
     // Close every connection with a per-connection timeout. Without
     // this, a single hung connection (typical cause: agent process

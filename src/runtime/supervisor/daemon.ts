@@ -124,6 +124,24 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
  * Liveness is polled with a short interval; the timeout defaults to
  * 5000ms before falling back to SIGKILL.
  */
+/**
+ * Send a signal to the running daemon. Returns false when no daemon
+ * is registered. Used by `2200 daemon restart` to send SIGHUP, which
+ * the supervisor's bootstrap interprets as "graceful shutdown that
+ * preserves Agent and pub child processes." The CLI follows up by
+ * waiting for the PID file to clear and re-spawning the daemon.
+ */
+export async function signalDaemon(home: string, signal: NodeJS.Signals): Promise<boolean> {
+  const pid = await readLivePid(home)
+  if (pid === null) return false
+  try {
+    process.kill(pid, signal)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function killDaemon(
   home: string,
   options: { timeoutMs?: number; logger?: Logger } = {},

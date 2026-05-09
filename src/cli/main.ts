@@ -224,6 +224,37 @@ export function buildProgram(): Command {
     })
 
   daemon
+    .command('restart')
+    .description(
+      'restart the supervisor daemon WITHOUT flapping the fleet (sends SIGHUP, agents survive, then re-spawns the daemon)',
+    )
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { signalDaemon } = await import('../runtime/supervisor/daemon.js')
+      const sent = await signalDaemon(home, 'SIGHUP')
+      if (!sent) {
+        console.log('no supervisor daemon was running; starting one fresh')
+      } else {
+        console.log('signaled supervisor daemon (SIGHUP) for graceful exit; agents preserved')
+        // Wait for the PID file to disappear (the daemon's shutdown
+        // path removes it). Bound by 10s so a stuck daemon doesn't
+        // block forever; the operator can fall back to `daemon stop`.
+        const { readLivePid } = await import('../runtime/supervisor/pidfile.js')
+        const start = Date.now()
+        while (Date.now() - start < 10_000) {
+          const pid = await readLivePid(home)
+          if (pid === null) break
+          await new Promise((resolve) => setTimeout(resolve, 200))
+        }
+      }
+      const pid = await spawnDaemon({ home })
+      console.log(`supervisor daemon restarted`)
+      console.log(`  pid:        ${String(pid)}`)
+      console.log(`  home:       ${home}`)
+      console.log(`  fleet:      surviving agents will reconnect via heartbeat within ~10s`)
+    })
+
+  daemon
     .command('status')
     .description('show whether a supervisor daemon is running on the configured 2200_HOME')
     .action(async () => {

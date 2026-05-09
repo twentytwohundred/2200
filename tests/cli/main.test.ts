@@ -142,11 +142,11 @@ describe('schedule subcommand', () => {
 })
 
 describe('daemon subcommand', () => {
-  it('has start, stop, status', () => {
+  it('has start, stop, status, restart', () => {
     const program = buildProgram()
     const daemon = findSubcommand(program, 'daemon')!
     const subs = daemon.commands.map((c) => c.name()).sort()
-    expect(subs).toEqual(['start', 'status', 'stop'])
+    expect(subs).toEqual(['restart', 'start', 'status', 'stop'])
   })
 })
 
