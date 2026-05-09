@@ -518,6 +518,18 @@ export class AgentLoop {
    * terminating, otherwise the room sees no response.
    */
   private pubToolCallsThisTask = 0
+  /**
+   * Paths the agent has successfully written to during the current
+   * task via fs_write / fs_edit / brain_write. Used by the path-
+   * discipline guardrail: when a subsequent fs_read / fs_edit /
+   * fs_delete / brain_read fails with ENOENT, the loop appends this
+   * set to the tool-result message in history so the model has
+   * perfect recall of where it actually put files instead of
+   * hallucinating paths. Closes the failure mode that tripped Jodin
+   * into error_storm on session 14 (wrote files, read back from
+   * imagined paths).
+   */
+  private writtenPathsThisTask = new Set<string>()
   /** Number of "you must call pub.* before terminating" nudges. Caps at 1. */
   private pubWakeNudges = 0
   private readonly nowFn: () => Date
@@ -583,6 +595,7 @@ export class AgentLoop {
     this.emptyResponseNudges = 0
     this.pubToolCallsThisTask = 0
     this.pubWakeNudges = 0
+    this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
 
     while (this.iteration < this.maxIterations) {
@@ -862,13 +875,53 @@ export class AgentLoop {
       })
     }
 
+    // Track every path the agent successfully wrote during this
+    // task. When a later read fails with ENOENT, the loop appends
+    // this list to the tool result so the model can reconcile
+    // against actual writes instead of hallucinating paths. See
+    // [[../decisions/2026-05-09-path-discipline]] for the
+    // failure-mode this closes.
+    if (
+      dispatchError === null &&
+      (call.tool === 'fs_write' || call.tool === 'fs_edit' || call.tool === 'brain_write')
+    ) {
+      const path = call.args['path']
+      if (typeof path === 'string') this.writtenPathsThisTask.add(path)
+    }
+
+    // Augment ENOENT errors on read-side fs / brain tools with the
+    // paths the agent has actually written this task. The dispatch
+    // error message becomes a recall surface, not just a failure.
+    let dispatchErrorAugmented = dispatchError
+    if (
+      dispatchError !== null &&
+      dispatchError.message.includes('ENOENT') &&
+      (call.tool === 'fs_read' ||
+        call.tool === 'fs_edit' ||
+        call.tool === 'fs_delete' ||
+        call.tool === 'brain_read')
+    ) {
+      const written = Array.from(this.writtenPathsThisTask)
+      if (written.length > 0) {
+        const list = written.map((p) => `  - ${p}`).join('\n')
+        dispatchErrorAugmented = {
+          ...dispatchError,
+          message:
+            `${dispatchError.message}\n\n` +
+            `Paths YOU wrote during this task (use these, do not invent paths):\n${list}\n\n` +
+            `If the file you wanted is in this list, retry with the exact path. If not, ` +
+            `call fs_list on the parent dir to see what's actually there.`,
+        }
+      }
+    }
+
     // Feed result back into history as a `tool` message.
-    const resultPayload = dispatchError
+    const resultPayload = dispatchErrorAugmented
       ? {
           tool: call.tool,
           ok: false,
-          error: dispatchError,
-          ...(dispatchError.class === 'ToolDeniedError'
+          error: dispatchErrorAugmented,
+          ...(dispatchErrorAugmented.class === 'ToolDeniedError'
             ? { hint: 'this call was denied at perm; check the perm record for which check failed' }
             : {}),
         }
