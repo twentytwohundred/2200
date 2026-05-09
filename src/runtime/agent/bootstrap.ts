@@ -12,6 +12,47 @@
 import { AgentProcess } from './process.js'
 import { createLogger } from '../util/logger.js'
 
+/**
+ * Swallow EPIPE on stdout/stderr so a broken pipe (typical cause:
+ * the supervisor that spawned us bounced and closed its read end of
+ * our pipes) does not synchronously crash the agent process. Node's
+ * default behavior is to throw EPIPE on the next write, which
+ * propagates as an uncaught exception and kills the process
+ * silently. The supervisor never sees the death and the agent stays
+ * marked `running` against a dead PID.
+ *
+ * Other stream errors (ENOSPC, EBADF, etc.) still surface so a real
+ * disk problem doesn't silently get swallowed.
+ *
+ * Identified via Antigravity codebase review on 2026-05-08; root
+ * cause of the "agents die silently when supervisor bounces"
+ * regression Doug surfaced during session 13 testing.
+ */
+function installPipeErrorHandler(stream: NodeJS.WriteStream): void {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') return
+    // Re-emit so legitimate errors surface; without this, listening
+    // here would silently swallow them.
+    throw err
+  })
+}
+installPipeErrorHandler(process.stdout)
+installPipeErrorHandler(process.stderr)
+
+// Defense in depth: if any unhandled rejection slips past a
+// per-feature try/catch, log it and keep running rather than
+// crashing the agent process. Node's default is to crash on
+// unhandled rejection in current versions; we'd rather degrade than
+// die. Per-feature handlers (heartbeat reconnect, etc.) remain the
+// primary line of defense.
+process.on('unhandledRejection', (reason) => {
+  const log = createLogger('agent/bootstrap')
+  log.error('unhandledRejection (kept running)', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  })
+})
+
 async function main(): Promise<void> {
   const name = process.env['TWENTYTWOHUNDRED_AGENT_NAME']
   const identityPath = process.env['TWENTYTWOHUNDRED_IDENTITY_PATH']

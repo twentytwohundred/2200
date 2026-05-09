@@ -229,11 +229,22 @@ export class McpServerManager implements McpServer {
     // we kick off the restart loop.
     handle.client.onclose = () => {
       if (this.stopped) return
-      // Discard the now-defunct handle and queue a restart.
+      // Discard the now-defunct handle and queue a restart. The
+      // .catch() on the floating promise is load-bearing: without
+      // it, an exception inside restartLoop bubbles up as an
+      // unhandled rejection and crashes the agent process. Per the
+      // 2026-05-08 review.
       this.currentHandle = undefined
-      this.restartPromise ??= this.restartLoop().finally(() => {
-        this.restartPromise = undefined
-      })
+      this.restartPromise ??= this.restartLoop()
+        .catch((err: unknown) => {
+          this.log.error('mcp restart loop crashed; will not retry until next close', {
+            server: this.name,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+        .finally(() => {
+          this.restartPromise = undefined
+        })
     }
   }
 
@@ -248,7 +259,21 @@ export class McpServerManager implements McpServer {
       this.consecutiveFailures += 1
       const attemptNumber = this.consecutiveFailures
       const delayMs = computeBackoffMs(attemptNumber)
-      await this.emitRestartNotification(attemptNumber)
+      // emitRestartNotification was previously OUTSIDE the try/catch
+      // around spawnFn ... a notification-write failure (disk full,
+      // file permissions, brain index lock) would bubble out of the
+      // loop as an unhandled rejection and crash the agent process.
+      // Wrapped now so the loop continues to attempt the spawn even
+      // if the operator-facing notification can't land.
+      try {
+        await this.emitRestartNotification(attemptNumber)
+      } catch (err) {
+        this.log.warn('mcp restart notification failed; continuing with restart attempt', {
+          server: this.name,
+          attempt: attemptNumber,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
       this.log.info('mcp restart pending', {
         server: this.name,
         attempt: attemptNumber,

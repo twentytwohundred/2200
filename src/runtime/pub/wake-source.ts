@@ -78,7 +78,19 @@ export class PubWakeSource {
   start(): () => void {
     if (this.unsubscribe) return this.unsubscribe
     const unsub = this.opts.client.onEvent((event) => {
-      void this.handleEvent(event)
+      // .catch() is load-bearing: handleEvent calls tryRouter() ->
+      // router.route() which hits the LLM provider. A provider
+      // error (rate limit, timeout, network) would bubble up as an
+      // unhandled rejection and crash the agent process whenever
+      // another agent posts in the pub. Per the 2026-05-08 review.
+      void this.handleEvent(event).catch((err: unknown) => {
+        this.log.error('wake-source handleEvent crashed', {
+          pub: this.opts.pubName,
+          agent: this.opts.agentName,
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        })
+      })
     })
     this.unsubscribe = unsub
     this.log.info('wake source started', {
@@ -203,11 +215,29 @@ export class PubWakeSource {
       if (message.mentions.length > 0 && !message.mentions.includes(this.opts.agent.agent_id)) {
         return
       }
-      const routed = await this.tryRouter({
-        message_id: message.message_id,
-        sender_display_name: message.display_name,
-        content: message.content,
-      })
+      // Wrap the router call: an LLM provider error inside route()
+      // (rate limit, timeout, network failure, malformed response)
+      // would otherwise bubble up to the wake-source's onEvent
+      // handler. Treating router failure as "no route" keeps the
+      // agent quiet rather than crashing the process. The handler-
+      // level .catch() in start() is the second line of defense;
+      // this is the first.
+      let routed
+      try {
+        routed = await this.tryRouter({
+          message_id: message.message_id,
+          sender_display_name: message.display_name,
+          content: message.content,
+        })
+      } catch (err) {
+        this.log.warn('ambient router failed; treating as no-route', {
+          pub: this.opts.pubName,
+          agent: this.opts.agentName,
+          message_id: message.message_id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       if (!routed) return
       rule = 'router'
       detail = routed.rationale ?? null

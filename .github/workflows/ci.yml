@@ -47,11 +47,15 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
-      - name: Test
-        run: pnpm test
-
+      # Build before Test so the chaos test (which spawns the bundled
+      # dist/runtime/agent/bootstrap.js as a real child process) finds
+      # the artifact. Local `pnpm verify` runs them in this same order
+      # via package.json's verify script ... CI just needs to match.
       - name: Build
         run: pnpm build
+
+      - name: Test
+        run: pnpm test
 
       - name: Web app verify (typecheck + lint + format + test + build)
         run: pnpm --filter @twentytwohundred/web verify
