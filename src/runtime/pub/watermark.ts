@@ -1,7 +1,7 @@
 /**
  * Per-Agent per-pub message watermark.
  *
- * Per Epic 3 spec [[03-local-pub-integration]]: `pub.read` dedupes
+ * Per Epic 3 spec [[03-local-pub-integration]]: `pub_read` dedupes
  * by `last_read_message_id`. The watermark file lives at
  * `<home>/agents/<name>/state/pub-watermarks.json` and is written
  * atomically (temp+rename) per the Epic 2 atomic-write convention.

@@ -1,8 +1,8 @@
 /**
  * Tests for the notification.* baseline tools.
  *
- * `notification.ask` is exercised end-to-end via the AgentLoop in
- * loop.test.ts. This file covers `notification.inform` directly
+ * `notification_ask` is exercised end-to-end via the AgentLoop in
+ * loop.test.ts. This file covers `notification_inform` directly
  * because it's the simpler fire-and-forget surface (Epic 7 Phase B).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -53,7 +53,7 @@ afterEach(async () => {
 })
 
 function findInformTool() {
-  const tool = notificationTools.find((t) => t.name === 'notification.inform')
+  const tool = notificationTools.find((t) => t.name === 'notification_inform')
   if (!tool) throw new Error('notification.inform missing from baseline')
   return tool
 }
@@ -81,9 +81,9 @@ function ctx(): ToolContext {
   }
 }
 
-describe('notification.inform', () => {
+describe('notification_inform', () => {
   it('is registered in notificationTools', () => {
-    expect(notificationTools.map((t) => t.name)).toContain('notification.inform')
+    expect(notificationTools.map((t) => t.name)).toContain('notification_inform')
   })
 
   it('writes a pending non-response notification and returns immediately', async () => {

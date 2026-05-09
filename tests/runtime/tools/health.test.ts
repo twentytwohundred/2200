@@ -67,13 +67,13 @@ describe('aggregateToolHealth', () => {
     await writeRun({
       taskId: 't1',
       callId: 'c1',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 60_000).toISOString(),
     })
     await writeRun({
       taskId: 't1',
       callId: 'c2',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 30_000).toISOString(),
     })
     await writeRun({
@@ -87,7 +87,7 @@ describe('aggregateToolHealth', () => {
     const s = await aggregateToolHealth(brain, 'hobby', { now: () => now })
     expect(s.total_records).toBe(3)
     expect(s.tools).toHaveLength(2)
-    const fsread = s.tools.find((t) => t.tool === 'fs.read')!
+    const fsread = s.tools.find((t) => t.tool === 'fs_read')!
     expect(fsread.total_calls).toBe(2)
     expect(fsread.ok_calls).toBe(2)
     expect(fsread.error_calls).toBe(0)
@@ -100,15 +100,15 @@ describe('aggregateToolHealth', () => {
     const now = new Date('2026-04-29T20:00:00.000Z')
     const longAgo = new Date(now.getTime() - 60 * 24 * 60 * 60_000).toISOString()
     const recent = new Date(now.getTime() - 60_000).toISOString()
-    await writeRun({ taskId: 't1', callId: 'old', tool: 'shell.run', tsEnd: longAgo })
-    await writeRun({ taskId: 't1', callId: 'new', tool: 'fs.read', tsEnd: recent })
+    await writeRun({ taskId: 't1', callId: 'old', tool: 'shell_run', tsEnd: longAgo })
+    await writeRun({ taskId: 't1', callId: 'new', tool: 'fs_read', tsEnd: recent })
     const s = await aggregateToolHealth(brain, 'hobby', {
       now: () => now,
       dormantThresholdDays: 30,
     })
     const dormantTools = s.dormant.map((t) => t.tool)
-    expect(dormantTools).toContain('shell.run')
-    expect(dormantTools).not.toContain('fs.read')
+    expect(dormantTools).toContain('shell_run')
+    expect(dormantTools).not.toContain('fs_read')
   })
 
   it('reports recent_failure_rate over the configured window', async () => {
@@ -151,23 +151,23 @@ describe('aggregateToolHealth', () => {
     await writeRun({
       taskId: 'task-A',
       callId: 'a',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 1_000).toISOString(),
     })
     await writeRun({
       taskId: 'task-B',
       callId: 'b',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 2_000).toISOString(),
     })
     await writeRun({
       taskId: '_no_task',
       callId: 'c',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 3_000).toISOString(),
     })
     const s = await aggregateToolHealth(brain, 'hobby', { now: () => now })
-    const t = s.tools.find((x) => x.tool === 'fs.read')!
+    const t = s.tools.find((x) => x.tool === 'fs_read')!
     expect(t.total_calls).toBe(3)
   })
 
@@ -179,7 +179,7 @@ describe('aggregateToolHealth', () => {
     await writeRun({
       taskId: 'task-A',
       callId: 'good',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 1_000).toISOString(),
     })
     const s = await aggregateToolHealth(brain, 'hobby', { now: () => now })
@@ -207,7 +207,7 @@ describe('renderToolHealthMd', () => {
     await writeRun({
       taskId: 't1',
       callId: 'a',
-      tool: 'fs.read',
+      tool: 'fs_read',
       tsEnd: new Date(now.getTime() - 1_000).toISOString(),
     })
     for (let i = 0; i < 5; i++) {
@@ -222,7 +222,7 @@ describe('renderToolHealthMd', () => {
     await writeRun({
       taskId: 't1',
       callId: 'old',
-      tool: 'shell.run',
+      tool: 'shell_run',
       tsEnd: new Date(now.getTime() - 90 * 24 * 60 * 60_000).toISOString(),
     })
     const s = await aggregateToolHealth(brain, 'hobby', { now: () => now })
@@ -230,7 +230,7 @@ describe('renderToolHealthMd', () => {
     expect(md).toMatch(/## Failing/)
     expect(md).toMatch(/`http.fetch`/)
     expect(md).toMatch(/## Dormant/)
-    expect(md).toMatch(/`shell.run`/)
+    expect(md).toMatch(/`shell_run`/)
     expect(md).toMatch(/## All tools/)
   })
 })

@@ -16,7 +16,7 @@
  * JSON object inside:
  *
  *     ```tool
- *     { "tool": "fs.read", "args": { "path": "/commons/reference/notes.md" } }
+ *     { "tool": "fs_read", "args": { "path": "/commons/reference/notes.md" } }
  *     ```
  *
  * Multiple blocks in one response are dispatched sequentially. A response
@@ -107,7 +107,7 @@ const TOOL_BLOCK_UNCLOSED_RE = /```tool\s*\n([\s\S]*?)$/
 // then pull out <parameter name="...">...</parameter> children. Models
 // sometimes put the actual tool name in a "tool" parameter (with
 // <invoke name="tool_code">) and sometimes put it on the invoke itself
-// (<invoke name="pub.read">), so both shapes are accepted.
+// (<invoke name="pub_read">), so both shapes are accepted.
 const FUNCTION_CALLS_RE = /<function_calls>([\s\S]*?)<\/function_calls>/g
 const INVOKE_RE = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g
 const PARAMETER_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/g
@@ -511,7 +511,7 @@ export class AgentLoop {
   /** Number of empty-response nudges issued for the current task. Caps at 1. */
   private emptyResponseNudges = 0
   /**
-   * True once a `pub.send` or `pub.react` tool call has been dispatched
+   * True once a `pub_send` or `pub_react` tool call has been dispatched
    * during the current task. Used by the wake-task enforcement path:
    * when the runtime fires a synthetic task because a peer addressed
    * us in a pub, the loop must produce a `pub.*` call before
@@ -687,19 +687,16 @@ export class AgentLoop {
       // never do; Anthropic / OpenAI / Kimi / Gemini / OpenRouter do
       // when the model decides to call a tool).
       //
-      // Tool names on the wire are underscored (Anthropic + OpenAI
-      // enforce `^[a-zA-Z0-9_-]+$`); translate them back to the
-      // dotted internal form via the spec map before dispatch.
-      const nativeCalls: ParsedToolCall[] = (response.toolCalls ?? []).map((c) => {
-        const spec = this.opts.nativeToolSpecs?.find((s) => s.name === c.name)
-        return {
-          tool: spec?.internalName ?? c.name,
-          args: c.args,
-          predicted_outcome: '',
-          reason: '',
-          precondition: null,
-        }
-      })
+      // Tool names are underscored throughout the runtime, matching
+      // Anthropic and OpenAI's `^[a-zA-Z0-9_-]+$` validation; no
+      // translation needed.
+      const nativeCalls: ParsedToolCall[] = (response.toolCalls ?? []).map((c) => ({
+        tool: c.name,
+        args: c.args,
+        predicted_outcome: '',
+        reason: '',
+        precondition: null,
+      }))
       const parsed =
         nativeCalls.length > 0
           ? { calls: nativeCalls, errors: [] as string[] }
@@ -714,7 +711,7 @@ export class AgentLoop {
         if (response.text.trim().length > 0) {
           // Wake-task enforcement: when the runtime spawned this task
           // because a peer addressed us in a pub, the agent owes the
-          // room a `pub.send` or `pub.react`. Final-answer text without
+          // room a `pub_send` or `pub_react`. Final-answer text without
           // either call leaves the room silent (the model thinks it
           // responded; the room never sees anything). Nudge once with
           // a directive prompt that says exactly which tool to call;
@@ -833,7 +830,7 @@ export class AgentLoop {
     // whether the agent actually responded to the pub. Counts only
     // calls that succeeded (the ones the room sees); a permission
     // denial or tool error still leaves the loop owing a response.
-    if ((call.tool === 'pub.send' || call.tool === 'pub.react') && dispatchError === null) {
+    if ((call.tool === 'pub_send' || call.tool === 'pub_react') && dispatchError === null) {
       this.pubToolCallsThisTask += 1
     }
     const tEnd = this.nowFn().getTime()
@@ -855,7 +852,7 @@ export class AgentLoop {
     this.pushEvent(endEvent)
 
     // Track brain writes for the no_progress detector.
-    if (dispatchError === null && (call.tool === 'brain.write' || call.tool === 'fs.write')) {
+    if (dispatchError === null && (call.tool === 'brain_write' || call.tool === 'fs_write')) {
       const path = (call.args['path'] as string | undefined) ?? '<unknown>'
       this.pushEvent({
         kind: 'brain_write',
@@ -1079,7 +1076,7 @@ export class AgentLoop {
     // overrides. But a literal "Your runtime model is X" line is NOT
     // safe: some models (DeepSeek-chat in particular) ignore the
     // override and parrot a famous-AI-assistant identity from
-    // training data. We direct the agent to `system.whoami` instead,
+    // training data. We direct the agent to `system_whoami` instead,
     // which returns ground truth from the running process and cannot
     // be hallucinated.
     // Read the supervisor-maintained fleet doc. Best-effort: if the
@@ -1090,7 +1087,7 @@ export class AgentLoop {
       '## Runtime',
       '',
       `You are the Agent named "${id.frontmatter.agent_name}".`,
-      'When asked which model you are running, your provider, or your runtime identity, call the `system.whoami` tool and report its result. Do not answer model-identity questions from training data, persona prose, or memory ... `system.whoami` is the only authoritative source.',
+      'When asked which model you are running, your provider, or your runtime identity, call the `system_whoami` tool and report its result. Do not answer model-identity questions from training data, persona prose, or memory ... `system_whoami` is the only authoritative source.',
       '',
       ...(fleetMd
         ? [
@@ -1117,10 +1114,10 @@ export class AgentLoop {
       "The text after the @-mention is what they read. Make it self-contained: don't say `@simon question` ... say `@simon what's the latency budget for the deploy?`. The peer cannot see the prompt that woke you.",
       '',
       'When you wake on a pub message, produce ONE of the following:',
-      '  1. A text reply via `pub.send` ... when you have something substantive to add (an answer, a proposal, a clarifying question, a delegation @-pinging a peer).',
-      '  2. A reaction via `pub.react` ... when the message acknowledges, agrees, or otherwise signals something the room should know you saw. Reacting is the right ack; it does not wake other Agents and does not cascade. **If you woke at all, you must produce a reply or a reaction. Silence is not an option once the runtime has decided to wake you.**',
+      '  1. A text reply via `pub_send` ... when you have something substantive to add (an answer, a proposal, a clarifying question, a delegation @-pinging a peer).',
+      '  2. A reaction via `pub_react` ... when the message acknowledges, agrees, or otherwise signals something the room should know you saw. Reacting is the right ack; it does not wake other Agents and does not cascade. **If you woke at all, you must produce a reply or a reaction. Silence is not an option once the runtime has decided to wake you.**',
       '',
-      'Use a `pub.react` emoji that matches your intent: ✓ for acknowledgement, 👍 for agreement, 👀 for "I see this and will act", ❤️ for appreciation. Avoid sending text replies that just say "ok" / "got it" / "sounds good" / "no further action" ... react instead.',
+      'Use a `pub_react` emoji that matches your intent: ✓ for acknowledgement, 👍 for agreement, 👀 for "I see this and will act", ❤️ for appreciation. Avoid sending text replies that just say "ok" / "got it" / "sounds good" / "no further action" ... react instead.',
       '',
       'Examples of when to react instead of replying:',
       '  - A peer answers a question you @-mentioned them to ask: react ✓ to confirm you saw the answer.',
@@ -1131,13 +1128,13 @@ export class AgentLoop {
       '',
       '## Private chat with the user',
       '',
-      'You have a persistent 1:1 chat with the user (the human operator) at `<home>/agents/<your-name>/chat.jsonl`, surfaced in their web UI at `/agent/<your-name>/chat`. The user posts there to talk to you privately ... messages to you alone, not the room. When the user spawns a task that originated in chat, the loop already routes your final answer back into that chat. But if you need to push something INTO that chat without the user prompting first ... a follow-up after pub work, a status update, a heads-up about something you noticed ... use the `chat.send` tool. It appends an assistant-role message to your chat log; the user sees it the next time they open or refresh the chat screen. Only the user sees it; other Agents do not.',
+      'You have a persistent 1:1 chat with the user (the human operator) at `<home>/agents/<your-name>/chat.jsonl`, surfaced in their web UI at `/agent/<your-name>/chat`. The user posts there to talk to you privately ... messages to you alone, not the room. When the user spawns a task that originated in chat, the loop already routes your final answer back into that chat. But if you need to push something INTO that chat without the user prompting first ... a follow-up after pub work, a status update, a heads-up about something you noticed ... use the `chat_send` tool. It appends an assistant-role message to your chat log; the user sees it the next time they open or refresh the chat screen. Only the user sees it; other Agents do not.',
       '',
-      'When to use `chat.send` vs `pub.send`:',
-      '  - `chat.send` is for the user only (private, 1:1 with you).',
-      '  - `pub.send` is for everyone in the pub (the room sees it). Use this when the work is team-relevant or another Agent is involved.',
+      'When to use `chat_send` vs `pub_send`:',
+      '  - `chat_send` is for the user only (private, 1:1 with you).',
+      '  - `pub_send` is for everyone in the pub (the room sees it). Use this when the work is team-relevant or another Agent is involved.',
       '',
-      'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat.send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat.send` explicitly.',
+      'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat_send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat_send` explicitly.',
       '',
     ]
     const lines: string[] = [
@@ -1151,7 +1148,7 @@ export class AgentLoop {
       'You can call tools by emitting a fenced code block tagged `tool` with a JSON object inside:',
       '',
       '```tool',
-      '{ "tool": "fs.read", "args": { "path": "/commons/reference/notes.md" }, "predicted_outcome": "the notes file content", "reason": "I need to consult the notes before answering" }',
+      '{ "tool": "fs_read", "args": { "path": "/commons/reference/notes.md" }, "predicted_outcome": "the notes file content", "reason": "I need to consult the notes before answering" }',
       '```',
       '',
       'Multiple tool blocks in one response are dispatched sequentially. A response with no tool blocks is treated as your final answer and the task is marked done.',
@@ -1169,11 +1166,11 @@ export class AgentLoop {
       '',
       '## Brain notes are managed only via brain.* tools',
       '',
-      'There is exactly ONE brain. It is the set of slug-keyed notes you read with `brain.read`, list with `brain.list`, search with `brain.search`, write with `brain.write` (upsert when `slug` is supplied), and delete with `brain.delete`.',
+      'There is exactly ONE brain. It is the set of slug-keyed notes you read with `brain_read`, list with `brain_list`, search with `brain_search`, write with `brain_write` (upsert when `slug` is supplied), and delete with `brain_delete`.',
       '',
-      'NEVER use `fs.read`, `fs.write`, `fs.edit`, or `fs.delete` on `/brain/...` paths. There is no separate filesystem layer for the brain ... a successful `fs.edit` to a brain path would corrupt the index, but the dispatcher will refuse such calls before they execute. Use `brain.write` to update an existing note: pass the same `slug`, your new `title`, and the full `body`. brain.write is upsert.',
+      'NEVER use `fs_read`, `fs_write`, `fs_edit`, or `fs_delete` on `/brain/...` paths. There is no separate filesystem layer for the brain ... a successful `fs_edit` to a brain path would corrupt the index, but the dispatcher will refuse such calls before they execute. Use `brain_write` to update an existing note: pass the same `slug`, your new `title`, and the full `body`. brain.write is upsert.',
       '',
-      'To revise an existing brain note: call `brain.read` first to load the current body, edit the body in your reasoning, then call `brain.write` with the same `slug`, the same (or revised) `title`, and the full revised `body`. Confirm with another `brain.read`.',
+      'To revise an existing brain note: call `brain_read` first to load the current body, edit the body in your reasoning, then call `brain_write` with the same `slug`, the same (or revised) `title`, and the full revised `body`. Confirm with another `brain_read`.',
     ]
     if (this.opts.skillProvider) {
       const [skills, conflicts] = await Promise.all([
@@ -1344,7 +1341,7 @@ export class AgentLoop {
  * the wake source uses (`pub.handle: <pub> ← <agent_id> (<rule>)`),
  * so the loop can distinguish a wake-driven task from a normal
  * user-driven one without needing a new schema field. Wake tasks
- * have a contract: the loop must produce a `pub.send` or `pub.react`
+ * have a contract: the loop must produce a `pub_send` or `pub_react`
  * before terminating.
  */
 function isPubWakeTask(task: TaskRecord): boolean {
@@ -1353,27 +1350,27 @@ function isPubWakeTask(task: TaskRecord): boolean {
 
 /**
  * Directive nudge appended to the loop history when a wake task tries
- * to terminate without calling `pub.send` or `pub.react`. Include the
+ * to terminate without calling `pub_send` or `pub_react`. Include the
  * trigger message_id so the model can react to the right message.
  */
 function composeWakeNudge(task: TaskRecord): string {
   const idMatch = /Message id:\s*(\S+)/.exec(task.body)
   const messageId = idMatch?.[1] ?? '<message_id from the task body>'
   return [
-    'You produced a final-answer response without calling `pub.send` or `pub.react`.',
+    'You produced a final-answer response without calling `pub_send` or `pub_react`.',
     'This task was generated because a peer addressed you in a pub; your final-answer text is NOT delivered to the pub.',
     'Choose ONE now and emit a single fenced ```tool block:',
     '',
     '  - If you would react to ack the message: emit',
     '',
     '    ```tool',
-    `    { "tool": "pub.react", "args": { "message_id": "${messageId}", "emoji": "✓" }, "predicted_outcome": "reaction landed", "reason": "ack the message I was woken on" }`,
+    `    { "tool": "pub_react", "args": { "message_id": "${messageId}", "emoji": "✓" }, "predicted_outcome": "reaction landed", "reason": "ack the message I was woken on" }`,
     '    ```',
     '',
     '  - If you have a substantive text reply: emit',
     '',
     '    ```tool',
-    `    { "tool": "pub.send", "args": { "content": "<your reply>", "in_reply_to": "${messageId}" }, "predicted_outcome": "reply delivered", "reason": "responding to the wake message" }`,
+    `    { "tool": "pub_send", "args": { "content": "<your reply>", "in_reply_to": "${messageId}" }, "predicted_outcome": "reply delivered", "reason": "responding to the wake message" }`,
     '    ```',
     '',
     'This is your last chance ... if you produce another response without one of those calls, the task terminates and the room sees no response.',

@@ -55,7 +55,7 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true })
 })
 
-describe('brain.search_agent', () => {
+describe('brain_search_agent', () => {
   it('throws BrainPermissionDeniedError when caller is not in the readers list', async () => {
     await expect(
       brainSearchAgent.execute({ agent: 'hobby', query: 'gemini', limit: 20 }, ctxFor('simon')),
@@ -106,7 +106,7 @@ describe('brain.search_agent', () => {
   })
 })
 
-describe('brain.list_agent', () => {
+describe('brain_list_agent', () => {
   it('throws BrainPermissionDeniedError when caller is not in the readers list', async () => {
     await expect(
       brainListAgent.execute({ agent: 'hobby', limit: 50 }, ctxFor('simon')),

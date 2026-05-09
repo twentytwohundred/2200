@@ -212,7 +212,7 @@ describe('installExtension', () => {
         approve: () =>
           Promise.resolve({
             requested: ['network'] as const,
-            approved: ['network', 'pub.send'] as ExtensionPermission[],
+            approved: ['network', 'pub_send'] as ExtensionPermission[],
           }),
       }),
     ).rejects.toThrow(/not declared in the manifest/)
@@ -395,7 +395,7 @@ describe('updateExtension', () => {
     const src2 = await makeSource({
       name: 'bumpy',
       version: '0.2.0',
-      permissions: ['pub.send'],
+      permissions: ['pub_send'],
     })
     const result = await updateExtension({
       home,

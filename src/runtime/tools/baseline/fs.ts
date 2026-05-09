@@ -26,7 +26,7 @@ const FsReadArgsSchema = z.object({
 })
 
 export const fsRead = defineTool({
-  name: 'fs.read',
+  name: 'fs_read',
   description: 'Read a file. Returns its UTF-8 contents.',
   idempotency: 'pure',
   argsSchema: FsReadArgsSchema,
@@ -47,7 +47,7 @@ const FsWriteArgsSchema = z.object({
 })
 
 export const fsWrite = defineTool({
-  name: 'fs.write',
+  name: 'fs_write',
   description: 'Write a file. Atomic via temp+rename. Creates parent dirs.',
   idempotency: 'checkpointed',
   argsSchema: FsWriteArgsSchema,
@@ -75,7 +75,7 @@ const FsEditArgsSchema = z.object({
 })
 
 export const fsEdit = defineTool({
-  name: 'fs.edit',
+  name: 'fs_edit',
   description: 'Find-and-replace within a file. Atomic write.',
   idempotency: 'checkpointed',
   argsSchema: FsEditArgsSchema,
@@ -122,7 +122,7 @@ const FsListArgsSchema = z.object({
 })
 
 export const fsList = defineTool({
-  name: 'fs.list',
+  name: 'fs_list',
   description: 'List entries in a directory. Returns names + types (file/dir).',
   idempotency: 'pure',
   argsSchema: FsListArgsSchema,
@@ -147,7 +147,7 @@ const FsDeleteArgsSchema = z.object({
 })
 
 export const fsDelete = defineTool({
-  name: 'fs.delete',
+  name: 'fs_delete',
   description: 'Delete a file. Never recursive at v1.',
   idempotency: 'destructive',
   argsSchema: FsDeleteArgsSchema,

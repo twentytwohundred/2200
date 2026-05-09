@@ -9,8 +9,8 @@
  * permission set is empty: no other Agent can read until the owner
  * (or the operator via `2200 brain permissions`) grants access.
  *
- * The check happens at tool-dispatch time: `brain.search_agent` and
- * `brain.list_agent` consult `canReadBrain(home, owner, caller)`
+ * The check happens at tool-dispatch time: `brain_search_agent` and
+ * `brain_list_agent` consult `canReadBrain(home, owner, caller)`
  * before opening the owner's index. The owner Agent's writer
  * continues to use a read-write handle; cross-Agent readers open
  * the same SQLite file with `?mode=ro` so there is no second writer.

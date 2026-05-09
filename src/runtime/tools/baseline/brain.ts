@@ -39,7 +39,7 @@ const BrainWriteArgsSchema = z.object({
 })
 
 export const brainWrite = defineTool({
-  name: 'brain.write',
+  name: 'brain_write',
   description: 'Write a brain note (slug-based; frontmatter+body). Upsert-style.',
   idempotency: 'checkpointed',
   argsSchema: BrainWriteArgsSchema,
@@ -73,7 +73,7 @@ const BrainReadArgsSchema = z.object({
 })
 
 export const brainRead = defineTool({
-  name: 'brain.read',
+  name: 'brain_read',
   description: 'Read a brain note by slug. Returns frontmatter + body.',
   idempotency: 'pure',
   argsSchema: BrainReadArgsSchema,
@@ -108,7 +108,7 @@ const BrainSearchArgsSchema = z.object({
 })
 
 export const brainSearch = defineTool({
-  name: 'brain.search',
+  name: 'brain_search',
   description: "Full-text search this Agent's brain via SQLite FTS5.",
   idempotency: 'pure',
   argsSchema: BrainSearchArgsSchema,
@@ -134,7 +134,7 @@ const BrainListArgsSchema = z.object({
 })
 
 export const brainList = defineTool({
-  name: 'brain.list',
+  name: 'brain_list',
   description: "Enumerate this Agent's brain notes, sorted by updated descending.",
   idempotency: 'pure',
   argsSchema: BrainListArgsSchema,
@@ -166,7 +166,7 @@ const BrainDeleteArgsSchema = z.object({
 })
 
 export const brainDelete = defineTool({
-  name: 'brain.delete',
+  name: 'brain_delete',
   description: 'Delete a brain note by slug. Idempotent on missing.',
   idempotency: 'destructive',
   argsSchema: BrainDeleteArgsSchema,
@@ -191,7 +191,7 @@ const BrainSearchAgentArgsSchema = z.object({
 })
 
 export const brainSearchAgent = defineTool({
-  name: 'brain.search_agent',
+  name: 'brain_search_agent',
   description:
     "Full-text search another Agent's brain via SQLite FTS5. Requires the owner to have granted read permission via `2200 brain permissions <owner> --add <caller>`.",
   idempotency: 'pure',
@@ -246,7 +246,7 @@ const BrainListAgentArgsSchema = z.object({
 })
 
 export const brainListAgent = defineTool({
-  name: 'brain.list_agent',
+  name: 'brain_list_agent',
   description:
     "Enumerate another Agent's brain notes (no body), sorted by updated descending. Requires permission as for brain.search_agent.",
   idempotency: 'pure',
@@ -289,7 +289,7 @@ const BrainReadSharedArgsSchema = z.object({
 })
 
 export const brainReadShared = defineTool({
-  name: 'brain.read_shared',
+  name: 'brain_read_shared',
   description:
     "Read a shared brain note by slug from <home>/shared/brain/. The shared brain is one note pool every Agent on this instance can read and write; it's the place to look for the platform overview, team roster, operator profile, and shared conventions.",
   idempotency: 'pure',
@@ -318,7 +318,7 @@ const BrainSearchSharedArgsSchema = z.object({
 })
 
 export const brainSearchShared = defineTool({
-  name: 'brain.search_shared',
+  name: 'brain_search_shared',
   description:
     "Full-text search the shared brain at <home>/shared/brain/ via SQLite FTS5. Returns hits sorted by relevance. Start any orientation pass here ('platform', 'team', 'operator') ... the shared brain holds instance-level context every Agent should know about.",
   idempotency: 'pure',
@@ -341,7 +341,7 @@ const BrainListSharedArgsSchema = z.object({
 })
 
 export const brainListShared = defineTool({
-  name: 'brain.list_shared',
+  name: 'brain_list_shared',
   description:
     'Enumerate shared brain notes at <home>/shared/brain/ (no body), sorted by updated descending. Filter by type or tag.',
   idempotency: 'pure',
@@ -374,7 +374,7 @@ const BrainWriteSharedArgsSchema = z.object({
 })
 
 export const brainWriteShared = defineTool({
-  name: 'brain.write_shared',
+  name: 'brain_write_shared',
   description:
     'Write a note into the shared brain at <home>/shared/brain/. Upsert-style. The shared brain is community-writable at v1; reserve it for instance-level context everyone benefits from (conventions, decisions, runbooks). Per-Agent state should live in your own brain via brain.write.',
   idempotency: 'checkpointed',

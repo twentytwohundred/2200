@@ -80,7 +80,7 @@ export interface DispatcherOptions {
 }
 
 export interface DispatchInput {
-  /** Tool name, e.g., 'fs.read'. */
+  /** Tool name, e.g., 'fs_read'. */
   tool: string
   /** Args object passed to the tool. Validated by the tool's argsSchema. */
   args: unknown
@@ -115,15 +115,15 @@ export class ToolDispatcher {
   }
 
   async dispatch(input: DispatchInput): Promise<DispatchResult> {
-    // Resolve wire names (`schedule_add`) back to internal dotted
-    // names (`schedule.add`) when the model echoes the underscored
-    // form it saw in the native-tool-use spec. The model can
-    // legitimately produce either name (it sees both in different
-    // contexts: dotted in the system prompt's tool descriptions,
-    // underscored in Anthropic/OpenAI's `tools[]` field). Accept
-    // both rather than make the model's choice load-bearing.
-    const resolvedName = this.resolveToolName(input.tool)
-    const tool = this.options.registry.find(resolvedName)
+    // Tool names are underscored throughout the runtime, but a model
+    // that was trained on the prior dotted convention may still emit
+    // `fs.read` instead of `fs_read` in its fenced-text output. We
+    // accept either: if the requested name doesn't resolve, try
+    // replacing the first dot with an underscore. Tolerant parser
+    // pattern; cheap defensive fallback.
+    const tool =
+      this.options.registry.find(input.tool) ??
+      this.options.registry.find(input.tool.replace('.', '_'))
     if (!tool) {
       throw new ToolNotFoundError(input.tool)
     }
@@ -195,7 +195,7 @@ export class ToolDispatcher {
       allowedToolNames: this.options.allowedToolNames,
       taskIdempotency: input.taskIdempotency,
       resolvedPaths,
-      shellCommand: input.tool === 'shell.run' ? (validatedArgs['command'] as string | null) : null,
+      shellCommand: input.tool === 'shell_run' ? (validatedArgs['command'] as string | null) : null,
     }
     const permResult = evaluatePerm(permCtx)
     const permId = newPermId()
@@ -294,29 +294,6 @@ export class ToolDispatcher {
     }
 
     return { output, callId, planId, permId, runId, durationMs }
-  }
-
-  /**
-   * Translate a tool name from the model's wire form (underscored,
-   * for native tool-use compatibility) back to the internal dotted
-   * form. Returns the input unchanged if the registry already has it
-   * or if no underscore-to-dot translation matches.
-   *
-   * Internal names use exactly one dot to separate the namespace
-   * from the local tool name (`fs.read`, `brain.search_shared`,
-   * `schedule.add`). Wire names replace that dot with an underscore
-   * (`fs_read`, `brain_search_shared`, `schedule_add`). To translate,
-   * we replace the FIRST underscore with a dot and check the
-   * registry. If the result resolves, use it; otherwise return the
-   * original name and let ToolNotFoundError surface to the caller.
-   */
-  private resolveToolName(name: string): string {
-    if (this.options.registry.find(name)) return name
-    const firstUnderscore = name.indexOf('_')
-    if (firstUnderscore === -1) return name
-    const candidate = name.slice(0, firstUnderscore) + '.' + name.slice(firstUnderscore + 1)
-    if (this.options.registry.find(candidate)) return candidate
-    return name
   }
 }
 

@@ -136,18 +136,18 @@ function fakeResponse(text: string, cost = 0): CompletionResponse {
 
 describe('parseToolCalls', () => {
   it('extracts a single tool block', () => {
-    const text = 'Reading the file...\n```tool\n{"tool":"fs.read","args":{"path":"/x"}}\n```'
+    const text = 'Reading the file...\n```tool\n{"tool":"fs_read","args":{"path":"/x"}}\n```'
     const r = parseToolCalls(text)
     expect(r.calls.length).toBe(1)
-    expect(r.calls[0]?.tool).toBe('fs.read')
+    expect(r.calls[0]?.tool).toBe('fs_read')
     expect(r.errors.length).toBe(0)
   })
 
   it('extracts multiple blocks in order', () => {
     const text =
-      '```tool\n{"tool":"fs.read","args":{"path":"/a"}}\n```\nthen\n```tool\n{"tool":"fs.write","args":{"path":"/b","content":"x"}}\n```'
+      '```tool\n{"tool":"fs_read","args":{"path":"/a"}}\n```\nthen\n```tool\n{"tool":"fs_write","args":{"path":"/b","content":"x"}}\n```'
     const r = parseToolCalls(text)
-    expect(r.calls.map((c) => c.tool)).toEqual(['fs.read', 'fs.write'])
+    expect(r.calls.map((c) => c.tool)).toEqual(['fs_read', 'fs_write'])
   })
 
   it('returns errors on bad JSON', () => {
@@ -174,7 +174,7 @@ describe('parseToolCalls', () => {
     // Native Anthropic-style: <invoke name="<actual tool>">.
     const text = [
       '<function_calls>',
-      '<invoke name="pub.read">',
+      '<invoke name="pub_read">',
       '<parameter name="args">{"pub_name": "ops"}</parameter>',
       '<parameter name="predicted_outcome">recent messages</parameter>',
       '<parameter name="reason">need context</parameter>',
@@ -184,14 +184,17 @@ describe('parseToolCalls', () => {
     const r = parseToolCalls(text)
     expect(r.errors).toEqual([])
     expect(r.calls).toHaveLength(1)
-    expect(r.calls[0]?.tool).toBe('pub.read')
+    expect(r.calls[0]?.tool).toBe('pub_read')
     expect(r.calls[0]?.args).toEqual({ pub_name: 'ops' })
     expect(r.calls[0]?.predicted_outcome).toBe('recent messages')
   })
 
   it('falls back to <function_calls> XML with tool name in a "tool" parameter', () => {
     // Claude-Code-trained Haiku reflex: <invoke name="tool_code"> with the
-    // real tool nested as a parameter.
+    // real tool nested as a parameter. The model in this fixture emits
+    // the legacy dotted name; the parser preserves it verbatim and the
+    // dispatcher's tolerant resolver translates dot to underscore on
+    // lookup. The parser test asserts the captured name only.
     const text = [
       '<function_calls>',
       '<invoke name="tool_code">',
@@ -212,24 +215,24 @@ describe('parseToolCalls', () => {
   it('parses both fenced and XML calls in the same response, fenced first', () => {
     const text = [
       '```tool',
-      '{"tool":"pub.read","args":{"pub_name":"ops"}}',
+      '{"tool":"pub_read","args":{"pub_name":"ops"}}',
       '```',
       'Then I want to send:',
       '<function_calls>',
-      '<invoke name="pub.send">',
+      '<invoke name="pub_send">',
       '<parameter name="args">{"pub_name": "ops", "content": "hi"}</parameter>',
       '</invoke>',
       '</function_calls>',
     ].join('\n')
     const r = parseToolCalls(text)
     expect(r.errors).toEqual([])
-    expect(r.calls.map((c) => c.tool)).toEqual(['pub.read', 'pub.send'])
+    expect(r.calls.map((c) => c.tool)).toEqual(['pub_read', 'pub_send'])
   })
 
   it('reports errors on XML blocks with malformed args JSON', () => {
     const text = [
       '<function_calls>',
-      '<invoke name="pub.read">',
+      '<invoke name="pub_read">',
       '<parameter name="args">not-json</parameter>',
       '</invoke>',
       '</function_calls>',
@@ -243,14 +246,14 @@ describe('parseToolCalls', () => {
 
 describe('hashArgs', () => {
   it('is stable across key order', () => {
-    const a = hashArgs('fs.read', { path: '/a', max_bytes: 100 })
-    const b = hashArgs('fs.read', { max_bytes: 100, path: '/a' })
+    const a = hashArgs('fs_read', { path: '/a', max_bytes: 100 })
+    const b = hashArgs('fs_read', { max_bytes: 100, path: '/a' })
     expect(a).toBe(b)
   })
 
   it('differs across tool names', () => {
-    const a = hashArgs('fs.read', { path: '/a' })
-    const b = hashArgs('fs.write', { path: '/a' })
+    const a = hashArgs('fs_read', { path: '/a' })
+    const b = hashArgs('fs_write', { path: '/a' })
     expect(a).not.toBe(b)
   })
 })
@@ -279,10 +282,10 @@ describe('AgentLoop model selection (followup_model_id)', () => {
 
     const provider = new CapturingProvider([
       fakeResponse(
-        '```tool\n{"tool":"fs.write","args":{"path":"/project/x.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+        '```tool\n{"tool":"fs_write","args":{"path":"/project/x.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
       ),
       fakeResponse(
-        '```tool\n{"tool":"fs.write","args":{"path":"/project/y.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+        '```tool\n{"tool":"fs_write","args":{"path":"/project/y.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
       ),
       fakeResponse('Done.'),
     ])
@@ -329,7 +332,7 @@ describe('AgentLoop model selection (followup_model_id)', () => {
 
     const provider = new CapturingProvider([
       fakeResponse(
-        '```tool\n{"tool":"fs.write","args":{"path":"/project/a.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
+        '```tool\n{"tool":"fs_write","args":{"path":"/project/a.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```',
       ),
       fakeResponse('Done.'),
     ])
@@ -369,7 +372,7 @@ describe('AgentLoop happy path', () => {
 
     const provider = new FakeProvider([
       fakeResponse(
-        'Writing a file.\n```tool\n{"tool":"fs.write","args":{"path":"/project/note.md","content":"hello"},"predicted_outcome":"file written","reason":"persist"}\n```',
+        'Writing a file.\n```tool\n{"tool":"fs_write","args":{"path":"/project/note.md","content":"hello"},"predicted_outcome":"file written","reason":"persist"}\n```',
         0.01,
       ),
       fakeResponse('Done. Wrote note.md.', 0.005),
@@ -546,7 +549,7 @@ describe('AgentLoop detector trips', () => {
     for (let i = 0; i < 6; i++) {
       script.push(
         fakeResponse(
-          '```tool\n{"tool":"fs.read","args":{"path":"/project/target.md"},"predicted_outcome":"read","reason":"r"}\n```',
+          '```tool\n{"tool":"fs_read","args":{"path":"/project/target.md"},"predicted_outcome":"read","reason":"r"}\n```',
         ),
       )
     }
@@ -599,7 +602,7 @@ describe('AgentLoop detector trips', () => {
     const provider = new FakeProvider([
       // First turn: try to read a non-existent file.
       fakeResponse(
-        '```tool\n{"tool":"fs.read","args":{"path":"/project/missing.md"},"predicted_outcome":"text","reason":"r"}\n```',
+        '```tool\n{"tool":"fs_read","args":{"path":"/project/missing.md"},"predicted_outcome":"text","reason":"r"}\n```',
       ),
       // Second turn: model recovers, gives a final answer.
       fakeResponse('I tried to read but the file was missing. Stopping.'),
@@ -637,7 +640,7 @@ describe('AgentLoop detector trips', () => {
     for (let i = 0; i < 10; i++) {
       script.push(
         fakeResponse(
-          `\`\`\`tool\n{"tool":"fs.read","args":{"path":"/project/a.md","max_bytes":${String(i + 1)}},"predicted_outcome":"text","reason":"r"}\n\`\`\``,
+          `\`\`\`tool\n{"tool":"fs_read","args":{"path":"/project/a.md","max_bytes":${String(i + 1)}},"predicted_outcome":"text","reason":"r"}\n\`\`\``,
         ),
       )
     }

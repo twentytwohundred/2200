@@ -69,7 +69,7 @@ const ScheduleAddArgsSchema = z
 
 export function makeScheduleAdd(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
-    name: 'schedule.add',
+    name: 'schedule_add',
     description:
       "Add a new schedule for yourself. Pass either `cron` (a standard 5-field cron expression like '0 8 * * 1-5' for weekdays 8am, plus optional `timezone`) OR `interval_seconds` (minimum 5). The `prompt` is what gets handed to you as the task body when the schedule fires; write it as a complete instruction, not a label. Returns the schedule id and next_fire_at.",
     idempotency: 'destructive',
@@ -106,7 +106,7 @@ const ScheduleListArgsSchema = z.object({})
 
 export function makeScheduleList(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
-    name: 'schedule.list',
+    name: 'schedule_list',
     description:
       'List your current schedules. Each entry carries id, description, prompt, timing, enabled, last_fired_at, next_fire_at.',
     idempotency: 'pure',
@@ -125,7 +125,7 @@ const ScheduleRemoveArgsSchema = z.object({
 
 export function makeScheduleRemove(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
-    name: 'schedule.remove',
+    name: 'schedule_remove',
     description:
       "Remove one of your schedules by id. Idempotent: removing a missing id returns ok without erroring (the supervisor's RPC handles this).",
     idempotency: 'destructive',
@@ -148,7 +148,7 @@ const ScheduleSetEnabledArgsSchema = z.object({
 
 export function makeScheduleSetEnabled(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
-    name: 'schedule.set_enabled',
+    name: 'schedule_set_enabled',
     description:
       'Pause or resume one of your schedules without removing it. Disabled schedules stop firing but their config is preserved; re-enable later to resume from the next fire window.',
     idempotency: 'destructive',
@@ -171,7 +171,7 @@ const ScheduleRunOnceArgsSchema = z.object({
 
 export function makeScheduleRunOnce(get: SupervisorRpcGetter): ToolDefinition {
   return defineTool({
-    name: 'schedule.run_once',
+    name: 'schedule_run_once',
     description:
       'Fire one of your schedules immediately, regardless of its next_fire_at. Useful for testing a freshly-added schedule, or for catching up after a missed window. Returns the synthetic task id.',
     idempotency: 'destructive',

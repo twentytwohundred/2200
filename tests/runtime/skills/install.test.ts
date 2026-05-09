@@ -84,12 +84,12 @@ describe('installSkill', () => {
       name: 'finance',
       description: 'Track finances',
       tags: ['money', 'cron'],
-      tools: ['fs.read', 'web.fetch'],
+      tools: ['fs_read', 'web_fetch'],
     })
     const result = await installSkill({ home, source: localSource(src) })
     expect(result.skill.name).toBe('finance')
     expect(result.skill.frontmatter.tags).toEqual(['money', 'cron'])
-    expect(result.skill.frontmatter.tools).toEqual(['fs.read', 'web.fetch'])
+    expect(result.skill.frontmatter.tools).toEqual(['fs_read', 'web_fetch'])
     expect(await fileExists(join(skillsHome(home), 'finance', 'SKILL.md'))).toBe(true)
   })
 

@@ -111,7 +111,7 @@ const PubSendArgsSchema = z.object({
 })
 
 export const pubSend = defineTool({
-  name: 'pub.send',
+  name: 'pub_send',
   description: 'Post a message to a pub. Returns the assigned message_id and timestamp.',
   idempotency: 'checkpointed',
   argsSchema: PubSendArgsSchema,
@@ -153,7 +153,7 @@ const PubReadArgsSchema = z.object({
 })
 
 export const pubRead = defineTool({
-  name: 'pub.read',
+  name: 'pub_read',
   description:
     'Read messages from a pub since the per-Agent watermark. Default mode advances the watermark; explicit since_message_id is non-mutating.',
   idempotency: 'pure',
@@ -199,7 +199,7 @@ export const pubRead = defineTool({
 const PubListPubsArgsSchema = z.object({}).strict()
 
 export const pubListPubs = defineTool({
-  name: 'pub.list_pubs',
+  name: 'pub_list_pubs',
   description:
     'List pubs on this instance. Reports pub name, state (running/stopped/errored), and port. The Agent participates in pubs that are running.',
   idempotency: 'pure',
@@ -226,7 +226,7 @@ const PubReactArgsSchema = z.object({
 })
 
 export const pubReact = defineTool({
-  name: 'pub.react',
+  name: 'pub_react',
   description:
     'Add a reaction to a message in a pub. Re-react with the same emoji is a server-side no-op; re-react with a different emoji replaces.',
   idempotency: 'checkpointed',

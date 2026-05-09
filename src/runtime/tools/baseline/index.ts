@@ -30,15 +30,15 @@ import { scheduleTools, type SupervisorRpcGetter } from './schedule.js'
  * Epic 8 PR C (brain.* swapped from path-based v1 stubs to
  * slug-based Phase A: brain.write/read/search/list/delete; dropped
  * brain.links — Phase C delivers `brain.get_links`); bumped to
- * include `notification.inform` for Epic 7 Phase B (fire-and-forget
- * passive notification surface); bumped 23 → 24 with `system.whoami`
+ * include `notification_inform` for Epic 7 Phase B (fire-and-forget
+ * passive notification surface); bumped 23 → 24 with `system_whoami`
  * so Agents can introspect their live runtime model with ground
- * truth, not prompt-level assertion; bumped 24 → 25 with `chat.send`
+ * truth, not prompt-level assertion; bumped 24 → 25 with `chat_send`
  * so Agents can push unsolicited assistant-role messages into their
  * own per-Agent private chat thread (the inverse of the user → agent
  * direction the chat HTTP endpoint already supports); bumped 25 → 29
- * with `brain.read_shared`, `brain.search_shared`, `brain.list_shared`,
- * and `brain.write_shared` so every Agent can see the instance's
+ * with `brain_read_shared`, `brain_search_shared`, `brain_list_shared`,
+ * and `brain_write_shared` so every Agent can see the instance's
  * shared brain at <home>/shared/brain/ (platform overview, team
  * roster, operator profile, conventions); bumped 29 → 34 with
  * `schedule.add/list/remove/set_enabled/run_once` so Agents can
@@ -46,51 +46,51 @@ import { scheduleTools, type SupervisorRpcGetter } from './schedule.js'
  * of waiting for the operator to wire each one through the CLI.
  */
 export const BASELINE_TOOL_NAMES: readonly string[] = [
-  'fs.read',
-  'fs.write',
-  'fs.edit',
-  'fs.list',
-  'fs.delete',
-  'shell.run',
-  'web.fetch',
-  'web.search',
-  'brain.write',
-  'brain.read',
-  'brain.search',
-  'brain.list',
-  'brain.delete',
-  'brain.search_agent',
-  'brain.list_agent',
-  'time.now',
-  'time.sleep',
-  'pub.send',
-  'pub.read',
-  'pub.list_pubs',
-  'pub.react',
-  'notification.ask',
-  'notification.inform',
-  'system.whoami',
-  'chat.send',
-  'brain.read_shared',
-  'brain.search_shared',
-  'brain.list_shared',
-  'brain.write_shared',
-  'schedule.add',
-  'schedule.list',
-  'schedule.remove',
-  'schedule.set_enabled',
-  'schedule.run_once',
+  'fs_read',
+  'fs_write',
+  'fs_edit',
+  'fs_list',
+  'fs_delete',
+  'shell_run',
+  'web_fetch',
+  'web_search',
+  'brain_write',
+  'brain_read',
+  'brain_search',
+  'brain_list',
+  'brain_delete',
+  'brain_search_agent',
+  'brain_list_agent',
+  'time_now',
+  'time_sleep',
+  'pub_send',
+  'pub_read',
+  'pub_list_pubs',
+  'pub_react',
+  'notification_ask',
+  'notification_inform',
+  'system_whoami',
+  'chat_send',
+  'brain_read_shared',
+  'brain_search_shared',
+  'brain_list_shared',
+  'brain_write_shared',
+  'schedule_add',
+  'schedule_list',
+  'schedule_remove',
+  'schedule_set_enabled',
+  'schedule_run_once',
 ]
 
 export interface BaselineServersOptions {
   /**
    * Returns the live IdentityRecord of the calling Agent process.
-   * Used by `system.whoami` so the tool reflects in-memory ground
+   * Used by `system_whoami` so the tool reflects in-memory ground
    * truth (what the LLM provider is actually bound to), not the
    * on-disk frontmatter (which can drift if an operator edits the
    * identity file without restarting the Agent).
    *
-   * Optional: tests that don't exercise `system.whoami` can omit it.
+   * Optional: tests that don't exercise `system_whoami` can omit it.
    * The whoami tool will throw if invoked without a getter.
    */
   getIdentity?: IdentityGetter

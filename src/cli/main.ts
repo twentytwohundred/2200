@@ -3188,7 +3188,7 @@ async function readSecretFromStdin(): Promise<string> {
  * Loads the user's pub credential, opens a `PubClient` against the
  * resolved pub, prints incoming messages to stdout with sender
  * attribution, reads stdin via readline (each line becomes a
- * `pub.send`), exits cleanly on `/quit` / `/exit` / Ctrl+C.
+ * `pub_send`), exits cleanly on `/quit` / `/exit` / Ctrl+C.
  *
  * The user's own messages echo back via the pub's `room_state`
  * broadcast; we filter them out so the user does not see their

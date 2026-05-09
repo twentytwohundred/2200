@@ -103,14 +103,14 @@ describe('OpenAIProvider request shape', () => {
       modelId: 'gpt-5-4',
       messages: [
         { role: 'user', content: 'fetch the notes' },
-        { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
-        { role: 'tool', content: '{"tool":"fs.read","ok":true,"output":"hi"}' },
+        { role: 'assistant', content: '```tool\n{"tool":"fs_read","args":{"path":"x"}}\n```' },
+        { role: 'tool', content: '{"tool":"fs_read","ok":true,"output":"hi"}' },
       ],
     })
     expect((body as Record<string, unknown>)['messages']).toEqual([
       { role: 'user', content: 'fetch the notes' },
-      { role: 'assistant', content: '```tool\n{"tool":"fs.read","args":{"path":"x"}}\n```' },
-      { role: 'user', content: 'tool_result:\n{"tool":"fs.read","ok":true,"output":"hi"}' },
+      { role: 'assistant', content: '```tool\n{"tool":"fs_read","args":{"path":"x"}}\n```' },
+      { role: 'user', content: 'tool_result:\n{"tool":"fs_read","ok":true,"output":"hi"}' },
     ])
   })
 

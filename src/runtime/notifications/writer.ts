@@ -56,7 +56,7 @@ export interface EmitNotificationArgs {
   /**
    * When true, validate the requested tier against the Agent's
    * `notification_policy.tiers_allowed` and refuse tiers outside it.
-   * Set this for Agent-driven writes (e.g., the `notification.ask`
+   * Set this for Agent-driven writes (e.g., the `notification_ask`
    * tool) so Agents cannot escalate their own priority per CLAUDE.md
    * "Notification tier gating". Supervisor-driven emitters
    * (BudgetTracker, ProvisioningPipeline, detector trips) leave this

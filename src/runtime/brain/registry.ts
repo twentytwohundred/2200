@@ -48,7 +48,7 @@ export async function getOrOpenBrain(home: string, agentName: string): Promise<C
  * Open the shared brain (`<home>/shared/brain/`) and return a cached
  * handle. The shared brain is a single store/index for the whole
  * instance; everyone reads it; agents can write to it via the
- * `brain.write_shared` baseline tool.
+ * `brain_write_shared` baseline tool.
  *
  * Cache key uses a sentinel agent name "__shared__" so the per-agent
  * cache map can carry both kinds of handles without a second map.

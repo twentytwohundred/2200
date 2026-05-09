@@ -5,7 +5,7 @@
  * connection (auth handshake → connect → heartbeat loop → reconnect on
  * drop), exposes a small send/react/close surface for the pub MCP
  * tools to call, and caches incoming messages in a rolling buffer for
- * `pub.read` watermark-based dedup.
+ * `pub_read` watermark-based dedup.
  *
  * Per Poe's contract reply (2026-04-26):
  *   - Transport: `wss://<pub-host>/ws` (we use `ws://` for local)
@@ -25,7 +25,7 @@
  *                      `{ type: 'pub_reaction', data }`, `{ type: 'error', data }`
  *
  * The PR D wake source will subscribe to PubClient events to drive
- * the AgentLoop. PR C only exposes the cache for `pub.read` and
+ * the AgentLoop. PR C only exposes the cache for `pub_read` and
  * round-trip send/react.
  */
 import { WebSocket } from 'ws'

@@ -36,12 +36,12 @@ export const EXTENSION_SCHEMA_VERSION = 1 as const
  * before the install completes.
  *
  * - `tools`        register MCP servers / built-in tools the Agent can call.
- * - `brain.read`   read any Agent's brain.
- * - `brain.write`  write to any Agent's brain (dangerous; rarely needed).
+ * - `brain_read`   read any Agent's brain.
+ * - `brain_write`  write to any Agent's brain (dangerous; rarely needed).
  * - `notifications` emit notifications to the user.
  * - `schedule`    register cron-style timers.
- * - `pub.read`    read pub messages.
- * - `pub.send`    send pub messages.
+ * - `pub_read`    read pub messages.
+ * - `pub_send`    send pub messages.
  * - `network`     make outbound HTTP calls beyond the registered tool MCP servers.
  * - `fs.scratch`  read/write inside the Extension's own scratch directory.
  *
@@ -51,12 +51,12 @@ export const EXTENSION_SCHEMA_VERSION = 1 as const
  */
 export const ExtensionPermissionSchema = z.enum([
   'tools',
-  'brain.read',
-  'brain.write',
+  'brain_read',
+  'brain_write',
   'notifications',
   'schedule',
-  'pub.read',
-  'pub.send',
+  'pub_read',
+  'pub_send',
   'network',
   'fs.scratch',
 ])

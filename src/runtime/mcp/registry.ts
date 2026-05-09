@@ -4,7 +4,7 @@
  * Each Agent process gets one registry containing the baseline servers
  * (fs, shell, web, brain, time) plus any user-registered servers from
  * Identity. The registry is the single dispatch point: callers ask
- * `registry.find('fs.read')` and get back a `ToolDefinition` they can
+ * `registry.find('fs_read')` and get back a `ToolDefinition` they can
  * pass to the dispatcher. Tool resolution is by exact dotted name.
  */
 import type { McpServer } from './server.js'

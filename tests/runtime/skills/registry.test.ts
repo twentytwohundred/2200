@@ -73,12 +73,12 @@ describe('readSkill', () => {
       name: 'release-notes',
       description: 'Compose human-readable release notes from a git diff.',
       tags: ['release'],
-      tools: ['git.*', 'fs.read'],
+      tools: ['git.*', 'fs_read'],
       body: 'When asked for release notes, walk the diff and produce a bulleted list.',
     })
     const s = await readSkill(home, 'release-notes')
     expect(s.frontmatter.description).toMatch(/release notes/)
-    expect(s.frontmatter.tools).toEqual(['git.*', 'fs.read'])
+    expect(s.frontmatter.tools).toEqual(['git.*', 'fs_read'])
     expect(s.body).toMatch(/walk the diff/)
   })
 

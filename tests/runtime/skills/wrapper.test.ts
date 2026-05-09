@@ -30,14 +30,14 @@ describe('synthesizeSkillManifest', () => {
         name: 'demo',
         description: 'd',
         tags: [],
-        tools: ['fs.read', 'web.fetch'],
+        tools: ['fs_read', 'web_fetch'],
       },
     })
     const m = synthesizeSkillManifest(skill)
     expect(() => ExtensionManifestSchema.parse(m)).not.toThrow()
     expect(m.name).toBe('demo')
     expect(m.permissions).toEqual([])
-    expect(m.tools.map((t) => t.name)).toEqual(['fs.read', 'web.fetch'])
+    expect(m.tools.map((t) => t.name)).toEqual(['fs_read', 'web_fetch'])
     expect(m.version).toBe(SKILL_SYNTHETIC_VERSION)
   })
 

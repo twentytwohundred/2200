@@ -162,7 +162,7 @@ describe('end-to-end: submit -> poll -> loop -> done', () => {
 
     const provider = new FakeProvider([
       {
-        text: '```tool\n{"tool":"fs.read","args":{"path":"/project/input.md"},"predicted_outcome":"text","reason":"reading input"}\n```',
+        text: '```tool\n{"tool":"fs_read","args":{"path":"/project/input.md"},"predicted_outcome":"text","reason":"reading input"}\n```',
         finishReason: 'stop',
         costMetrics: { inputTokens: 50, outputTokens: 30, estDollars: 0.001 },
       },
@@ -225,7 +225,7 @@ describe('end-to-end: submit -> poll -> loop -> done', () => {
     expect(permEntries.length).toBeGreaterThanOrEqual(1)
     const aRun = await readFile(join(runDir, runEntries[0]!), 'utf8')
     expect(aRun).toContain('schema_version: 1')
-    expect(aRun).toContain('tool: fs.read')
+    expect(aRun).toContain('tool: fs_read')
   })
 
   it('marks the task blocked_on_detector when a trip fires', async () => {
@@ -237,7 +237,7 @@ describe('end-to-end: submit -> poll -> loop -> done', () => {
     const script: CompletionResponse[] = []
     for (let i = 0; i < 6; i++) {
       script.push({
-        text: '```tool\n{"tool":"fs.read","args":{"path":"/project/input.md"},"predicted_outcome":"text","reason":"r"}\n```',
+        text: '```tool\n{"tool":"fs_read","args":{"path":"/project/input.md"},"predicted_outcome":"text","reason":"r"}\n```',
         finishReason: 'stop',
         costMetrics: { inputTokens: 50, outputTokens: 20, estDollars: 0.001 },
       })

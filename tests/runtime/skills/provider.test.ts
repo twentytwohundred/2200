@@ -62,13 +62,13 @@ describe('FilesystemSkillProvider.resolve', () => {
     await dropSkill(
       'finance',
       'Track Mercury + Chase nightly.\nWalk through the steps.\n',
-      `name: finance\ndescription: nightly finance check\ntools: [fs.read, web.fetch]\n`,
+      `name: finance\ndescription: nightly finance check\ntools: [fs_read, web_fetch]\n`,
     )
     const provider = new FilesystemSkillProvider(home)
     const r = await provider.resolve('finance')
     expect(r).not.toBeNull()
     expect(r?.body).toContain('Track Mercury + Chase nightly')
-    expect(r?.toolDependencies).toEqual(['fs.read', 'web.fetch'])
+    expect(r?.toolDependencies).toEqual(['fs_read', 'web_fetch'])
   })
 
   it('returns null for missing skill', async () => {
