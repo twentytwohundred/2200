@@ -530,6 +530,22 @@ export class AgentProcess {
     this.taskInFlight = true
     const taskId = pending.frontmatter.id
     try {
+      // If the agent's local state machine is in a terminal-stuck
+      // state (blocked_on_detector from a prior trip; supervisor's
+      // resume RPC marked the task pending again but the agent's
+      // own machine never got the memo), the next heartbeat would
+      // overwrite the supervisor's `running` back to
+      // `blocked_on_detector`. Fix: when picking up a pending task,
+      // transition the machine back to running first. This is the
+      // missing edge in the resume flow.
+      if (this.machine.state === 'blocked_on_detector') {
+        try {
+          this.machine.transition('running', 'task picked up after resume')
+        } catch {
+          // illegal transition; carry on, the loop's own state will
+          // dominate
+        }
+      }
       await this.taskStore.update(taskId, (fm) => ({ ...fm, state: 'running' }))
       const result = await this.loop.run(pending)
       await this.recordResult(taskId, result)
