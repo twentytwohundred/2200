@@ -364,6 +364,22 @@ export class Supervisor {
 
     for (const [name, record] of Object.entries(this.state.pubs)) {
       if (record.state !== 'running' && record.state !== 'errored') continue
+      // If the recorded pub-server PID is still alive, the previous
+      // supervisor exited via SIGHUP (preserveChildren) and the
+      // pub-server is OUR child still listening on its port. Adopt
+      // rather than kill-and-respawn ... that flapping is what
+      // disconnects every agent's WebSocket and breaks Studio after a
+      // daemon restart. The pub-bridge will reconnect via its
+      // existing retry path.
+      if (record.pid !== null && isPidAlive(record.pid)) {
+        this.log.info('boot: pub-server still alive; adopting', {
+          name,
+          pid: record.pid,
+          port: record.port,
+        })
+        pubsRevived += 1
+        continue
+      }
       try {
         await killOrphanOnPort(record.port, this.log)
         await this.startPub(name)

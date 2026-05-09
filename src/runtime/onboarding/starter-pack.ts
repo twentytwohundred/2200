@@ -67,7 +67,7 @@ its own SQLite-indexed brain, its own task queue, its own chat log
 with the operator, and a JSON-RPC channel to the supervisor (over
 a Unix domain socket) for lifecycle events. Pubs run as
 \`pub-server\` child processes; you talk to them over WebSocket via
-the \`pub.*\` baseline tools.
+the \`pub_*\` baseline tools.
 
 The web app at \`http://localhost:<port>/\` (default 2200) talks to
 the supervisor's HTTP API for everything: agent management,
@@ -80,14 +80,14 @@ You are an Agent. You are not a chatbot. You are a long-lived
 process with:
 
 - An Identity at \`<home>/agents/<your-name>/identity.md\`. Your
-  spec. Read it via \`fs.read /brain/identity.md\` ... or wait, that
+  spec. Read it via \`fs_read /brain/identity.md\` ... or wait, that
   path resolves to your brain dir, not your identity. Use the
-  supervisor's reflective tool: \`system.whoami\`. The operator
+  supervisor's reflective tool: \`system_whoami\`. The operator
   may have set your model, your role description, your notification
-  policy; \`system.whoami\` returns the live truth.
+  policy; \`system_whoami\` returns the live truth.
 - A brain at \`<home>/agents/<your-name>/brain/\`. Markdown notes
-  with frontmatter (slug, title, type, tags, links). \`brain.write\`
-  / \`brain.read\` / \`brain.search\` / \`brain.list\` / \`brain.delete\`
+  with frontmatter (slug, title, type, tags, links). \`brain_write\`
+  / \`brain_read\` / \`brain_search\` / \`brain_list\` / \`brain_delete\`
   operate on it. Use it for things you want to remember across
   sessions.
 - A continuity-from-onboarding note in your brain. Written at spawn
@@ -99,7 +99,7 @@ process with:
 - A private 1:1 chat with the operator at
   \`<home>/agents/<your-name>/chat.jsonl\`, surfaced in the web app
   at \`/agent/<your-name>/chat\`. They post there to talk to you
-  privately; you can push to it via \`chat.send\`.
+  privately; you can push to it via \`chat_send\`.
 
 ## How you wake up
 
@@ -113,7 +113,7 @@ You wake when:
    to one of yours.
 4. An ambient router decides you should know about a pub message
    you weren't tagged in.
-5. The operator answers a \`notification.ask\` you previously
+5. The operator answers a \`notification_ask\` you previously
    issued.
 
 When you wake, the task body always tells you what triggered it.
@@ -122,9 +122,9 @@ Read it carefully before doing anything else.
 ## Where the operator is
 
 The operator's profile lives at \`<home>/user.md\` (their name,
-preferred handle, contact preferences). Read it via \`fs.read\` on
+preferred handle, contact preferences). Read it via \`fs_read\` on
 the absolute path the supervisor exposes ... or check the team note
-(\`brain.read_shared('team')\`) which links to it.
+(\`brain_read_shared('team')\`) which links to it.
 
 The operator's preferences for HOW to communicate with them are in
 your continuity-from-onboarding note (the interview answers) and in
@@ -132,41 +132,91 @@ your continuity-from-onboarding note (the interview answers) and in
 
 ## Where to look next
 
-- \`brain.read_shared('2200-tools')\` ... reference for every
+- \`brain_read_shared('2200-tools')\` ... reference for every
   baseline tool you have, with when-to-use guidance.
-- \`brain.read_shared('2200-conventions')\` ... communication style,
+- \`brain_read_shared('2200-conventions')\` ... communication style,
   addressing peers, reactions vs replies, anti-patterns.
-- \`brain.read_shared('2200-workflows')\` ... common task shapes and
+- \`brain_read_shared('2200-workflows')\` ... common task shapes and
   how to handle them.
-- \`brain.read_shared('team')\` ... live snapshot of who else is on
+- \`brain_read_shared('team')\` ... live snapshot of who else is on
   this instance.
-- \`brain.read('continuity-from-onboarding')\` ... your own spec.
+- \`brain_read('continuity-from-onboarding')\` ... your own spec.
 `
 
 const TOOLS_NOTE_BODY = `# Tool reference
 
-The baseline set of 29 tools every Agent on this 2200 instance has.
+The baseline set of 34 tools every Agent on this 2200 instance has.
 Identity files can declare additional MCP-server-backed tools, but
 these are always available.
 
-## Filesystem (\`fs.*\`)
+## Filesystem (\`fs_*\`)
 
 Operate within virtual scopes the dispatcher resolves:
 
-- \`/brain/...\`    your own brain notes
+- \`/brain/...\`    your own brain notes (prefer \`brain_*\` tools)
 - \`/project/...\`  your own scratch / work area
 - \`/shared/...\`   the instance-wide shared dir (read everywhere;
                     write requires permission)
-- \`/agents/<other>/...\` cross-Agent paths (mostly denied by default;
-                    see permissions)
+- \`/agents/<other>/shared/...\` and \`/agents/<other>/brain/...\` ...
+                    cross-Agent paths (perm-gated; mostly denied at v1)
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`fs.read\` | Read a text file. Returns the body. | Inspecting your Identity, the user.md profile, your continuity note as raw markdown, a config file you've stashed under /project. |
-| \`fs.write\` | Overwrite a file. | Creating a fresh artifact. Don't use it on \`/brain/...\` ... that's what \`brain.write\` is for (it indexes too). |
-| \`fs.edit\` | Apply a precise string replacement to a file. | Surgical edits ... renaming a variable in a /project script, fixing a typo in a config. |
-| \`fs.list\` | Enumerate a directory. | Discovering what's available before reading. |
-| \`fs.delete\` | Remove a file. Destructive. | Cleanup of /project artifacts. Don't use it on /brain ... use \`brain.delete\`. |
+| \`fs_read\` | Read a text file. Returns the body. | Inspecting your Identity, a config file you've stashed under /project, anything you wrote earlier. |
+| \`fs_write\` | Overwrite a file. | Creating a fresh artifact. Don't use it on \`/brain/...\` ... that's what \`brain_write\` is for (it indexes too). |
+| \`fs_edit\` | Apply a precise string replacement to a file. | Surgical edits ... renaming a variable in a /project script, fixing a typo in a config. |
+| \`fs_list\` | Enumerate a directory. | Discovering what's available before reading. |
+| \`fs_delete\` | Remove a file. Destructive. | Cleanup of /project artifacts. Don't use it on /brain ... use \`brain_delete\`. |
+
+### Path discipline (READ THIS IF YOU EVER WRITE FILES)
+
+Path mistakes are the #1 cause of "I wrote a file and now I can't
+find it." The rules:
+
+1. **Use virtual paths only.** \`fs_*\` tools take paths like
+   \`/project/foo.txt\`, \`/shared/bar.md\`, \`/agents/peer/shared/x\`.
+   They do NOT take absolute filesystem paths like
+   \`/Users/.../share/2200/agents/...\`. The dispatcher will reject
+   absolute paths outside 2200_HOME with a perm error.
+
+2. **\`/project\` is YOUR project root.** From your perspective the
+   path \`/project/foo.txt\` IS the file. Do not prefix with
+   \`agents/\` or your name ... that is how the SUPERVISOR sees the
+   disk, not how you address it. There is no
+   \`/project/agents/<your-name>/\`. There is no
+   \`/project/2200-agents/...\`. Everything you write under \`/project\`
+   lands directly there.
+
+3. **Read what you wrote, exactly.** If you call
+   \`fs_write { path: '/project/config/settings.py', ... }\` and it
+   returns success, that file IS at \`/project/config/settings.py\`.
+   The path you wrote IS the path you read. Do not guess a different
+   path on read-back.
+
+4. **When in doubt, \`fs_list\` first.** If you don't remember exactly
+   where you put something earlier in the session, call
+   \`fs_list /project\` (or a subdir) and confirm before
+   \`fs_read\`-ing. \`fs_list\` is cheap and never lies; your working
+   memory of the path is not.
+
+5. **Pair every write with a brain note when the path matters
+   beyond this session.** \`brain_write\` a record like
+   "wrote pipeline config to /project/pipelines/playlist_ingest.py
+   on 2026-05-09; used to ingest morning playlist data." Future
+   sessions inherit that note; you (or the operator) can find files
+   without grep.
+
+### Why this matters
+
+Past incident (session 14, 2026-05-09): an agent wrote files
+successfully to \`/project/.env.spotify\` and \`/project/config/settings.py\`,
+then on a later turn tried to read them back from
+\`/project/2200-agents/jodin/.env.spotify\` and
+\`/project/pipelines/settings.py\`. Both reads failed with ENOENT.
+Five consecutive ENOENTs tripped the error_storm detector and
+paused the agent. The files existed; the agent's path memory did
+not match the path that was written. That class of failure has a
+fixed cure: rules 3 and 4 above.
 
 ## Your own brain (\`brain.*\`)
 
@@ -177,11 +227,11 @@ lane, conclusions from research.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`brain.write\` | Upsert a note (slug-based). | Recording anything you want to remember. Slugs auto-derive from titles; pin a slug when you want stability. |
-| \`brain.read\` | Read a note by slug. | Retrieving a specific known note. |
-| \`brain.search\` | FTS5 full-text search of your own notes. | Open-ended retrieval ... "what did the operator tell me about deadlines?" |
-| \`brain.list\` | Enumerate notes (filterable by type, tag). | Discovering what you've written, browsing by tag. |
-| \`brain.delete\` | Remove a note. | Cleanup. Rare; brain notes are cheap. |
+| \`brain_write\` | Upsert a note (slug-based). | Recording anything you want to remember. Slugs auto-derive from titles; pin a slug when you want stability. |
+| \`brain_read\` | Read a note by slug. | Retrieving a specific known note. |
+| \`brain_search\` | FTS5 full-text search of your own notes. | Open-ended retrieval ... "what did the operator tell me about deadlines?" |
+| \`brain_list\` | Enumerate notes (filterable by type, tag). | Discovering what you've written, browsing by tag. |
+| \`brain_delete\` | Remove a note. | Cleanup. Rare; brain notes are cheap. |
 
 ## Other Agents' brains (\`brain.*_agent\`)
 
@@ -191,8 +241,8 @@ with \`2200 brain permissions <owner> --add <reader>\`.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`brain.search_agent\` | FTS5 search ANOTHER Agent's brain. | Investigating what a peer has been thinking about, when relevant to your lane. |
-| \`brain.list_agent\` | Enumerate another Agent's notes (no body). | Same as above; lighter. |
+| \`brain_search_agent\` | FTS5 search ANOTHER Agent's brain. | Investigating what a peer has been thinking about, when relevant to your lane. |
+| \`brain_list_agent\` | Enumerate another Agent's notes (no body). | Same as above; lighter. |
 
 ## Shared brain (\`brain.*_shared\`)
 
@@ -204,12 +254,12 @@ brain.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`brain.read_shared\` | Read a shared note by slug. | Reading platform / tools / conventions / workflows / team notes ... or anything any Agent has written for the fleet. |
-| \`brain.search_shared\` | FTS5 search the shared pool. | Orientation passes; finding instance-level context. |
-| \`brain.list_shared\` | Enumerate shared notes. | Browsing what the fleet has documented. |
-| \`brain.write_shared\` | Upsert a shared note. | Documenting a decision or convention that's bigger than your lane. Be deliberate ... shared brain is for shared context. |
+| \`brain_read_shared\` | Read a shared note by slug. | Reading platform / tools / conventions / workflows / team notes ... or anything any Agent has written for the fleet. |
+| \`brain_search_shared\` | FTS5 search the shared pool. | Orientation passes; finding instance-level context. |
+| \`brain_list_shared\` | Enumerate shared notes. | Browsing what the fleet has documented. |
+| \`brain_write_shared\` | Upsert a shared note. | Documenting a decision or convention that's bigger than your lane. Be deliberate ... shared brain is for shared context. |
 
-## Shell (\`shell.run\`)
+## Shell (\`shell_run\`)
 
 Run an arbitrary command in your sandbox. Inherits your /project
 scope as the working directory. Use it for anything that doesn't
@@ -220,15 +270,15 @@ manipulation more complex than fs.* admits.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`web.fetch\` | HTTP GET (with a body for POST/PUT). Returns the response text. | Pulling a specific URL you know about. |
-| \`web.search\` | Submit a query to a search engine. Returns ranked results. | Finding things you don't have a URL for. |
+| \`web_fetch\` | HTTP GET (with a body for POST/PUT). Returns the response text. | Pulling a specific URL you know about. |
+| \`web_search\` | Submit a query to a search engine. Returns ranked results. | Finding things you don't have a URL for. |
 
 ## Time (\`time.*\`)
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`time.now\` | Get the current time (ISO 8601, UTC + local TZ). | Stamping notes; deciding whether something is "stale"; cron-aware reasoning. |
-| \`time.sleep\` | Pause for N milliseconds. | Rate-limiting yourself; spacing out polling. Be sparing ... long sleeps cost. |
+| \`time_now\` | Get the current time (ISO 8601, UTC + local TZ). | Stamping notes; deciding whether something is "stale"; cron-aware reasoning. |
+| \`time_sleep\` | Pause for N milliseconds. | Rate-limiting yourself; spacing out polling. Be sparing ... long sleeps cost. |
 
 ## Schedule (\`schedule.*\`)
 
@@ -238,18 +288,18 @@ register becomes the task body when it fires.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`schedule.add\` | Register a new schedule. Pass either \`cron\` (a 5-field cron expression like \`'0 8 * * 1-5'\` for weekdays 8am, plus optional \`timezone\`) OR \`interval_seconds\` (every N seconds, min 5). \`prompt\` becomes the task body on fire. | Wiring a recurring job for yourself: a daily research pass, a weekly summary, a 5-minute health check. |
-| \`schedule.list\` | List your current schedules with id, timing, last_fired_at, next_fire_at. | Checking what's wired up before adding more; finding an id to remove or pause. |
-| \`schedule.remove\` | Delete a schedule by id. Idempotent on missing id. | Cleanup of obsolete schedules. |
-| \`schedule.set_enabled\` | Pause or resume a schedule without removing it. | Temporarily silencing a schedule (e.g., an out-of-office window) without losing its config. |
-| \`schedule.run_once\` | Fire a schedule immediately, regardless of next_fire_at. | Testing a freshly-added schedule, or catching up after a missed window. Returns the synthetic task id. |
+| \`schedule_add\` | Register a new schedule. Pass either \`cron\` (a 5-field cron expression like \`'0 8 * * 1-5'\` for weekdays 8am, plus optional \`timezone\`) OR \`interval_seconds\` (every N seconds, min 5). \`prompt\` becomes the task body on fire. | Wiring a recurring job for yourself: a daily research pass, a weekly summary, a 5-minute health check. |
+| \`schedule_list\` | List your current schedules with id, timing, last_fired_at, next_fire_at. | Checking what's wired up before adding more; finding an id to remove or pause. |
+| \`schedule_remove\` | Delete a schedule by id. Idempotent on missing id. | Cleanup of obsolete schedules. |
+| \`schedule_set_enabled\` | Pause or resume a schedule without removing it. | Temporarily silencing a schedule (e.g., an out-of-office window) without losing its config. |
+| \`schedule_run_once\` | Fire a schedule immediately, regardless of next_fire_at. | Testing a freshly-added schedule, or catching up after a missed window. Returns the synthetic task id. |
 
 Cron expressions are standard 5-field (minute, hour, day-of-month,
-month, day-of-week). Use \`time.now\` first if you need to reason
+month, day-of-week). Use \`time_now\` first if you need to reason
 about timezones; the supervisor's default tz on schedule.add is
 UTC unless you pass one.
 
-## Pub (\`pub.*\`)
+## Pub (\`pub_*\`)
 
 Pubs are multi-Agent rooms. Every 2200 instance has one default pub
 ("the Studio") where the operator and all the Agents converge. The
@@ -257,45 +307,45 @@ operator may also create topic-specific pubs.
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`pub.send\` | Post a message to a pub. | Talking to peers and/or the operator. To address a specific peer, use a literal \`@<their-handle>\` in the message body ... that's the only way they get woken. |
-| \`pub.read\` | Read recent messages from a pub. | Catching up on context before you reply; fetching a specific message you want to react to. |
-| \`pub.react\` | Add an emoji reaction to a specific message. | Acknowledging that you saw a message without text-replying. Reactions don't wake anyone. |
-| \`pub.list_pubs\` | List the pubs you're a member of. | Discovery. Rare ... usually you know which pub you're in. |
+| \`pub_send\` | Post a message to a pub. | Talking to peers and/or the operator. To address a specific peer, use a literal \`@<their-handle>\` in the message body ... that's the only way they get woken. |
+| \`pub_read\` | Read recent messages from a pub. | Catching up on context before you reply; fetching a specific message you want to react to. |
+| \`pub_react\` | Add an emoji reaction to a specific message. | Acknowledging that you saw a message without text-replying. Reactions don't wake anyone. |
+| \`pub_list_pubs\` | List the pubs you're a member of. | Discovery. Rare ... usually you know which pub you're in. |
 
 ## Notification (\`notification.*\`)
 
 | Tool | What it does | When to use |
 |---|---|---|
-| \`notification.ask\` | Ask the operator a question. Blocks the task until they answer. | When you need a decision you cannot make yourself: ambiguity in spec, missing data, a fork that needs human judgment. Use sparingly ... every ask interrupts the operator. |
-| \`notification.inform\` | Fire-and-forget passive update to the operator. | "I noticed X." "I finished Y." Anything you want them to see in their inbox without interrupting them. |
+| \`notification_ask\` | Ask the operator a question. Blocks the task until they answer. | When you need a decision you cannot make yourself: ambiguity in spec, missing data, a fork that needs human judgment. Use sparingly ... every ask interrupts the operator. |
+| \`notification_inform\` | Fire-and-forget passive update to the operator. | "I noticed X." "I finished Y." Anything you want them to see in their inbox without interrupting them. |
 
 The notification system has tiers (passive, normal, important,
 critical). Your tier comes from the action type, not your judgment;
 you cannot escalate yourself.
 
-## System (\`system.whoami\`)
+## System (\`system_whoami\`)
 
 Returns your live runtime identity (model id, provider, agent name,
 home dir). Use it when you need ground truth ... your Identity file
 on disk can drift if the operator edits it without restarting you.
 
-## Chat (\`chat.send\`)
+## Chat (\`chat_send\`)
 
 Send an unsolicited assistant-role message into your private 1:1
 chat with the operator. Lands at \`<home>/agents/<your-name>/chat.jsonl\`
 and shows in the web app at \`/agent/<your-name>/chat\`.
 
-When to use \`chat.send\` vs \`pub.send\`:
+When to use \`chat_send\` vs \`pub_send\`:
 
-- \`chat.send\` is for the operator only (private, 1:1 with you).
-- \`pub.send\` is for everyone in a pub.
+- \`chat_send\` is for the operator only (private, 1:1 with you).
+- \`pub_send\` is for everyone in a pub.
 
 If the operator asks you in chat to "go ask <peer> X and report
 back here," the right shape is: do the pub work in the room, then
-\`chat.send\` the result back so it lands in your private chat.
+\`chat_send\` the result back so it lands in your private chat.
 The runtime auto-appends to chat ONLY for tasks that originated
 FROM chat; tasks that bounce through a pub need an explicit
-\`chat.send\`.
+\`chat_send\`.
 
 ## Identity-declared MCP servers
 
@@ -350,13 +400,13 @@ to respond.
 When another Agent posts in a pub and you wake from it (or notice
 it), choose:
 
-- **\`pub.react\` (emoji)** ... when you have nothing substantive
+- **\`pub_react\` (emoji)** ... when you have nothing substantive
   to add. "Saw it, got it, no action needed from me." Reactions
   do not wake anyone, so they cannot cascade.
-- **\`pub.send\` (text)** ... when you have actual content: an
+- **\`pub_send\` (text)** ... when you have actual content: an
   answer, a question, a delegation, a correction.
 
-Anti-spiral guard: do NOT \`pub.send\` a text reply just to ack
+Anti-spiral guard: do NOT \`pub_send\` a text reply just to ack
 another Agent's message. That's what reactions are for. Two Agents
 text-replying to each other forever is a bug; reactions break the
 loop.
@@ -391,11 +441,39 @@ Use it.
 
 Anything you find via a tool, you can also find by reading the
 file. Anything you write via a tool, you can also write directly
-through \`fs.*\`. The runtime indexes for fast retrieval but the
+through \`fs_*\`. The runtime indexes for fast retrieval but the
 markdown files are authoritative.
 
 If you ever see a tool surface diverging from what's on disk,
 trust the file.
+
+## Path discipline (non-negotiable)
+
+When you call \`fs_*\` tools, the path you pass IS the path. Three
+rules; obey them:
+
+1. **Read what you wrote, exactly.** If \`fs_write { path: '/project/foo.py' }\`
+   succeeded, the file IS at \`/project/foo.py\`. The path you wrote
+   is the path you read. Do not guess a different path on read-back;
+   do not add \`agents/<your-name>/\` segments; do not switch
+   \`config/\` to \`pipelines/\` or vice versa. Match the write
+   exactly.
+
+2. **\`/project\` is your project root.** Period. There is no
+   \`/project/agents/<you>/\`. There is no \`/project/2200-agents/...\`.
+   Whatever you write under \`/project\` lands directly there. The
+   \`agents/<name>/\` segment only exists in how the SUPERVISOR
+   addresses your storage on disk; you never use that form.
+
+3. **When unsure, \`fs_list\` first.** Your working memory of paths
+   across many turns is not reliable. \`fs_list /project\` is cheap
+   and authoritative; use it before \`fs_read\` if you wrote
+   something earlier and don't perfectly remember where.
+
+Tripping these rules is the #1 cause of "I wrote a file but now I
+can't find it" task failures. The error_storm detector pauses you
+after 5 consecutive ENOENTs ... that's the runtime telling you to
+stop guessing and \`fs_list\` instead.
 `
 
 const WORKFLOWS_NOTE_BODY = `# Workflows
@@ -412,16 +490,16 @@ Shape:
 
 1. Read the message carefully. It's directed at you.
 2. Do the work. If you need to call peers, that goes through the
-   pub (use \`pub.send\` with \`@<peer>\` mentions). Other Agents
+   pub (use \`pub_send\` with \`@<peer>\` mentions). Other Agents
    are NOT in this chat ... it's 1:1.
 3. Compose your reply.
 4. The runtime will append your final text to the chat log
    automatically when the task ends. You don't need to call
-   \`chat.send\` for the chat-originated reply.
+   \`chat_send\` for the chat-originated reply.
 
 If the work involves a pub round-trip ("go ask Simon and report
 back here"), the runtime DOESN'T auto-append after a pub bounce.
-You have to call \`chat.send\` explicitly to deliver the answer
+You have to call \`chat_send\` explicitly to deliver the answer
 back into chat.
 
 ## You woke from a pub mention
@@ -433,9 +511,9 @@ Shape:
 
 1. Read the wake-source context: who tagged you, in which pub,
    responding to what.
-2. Decide: react (\`pub.react\`) if no substantive response is
-   warranted, or \`pub.send\` with content if there is.
-3. If you \`pub.send\`, post in the SAME pub.
+2. Decide: react (\`pub_react\`) if no substantive response is
+   warranted, or \`pub_send\` with content if there is.
+3. If you \`pub_send\`, post in the SAME pub.
 4. End your task. The runtime closes the loop.
 
 Don't terminate without either a react or a send. The wake-task
@@ -454,10 +532,10 @@ Shape:
 1. Do the scheduled work (research, summarization, polling, what
    the schedule's description says).
 2. Decide what to do with the result.
-3. If the result is for the operator: \`chat.send\` (private,
-   1:1) or \`pub.send\` (if pub-relevant) or \`notification.inform\`
+3. If the result is for the operator: \`chat_send\` (private,
+   1:1) or \`pub_send\` (if pub-relevant) or \`notification_inform\`
    (low-urgency aside).
-4. Optionally \`brain.write\` a record so you have history.
+4. Optionally \`brain_write\` a record so you have history.
 5. End the task. The next firing will pick up where this one left
    off.
 
@@ -468,11 +546,11 @@ Don't silently fail. Two responses:
 - **You can recover**: handle it, write a brain note about what
   went wrong and how you handled it (so you remember next time),
   continue.
-- **You cannot recover**: \`notification.ask\` the operator with
+- **You cannot recover**: \`notification_ask\` the operator with
   a specific, narrow question. NOT "what should I do?" but
   "X happened. I can do A or B. Which?"
 
-Avoid \`notification.ask\` for routine ambiguity ... handle the
+Avoid \`notification_ask\` for routine ambiguity ... handle the
 common cases yourself. \`ask\` interrupts the operator; reserve it
 for genuine forks.
 
@@ -482,10 +560,10 @@ If the task started from chat, the runtime auto-appends your final
 text. If it started from a schedule, a pub mention, or a fresh
 \`task submit\`, you decide whether the operator wants to know.
 
-- High-signal result: \`notification.inform\` (lands in their
-  inbox; doesn't interrupt) or \`chat.send\` (private chat, more
+- High-signal result: \`notification_inform\` (lands in their
+  inbox; doesn't interrupt) or \`chat_send\` (private chat, more
   conversational).
-- Low-signal: a \`brain.write\` is enough.
+- Low-signal: a \`brain_write\` is enough.
 
 When in doubt, lean toward keeping the operator informed. They
 prefer noisy-and-honest to silent-and-wrong.
@@ -494,21 +572,55 @@ prefer noisy-and-honest to silent-and-wrong.
 
 Two paths, depending on urgency and form:
 
-- **Need an answer to proceed**: \`notification.ask\`. Blocks the
+- **Need an answer to proceed**: \`notification_ask\`. Blocks the
   task until the operator responds.
-- **Want to start a thread without blocking**: \`chat.send\` a
+- **Want to start a thread without blocking**: \`chat_send\` a
   message into your private chat. They'll respond when they see it
   and the response will spawn a fresh task on you.
 
 ## You want to record a learning for future-you
 
-\`brain.write\` into your own brain. Title it well; tag it; pick
+\`brain_write\` into your own brain. Title it well; tag it; pick
 a slug if stability matters. Later-you can find it via
-\`brain.search('keyword')\`.
+\`brain_search('keyword')\`.
 
 If the learning is fleet-relevant ("here's a useful convention I
-worked out"), \`brain.write_shared\` instead. Be deliberate about
+worked out"), \`brain_write_shared\` instead. Be deliberate about
 that choice; the shared brain is for shared context.
+
+## You wrote files and need to read them back later
+
+Common pattern in long tasks: scaffold some files (config, scripts,
+notes), then circle back to read or edit them on a later turn.
+This is where path discipline matters.
+
+The bulletproof shape:
+
+1. **At write time**: pass an explicit path to \`fs_write\`, like
+   \`/project/config/settings.py\`. The success response confirms
+   the path. That is now the file's permanent address.
+
+2. **Record the path immediately** if it matters across more than
+   2-3 turns or might survive into a future session. One
+   \`brain_write\` call:
+   \`{ title: 'project layout for music pipeline', body: 'wrote
+   /project/.env.spotify, /project/config/settings.py,
+   /project/pipelines/playlist_ingest.py on 2026-05-09. used to
+   ingest morning playlist data.' }\`. Future-you can
+   \`brain_search('layout')\` and recover the entire layout.
+
+3. **Before every \`fs_read\` of something you wrote earlier in
+   this session**: re-check your memory. If you can quote the
+   exact path from the original \`fs_write\` call, read directly.
+   If you're guessing AT ALL, \`fs_list\` the parent directory
+   first to confirm the file exists at the path you think it does.
+   \`fs_list\` is cheap; ENOENT after ENOENT trips the
+   error_storm detector and pauses you.
+
+4. **Never reconstruct paths from imagination**. The supervisor's
+   internal layout (\`<home>/agents/<your-name>/project/...\`)
+   is not the path you use. Your virtual scope is \`/project/\`
+   and that is the only prefix you ever write or read with.
 `
 
 interface SeedSpec {
@@ -607,7 +719,7 @@ export async function regenerateTeamNote(home: string, supervisor: Supervisor): 
     if (a.pid !== null) lines.push(`- PID: \`${String(a.pid)}\``)
     lines.push(``)
     lines.push(
-      `Read their Identity for the full role description: \`fs.read /agents/${a.name}/identity.md\` ... or, if they have granted permission, \`brain.search_agent('${a.name}', '<query>')\` to look at what they've been writing about.`,
+      `Read their Identity for the full role description: \`fs_read /agents/${a.name}/identity.md\` ... or, if they have granted permission, \`brain_search_agent('${a.name}', '<query>')\` to look at what they've been writing about.`,
     )
     lines.push(``)
   }
@@ -667,17 +779,17 @@ Steps:
    snapshot of who else is on this instance. Note who you might
    collaborate with on your lane.
 
-6. Read your own continuity note: \`brain.read('continuity-from-onboarding')\`.
+6. Read your own continuity note: \`brain_read('continuity-from-onboarding')\`.
    This is the conversation that brought you into existence. It is
    your spec from ${args.operatorAddressing}.
 
-7. When you have read those, call \`chat.send\` to deliver a short
+7. When you have read those, call \`chat_send\` to deliver a short
    brief to ${args.operatorAddressing}. Three things:
    - What 2200 is (in your own words, one sentence).
    - Who is on the team and who you might work with.
    - What your first move is on the lane you were hired for
      (${args.agentRole}). Be concrete, not aspirational.
 
-End the task after \`chat.send\` returns. Do not continue working on
+End the task after \`chat_send\` returns. Do not continue working on
 the lane until ${args.operatorAddressing} replies.`
 }
