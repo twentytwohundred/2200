@@ -208,19 +208,25 @@ created: 2026-04-26
     ).rejects.toMatchObject({ name: 'ToolDeniedError', checkType: 'commons_scope' })
   })
 
-  it('denies fs.write inside a `pure` task via idempotency_compatible', async () => {
+  it('admits fs_write inside a `pure` task (idempotency_compatible retired session 13)', async () => {
+    // The idempotency-compatible perm matrix was retired per the
+    // codebase review: it blocked legitimate user-requested
+    // destructive tool calls when the originating task happened to be
+    // classified `pure` or `checkpointed`. The `idempotency` field is
+    // preserved as metadata; the perm gate is gone. Tasks that need
+    // to restrict the tool surface for a specific run do so via the
+    // explicit `allowedToolNames` set (the `tool_in_set` check).
     const dispatcher = buildDispatcher()
-    await expect(
-      dispatcher.dispatch({
-        tool: 'fs_write',
-        args: { path: '/commons/scratch/x.md', content: 'x' },
-        taskId: 'task_pure',
-        taskIdempotency: 'pure',
-        model: 'anthropic/claude-opus-4-7',
-        predictedOutcome: '',
-        reason: '',
-      }),
-    ).rejects.toMatchObject({ name: 'ToolDeniedError', checkType: 'idempotency_compatible' })
+    const result = await dispatcher.dispatch({
+      tool: 'fs_write',
+      args: { path: '/commons/scratch/x.md', content: 'x' },
+      taskId: 'task_pure',
+      taskIdempotency: 'pure',
+      model: 'anthropic/claude-opus-4-7',
+      predictedOutcome: '',
+      reason: '',
+    })
+    expect(result.callId).toBeDefined()
   })
 
   it('denies a tool not in the Agent allowlist via tool_in_set', async () => {
