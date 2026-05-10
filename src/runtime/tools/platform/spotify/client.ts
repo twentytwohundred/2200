@@ -66,8 +66,9 @@ export async function buildSpotifyApi(args: BuildSpotifyApiArgs): Promise<Spotif
   const clientId = env(SPOTIFY_CLIENT_ID_ENV)
   if (!clientId || clientId.trim().length === 0) {
     throw new SpotifyCredentialError(
-      `Spotify OAuth client_id is not configured. Set ${SPOTIFY_CLIENT_ID_ENV} ` +
-        `in the supervisor environment, then run \`2200 oauth login spotify ${args.agentName} --name spotify\`.`,
+      `Spotify access not yet configured for '${args.agentName}'. ` +
+        `If you can run shell commands, brain_search 'oauth-setup-spotify' for an agent-driven setup runbook. ` +
+        `Operators can run \`2200 oauth login spotify ${args.agentName} --name spotify\` directly.`,
       'NO_CLIENT_ID',
     )
   }
@@ -81,8 +82,9 @@ export async function buildSpotifyApi(args: BuildSpotifyApiArgs): Promise<Spotif
   } catch (err) {
     if (err instanceof CredentialVaultError && err.code === 'NOT_FOUND') {
       throw new SpotifyCredentialError(
-        `Spotify access token not found in ${args.agentName}'s vault. ` +
-          `Run \`2200 oauth login spotify ${args.agentName} --name spotify\`.`,
+        `Spotify access token not in ${args.agentName}'s vault yet. ` +
+          `If you have shell_run, brain_search 'oauth-setup-spotify' for the self-service runbook ` +
+          `(ask the operator to be ready to click 'Agree' once, then drive the flow yourself).`,
         'NO_VAULT_TOKEN',
       )
     }
