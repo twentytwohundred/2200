@@ -31,6 +31,7 @@ import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
+import { platformServers } from '../tools/platform/index.js'
 import { McpServerManager } from '../mcp/restart-manager.js'
 import { spawnHttpMcpServer, type HttpMcpServerHandle } from '../mcp/http-transport.js'
 import { expandToolGrants } from '../mcp/tool-grants.js'
@@ -151,6 +152,18 @@ export class AgentProcess {
       // fires, this.client is non-undefined.
       getSupervisorRpc: () => this.client,
     })) {
+      registry.register(server)
+    }
+
+    // Platform tools (Discord, Slack, Spotify). Always registered;
+    // each tool resolves its credential lazily and throws a clean
+    // "credential missing" error if absent. Per-Agent access is gated
+    // by the Identity's `tools:` array, which already supports
+    // namespace wildcards (`discord_*`, `slack_*`, `spotify_*`) via
+    // `expandToolGrants`. Agents that do not declare a platform
+    // wildcard or the exact tool name simply do not see them in
+    // `availableToolNames`.
+    for (const server of platformServers()) {
       registry.register(server)
     }
 

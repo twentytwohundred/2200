@@ -354,6 +354,77 @@ servers (Gmail, Calendar, Drive, third-party APIs). Those tools
 appear in your tool registry alongside the baseline. The operator
 provisioned them at spawn time; they're listed in your Identity's
 \`mcp_servers\` block if you want to introspect.
+
+## Platform tools (Discord, Slack, Spotify)
+
+Three platform integrations ship as in-process tools alongside the
+baseline. They are NOT in the baseline-tool list; access is opt-in
+per-Agent via your Identity's \`tools:\` array. If your Identity
+declares \`tools: [discord_*]\`, you see Discord tools; otherwise
+they're filtered out at dispatch time.
+
+### Discord (\`discord_*\` ... 5 tools)
+
+| Tool | Purpose |
+|---|---|
+| \`discord_send_message\` | Post to a channel (optionally as a reply). |
+| \`discord_list_channels\` | Enumerate channels in a guild. |
+| \`discord_fetch_history\` | Read recent messages in a channel. |
+| \`discord_react\` | Add a reaction emoji to a message. |
+| \`discord_create_thread\` | Spawn a thread (anchored on a message or standalone). |
+
+Auth: workspace bot token from a Discord app the operator owns.
+The operator sets \`_2200_DISCORD_BOT_TOKEN\` and restarts the daemon.
+You will get a clear "credential missing" error if you try a Discord
+tool before the operator has wired the token.
+
+### Slack (\`slack_*\` ... 6 tools)
+
+| Tool | Purpose |
+|---|---|
+| \`slack_send_message\` | Post to a channel/DM (optionally as thread reply). |
+| \`slack_list_channels\` | Enumerate workspace channels. |
+| \`slack_fetch_history\` | Read recent messages in a channel. |
+| \`slack_react\` | Add an emoji reaction. |
+| \`slack_get_user\` | Fetch a user's profile by id. |
+| \`slack_get_thread\` | Fetch all messages in a thread. |
+
+Auth: workspace bot token (\`xoxb-...\`) from a Slack app the operator
+owns. The operator sets \`_2200_SLACK_BOT_TOKEN\` and restarts the
+daemon. v1 is outbound-only; the bot does not yet receive incoming
+events.
+
+### Spotify (\`spotify_*\` ... 10 tools)
+
+| Tool | Purpose |
+|---|---|
+| \`spotify_search_tracks\` | Search by query. |
+| \`spotify_get_playback_state\` | Current track / device / progress. |
+| \`spotify_get_devices\` | List available playback devices. |
+| \`spotify_play_track\` | Start or resume playback. |
+| \`spotify_pause\` | Pause active playback. |
+| \`spotify_skip_next\` | Skip to next track. |
+| \`spotify_add_to_queue\` | Queue a track on the active device. |
+| \`spotify_get_my_playlists\` | List the authorized user's playlists. |
+| \`spotify_get_playlist_tracks\` | Page through a playlist's items. |
+| \`spotify_add_to_playlist\` | Append tracks to a playlist. |
+
+Auth: OAuth Authorization Code + PKCE. Per-Agent vault credential
+named \`spotify\`. The operator runs
+\`2200 oauth login spotify <agent> --name spotify\` once, the browser
+opens, the operator authorizes, the token lands in the vault. The
+supervisor's TokenRefreshService rotates the access token in the
+background.
+
+**Premium gating (load-bearing):** every \`/me/player/*\` write
+endpoint (play / pause / skip / queue) requires the authorizing user
+to have Spotify Premium. Reads (current playback state, devices,
+playlists) work for free-tier users. If you get a "PREMIUM_REQUIRED"
+error, surface that to the operator ... do not retry.
+
+**Active device:** play / pause / skip / queue need an active device
+to target. If none is active, call \`spotify_get_devices\` first and
+pass the desired \`device_id\` explicitly.
 `
 
 const CONVENTIONS_NOTE_BODY = `# Conventions

@@ -40,6 +40,20 @@ export const PROVIDERS: Readonly<Record<string, OAuthProviderConfig>> = {
     tokenUrl: 'https://slack.com/api/oauth.v2.access',
     defaultScopes: ['chat:write', 'channels:read'],
   },
+  spotify: {
+    name: 'spotify',
+    authUrl: 'https://accounts.spotify.com/authorize',
+    tokenUrl: 'https://accounts.spotify.com/api/token',
+    defaultScopes: [
+      'user-read-playback-state',
+      'user-read-currently-playing',
+      'user-modify-playback-state',
+      'playlist-read-private',
+      'playlist-modify-private',
+      'user-library-read',
+    ],
+    scopeSeparator: ' ',
+  },
 }
 
 export function knownProviders(): string[] {

@@ -3178,6 +3178,71 @@ export function buildProgram(): Command {
       )
     })
 
+  const platform = program
+    .command('platform')
+    .description('check status of platform-tool credentials (Discord, Slack, Spotify)')
+
+  platform
+    .command('status')
+    .description('show which platform credentials are configured in the supervisor environment')
+    .action(async () => {
+      const { DISCORD_BOT_TOKEN_ENV } = await import('../runtime/tools/platform/discord/index.js')
+      const { SLACK_BOT_TOKEN_ENV } = await import('../runtime/tools/platform/slack/index.js')
+      const { SPOTIFY_CLIENT_ID_ENV } = await import('../runtime/tools/platform/spotify/index.js')
+      interface Row {
+        platform: string
+        envVars: string[]
+        setupHint: string
+      }
+      const rows: Row[] = [
+        {
+          platform: 'discord',
+          envVars: [DISCORD_BOT_TOKEN_ENV],
+          setupHint:
+            'Create a Discord app at https://discord.com/developers/applications, ' +
+            'add a Bot, copy the bot token, then ' +
+            `\`export ${DISCORD_BOT_TOKEN_ENV}=...\` before \`2200 daemon start\`.`,
+        },
+        {
+          platform: 'slack',
+          envVars: [SLACK_BOT_TOKEN_ENV],
+          setupHint:
+            'Create a Slack app at https://api.slack.com/apps, install it to your workspace, ' +
+            'copy the Bot User OAuth Token (xoxb-...) from "OAuth & Permissions", ' +
+            `then \`export ${SLACK_BOT_TOKEN_ENV}=...\` before \`2200 daemon start\`.`,
+        },
+        {
+          platform: 'spotify',
+          envVars: [SPOTIFY_CLIENT_ID_ENV, '_2200_OAUTH_SPOTIFY_CLIENT_SECRET'],
+          setupHint:
+            'Create a Spotify app at https://developer.spotify.com/dashboard, add ' +
+            '`http://127.0.0.1:<any-port>/callback` to the Redirect URIs, then export ' +
+            `${SPOTIFY_CLIENT_ID_ENV} and _2200_OAUTH_SPOTIFY_CLIENT_SECRET, then run ` +
+            '`2200 oauth login spotify <agent> --name spotify`.',
+        },
+      ]
+      console.log('# platform credentials')
+      for (const row of rows) {
+        const allSet = row.envVars.every((v) => {
+          const value = process.env[v]
+          return value !== undefined && value.trim().length > 0
+        })
+        const status = allSet ? 'SET' : 'MISSING'
+        console.log(`${row.platform.padEnd(10)}  ${status}`)
+        for (const envVar of row.envVars) {
+          const value = process.env[envVar]
+          const present = value !== undefined && value.trim().length > 0
+          console.log(`  ${envVar}: ${present ? 'set' : 'MISSING'}`)
+        }
+        if (!allSet) {
+          console.log(`  ${row.setupHint}`)
+        }
+      }
+      console.log('')
+      console.log('Tools become available to an Agent when the credential is set AND the')
+      console.log("Agent's identity grants the tool (e.g. `tools: [discord_*]`).")
+    })
+
   registerWebCommands(program)
 
   return program
