@@ -73,8 +73,10 @@ interface MockApi {
   playlists: {
     getPlaylistItems: MockedFn
     addItemsToPlaylist: MockedFn
+    createPlaylist: MockedFn
   }
   currentUser: {
+    profile: MockedFn
     playlists: {
       playlists: MockedFn
     }
@@ -95,8 +97,10 @@ function makeMockApi(): MockApi {
     playlists: {
       getPlaylistItems: mockFn(),
       addItemsToPlaylist: mockFn(),
+      createPlaylist: mockFn(),
     },
     currentUser: {
+      profile: mockFn(),
       playlists: {
         playlists: mockFn(),
       },
@@ -456,5 +460,96 @@ describe('spotify_add_to_playlist', () => {
     const tool = byName('spotify_add_to_playlist')
     const oneOhOne = Array.from({ length: 101 }, (_v, i) => `spotify:track:t${String(i)}`)
     expect(() => tool.argsSchema.parse({ playlist_id: 'pl1', track_uris: oneOhOne })).toThrow()
+  })
+})
+
+describe('spotify_create_playlist', () => {
+  it('rejects empty name', () => {
+    const mock = makeMockApi()
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    expect(() => tool.argsSchema.parse({ name: '' })).toThrow()
+  })
+
+  it('rejects name longer than 100 chars', () => {
+    const mock = makeMockApi()
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    expect(() => tool.argsSchema.parse({ name: 'x'.repeat(101) })).toThrow()
+  })
+
+  it('rejects description longer than 300 chars', () => {
+    const mock = makeMockApi()
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    expect(() => tool.argsSchema.parse({ name: 'ok', description: 'd'.repeat(301) })).toThrow()
+  })
+
+  it('resolves user_id from currentUser.profile() and creates the playlist', async () => {
+    const mock = makeMockApi()
+    mock.currentUser.profile.setResult({ id: 'doug', display_name: 'Doug' })
+    mock.playlists.createPlaylist.setResult({
+      id: 'pl_new',
+      name: 'Sunday afternoon',
+      uri: 'spotify:playlist:pl_new',
+    })
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    const result = await tool.execute(
+      tool.argsSchema.parse({
+        name: 'Sunday afternoon',
+        description: 'easy listening',
+      }),
+      ctx(),
+    )
+    expect(mock.currentUser.profile.calls).toHaveLength(1)
+    expect(mock.playlists.createPlaylist.calls[0]!.args).toEqual([
+      'doug',
+      {
+        name: 'Sunday afternoon',
+        description: 'easy listening',
+        public: false,
+        collaborative: false,
+      },
+    ])
+    expect(result).toEqual({
+      id: 'pl_new',
+      name: 'Sunday afternoon',
+      uri: 'spotify:playlist:pl_new',
+      owner: 'doug',
+    })
+  })
+
+  it('omits description when not provided', async () => {
+    const mock = makeMockApi()
+    mock.currentUser.profile.setResult({ id: 'doug' })
+    mock.playlists.createPlaylist.setResult({
+      id: 'pl_new',
+      name: 'Bare',
+      uri: 'spotify:playlist:pl_new',
+    })
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    await tool.execute(tool.argsSchema.parse({ name: 'Bare' }), ctx())
+    expect(mock.playlists.createPlaylist.calls[0]!.args[1]).toEqual({
+      name: 'Bare',
+      public: false,
+      collaborative: false,
+    })
+  })
+
+  it('honors public:true override', async () => {
+    const mock = makeMockApi()
+    mock.currentUser.profile.setResult({ id: 'doug' })
+    mock.playlists.createPlaylist.setResult({
+      id: 'pl_new',
+      name: 'Public',
+      uri: 'spotify:playlist:pl_new',
+    })
+    const { byName } = withMock(mock)
+    const tool = byName('spotify_create_playlist')
+    await tool.execute(tool.argsSchema.parse({ name: 'Public', public: true }), ctx())
+    const body = mock.playlists.createPlaylist.calls[0]!.args[1] as { public: boolean }
+    expect(body.public).toBe(true)
   })
 })

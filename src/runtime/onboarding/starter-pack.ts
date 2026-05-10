@@ -394,7 +394,7 @@ owns. The operator sets \`_2200_SLACK_BOT_TOKEN\` and restarts the
 daemon. v1 is outbound-only; the bot does not yet receive incoming
 events.
 
-### Spotify (\`spotify_*\` ... 10 tools)
+### Spotify (\`spotify_*\` ... 11 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -407,7 +407,8 @@ events.
 | \`spotify_add_to_queue\` | Queue a track on the active device. |
 | \`spotify_get_my_playlists\` | List the authorized user's playlists. |
 | \`spotify_get_playlist_tracks\` | Page through a playlist's items. |
-| \`spotify_add_to_playlist\` | Append tracks to a playlist. |
+| \`spotify_add_to_playlist\` | Append tracks to an existing playlist. |
+| \`spotify_create_playlist\` | Create a new playlist owned by the authorizing user. |
 
 Auth: OAuth Authorization Code + PKCE. Per-Agent vault credential
 named \`spotify\`. The operator runs

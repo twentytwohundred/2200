@@ -1,7 +1,7 @@
 /**
  * Spotify tool definitions.
  *
- * Ten tools in v1, sized for Jodin's music-pipeline use case:
+ * Eleven tools in v1, sized for Jodin's music-pipeline use case:
  *   - spotify_search_tracks         find tracks by query
  *   - spotify_get_playback_state    current track / device / progress
  *   - spotify_get_devices           list available playback devices
@@ -12,6 +12,7 @@
  *   - spotify_get_my_playlists      list the current user's playlists
  *   - spotify_get_playlist_tracks   page through a playlist's items
  *   - spotify_add_to_playlist       append tracks to a playlist
+ *   - spotify_create_playlist       create a new playlist
  *
  * Premium gating: every `/me/player/*` write endpoint (play, pause,
  * skip, queue, transfer) requires the *end user* (whoever authorized
@@ -85,6 +86,13 @@ const AddToPlaylistArgsSchema = z.object({
   playlist_id: PlaylistIdSchema,
   track_uris: z.array(TrackUriSchema).min(1).max(100),
   position: z.number().int().min(0).optional(),
+})
+
+const CreatePlaylistArgsSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(300).optional(),
+  public: z.boolean().default(false),
+  collaborative: z.boolean().default(false),
 })
 
 interface SpotifyApiError {
@@ -426,6 +434,35 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     },
   })
 
+  const createPlaylist = defineTool({
+    name: 'spotify_create_playlist',
+    description:
+      'Create a new Spotify playlist owned by the authorized user. Returns the new playlist id, name, and uri. Use spotify_add_to_playlist afterward to populate it. ' +
+      "Defaults: private (`public: false`), non-collaborative. The playlist is created in the authorizing user's account, so the caller does not need to know the user id.",
+    idempotency: 'destructive',
+    argsSchema: CreatePlaylistArgsSchema,
+    execute: async (args, ctx) => {
+      const api = await buildApi(ctx.home, ctx.callingAgent)
+      try {
+        const me = await api.currentUser.profile()
+        const playlist = await api.playlists.createPlaylist(me.id, {
+          name: args.name,
+          ...(args.description ? { description: args.description } : {}),
+          public: args.public,
+          collaborative: args.collaborative,
+        })
+        return {
+          id: playlist.id,
+          name: playlist.name,
+          uri: playlist.uri,
+          owner: me.id,
+        }
+      } catch (err) {
+        mapSpotifyError(err)
+      }
+    },
+  })
+
   return [
     search,
     getPlaybackState,
@@ -437,6 +474,7 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     getMyPlaylists,
     getPlaylistTracks,
     addToPlaylist,
+    createPlaylist,
   ]
 }
 
@@ -451,4 +489,5 @@ export const SPOTIFY_TOOL_NAMES = [
   'spotify_get_my_playlists',
   'spotify_get_playlist_tracks',
   'spotify_add_to_playlist',
+  'spotify_create_playlist',
 ] as const

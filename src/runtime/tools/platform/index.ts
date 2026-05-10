@@ -35,7 +35,7 @@ export const PLATFORM_TOOL_NAMES: readonly string[] = [
   'discord_fetch_history',
   'discord_react',
   'discord_create_thread',
-  // Spotify (10)
+  // Spotify (11)
   'spotify_search_tracks',
   'spotify_get_playback_state',
   'spotify_get_devices',
@@ -46,6 +46,7 @@ export const PLATFORM_TOOL_NAMES: readonly string[] = [
   'spotify_get_my_playlists',
   'spotify_get_playlist_tracks',
   'spotify_add_to_playlist',
+  'spotify_create_playlist',
   // Slack (6)
   'slack_send_message',
   'slack_list_channels',
