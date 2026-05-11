@@ -39,6 +39,7 @@ import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
 import { AgentLoop, type LoopResult } from './loop.js'
+import type { AuditFlag } from './audit/narrated-completion.js'
 import { loadState } from '../supervisor/state.js'
 import { readCredentialFile } from '../pub/keypair.js'
 import { getOrCreatePubClient } from '../pub/registry.js'
@@ -589,7 +590,7 @@ export class AgentProcess {
   private async recordResult(taskId: string, result: LoopResult): Promise<void> {
     if (!this.taskStore) return
     if (result.kind === 'done') {
-      await this.taskStore.update(taskId, (fm) => ({
+      const updated = await this.taskStore.update(taskId, (fm) => ({
         ...fm,
         state: 'done',
         outcome: {
@@ -599,6 +600,41 @@ export class AgentProcess {
         },
         agent_state_at_terminal: this.machine.state,
       }))
+      // Post-task audit notification. Currently only narrated_completion fires
+      // here (destructive task ended with no successful tool calls). Tier is
+      // `important` ... shows in the operator inbox prominently, does not page.
+      if (updated && result.audit_flags.length > 0) {
+        for (const flag of result.audit_flags) {
+          try {
+            await emitNotification({
+              home: this.options.home,
+              agentName: this.options.name,
+              tier: 'important',
+              kind: `audit_${flag.kind}`,
+              body: this.composeAuditBody(taskId, updated.frontmatter.title, result, flag),
+              extras: {
+                task_id: taskId,
+                audit_flag: flag.kind,
+                tool_calls_attempted: flag.attempted,
+                tool_calls_succeeded: flag.succeeded,
+                iterations: result.iterations,
+              },
+            })
+            this.log.warn('post-task audit flag emitted', {
+              task_id: taskId,
+              flag: flag.kind,
+              attempted: flag.attempted,
+              succeeded: flag.succeeded,
+            })
+          } catch (err) {
+            this.log.warn('failed to emit audit notification', {
+              task_id: taskId,
+              flag: flag.kind,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+      }
       return
     }
     if (result.kind === 'tripped') {
@@ -623,6 +659,39 @@ export class AgentProcess {
       },
       agent_state_at_terminal: this.machine.state,
     }))
+  }
+
+  private composeAuditBody(
+    taskId: string,
+    taskTitle: string,
+    result: Extract<LoopResult, { kind: 'done' }>,
+    flag: AuditFlag,
+  ): string {
+    const lines: string[] = [
+      `Agent: ${this.options.name}`,
+      `Task: ${taskId}`,
+      `Title: ${taskTitle}`,
+      ``,
+      `**Audit flag: ${flag.kind}**`,
+      flag.detail,
+      ``,
+      `Iterations: ${String(result.iterations)}`,
+      `Tool calls attempted: ${String(flag.attempted)}`,
+      `Tool calls succeeded: ${String(flag.succeeded)}`,
+      ``,
+      `The task transitioned to \`done\` with an idempotency of \`destructive\`,`,
+      `but no tool call returned ok. The agent's final response was:`,
+      ``,
+      '```',
+      result.summary.length > 600 ? `${result.summary.slice(0, 600)}...` : result.summary,
+      '```',
+      ``,
+      `Inspect the task's run records and plan records under the agent's brain`,
+      `to confirm whether anything actually changed. If the agent narrated`,
+      `completion of work that did not happen, address at the brain-note or`,
+      `system-prompt layer.`,
+    ]
+    return lines.join('\n')
   }
 
   /**

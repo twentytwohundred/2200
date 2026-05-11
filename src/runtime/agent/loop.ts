@@ -76,6 +76,7 @@ import {
   writeDetectorTrip,
   type TripRecordPersisted,
 } from './detectors/trip-record.js'
+import { auditNarratedCompletion, type AuditFlag } from './audit/narrated-completion.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
 // Match a fenced ```tool block. The leading `\s*` after `tool` admits
@@ -491,7 +492,18 @@ export interface AgentLoopOptions {
 }
 
 export type LoopResult =
-  | { kind: 'done'; summary: string; iterations: number }
+  | {
+      kind: 'done'
+      summary: string
+      iterations: number
+      /**
+       * Post-task audit flags. Currently only narrated_completion (destructive
+       * task that ended with no successful tool calls). Empty array on a
+       * clean done; never null. The owning AgentProcess decides whether to
+       * surface flags as notifications.
+       */
+      audit_flags: AuditFlag[]
+    }
   | {
       kind: 'tripped'
       verdict: TripVerdict
@@ -740,10 +752,15 @@ export class AgentLoop {
             continue
           }
           this.history.push({ role: 'assistant', content: response.text })
+          const flag = auditNarratedCompletion({
+            events: this.events,
+            idempotency: task.frontmatter.idempotency,
+          })
           return {
             kind: 'done',
             summary: response.text,
             iterations: this.iteration,
+            audit_flags: flag ? [flag] : [],
           }
         }
         if (this.emptyResponseNudges >= 1) {
