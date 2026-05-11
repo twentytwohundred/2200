@@ -1,17 +1,21 @@
 /**
  * Spotify tool defs ... unit-level coverage.
  *
- * The SpotifyApi SDK is mocked at the buildApi seam. We are not
- * testing Spotify's HTTP API. The tests verify:
- *   - argsSchema rejects malformed URIs / over-limit values
- *   - execute() reads from the agent's vault (via the seam) and calls
- *     the right SDK method with the expected shape
- *   - PREMIUM_REQUIRED, NO_ACTIVE_DEVICE, 401, 403, 429 map to clean
- *     human-readable error messages
- *   - Missing-credential errors point the operator at the right CLI
- *     command
+ * Two tools now: `spotify_api` (passthrough) and `spotify_set_playlist_cover`
+ * (server-side cover-upload helper). The SpotifyApi SDK is mocked at the
+ * buildApi seam; the `makeRequest` method is what both tools actually call.
+ *
+ * Verifies:
+ *   - argsSchema rejects malformed shapes
+ *   - spotify_api passes through (method, normalized path, query string, body)
+ *   - error mapping: PREMIUM_REQUIRED, NO_ACTIVE_DEVICE, 401, 403, 429
+ *   - cover helper strips URI prefix from playlist_id and PUTs base64 JPEG
  */
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import sharp from 'sharp'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeSpotifyTools } from '../../../../src/runtime/tools/platform/spotify/tools.js'
 import type { ToolContext, ToolDefinition } from '../../../../src/runtime/mcp/tool.js'
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk'
@@ -61,53 +65,11 @@ function mockFn(): MockedFn {
 }
 
 interface MockApi {
-  search: MockedFn
-  player: {
-    getPlaybackState: MockedFn
-    getAvailableDevices: MockedFn
-    startResumePlayback: MockedFn
-    pausePlayback: MockedFn
-    skipToNext: MockedFn
-    addItemToPlaybackQueue: MockedFn
-  }
-  playlists: {
-    getPlaylistItems: MockedFn
-    addItemsToPlaylist: MockedFn
-    createPlaylist: MockedFn
-  }
-  currentUser: {
-    profile: MockedFn
-    playlists: {
-      playlists: MockedFn
-    }
-  }
   makeRequest: MockedFn
 }
 
 function makeMockApi(): MockApi {
-  return {
-    search: mockFn(),
-    player: {
-      getPlaybackState: mockFn(),
-      getAvailableDevices: mockFn(),
-      startResumePlayback: mockFn(),
-      pausePlayback: mockFn(),
-      skipToNext: mockFn(),
-      addItemToPlaybackQueue: mockFn(),
-    },
-    playlists: {
-      getPlaylistItems: mockFn(),
-      addItemsToPlaylist: mockFn(),
-      createPlaylist: mockFn(),
-    },
-    currentUser: {
-      profile: mockFn(),
-      playlists: {
-        playlists: mockFn(),
-      },
-    },
-    makeRequest: mockFn(),
-  }
+  return { makeRequest: mockFn() }
 }
 
 function withMock(mock: MockApi): {
@@ -125,441 +87,299 @@ function withMock(mock: MockApi): {
   }
 }
 
-describe('spotify_search_tracks', () => {
-  it('searches with type=["track"] and projects items', async () => {
+describe('makeSpotifyTools', () => {
+  it('exposes exactly two tools: spotify_api and spotify_set_playlist_cover', () => {
     const mock = makeMockApi()
-    mock.search.setResult({
-      tracks: {
-        items: [
-          {
-            uri: 'spotify:track:abc',
-            name: 'Heroes',
-            artists: [{ name: 'David Bowie' }],
-            album: { name: 'Heroes' },
-            duration_ms: 220000,
-            explicit: false,
-          },
-        ],
-      },
+    const tools = makeSpotifyTools({
+      apiBuilder: () => Promise.resolve(mock as unknown as SpotifyApi),
     })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_search_tracks')
-    const result = await tool.execute({ query: 'Heroes Bowie', limit: 5 }, ctx())
-    expect(mock.search.calls[0]!.args).toEqual(['Heroes Bowie', ['track'], undefined, 5])
-    expect(result).toEqual([
-      {
-        uri: 'spotify:track:abc',
-        name: 'Heroes',
-        artists: ['David Bowie'],
-        album: 'Heroes',
-        duration_ms: 220000,
-        explicit: false,
-      },
-    ])
-  })
-
-  it('rejects an empty query', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_search_tracks')
-    expect(() => tool.argsSchema.parse({ query: '' })).toThrow()
-  })
-
-  it('caps limit at 50', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_search_tracks')
-    expect(() => tool.argsSchema.parse({ query: 'x', limit: 51 })).toThrow()
+    expect(tools.map((t) => t.name).sort()).toEqual(['spotify_api', 'spotify_set_playlist_cover'])
   })
 })
 
-describe('spotify_get_playback_state', () => {
-  it('returns null when nothing is playing', async () => {
+describe('spotify_api: argsSchema', () => {
+  function tool(): ToolDefinition {
     const mock = makeMockApi()
-    mock.player.getPlaybackState.setResult(null)
     const { byName } = withMock(mock)
-    const tool = byName('spotify_get_playback_state')
-    expect(await tool.execute({}, ctx())).toBeNull()
+    return byName('spotify_api')
+  }
+
+  it('rejects unknown HTTP method', () => {
+    expect(() => tool().argsSchema.parse({ method: 'PATCH', path: 'me/playlists' })).toThrow()
   })
 
-  it('projects device + item cleanly', async () => {
-    const mock = makeMockApi()
-    mock.player.getPlaybackState.setResult({
-      is_playing: true,
-      progress_ms: 12345,
-      shuffle_state: false,
-      repeat_state: 'off',
-      device: {
-        id: 'd1',
-        name: 'MacBook',
-        type: 'Computer',
-        is_active: true,
-        volume_percent: 60,
-      },
-      item: {
-        uri: 'spotify:track:abc',
-        name: 'Heroes',
-        artists: [{ name: 'David Bowie' }],
-      },
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_get_playback_state')
-    const result = await tool.execute({}, ctx())
-    expect(result).toEqual({
-      is_playing: true,
-      progress_ms: 12345,
-      shuffle: false,
-      repeat: 'off',
-      device: { id: 'd1', name: 'MacBook', type: 'Computer', is_active: true, volume_percent: 60 },
-      item: { uri: 'spotify:track:abc', name: 'Heroes', artists: ['David Bowie'] },
-    })
-  })
-})
-
-describe('spotify_get_devices', () => {
-  it('lists devices', async () => {
-    const mock = makeMockApi()
-    mock.player.getAvailableDevices.setResult({
-      devices: [
-        {
-          id: 'd1',
-          name: 'MacBook',
-          type: 'Computer',
-          is_active: true,
-          is_restricted: false,
-          volume_percent: 60,
-        },
-        {
-          id: 'd2',
-          name: 'iPhone',
-          type: 'Smartphone',
-          is_active: false,
-          is_restricted: false,
-          volume_percent: 100,
-        },
-      ],
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_get_devices')
-    const result = await tool.execute({}, ctx())
-    expect(result).toHaveLength(2)
-    expect((result as { id: string }[])[0]!.id).toBe('d1')
-  })
-})
-
-describe('spotify_play_track', () => {
-  it('starts playback of a specific track URI', async () => {
-    const mock = makeMockApi()
-    mock.player.startResumePlayback.setResult(undefined)
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    await tool.execute({ track_uri: 'spotify:track:abc', device_id: 'd1' }, ctx())
-    expect(mock.player.startResumePlayback.calls[0]!.args).toEqual([
-      'd1',
-      undefined,
-      ['spotify:track:abc'],
-    ])
+  it('rejects empty path', () => {
+    expect(() => tool().argsSchema.parse({ method: 'GET', path: '' })).toThrow()
   })
 
-  it('resumes (no track_uri) using empty device_id when device_id is omitted', async () => {
-    const mock = makeMockApi()
-    mock.player.startResumePlayback.setResult(undefined)
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    await tool.execute({}, ctx())
-    expect(mock.player.startResumePlayback.calls[0]!.args).toEqual([''])
+  it('rejects path longer than 500 chars', () => {
+    expect(() => tool().argsSchema.parse({ method: 'GET', path: 'x'.repeat(501) })).toThrow()
   })
 
-  it('rejects malformed track_uri', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    expect(() => tool.argsSchema.parse({ track_uri: 'not-a-spotify-uri' })).toThrow()
-  })
-
-  it('maps PREMIUM_REQUIRED to a clear message', async () => {
-    const mock = makeMockApi()
-    mock.player.startResumePlayback.setError({
-      status: 403,
-      reason: 'PREMIUM_REQUIRED',
-      body: {
-        error: { reason: 'PREMIUM_REQUIRED', message: 'Player command failed: Premium required' },
-      },
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    await expect(tool.execute({ track_uri: 'spotify:track:abc' }, ctx())).rejects.toThrow(
-      /Premium/i,
-    )
-  })
-
-  it('maps NO_ACTIVE_DEVICE to a clear setup hint', async () => {
-    const mock = makeMockApi()
-    mock.player.startResumePlayback.setError({
-      status: 404,
-      reason: 'NO_ACTIVE_DEVICE',
-      body: {
-        error: { reason: 'NO_ACTIVE_DEVICE', message: 'Player command failed: No active device' },
-      },
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    await expect(tool.execute({}, ctx())).rejects.toThrow(/no active device/i)
-  })
-
-  it('maps 401 to a refresh-pending message', async () => {
-    const mock = makeMockApi()
-    mock.player.startResumePlayback.setError({
-      status: 401,
-      message: 'The access token expired',
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_play_track')
-    await expect(tool.execute({}, ctx())).rejects.toThrow(/access token.*401|refresh/i)
-  })
-})
-
-describe('spotify_pause / spotify_skip_next', () => {
-  it('pause passes device_id (or empty string)', async () => {
-    const mock = makeMockApi()
-    mock.player.pausePlayback.setResult(undefined)
-    const { byName } = withMock(mock)
-    await byName('spotify_pause').execute({ device_id: 'd1' }, ctx())
-    expect(mock.player.pausePlayback.calls[0]!.args).toEqual(['d1'])
-    await byName('spotify_pause').execute({}, ctx())
-    expect(mock.player.pausePlayback.calls[1]!.args).toEqual([''])
-  })
-
-  it('skip_next passes device_id (or empty string)', async () => {
-    const mock = makeMockApi()
-    mock.player.skipToNext.setResult(undefined)
-    const { byName } = withMock(mock)
-    await byName('spotify_skip_next').execute({}, ctx())
-    expect(mock.player.skipToNext.calls[0]!.args).toEqual([''])
-  })
-})
-
-describe('spotify_add_to_queue', () => {
-  it('adds a track URI to the active device queue', async () => {
-    const mock = makeMockApi()
-    mock.player.addItemToPlaybackQueue.setResult(undefined)
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_add_to_queue')
-    const result = await tool.execute({ track_uri: 'spotify:track:abc' }, ctx())
-    expect(mock.player.addItemToPlaybackQueue.calls[0]!.args).toEqual([
-      'spotify:track:abc',
-      undefined,
-    ])
-    expect(result).toEqual({ ok: true })
-  })
-})
-
-describe('spotify_get_my_playlists', () => {
-  it('projects playlists', async () => {
-    const mock = makeMockApi()
-    mock.currentUser.playlists.playlists.setResult({
-      total: 2,
-      items: [
-        {
-          id: 'pl1',
-          name: 'Driving',
-          description: 'road trip',
-          tracks: { total: 42 },
-          owner: { display_name: 'Doug', id: 'doug' },
-          collaborative: false,
-          public: false,
-          uri: 'spotify:playlist:pl1',
-        },
-        {
-          id: 'pl2',
-          name: 'Coding',
-          description: null,
-          tracks: null,
-          owner: { display_name: null, id: 'doug' },
-          collaborative: false,
-          public: true,
-          uri: 'spotify:playlist:pl2',
-        },
-      ],
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_get_my_playlists')
-    const result = (await tool.execute({ limit: 20, offset: 0 }, ctx())) as {
-      total: number
-      items: { id: string; name: string; track_count: number; owner: string }[]
-    }
-    expect(result.total).toBe(2)
-    expect(result.items[0]!.track_count).toBe(42)
-    expect(result.items[1]!.track_count).toBe(0)
-    expect(result.items[1]!.owner).toBe('doug')
-  })
-})
-
-describe('spotify_get_playlist_tracks', () => {
-  it('handles items with full track shape', async () => {
-    const mock = makeMockApi()
-    mock.playlists.getPlaylistItems.setResult({
-      total: 1,
-      items: [
-        {
-          track: {
-            uri: 'spotify:track:abc',
-            name: 'Heroes',
-            artists: [{ name: 'David Bowie' }],
-            album: { name: 'Heroes' },
-            duration_ms: 220000,
-          },
-        },
-      ],
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_get_playlist_tracks')
-    const result = (await tool.execute({ playlist_id: 'pl1', limit: 50, offset: 0 }, ctx())) as {
-      items: { uri: string | null }[]
-    }
-    expect(result.items[0]!.uri).toBe('spotify:track:abc')
-  })
-
-  it('rejects malformed playlist_id', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_get_playlist_tracks')
-    expect(() => tool.argsSchema.parse({ playlist_id: 'bad/id' })).toThrow()
-  })
-})
-
-describe('spotify_add_to_playlist', () => {
-  it('appends multiple track URIs via the new /items endpoint', async () => {
-    const mock = makeMockApi()
-    mock.makeRequest.setResult({ snapshot_id: 'snap_abc' })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_add_to_playlist')
-    const result = await tool.execute(
-      {
-        playlist_id: 'pl1',
-        track_uris: ['spotify:track:abc', 'spotify:track:def'],
-      },
-      ctx(),
-    )
-    // Bypasses the SDK's deprecated addItemsToPlaylist; calls
-    // POST playlists/{id}/items directly via makeRequest.
-    expect(mock.makeRequest.calls[0]!.args).toEqual([
-      'POST',
-      'playlists/pl1/items',
-      { uris: ['spotify:track:abc', 'spotify:track:def'] },
-    ])
-    expect(result).toEqual({ ok: true, added: 2 })
-  })
-
-  it('rejects empty track list', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_add_to_playlist')
-    expect(() => tool.argsSchema.parse({ playlist_id: 'pl1', track_uris: [] })).toThrow()
-  })
-
-  it('rejects more than 100 tracks at once', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_add_to_playlist')
-    const oneOhOne = Array.from({ length: 101 }, (_v, i) => `spotify:track:t${String(i)}`)
-    expect(() => tool.argsSchema.parse({ playlist_id: 'pl1', track_uris: oneOhOne })).toThrow()
-  })
-})
-
-describe('spotify_create_playlist', () => {
-  it('rejects empty name', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    expect(() => tool.argsSchema.parse({ name: '' })).toThrow()
-  })
-
-  it('rejects name longer than 100 chars', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    expect(() => tool.argsSchema.parse({ name: 'x'.repeat(101) })).toThrow()
-  })
-
-  it('rejects description longer than 300 chars', () => {
-    const mock = makeMockApi()
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    expect(() => tool.argsSchema.parse({ name: 'ok', description: 'd'.repeat(301) })).toThrow()
-  })
-
-  it('creates the playlist via /v1/me/playlists (current-user endpoint)', async () => {
-    const mock = makeMockApi()
-    mock.makeRequest.setResult({
-      id: 'pl_new',
-      name: 'Sunday afternoon',
-      uri: 'spotify:playlist:pl_new',
-      owner: { id: 'doug' },
-    })
-    const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    const result = await tool.execute(
-      tool.argsSchema.parse({
-        name: 'Sunday afternoon',
-        description: 'easy listening',
+  it('accepts query with mixed string/number/boolean values', () => {
+    expect(() =>
+      tool().argsSchema.parse({
+        method: 'GET',
+        path: 'search',
+        query: { q: 'taylor', type: 'track', limit: 20, market: 'US', include_explicit: true },
       }),
+    ).not.toThrow()
+  })
+
+  it('rejects non-primitive query values', () => {
+    expect(() =>
+      tool().argsSchema.parse({
+        method: 'GET',
+        path: 'search',
+        query: { q: { nested: 'no' } },
+      }),
+    ).toThrow()
+  })
+
+  it('accepts arbitrary unknown body shape', () => {
+    expect(() =>
+      tool().argsSchema.parse({
+        method: 'POST',
+        path: 'me/playlists',
+        body: { name: 'x', description: 'y', public: false },
+      }),
+    ).not.toThrow()
+  })
+})
+
+describe('spotify_api: path normalization', () => {
+  it('passes a bare path through unchanged', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({ items: [] })
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: 'me/playlists' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+  })
+
+  it('strips a leading slash', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: '/me/playlists' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+  })
+
+  it('strips a leading /v1/', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: '/v1/me/playlists' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+  })
+
+  it('preserves path segments past the prefix', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'POST', path: 'playlists/abc123/items' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('playlists/abc123/items')
+  })
+})
+
+describe('spotify_api: query serialization', () => {
+  it('appends string/number/boolean query params', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute(
+      {
+        method: 'GET',
+        path: 'search',
+        query: { q: 'taylor swift', type: 'track', limit: 20, include_explicit: false },
+      },
       ctx(),
     )
-    // Bypasses the SDK's deprecated createPlaylist (which calls
-    // /v1/users/{id}/playlists, deprecated in the Feb 2026 migration);
-    // calls POST me/playlists directly via makeRequest. The
-    // authenticated user is inferred from the access token, so we
-    // do not need currentUser.profile() anymore.
-    expect(mock.currentUser.profile.calls).toHaveLength(0)
-    expect(mock.makeRequest.calls[0]!.args).toEqual([
-      'POST',
-      'me/playlists',
-      {
-        name: 'Sunday afternoon',
-        public: false,
-        collaborative: false,
-        description: 'easy listening',
-      },
-    ])
-    expect(result).toEqual({
-      id: 'pl_new',
-      name: 'Sunday afternoon',
-      uri: 'spotify:playlist:pl_new',
-      owner: 'doug',
-    })
+    const url = mock.makeRequest.calls[0]!.args[1] as string
+    expect(url.startsWith('search?')).toBe(true)
+    const qs = new URLSearchParams(url.split('?')[1] ?? '')
+    expect(qs.get('q')).toBe('taylor swift')
+    expect(qs.get('type')).toBe('track')
+    expect(qs.get('limit')).toBe('20')
+    expect(qs.get('include_explicit')).toBe('false')
   })
 
-  it('omits description when not provided', async () => {
+  it('omits the query string when query is undefined', async () => {
     const mock = makeMockApi()
-    mock.makeRequest.setResult({
-      id: 'pl_new',
-      name: 'Bare',
-      uri: 'spotify:playlist:pl_new',
-      owner: { id: 'doug' },
-    })
+    mock.makeRequest.setResult({})
     const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    await tool.execute(tool.argsSchema.parse({ name: 'Bare' }), ctx())
-    expect(mock.makeRequest.calls[0]!.args[2]).toEqual({
-      name: 'Bare',
-      public: false,
-      collaborative: false,
-    })
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: 'me/playlists' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+  })
+})
+
+describe('spotify_api: body passthrough', () => {
+  it('passes the body through unchanged to makeRequest', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({ id: 'pl_new', uri: 'spotify:playlist:pl_new' })
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    const body = { name: 'Sunday', description: 'mellow', public: false }
+    await t.execute({ method: 'POST', path: 'me/playlists', body }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[0]).toBe('POST')
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+    expect(mock.makeRequest.calls[0]!.args[2]).toBe(body)
   })
 
-  it('honors public:true override', async () => {
+  it('returns the JSON response unchanged', async () => {
     const mock = makeMockApi()
-    mock.makeRequest.setResult({
-      id: 'pl_new',
-      name: 'Public',
-      uri: 'spotify:playlist:pl_new',
-      owner: { id: 'doug' },
-    })
+    const response = { items: [{ id: 'pl1' }, { id: 'pl2' }] }
+    mock.makeRequest.setResult(response)
     const { byName } = withMock(mock)
-    const tool = byName('spotify_create_playlist')
-    await tool.execute(tool.argsSchema.parse({ name: 'Public', public: true }), ctx())
-    const body = mock.makeRequest.calls[0]!.args[2] as { public: boolean }
-    expect(body.public).toBe(true)
+    const t = byName('spotify_api')
+    const result = await t.execute({ method: 'GET', path: 'me/playlists' }, ctx())
+    expect(result).toEqual(response)
+  })
+})
+
+describe('spotify_api: error mapping', () => {
+  function build(): { tool: ToolDefinition; setError: (e: unknown) => void } {
+    const mock = makeMockApi()
+    const { byName } = withMock(mock)
+    return { tool: byName('spotify_api'), setError: mock.makeRequest.setError }
+  }
+
+  it('maps 401 to a token-refresh hint', async () => {
+    const { tool, setError } = build()
+    setError({ status: 401, message: 'Unauthorized' })
+    await expect(tool.execute({ method: 'GET', path: 'me' }, ctx())).rejects.toThrow(/401/)
+  })
+
+  it('maps 403 to a forbidden hint with the original message', async () => {
+    const { tool, setError } = build()
+    setError({ status: 403, body: { error: { message: 'Insufficient client scope' } } })
+    await expect(tool.execute({ method: 'POST', path: 'me/player/play' }, ctx())).rejects.toThrow(
+      /Insufficient client scope/,
+    )
+  })
+
+  it('maps 429 to a rate-limit hint', async () => {
+    const { tool, setError } = build()
+    setError({ status: 429, message: 'Too Many Requests' })
+    await expect(tool.execute({ method: 'GET', path: 'me' }, ctx())).rejects.toThrow(/429/)
+  })
+
+  it('maps PREMIUM_REQUIRED to an actionable message', async () => {
+    const { tool, setError } = build()
+    setError({
+      status: 403,
+      body: { error: { reason: 'PREMIUM_REQUIRED', message: 'Player command failed' } },
+    })
+    await expect(tool.execute({ method: 'PUT', path: 'me/player/play' }, ctx())).rejects.toThrow(
+      /Premium/,
+    )
+  })
+
+  it('maps NO_ACTIVE_DEVICE to a device-required message', async () => {
+    const { tool, setError } = build()
+    setError({
+      status: 404,
+      body: { error: { reason: 'NO_ACTIVE_DEVICE', message: 'Player command failed' } },
+    })
+    await expect(tool.execute({ method: 'PUT', path: 'me/player/play' }, ctx())).rejects.toThrow(
+      /no active device/i,
+    )
+  })
+})
+
+describe('spotify_set_playlist_cover', () => {
+  let tmp: string
+  let imagePath: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'spotify-cover-'))
+    imagePath = join(tmp, 'cover.png')
+    // 800x800 solid-color PNG ... well under 256KB once re-encoded as JPEG.
+    const png = await sharp({
+      create: { width: 800, height: 800, channels: 3, background: { r: 200, g: 50, b: 100 } },
+    })
+      .png()
+      .toBuffer()
+    await writeFile(imagePath, png)
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  function tool(): ToolDefinition {
+    const mock = makeMockApi()
+    const { byName } = withMock(mock)
+    return byName('spotify_set_playlist_cover')
+  }
+
+  it('rejects empty playlist_id', () => {
+    expect(() => tool().argsSchema.parse({ playlist_id: '', image_path: imagePath })).toThrow()
+  })
+
+  it('rejects empty image_path', () => {
+    expect(() => tool().argsSchema.parse({ playlist_id: 'pl1', image_path: '' })).toThrow()
+  })
+
+  it('strips the spotify:playlist: URI prefix from the playlist_id', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult(undefined)
+    const { byName } = withMock(mock)
+    const t = byName('spotify_set_playlist_cover')
+    await t.execute({ playlist_id: 'spotify:playlist:abc123XYZ', image_path: imagePath }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[0]).toBe('PUT')
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('playlists/abc123XYZ/images')
+    expect(mock.makeRequest.calls[0]!.args[3]).toBe('image/jpeg')
+  })
+
+  it('uploads a base64 JPEG body', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult(undefined)
+    const { byName } = withMock(mock)
+    const t = byName('spotify_set_playlist_cover')
+    const result = (await t.execute({ playlist_id: 'abc123', image_path: imagePath }, ctx())) as {
+      ok: boolean
+      bytes_uploaded: number
+    }
+    expect(result.ok).toBe(true)
+    expect(result.bytes_uploaded).toBeGreaterThan(0)
+    const body = mock.makeRequest.calls[0]!.args[2] as string
+    expect(typeof body).toBe('string')
+    // base64 payload should decode to a JPEG (starts with FF D8 FF)
+    const decoded = Buffer.from(body, 'base64')
+    expect(decoded[0]).toBe(0xff)
+    expect(decoded[1]).toBe(0xd8)
+    expect(decoded[2]).toBe(0xff)
+  })
+
+  it('recompresses when initial JPEG exceeds the 256KB cap', async () => {
+    // Create a large noisy PNG that does not compress well. Random noise so
+    // sharp can't trivially deflate it. 2400x2400 RGB random ~ several MB.
+    const noisyPath = join(tmp, 'noisy.png')
+    const w = 2400
+    const h = 2400
+    const buf = Buffer.alloc(w * h * 3)
+    for (let i = 0; i < buf.length; i++) buf[i] = (i * 1103515245 + 12345) & 0xff
+    const noisyPng = await sharp(buf, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toBuffer()
+    await writeFile(noisyPath, noisyPng)
+
+    const mock = makeMockApi()
+    mock.makeRequest.setResult(undefined)
+    const { byName } = withMock(mock)
+    const t = byName('spotify_set_playlist_cover')
+    const result = (await t.execute({ playlist_id: 'abc123', image_path: noisyPath }, ctx())) as {
+      ok: boolean
+      bytes_uploaded: number
+      recompressed: boolean
+    }
+    expect(result.ok).toBe(true)
+    expect(result.bytes_uploaded).toBeLessThanOrEqual(256_000)
   })
 })

@@ -35,6 +35,7 @@ const PLATFORM_SLUG = '2200-platform'
 const TOOLS_SLUG = '2200-tools'
 const CONVENTIONS_SLUG = '2200-conventions'
 const WORKFLOWS_SLUG = '2200-workflows'
+const SPOTIFY_API_REF_SLUG = 'spotify-api-reference'
 const TEAM_SLUG = 'team'
 
 const PLATFORM_NOTE_BODY = `# 2200 platform overview
@@ -410,29 +411,24 @@ owns. The operator sets \`_2200_SLACK_BOT_TOKEN\` and restarts the
 daemon. v1 is outbound-only; the bot does not yet receive incoming
 events.
 
-### Spotify (\`spotify_*\` ... 12 tools)
+### Spotify (\`spotify_*\` ... 2 tools)
 
 | Tool | Purpose |
 |---|---|
-| \`spotify_search_tracks\` | Search by query. |
-| \`spotify_get_playback_state\` | Current track / device / progress. |
-| \`spotify_get_devices\` | List available playback devices. |
-| \`spotify_play_track\` | Start or resume playback. |
-| \`spotify_pause\` | Pause active playback. |
-| \`spotify_skip_next\` | Skip to next track. |
-| \`spotify_add_to_queue\` | Queue a track on the active device. |
-| \`spotify_get_my_playlists\` | List the authorized user's playlists. |
-| \`spotify_get_playlist_tracks\` | Page through a playlist's items. |
-| \`spotify_add_to_playlist\` | Append tracks to an existing playlist. |
-| \`spotify_create_playlist\` | Create a new playlist owned by the authorizing user. |
-| \`spotify_set_playlist_cover\` | Upload a custom cover image (auto-resized to fit Spotify's 256KB JPEG cap). Requires the \`ugc-image-upload\` OAuth scope. |
+| \`spotify_api\` | Thin HTTP passthrough to the Spotify Web API. Takes \`(method, path, query?, body?)\` and returns the JSON response. Use this for everything: search, playlists, playback, library reads/writes. Read \`spotify-api-reference\` in the shared brain for the endpoint catalog and request/response shapes. |
+| \`spotify_set_playlist_cover\` | Upload a custom cover image to a playlist. Reads a virtual path (PNG/WebP/JPEG), re-encodes to JPEG, resizes to fit Spotify's 256KB cap, PUTs to \`/playlists/{id}/images\`. Server-side because sharp re-encoding + base64 are not model-callable. Requires the \`ugc-image-upload\` OAuth scope. |
+
+Why two tools instead of twelve: provider SDKs lag the real API by
+months; per-endpoint wrappers self-collide on shape mismatches; new
+endpoints become brain-note updates rather than code changes. See
+\`spotify-api-reference\` for the actual paths you'll be calling.
 
 Auth: OAuth Authorization Code + PKCE. Per-Agent vault credential
 named \`spotify\`. The operator runs
 \`2200 oauth login spotify <agent> --name spotify\` once, the browser
 opens, the operator authorizes, the token lands in the vault. The
 supervisor's TokenRefreshService rotates the access token in the
-background.
+background, so \`spotify_api\` always reads a fresh token per call.
 
 **Premium gating (load-bearing):** every \`/me/player/*\` write
 endpoint (play / pause / skip / queue) requires the authorizing user
@@ -441,8 +437,8 @@ playlists) work for free-tier users. If you get a "PREMIUM_REQUIRED"
 error, surface that to the operator ... do not retry.
 
 **Active device:** play / pause / skip / queue need an active device
-to target. If none is active, call \`spotify_get_devices\` first and
-pass the desired \`device_id\` explicitly.
+to target. If none is active, GET \`/me/player/devices\` first and
+pass the desired \`device_id\` in the body when starting playback.
 `
 
 const CONVENTIONS_NOTE_BODY = `# Conventions
@@ -712,6 +708,152 @@ The bulletproof shape:
    and that is the only prefix you ever write or read with.
 `
 
+const SPOTIFY_API_REF_NOTE_BODY = `# Spotify Web API reference
+
+Endpoint catalog for calling Spotify through the \`spotify_api\` tool.
+This note is the contract: paths, methods, query params, body shapes,
+required scopes, and gotchas. Read this BEFORE calling \`spotify_api\`.
+
+## Tool shape
+
+\`\`\`
+spotify_api({
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  path: string,            // 'me/playlists', 'search', etc. Leading '/' or '/v1/' stripped.
+  query?: Record<string, string | number | boolean>,
+  body?: any,              // JSON-serialized for POST/PUT.
+})
+\`\`\`
+
+Returns the parsed JSON response unchanged. Errors map to clean
+messages: 401 means refresh-pending-retry, 403 means scope/permission,
+404 means resource-not-found, 429 means rate-limited, PREMIUM_REQUIRED
+means the authorizing user lacks Spotify Premium, NO_ACTIVE_DEVICE
+means no playback device is active.
+
+## Auth model
+
+The OAuth token in your vault was minted with these scopes:
+
+- \`user-read-playback-state\`, \`user-read-currently-playing\`,
+  \`user-read-recently-played\` ... read playback state.
+- \`user-modify-playback-state\` ... control playback (play/pause/skip).
+- \`user-read-private\`, \`user-read-email\` ... read profile.
+- \`user-library-read\`, \`user-library-modify\` ... saved tracks/albums.
+- \`playlist-read-private\`, \`playlist-read-collaborative\` ... read playlists.
+- \`playlist-modify-private\`, \`playlist-modify-public\` ... write playlists.
+- \`ugc-image-upload\` ... custom playlist cover upload.
+
+If you get 403 "Insufficient client scope", the operator needs to
+re-run OAuth login with the missing scope.
+
+## Endpoint catalog
+
+### Search
+
+| Path | Method | Notes |
+|---|---|---|
+| \`search\` | GET | query: \`q\` (string, required), \`type\` (\`track\`, \`artist\`, \`album\`, \`playlist\`, \`show\`, \`episode\`, \`audiobook\` ... comma-separated for multi), \`limit\` (1-50, default 20), \`offset\` (0-based), \`market\` (ISO country, optional). |
+
+Example: \`spotify_api({ method: 'GET', path: 'search', query: { q: 'Radiohead Fake Plastic Trees', type: 'track', limit: 5 } })\` returns
+\`{ tracks: { items: [...], total, limit, offset } }\`. Each item has
+\`uri\` (use this when adding to playlists), \`name\`, \`artists[]\`,
+\`album\`, \`duration_ms\`, \`explicit\`, \`id\`.
+
+### User profile + playlists (read)
+
+| Path | Method | Notes |
+|---|---|---|
+| \`me\` | GET | Current user profile. Returns \`{ id, display_name, email, country, product }\`. |
+| \`me/playlists\` | GET | List your playlists. query: \`limit\` (1-50, default 20), \`offset\` (default 0). Returns \`{ items: [...], total, next, previous }\`. |
+| \`playlists/{playlist_id}\` | GET | Playlist metadata + first page of tracks. |
+| \`playlists/{playlist_id}/tracks\` | GET | Playlist items. query: \`limit\` (1-100, default 100), \`offset\`, \`market\`, \`fields\` (optional projection). |
+
+### Playlists (write)
+
+| Path | Method | Body | Notes |
+|---|---|---|---|
+| \`me/playlists\` | POST | \`{ name, description?, public?, collaborative? }\` | Create a playlist owned by the authorizing user. \`name\` is required (1-100 chars). \`public\` defaults to true on Spotify's side; explicitly set \`public: false\` if you want a private playlist. Returns the created playlist (\`id\`, \`uri\`, \`owner\`, ...). |
+| \`playlists/{playlist_id}/items\` | POST | \`{ uris: ['spotify:track:...', ...], position? }\` | Append (or insert at \`position\`) up to 100 tracks. URIs must be in \`spotify:track:<id>\` form. |
+| \`playlists/{playlist_id}/items\` | PUT | \`{ uris: ['spotify:track:...', ...] }\` | REPLACE the playlist's tracks with the given list (clears the rest). Useful for "refresh this playlist with today's picks". |
+| \`playlists/{playlist_id}/items\` | DELETE | \`{ tracks: [{ uri }, ...] }\` | Remove specific tracks. |
+| \`playlists/{playlist_id}\` | PUT | \`{ name?, description?, public?, collaborative? }\` | Update playlist metadata. |
+| \`playlists/{playlist_id}/images\` | PUT | (base64 JPEG) | **Use \`spotify_set_playlist_cover\`, not \`spotify_api\`** ... binary base64 body + sharp re-encoding required. |
+
+### Playback (write ... PREMIUM REQUIRED)
+
+| Path | Method | Body | Notes |
+|---|---|---|---|
+| \`me/player/play\` | PUT | \`{ uris?: ['spotify:track:...'], context_uri?: 'spotify:playlist:...', offset?, position_ms? }\` query: \`device_id?\` | Start or resume playback. Empty body resumes whatever is paused. |
+| \`me/player/pause\` | PUT | (none) query: \`device_id?\` | Pause playback. |
+| \`me/player/next\` | POST | (none) query: \`device_id?\` | Skip to next track. |
+| \`me/player/previous\` | POST | (none) query: \`device_id?\` | Skip to previous track. |
+| \`me/player/queue\` | POST | (none) query: \`uri\` (required ... spotify:track:...), \`device_id?\` | Queue a track on the active device. |
+
+### Playback (read)
+
+| Path | Method | Notes |
+|---|---|---|
+| \`me/player\` | GET | Current playback state. Returns \`null\` (204) if nothing is playing. |
+| \`me/player/devices\` | GET | List available devices. Returns \`{ devices: [{ id, name, type, is_active, is_private_session, is_restricted, volume_percent }, ...] }\`. |
+| \`me/player/recently-played\` | GET | query: \`limit\` (1-50), \`after\` (timestamp), \`before\`. |
+
+### Library
+
+| Path | Method | Body | Notes |
+|---|---|---|---|
+| \`me/tracks\` | GET | ... | Saved tracks. query: \`limit\` (1-50), \`offset\`, \`market\`. |
+| \`me/tracks\` | PUT | \`{ ids: ['trackId', ...] }\` | Save tracks to library (bare IDs, not URIs). |
+| \`me/tracks\` | DELETE | \`{ ids: ['trackId', ...] }\` | Remove from library. |
+| \`me/tracks/contains\` | GET | query: \`ids\` (comma-separated). Returns \`[bool, ...]\`. |
+
+## URI shapes
+
+Spotify has two shapes for the same resource:
+
+- **URI**: \`spotify:track:6rqhFgbbKwnb9MLmUQDhG6\`, \`spotify:playlist:2awL1BisIAY385gneFdhJM\`. Use these in playlist-add/replace bodies (\`uris\` field).
+- **ID**: \`6rqhFgbbKwnb9MLmUQDhG6\`. Use these in URL paths (\`playlists/{id}/items\`) and in \`/me/tracks\` bodies (\`ids\` field).
+
+The \`spotify_set_playlist_cover\` tool accepts EITHER shape for
+\`playlist_id\` (strips the URI prefix for you). For \`spotify_api\`
+paths, you have to pass the bare ID.
+
+## Common patterns
+
+**Refresh "today's playlist" with curated tracks:**
+
+\`\`\`
+PUT playlists/{playlist_id}/items
+body: { uris: ['spotify:track:abc', 'spotify:track:def', ...] }
+\`\`\`
+
+**Create a new private playlist:**
+
+\`\`\`
+POST me/playlists
+body: { name: '10RL - 2026-05-11', description: 'Ten Random Listens for today', public: false }
+\`\`\`
+
+Then take \`id\` from the response, use it in subsequent calls. Save the
+URI (\`spotify:playlist:<id>\`) to a brain log if you need to find it again.
+
+**Append tracks to a playlist:**
+
+\`\`\`
+POST playlists/{id}/items
+body: { uris: ['spotify:track:...', ...] }
+\`\`\`
+
+## Gotchas
+
+- **Playlist tracks endpoint is \`/items\`, not \`/tracks\`.** \`POST .../tracks\` was deprecated in the Feb 2026 API migration; it returns 403 with a misleading "Bad OAuth request" message.
+- **Create playlist endpoint is \`POST /me/playlists\`, not \`POST /users/{user_id}/playlists\`.** Same migration; the per-user path returns 403.
+- **Spotify URIs vs IDs.** Body fields take URIs (\`spotify:track:...\`). Path segments take bare IDs. Mixing them up returns 400 or 404.
+- **search query parameter is \`q\`, not \`query\`.** Spotify-specific name. Don't guess.
+- **Premium-required errors are not retryable.** If you get PREMIUM_REQUIRED, surface to the operator. The user has to upgrade or the action can't happen.
+- **Active-device requirement on playback writes.** GET \`me/player/devices\` first if you're unsure; pass \`device_id\` in the query string for \`me/player/play\` etc.
+`
+
 interface SeedSpec {
   slug: string
   title: string
@@ -748,6 +890,13 @@ const SEEDS: readonly SeedSpec[] = [
     body: WORKFLOWS_NOTE_BODY,
     type: 'workflows',
     tags: ['platform', 'workflows', 'orientation'],
+  },
+  {
+    slug: SPOTIFY_API_REF_SLUG,
+    title: 'Spotify Web API reference',
+    body: SPOTIFY_API_REF_NOTE_BODY,
+    type: 'reference',
+    tags: ['platform', 'spotify', 'api', 'reference'],
   },
 ]
 

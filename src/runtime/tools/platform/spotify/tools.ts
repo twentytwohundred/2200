@@ -1,31 +1,34 @@
 /**
- * Spotify tool definitions.
+ * Spotify tool surface (passthrough + server-side-only helpers).
  *
- * Twelve tools in v1, sized for Jodin's music-pipeline use case:
- *   - spotify_search_tracks         find tracks by query
- *   - spotify_get_playback_state    current track / device / progress
- *   - spotify_get_devices           list available playback devices
- *   - spotify_play_track            start playback (specific URI or resume)
- *   - spotify_pause                 pause active playback
- *   - spotify_skip_next             skip to next in queue
- *   - spotify_add_to_queue          queue a track on the active device
- *   - spotify_get_my_playlists      list the current user's playlists
- *   - spotify_get_playlist_tracks   page through a playlist's items
- *   - spotify_add_to_playlist       append tracks to a playlist
- *   - spotify_create_playlist       create a new playlist
- *   - spotify_set_playlist_cover    upload a custom cover image
+ * Two tools shipped:
+ *   - spotify_api               thin HTTP passthrough to the Spotify Web API
+ *   - spotify_set_playlist_cover upload a custom cover image (sharp re-encode + base64)
  *
- * Premium gating: every `/me/player/*` write endpoint (play, pause,
- * skip, queue, transfer) requires the *end user* (whoever authorized
- * the OAuth flow) to have a Spotify Premium subscription. Spotify
- * returns HTTP 403 with `reason: "PREMIUM_REQUIRED"` for non-Premium
- * users; we map that to a clean error message so the model gets
- * actionable feedback.
+ * This file used to host twelve per-endpoint wrappers (search, get_playback_state,
+ * get_my_playlists, create_playlist, add_to_playlist, ...). Those were collapsed
+ * into `spotify_api` per the 2026-05-11 platform-integration decision record.
+ * Reasons in short:
+ *   - Provider SDKs lag the actual API by months; every endpoint we wrapped became
+ *     a maintenance liability the moment Spotify migrated. The Feb 2026 migration
+ *     broke createPlaylist, addItemsToPlaylist, and (discovered live) more.
+ *   - Per-endpoint wrappers self-collide: our own create-tool returned a URI shape
+ *     our own add-tool rejected via a Zod regex. Agents fell into this multiple
+ *     times in one session.
+ *   - 12 typed wrappers × N future endpoints is a quadratic surface.
  *
- * Token refresh: handled by the supervisor's TokenRefreshService.
- * The tool builds a fresh SpotifyApi per call (cheap, no network) and
- * reads the current access_token from the calling Agent's vault, so
- * refreshed tokens are picked up on the very next call.
+ * `spotify_api` bypasses the SDK's URL construction entirely. It still relies on
+ * the SDK's `makeRequest` for bearer-auth + body serialization + refresh handling,
+ * keeping the OAuth + vault + TokenRefreshService machinery unchanged.
+ *
+ * The endpoint catalog (paths, methods, scopes, gotchas) lives in the shared
+ * brain note `spotify-api-reference`, seeded by starter-pack. Agents read the
+ * note, then call `spotify_api`.
+ *
+ * Token refresh: handled by the supervisor's TokenRefreshService. The tool builds
+ * a fresh SpotifyApi per call (cheap, no network) and reads the current access
+ * token from the calling Agent's vault, so refreshed tokens are picked up on the
+ * very next call.
  */
 import { readFile } from 'node:fs/promises'
 import sharp from 'sharp'
@@ -36,77 +39,49 @@ import { buildSpotifyApi, SpotifyCredentialError } from './client.js'
 
 const SPOTIFY_COVER_MAX_BYTES = 256_000
 
-const TrackUriSchema = z.string().regex(/^spotify:track:[A-Za-z0-9]+$/, {
-  message: 'Spotify track URI must look like "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"',
-})
-
-const PlaylistIdSchema = z
-  .string()
-  .regex(/^[A-Za-z0-9]+$/, { message: 'Spotify playlist id is alphanumeric' })
-
-const SearchTracksArgsSchema = z.object({
-  query: z.string().min(1).max(500),
-  limit: z.number().int().min(1).max(50).default(20),
-})
-
-const GetPlaybackStateArgsSchema = z.object({})
-
-const GetDevicesArgsSchema = z.object({})
-
-const PlayTrackArgsSchema = z.object({
-  track_uri: TrackUriSchema.optional().describe(
-    'A specific track URI to play. If omitted, resumes whatever is currently paused.',
-  ),
-  device_id: z
+const SpotifyApiArgsSchema = z.object({
+  method: z
+    .enum(['GET', 'POST', 'PUT', 'DELETE'])
+    .describe('HTTP method. Use GET for reads, POST to create, PUT to update, DELETE to remove.'),
+  path: z
     .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Spotify Web API path under /v1. Leading '/' or '/v1/' is stripped if present. " +
+        "Examples: 'me/playlists', 'search', 'playlists/{id}/items', 'me/player/play'. " +
+        'See brain note `spotify-api-reference` for the endpoint catalog.',
+    ),
+  query: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
     .optional()
-    .describe('Spotify device id to target. If omitted, the currently-active device is used.'),
-})
-
-const PauseArgsSchema = z.object({
-  device_id: z.string().optional(),
-})
-
-const SkipNextArgsSchema = z.object({
-  device_id: z.string().optional(),
-})
-
-const AddToQueueArgsSchema = z.object({
-  track_uri: TrackUriSchema,
-  device_id: z.string().optional(),
-})
-
-const GetMyPlaylistsArgsSchema = z.object({
-  limit: z.number().int().min(1).max(50).default(20),
-  offset: z.number().int().min(0).default(0),
-})
-
-const GetPlaylistTracksArgsSchema = z.object({
-  playlist_id: PlaylistIdSchema,
-  limit: z.number().int().min(1).max(50).default(50),
-  offset: z.number().int().min(0).default(0),
-})
-
-const AddToPlaylistArgsSchema = z.object({
-  playlist_id: PlaylistIdSchema,
-  track_uris: z.array(TrackUriSchema).min(1).max(100),
-  position: z.number().int().min(0).optional(),
-})
-
-const CreatePlaylistArgsSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().max(300).optional(),
-  public: z.boolean().default(false),
-  collaborative: z.boolean().default(false),
+    .describe(
+      "URL query parameters as key->value (e.g. { q: 'taylor swift', type: 'track', limit: 20 }). " +
+        'Numbers and booleans are coerced to strings. Omit for paths that take no query.',
+    ),
+  body: z
+    .unknown()
+    .optional()
+    .describe(
+      'JSON request body for POST/PUT. Pass as a structured object; will be JSON-serialized. ' +
+        'Omit for GET/DELETE.',
+    ),
 })
 
 const SetPlaylistCoverArgsSchema = z.object({
-  playlist_id: PlaylistIdSchema,
+  playlist_id: z
+    .string()
+    .min(1)
+    .describe(
+      "Spotify playlist id. Accepts either the bare id ('2awL1BisIAY385gneFdhJM') or the full " +
+        "URI ('spotify:playlist:2awL1BisIAY385gneFdhJM'); the URI prefix is stripped automatically.",
+    ),
   image_path: z
     .string()
     .min(1)
     .describe(
-      "Virtual path to the cover image (e.g. '/project/covers/today.jpg'). PNG / WebP / JPEG accepted; we re-encode to JPEG and resize to fit Spotify's 256KB cap.",
+      "Virtual path to the cover image (e.g. '/project/covers/today.jpg'). " +
+        "PNG / WebP / JPEG accepted; we re-encode to JPEG and resize to fit Spotify's 256KB cap.",
     ),
 })
 
@@ -114,7 +89,7 @@ interface SpotifyApiError {
   message?: string
   status?: number
   reason?: string
-  body?: { error?: { reason?: string; message?: string } }
+  body?: { error?: { reason?: string; message?: string; status?: number } }
 }
 
 function mapSpotifyError(err: unknown): never {
@@ -129,7 +104,7 @@ function mapSpotifyError(err: unknown): never {
   if (reason === 'NO_ACTIVE_DEVICE') {
     throw new Error(
       'Spotify has no active device. Open the Spotify app on a phone, desktop, or web player first, ' +
-        'or call `spotify_get_devices` and pass the desired `device_id` explicitly.',
+        'or GET /me/player/devices and pass `device_id` in the body when starting playback.',
     )
   }
   if (e.status === 401) {
@@ -140,7 +115,8 @@ function mapSpotifyError(err: unknown): never {
   }
   if (e.status === 403) {
     throw new Error(
-      `Spotify forbade the action (403): ${e.body?.error?.message ?? e.message ?? 'forbidden'}.`,
+      `Spotify forbade the action (403): ${e.body?.error?.message ?? e.message ?? 'forbidden'}. ` +
+        'Common causes: missing OAuth scope for this endpoint, or attempting to modify a resource you do not own.',
     )
   }
   if (e.status === 404) {
@@ -162,6 +138,29 @@ function extractReasonFromMessage(msg?: string): string | undefined {
   return m?.[0]
 }
 
+function normalizePath(raw: string): string {
+  let p = raw.trim()
+  if (p.startsWith('/')) p = p.slice(1)
+  if (p.startsWith('v1/')) p = p.slice(3)
+  return p
+}
+
+function buildQueryString(query: Record<string, string | number | boolean> | undefined): string {
+  if (!query) return ''
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(query)) {
+    params.append(k, String(v))
+  }
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
+function stripPlaylistUriPrefix(raw: string): string {
+  const m = /^spotify:playlist:([A-Za-z0-9]+)$/.exec(raw.trim())
+  if (m?.[1]) return m[1]
+  return raw.trim()
+}
+
 export interface SpotifyToolDeps {
   /** Inject a pre-built SpotifyApi (test seam). Default: build per call. */
   apiBuilder?: (home: string, agentName: string) => Promise<SpotifyApi>
@@ -171,327 +170,27 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
   const buildApi =
     deps.apiBuilder ?? ((home: string, agentName: string) => buildSpotifyApi({ home, agentName }))
 
-  const search = defineTool({
-    name: 'spotify_search_tracks',
-    description: 'Search Spotify for tracks. Returns name, artists, album, duration, and uri.',
-    idempotency: 'pure',
-    argsSchema: SearchTracksArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        const limit = args.limit as Parameters<typeof api.search>[3]
-        const result = await api.search(args.query, ['track'], undefined, limit)
-        return result.tracks.items.map((t) => ({
-          uri: t.uri,
-          name: t.name,
-          artists: t.artists.map((a) => a.name),
-          album: t.album.name,
-          duration_ms: t.duration_ms,
-          explicit: t.explicit,
-        }))
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const getPlaybackState = defineTool({
-    name: 'spotify_get_playback_state',
+  const apiPassthrough = defineTool({
+    name: 'spotify_api',
     description:
-      "Get the user's current Spotify playback state: track, device, progress, shuffle/repeat. Returns null if nothing is active.",
-    idempotency: 'pure',
-    argsSchema: GetPlaybackStateArgsSchema,
-    execute: async (_args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        // The SDK over-asserts non-null on getPlaybackState() and on
-        // state.device / state.item. Spotify's REST API returns 204 No
-        // Content (empty body) when nothing is playing, and individual
-        // fields can be missing. Cast to a nullable shape so the
-        // runtime guards survive the optimizer.
-        type RawState = Awaited<ReturnType<typeof api.player.getPlaybackState>>
-        const state = (await api.player.getPlaybackState()) as RawState | null
-        if (!state) return null
-        const device = state.device as RawState['device'] | null
-        const item = state.item as RawState['item'] | null
-        return {
-          is_playing: state.is_playing,
-          progress_ms: state.progress_ms,
-          shuffle: state.shuffle_state,
-          repeat: state.repeat_state,
-          device: device
-            ? {
-                id: device.id,
-                name: device.name,
-                type: device.type,
-                is_active: device.is_active,
-                volume_percent: device.volume_percent,
-              }
-            : null,
-          item: item
-            ? {
-                uri: item.uri,
-                name: item.name,
-                ...('artists' in item ? { artists: item.artists.map((a) => a.name) } : {}),
-              }
-            : null,
-        }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const getDevices = defineTool({
-    name: 'spotify_get_devices',
-    description:
-      'List Spotify devices currently available to the authorized user (phones, desktops, web players, speakers).',
-    idempotency: 'pure',
-    argsSchema: GetDevicesArgsSchema,
-    execute: async (_args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        const result = await api.player.getAvailableDevices()
-        return result.devices.map((d) => ({
-          id: d.id,
-          name: d.name,
-          type: d.type,
-          is_active: d.is_active,
-          is_restricted: d.is_restricted,
-          volume_percent: d.volume_percent,
-        }))
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const playTrack = defineTool({
-    name: 'spotify_play_track',
-    description:
-      'Start or resume Spotify playback. If `track_uri` is set, plays that track; otherwise resumes the active device. Requires Premium.',
+      'Call the Spotify Web API directly. Takes (method, path, query?, body?) and returns the JSON response. ' +
+      "Uses the calling Agent's vault token for auth. Read `spotify-api-reference` in the shared brain for the " +
+      'endpoint catalog, required scopes, and request/response shapes. Use this for: search, playlists, ' +
+      'playback state, library reads/writes, user profile, anything Spotify exposes. ' +
+      'The one exception is uploading a custom playlist cover image: use `spotify_set_playlist_cover` for ' +
+      'that (server-side re-encoding required).',
     idempotency: 'destructive',
-    argsSchema: PlayTrackArgsSchema,
+    argsSchema: SpotifyApiArgsSchema,
     execute: async (args, ctx) => {
       const api = await buildApi(ctx.home, ctx.callingAgent)
+      const fullPath = normalizePath(args.path) + buildQueryString(args.query)
       try {
-        // The SDK requires device_id as a string. An empty string
-        // means "use the active device" per Spotify's REST contract.
-        const deviceId = args.device_id ?? ''
-        if (args.track_uri) {
-          await api.player.startResumePlayback(deviceId, undefined, [args.track_uri])
-        } else {
-          await api.player.startResumePlayback(deviceId)
-        }
-        return { ok: true }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const pause = defineTool({
-    name: 'spotify_pause',
-    description:
-      'Pause Spotify playback on the active device (or a specific device). Requires Premium.',
-    idempotency: 'destructive',
-    argsSchema: PauseArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        await api.player.pausePlayback(args.device_id ?? '')
-        return { ok: true }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const skipNext = defineTool({
-    name: 'spotify_skip_next',
-    description: 'Skip to the next track on the active Spotify device. Requires Premium.',
-    idempotency: 'destructive',
-    argsSchema: SkipNextArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        await api.player.skipToNext(args.device_id ?? '')
-        return { ok: true }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const addToQueue = defineTool({
-    name: 'spotify_add_to_queue',
-    description:
-      'Add a track to the Spotify playback queue on the active device. Requires Premium.',
-    idempotency: 'destructive',
-    argsSchema: AddToQueueArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        await api.player.addItemToPlaybackQueue(args.track_uri, args.device_id)
-        return { ok: true }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const getMyPlaylists = defineTool({
-    name: 'spotify_get_my_playlists',
-    description: "List the current user's Spotify playlists.",
-    idempotency: 'pure',
-    argsSchema: GetMyPlaylistsArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        const limit = args.limit as Parameters<typeof api.currentUser.playlists.playlists>[0]
-        // The SDK types `tracks` as a non-nullable Page and `display_name`
-        // as a non-nullable string, but Spotify's docs show both can be
-        // null in real responses (tracks=null on unloaded references,
-        // display_name=null for users who never set one). Cast to a
-        // wider shape so the runtime guards survive lint.
-        interface PlaylistRow {
-          id: string
-          name: string
-          description: string | null
-          tracks: { total: number } | null
-          owner: { display_name: string | null; id: string }
-          collaborative: boolean
-          public: boolean | null
-          uri: string
-        }
-        const page = await api.currentUser.playlists.playlists(limit, args.offset)
-        return {
-          total: page.total,
-          items: (page.items as unknown as PlaylistRow[]).map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            track_count: p.tracks?.total ?? 0,
-            owner: p.owner.display_name ?? p.owner.id,
-            collaborative: p.collaborative,
-            public: p.public,
-            uri: p.uri,
-          })),
-        }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const getPlaylistTracks = defineTool({
-    name: 'spotify_get_playlist_tracks',
-    description:
-      'Page through tracks in a Spotify playlist. Returns track uri, name, artists, album, duration.',
-    idempotency: 'pure',
-    argsSchema: GetPlaylistTracksArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        const limit = args.limit as Parameters<typeof api.playlists.getPlaylistItems>[3]
-        const page = await api.playlists.getPlaylistItems(
-          args.playlist_id,
-          undefined,
-          undefined,
-          limit,
-          args.offset,
-        )
-        // SDK over-asserts `track` non-null; Spotify returns null for
-        // removed/local tracks. Cast for the runtime guard.
-        type SafeTrackItem = {
-          uri: string
-          name: string
-          duration_ms: number
-          artists?: { name: string }[]
-          album?: { name: string }
-        } | null
-        return {
-          total: page.total,
-          items: page.items.map((it) => {
-            const track = it.track as unknown as SafeTrackItem
-            if (!track) {
-              return { uri: null, name: null, artists: [], album: null, duration_ms: 0 }
-            }
-            return {
-              uri: track.uri,
-              name: track.name,
-              artists: track.artists ? track.artists.map((a) => a.name) : [],
-              album: track.album ? track.album.name : null,
-              duration_ms: track.duration_ms,
-            }
-          }),
-        }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const addToPlaylist = defineTool({
-    name: 'spotify_add_to_playlist',
-    description:
-      'Append one or more tracks (by URI) to a Spotify playlist. Caller must own the playlist or have collaboration access.',
-    idempotency: 'destructive',
-    argsSchema: AddToPlaylistArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        // The SDK's addItemsToPlaylist still calls the legacy
-        // /v1/playlists/{id}/tracks endpoint which Spotify deprecated
-        // in the Feb 2026 migration (returns 403 Forbidden). The new
-        // endpoint is /v1/playlists/{id}/items. We bypass the SDK's
-        // method and use makeRequest to hit the correct URL while
-        // preserving the SDK's auth + refresh machinery.
-        const body: Record<string, unknown> = { uris: args.track_uris }
-        if (args.position !== undefined) body['position'] = args.position
-        await api.makeRequest('POST', `playlists/${args.playlist_id}/items`, body)
-        return { ok: true, added: args.track_uris.length }
-      } catch (err) {
-        mapSpotifyError(err)
-      }
-    },
-  })
-
-  const createPlaylist = defineTool({
-    name: 'spotify_create_playlist',
-    description:
-      'Create a new Spotify playlist owned by the authorized user. Returns the new playlist id, name, and uri. Use spotify_add_to_playlist afterward to populate it. ' +
-      "Defaults: private (`public: false`), non-collaborative. The playlist is created in the authorizing user's account, so the caller does not need to know the user id.",
-    idempotency: 'destructive',
-    argsSchema: CreatePlaylistArgsSchema,
-    execute: async (args, ctx) => {
-      const api = await buildApi(ctx.home, ctx.callingAgent)
-      try {
-        // The SDK's playlists.createPlaylist(user_id, ...) still calls
-        // the legacy /v1/users/{user_id}/playlists endpoint which
-        // Spotify deprecated in the Feb 2026 migration (returns 403
-        // Forbidden). The new endpoint is /v1/me/playlists and infers
-        // the user from the access token. We bypass the SDK's method
-        // and use makeRequest to hit the correct URL while preserving
-        // the SDK's auth + refresh machinery.
-        const body: Record<string, unknown> = {
-          name: args.name,
-          public: args.public,
-          collaborative: args.collaborative,
-        }
-        if (args.description) body['description'] = args.description
-        const playlist = await api.makeRequest<{
-          id: string
-          name: string
-          uri: string
-          owner: { id: string }
-        }>('POST', 'me/playlists', body)
-        return {
-          id: playlist.id,
-          name: playlist.name,
-          uri: playlist.uri,
-          owner: playlist.owner.id,
-        }
+        // makeRequest signature: (method, url, body?, contentType?)
+        // The SDK handles bearer-auth header, body JSON-serialization when
+        // contentType is omitted (default application/json), and parses the
+        // JSON response. We pass `body` through unchanged.
+        const result = await api.makeRequest(args.method, fullPath, args.body)
+        return result
       } catch (err) {
         mapSpotifyError(err)
       }
@@ -501,18 +200,16 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
   const setPlaylistCover = defineTool({
     name: 'spotify_set_playlist_cover',
     description:
-      "Upload a custom cover image for a Spotify playlist. Reads a virtual path (PNG/WebP/JPEG), re-encodes to JPEG, resizes if needed to fit Spotify's 256KB cap, and PUTs to /playlists/{id}/images. Requires the `ugc-image-upload` OAuth scope.",
+      'Upload a custom cover image for a Spotify playlist. Reads a virtual path (PNG/WebP/JPEG), ' +
+      "re-encodes to JPEG, resizes if needed to fit Spotify's 256KB cap, and PUTs to /playlists/{id}/images. " +
+      'Requires the `ugc-image-upload` OAuth scope. Why a dedicated tool: the binary base64 body and sharp ' +
+      "re-encoding pipeline can't be done from the model side.",
     idempotency: 'destructive',
     argsSchema: SetPlaylistCoverArgsSchema,
     pathArgs: [{ argName: 'image_path', operation: 'read' }],
     execute: async (args, ctx) => {
-      // image_path is already an absolute resolved path post-dispatch.
+      const playlistId = stripPlaylistUriPrefix(args.playlist_id)
       const raw = await readFile(args.image_path)
-      // Re-encode to JPEG. If the image is already a small JPEG we
-      // still pass it through sharp once to normalize (cheap) and to
-      // get a deterministic format. Start at quality 85 and a 1000px
-      // max edge; if the result is still over 256KB, recompress with
-      // lower quality / smaller edge until it fits.
       let quality = 85
       let maxEdge = 1000
       let jpeg = await sharp(raw)
@@ -534,15 +231,10 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
           `unable to compress image under Spotify's 256KB cover cap after ${String(attempts)} attempts; final size ${String(jpeg.byteLength)} bytes`,
         )
       }
-      // Spotify expects the body as base64 of the JPEG, content-type
-      // image/jpeg. The base64 must NOT include line breaks (default
-      // node Buffer.toString('base64') produces a single line, so we
-      // are fine; macOS `base64` cli wraps at 76 chars but Node's
-      // Buffer does not).
       const base64 = jpeg.toString('base64')
       const api = await buildApi(ctx.home, ctx.callingAgent)
       try {
-        await api.makeRequest('PUT', `playlists/${args.playlist_id}/images`, base64, 'image/jpeg')
+        await api.makeRequest('PUT', `playlists/${playlistId}/images`, base64, 'image/jpeg')
         return {
           ok: true,
           bytes_uploaded: jpeg.byteLength,
@@ -556,33 +248,7 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     },
   })
 
-  return [
-    search,
-    getPlaybackState,
-    getDevices,
-    playTrack,
-    pause,
-    skipNext,
-    addToQueue,
-    getMyPlaylists,
-    getPlaylistTracks,
-    addToPlaylist,
-    createPlaylist,
-    setPlaylistCover,
-  ]
+  return [apiPassthrough, setPlaylistCover]
 }
 
-export const SPOTIFY_TOOL_NAMES = [
-  'spotify_search_tracks',
-  'spotify_get_playback_state',
-  'spotify_get_devices',
-  'spotify_play_track',
-  'spotify_pause',
-  'spotify_skip_next',
-  'spotify_add_to_queue',
-  'spotify_get_my_playlists',
-  'spotify_get_playlist_tracks',
-  'spotify_add_to_playlist',
-  'spotify_create_playlist',
-  'spotify_set_playlist_cover',
-] as const
+export const SPOTIFY_TOOL_NAMES = ['spotify_api', 'spotify_set_playlist_cover'] as const
