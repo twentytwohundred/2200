@@ -145,7 +145,7 @@ your continuity-from-onboarding note (the interview answers) and in
 
 const TOOLS_NOTE_BODY = `# Tool reference
 
-The baseline set of 34 tools every Agent on this 2200 instance has.
+The baseline set of 35 tools every Agent on this 2200 instance has.
 Identity files can declare additional MCP-server-backed tools, but
 these are always available.
 
@@ -280,6 +280,22 @@ manipulation more complex than fs.* admits.
 | \`time_now\` | Get the current time (ISO 8601, UTC + local TZ). | Stamping notes; deciding whether something is "stale"; cron-aware reasoning. |
 | \`time_sleep\` | Pause for N milliseconds. | Rate-limiting yourself; spacing out polling. Be sparing ... long sleeps cost. |
 
+## Image generation (\`image_generate\`)
+
+Generate an image via xAI and save it to a virtual path in one call.
+
+| Tool | What it does |
+|---|---|
+| \`image_generate\` | Calls xAI's image-generation endpoint with your prompt; downloads the result; saves it to the virtual path you specify. Returns \`{ path, bytes, mime_type, cost_usd, model }\`. |
+
+Defaults are sensible: provider \`xai\`, model \`grok-imagine-image-quality\`, 60s timeout, one image per call.
+
+**Auth** is via the \`XAI_API_KEY\` env var, which the supervisor inherits from \`~/.config/2200/runtime.env\` at start time. You will get a clean error if it is missing.
+
+**Cost** is real (~$0.05 per image at current pricing). Don't loop this in a tight retry; if the call fails, read the error before retrying.
+
+Typical use shape: pick a virtual path inside your project for the output (\`/project/covers/2026-05-11.jpg\` is a fine pattern), pass a specific prompt, take the path the tool returns, hand it to the next tool that consumes a file (e.g. \`spotify_set_playlist_cover\`).
+
 ## Schedule (\`schedule.*\`)
 
 Manage your own cron / interval schedules at runtime. The supervisor's
@@ -394,7 +410,7 @@ owns. The operator sets \`_2200_SLACK_BOT_TOKEN\` and restarts the
 daemon. v1 is outbound-only; the bot does not yet receive incoming
 events.
 
-### Spotify (\`spotify_*\` ... 11 tools)
+### Spotify (\`spotify_*\` ... 12 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -409,6 +425,7 @@ events.
 | \`spotify_get_playlist_tracks\` | Page through a playlist's items. |
 | \`spotify_add_to_playlist\` | Append tracks to an existing playlist. |
 | \`spotify_create_playlist\` | Create a new playlist owned by the authorizing user. |
+| \`spotify_set_playlist_cover\` | Upload a custom cover image (auto-resized to fit Spotify's 256KB JPEG cap). Requires the \`ugc-image-upload\` OAuth scope. |
 
 Auth: OAuth Authorization Code + PKCE. Per-Agent vault credential
 named \`spotify\`. The operator runs

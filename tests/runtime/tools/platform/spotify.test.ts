@@ -81,6 +81,7 @@ interface MockApi {
       playlists: MockedFn
     }
   }
+  makeRequest: MockedFn
 }
 
 function makeMockApi(): MockApi {
@@ -105,6 +106,7 @@ function makeMockApi(): MockApi {
         playlists: mockFn(),
       },
     },
+    makeRequest: mockFn(),
   }
 }
 
@@ -427,9 +429,9 @@ describe('spotify_get_playlist_tracks', () => {
 })
 
 describe('spotify_add_to_playlist', () => {
-  it('appends multiple track URIs', async () => {
+  it('appends multiple track URIs via the new /items endpoint', async () => {
     const mock = makeMockApi()
-    mock.playlists.addItemsToPlaylist.setResult(undefined)
+    mock.makeRequest.setResult({ snapshot_id: 'snap_abc' })
     const { byName } = withMock(mock)
     const tool = byName('spotify_add_to_playlist')
     const result = await tool.execute(
@@ -439,10 +441,12 @@ describe('spotify_add_to_playlist', () => {
       },
       ctx(),
     )
-    expect(mock.playlists.addItemsToPlaylist.calls[0]!.args).toEqual([
-      'pl1',
-      ['spotify:track:abc', 'spotify:track:def'],
-      undefined,
+    // Bypasses the SDK's deprecated addItemsToPlaylist; calls
+    // POST playlists/{id}/items directly via makeRequest.
+    expect(mock.makeRequest.calls[0]!.args).toEqual([
+      'POST',
+      'playlists/pl1/items',
+      { uris: ['spotify:track:abc', 'spotify:track:def'] },
     ])
     expect(result).toEqual({ ok: true, added: 2 })
   })
@@ -485,13 +489,13 @@ describe('spotify_create_playlist', () => {
     expect(() => tool.argsSchema.parse({ name: 'ok', description: 'd'.repeat(301) })).toThrow()
   })
 
-  it('resolves user_id from currentUser.profile() and creates the playlist', async () => {
+  it('creates the playlist via /v1/me/playlists (current-user endpoint)', async () => {
     const mock = makeMockApi()
-    mock.currentUser.profile.setResult({ id: 'doug', display_name: 'Doug' })
-    mock.playlists.createPlaylist.setResult({
+    mock.makeRequest.setResult({
       id: 'pl_new',
       name: 'Sunday afternoon',
       uri: 'spotify:playlist:pl_new',
+      owner: { id: 'doug' },
     })
     const { byName } = withMock(mock)
     const tool = byName('spotify_create_playlist')
@@ -502,14 +506,20 @@ describe('spotify_create_playlist', () => {
       }),
       ctx(),
     )
-    expect(mock.currentUser.profile.calls).toHaveLength(1)
-    expect(mock.playlists.createPlaylist.calls[0]!.args).toEqual([
-      'doug',
+    // Bypasses the SDK's deprecated createPlaylist (which calls
+    // /v1/users/{id}/playlists, deprecated in the Feb 2026 migration);
+    // calls POST me/playlists directly via makeRequest. The
+    // authenticated user is inferred from the access token, so we
+    // do not need currentUser.profile() anymore.
+    expect(mock.currentUser.profile.calls).toHaveLength(0)
+    expect(mock.makeRequest.calls[0]!.args).toEqual([
+      'POST',
+      'me/playlists',
       {
         name: 'Sunday afternoon',
-        description: 'easy listening',
         public: false,
         collaborative: false,
+        description: 'easy listening',
       },
     ])
     expect(result).toEqual({
@@ -522,16 +532,16 @@ describe('spotify_create_playlist', () => {
 
   it('omits description when not provided', async () => {
     const mock = makeMockApi()
-    mock.currentUser.profile.setResult({ id: 'doug' })
-    mock.playlists.createPlaylist.setResult({
+    mock.makeRequest.setResult({
       id: 'pl_new',
       name: 'Bare',
       uri: 'spotify:playlist:pl_new',
+      owner: { id: 'doug' },
     })
     const { byName } = withMock(mock)
     const tool = byName('spotify_create_playlist')
     await tool.execute(tool.argsSchema.parse({ name: 'Bare' }), ctx())
-    expect(mock.playlists.createPlaylist.calls[0]!.args[1]).toEqual({
+    expect(mock.makeRequest.calls[0]!.args[2]).toEqual({
       name: 'Bare',
       public: false,
       collaborative: false,
@@ -540,16 +550,16 @@ describe('spotify_create_playlist', () => {
 
   it('honors public:true override', async () => {
     const mock = makeMockApi()
-    mock.currentUser.profile.setResult({ id: 'doug' })
-    mock.playlists.createPlaylist.setResult({
+    mock.makeRequest.setResult({
       id: 'pl_new',
       name: 'Public',
       uri: 'spotify:playlist:pl_new',
+      owner: { id: 'doug' },
     })
     const { byName } = withMock(mock)
     const tool = byName('spotify_create_playlist')
     await tool.execute(tool.argsSchema.parse({ name: 'Public', public: true }), ctx())
-    const body = mock.playlists.createPlaylist.calls[0]!.args[1] as { public: boolean }
+    const body = mock.makeRequest.calls[0]!.args[2] as { public: boolean }
     expect(body.public).toBe(true)
   })
 })

@@ -1,7 +1,7 @@
 /**
  * Spotify tool definitions.
  *
- * Eleven tools in v1, sized for Jodin's music-pipeline use case:
+ * Twelve tools in v1, sized for Jodin's music-pipeline use case:
  *   - spotify_search_tracks         find tracks by query
  *   - spotify_get_playback_state    current track / device / progress
  *   - spotify_get_devices           list available playback devices
@@ -13,6 +13,7 @@
  *   - spotify_get_playlist_tracks   page through a playlist's items
  *   - spotify_add_to_playlist       append tracks to a playlist
  *   - spotify_create_playlist       create a new playlist
+ *   - spotify_set_playlist_cover    upload a custom cover image
  *
  * Premium gating: every `/me/player/*` write endpoint (play, pause,
  * skip, queue, transfer) requires the *end user* (whoever authorized
@@ -26,10 +27,14 @@
  * reads the current access_token from the calling Agent's vault, so
  * refreshed tokens are picked up on the very next call.
  */
+import { readFile } from 'node:fs/promises'
+import sharp from 'sharp'
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../../mcp/tool.js'
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk'
 import { buildSpotifyApi, SpotifyCredentialError } from './client.js'
+
+const SPOTIFY_COVER_MAX_BYTES = 256_000
 
 const TrackUriSchema = z.string().regex(/^spotify:track:[A-Za-z0-9]+$/, {
   message: 'Spotify track URI must look like "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"',
@@ -93,6 +98,16 @@ const CreatePlaylistArgsSchema = z.object({
   description: z.string().max(300).optional(),
   public: z.boolean().default(false),
   collaborative: z.boolean().default(false),
+})
+
+const SetPlaylistCoverArgsSchema = z.object({
+  playlist_id: PlaylistIdSchema,
+  image_path: z
+    .string()
+    .min(1)
+    .describe(
+      "Virtual path to the cover image (e.g. '/project/covers/today.jpg'). PNG / WebP / JPEG accepted; we re-encode to JPEG and resize to fit Spotify's 256KB cap.",
+    ),
 })
 
 interface SpotifyApiError {
@@ -426,7 +441,15 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     execute: async (args, ctx) => {
       const api = await buildApi(ctx.home, ctx.callingAgent)
       try {
-        await api.playlists.addItemsToPlaylist(args.playlist_id, args.track_uris, args.position)
+        // The SDK's addItemsToPlaylist still calls the legacy
+        // /v1/playlists/{id}/tracks endpoint which Spotify deprecated
+        // in the Feb 2026 migration (returns 403 Forbidden). The new
+        // endpoint is /v1/playlists/{id}/items. We bypass the SDK's
+        // method and use makeRequest to hit the correct URL while
+        // preserving the SDK's auth + refresh machinery.
+        const body: Record<string, unknown> = { uris: args.track_uris }
+        if (args.position !== undefined) body['position'] = args.position
+        await api.makeRequest('POST', `playlists/${args.playlist_id}/items`, body)
         return { ok: true, added: args.track_uris.length }
       } catch (err) {
         mapSpotifyError(err)
@@ -444,18 +467,88 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     execute: async (args, ctx) => {
       const api = await buildApi(ctx.home, ctx.callingAgent)
       try {
-        const me = await api.currentUser.profile()
-        const playlist = await api.playlists.createPlaylist(me.id, {
+        // The SDK's playlists.createPlaylist(user_id, ...) still calls
+        // the legacy /v1/users/{user_id}/playlists endpoint which
+        // Spotify deprecated in the Feb 2026 migration (returns 403
+        // Forbidden). The new endpoint is /v1/me/playlists and infers
+        // the user from the access token. We bypass the SDK's method
+        // and use makeRequest to hit the correct URL while preserving
+        // the SDK's auth + refresh machinery.
+        const body: Record<string, unknown> = {
           name: args.name,
-          ...(args.description ? { description: args.description } : {}),
           public: args.public,
           collaborative: args.collaborative,
-        })
+        }
+        if (args.description) body['description'] = args.description
+        const playlist = await api.makeRequest<{
+          id: string
+          name: string
+          uri: string
+          owner: { id: string }
+        }>('POST', 'me/playlists', body)
         return {
           id: playlist.id,
           name: playlist.name,
           uri: playlist.uri,
-          owner: me.id,
+          owner: playlist.owner.id,
+        }
+      } catch (err) {
+        mapSpotifyError(err)
+      }
+    },
+  })
+
+  const setPlaylistCover = defineTool({
+    name: 'spotify_set_playlist_cover',
+    description:
+      "Upload a custom cover image for a Spotify playlist. Reads a virtual path (PNG/WebP/JPEG), re-encodes to JPEG, resizes if needed to fit Spotify's 256KB cap, and PUTs to /playlists/{id}/images. Requires the `ugc-image-upload` OAuth scope.",
+    idempotency: 'destructive',
+    argsSchema: SetPlaylistCoverArgsSchema,
+    pathArgs: [{ argName: 'image_path', operation: 'read' }],
+    execute: async (args, ctx) => {
+      // image_path is already an absolute resolved path post-dispatch.
+      const raw = await readFile(args.image_path)
+      // Re-encode to JPEG. If the image is already a small JPEG we
+      // still pass it through sharp once to normalize (cheap) and to
+      // get a deterministic format. Start at quality 85 and a 1000px
+      // max edge; if the result is still over 256KB, recompress with
+      // lower quality / smaller edge until it fits.
+      let quality = 85
+      let maxEdge = 1000
+      let jpeg = await sharp(raw)
+        .resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer()
+      let attempts = 0
+      while (jpeg.byteLength > SPOTIFY_COVER_MAX_BYTES && attempts < 5) {
+        attempts += 1
+        quality = Math.max(50, quality - 10)
+        if (attempts >= 3) maxEdge = Math.max(500, Math.floor(maxEdge * 0.85))
+        jpeg = await sharp(raw)
+          .resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality, mozjpeg: true })
+          .toBuffer()
+      }
+      if (jpeg.byteLength > SPOTIFY_COVER_MAX_BYTES) {
+        throw new Error(
+          `unable to compress image under Spotify's 256KB cover cap after ${String(attempts)} attempts; final size ${String(jpeg.byteLength)} bytes`,
+        )
+      }
+      // Spotify expects the body as base64 of the JPEG, content-type
+      // image/jpeg. The base64 must NOT include line breaks (default
+      // node Buffer.toString('base64') produces a single line, so we
+      // are fine; macOS `base64` cli wraps at 76 chars but Node's
+      // Buffer does not).
+      const base64 = jpeg.toString('base64')
+      const api = await buildApi(ctx.home, ctx.callingAgent)
+      try {
+        await api.makeRequest('PUT', `playlists/${args.playlist_id}/images`, base64, 'image/jpeg')
+        return {
+          ok: true,
+          bytes_uploaded: jpeg.byteLength,
+          recompressed: attempts > 0,
+          final_quality: quality,
+          final_max_edge: maxEdge,
         }
       } catch (err) {
         mapSpotifyError(err)
@@ -475,6 +568,7 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     getPlaylistTracks,
     addToPlaylist,
     createPlaylist,
+    setPlaylistCover,
   ]
 }
 
@@ -490,4 +584,5 @@ export const SPOTIFY_TOOL_NAMES = [
   'spotify_get_playlist_tracks',
   'spotify_add_to_playlist',
   'spotify_create_playlist',
+  'spotify_set_playlist_cover',
 ] as const
