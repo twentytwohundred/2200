@@ -5,8 +5,7 @@ agent_role: 'Primary build Agent for 2200; absorbs the architecture-lead role'
 model:
   tier: frontier
   provider: deepseek
-  model_id: deepseek-chat
-  followup_model_id: deepseek-reasoner
+  model_id: deepseek-reasoner
 tools: []
 project_dir: /var/lib/2200/agents/hobby/project
 brain_dir: /var/lib/2200/agents/hobby/brain
