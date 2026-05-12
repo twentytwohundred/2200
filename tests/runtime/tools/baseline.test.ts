@@ -54,11 +54,13 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 35 tools (34 prior + image_generate)', () => {
-    expect(BASELINE_TOOL_NAMES).toHaveLength(35)
+  it('exports exactly 36 tools (35 prior + task_create_for_agent)', () => {
+    // 2026-05-12 v1 scope: bumped to 36 with `task_create_for_agent`
+    // (Capability 3: Agent-to-Agent task delegation).
+    expect(BASELINE_TOOL_NAMES).toHaveLength(36)
   })
 
-  it('baselineServers() builds eleven servers (incl. schedule + image)', () => {
+  it('baselineServers() builds twelve servers (adds task)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -70,6 +72,7 @@ describe('baseline tool registry', () => {
       'schedule',
       'shell',
       'system',
+      'task',
       'time',
       'web',
     ])

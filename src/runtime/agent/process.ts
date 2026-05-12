@@ -38,6 +38,7 @@ import { expandToolGrants } from '../mcp/tool-grants.js'
 import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
+import type { TaskRecord } from './task/types.js'
 import { AgentLoop, type LoopResult } from './loop.js'
 import type { AuditFlag } from './audit/narrated-completion.js'
 import { loadState } from '../supervisor/state.js'
@@ -635,6 +636,9 @@ export class AgentProcess {
           }
         }
       }
+      if (updated) {
+        await this.maybeEmitDelegationCompletion(taskId, updated, 'done', result.summary)
+      }
       return
     }
     if (result.kind === 'tripped') {
@@ -646,10 +650,19 @@ export class AgentProcess {
       } catch {
         // already transitioned
       }
+      const current = await this.taskStore.get(taskId)
+      if (current) {
+        await this.maybeEmitDelegationCompletion(
+          taskId,
+          current,
+          'blocked_on_detector',
+          `paused on detector ${result.verdict.kind}: ${result.verdict.detail}`,
+        )
+      }
       return
     }
     // errored
-    await this.taskStore.update(taskId, (fm) => ({
+    const erroredTask = await this.taskStore.update(taskId, (fm) => ({
       ...fm,
       state: 'errored',
       error: {
@@ -659,6 +672,67 @@ export class AgentProcess {
       },
       agent_state_at_terminal: this.machine.state,
     }))
+    if (erroredTask) {
+      await this.maybeEmitDelegationCompletion(
+        taskId,
+        erroredTask,
+        'errored',
+        `${result.error.class}: ${result.error.message}`,
+      )
+    }
+  }
+
+  /**
+   * When a delegated task hits a terminal/paused state, emit a passive-tier
+   * completion notification to the originating Agent's inbox so they can
+   * pick up the outcome on their next iteration (via notification_*).
+   *
+   * No-op when the task has no `delegated_by` (it wasn't a delegation).
+   * Best-effort: errors are logged but do not block the task transition.
+   */
+  private async maybeEmitDelegationCompletion(
+    taskId: string,
+    task: TaskRecord,
+    outcomeState: 'done' | 'errored' | 'blocked_on_detector',
+    summary: string,
+  ): Promise<void> {
+    const fm = task.frontmatter
+    if (!fm.delegated_by || !fm.delegating_task_id) return
+    try {
+      const truncated = summary.length > 500 ? `${summary.slice(0, 500)}...` : summary
+      await emitNotification({
+        home: this.options.home,
+        agentName: fm.delegated_by,
+        tier: 'passive',
+        kind: 'delegation_complete',
+        body:
+          `Delegated task **${fm.title}** on **${this.options.name}** ` +
+          `reached state \`${outcomeState}\`.\n\n` +
+          `Originating task: ${fm.delegating_task_id}\n` +
+          `Receiving task: ${taskId}\n` +
+          `Depth: ${String(fm.delegation_depth)}\n\n` +
+          `Outcome:\n\n\`\`\`\n${truncated}\n\`\`\``,
+        extras: {
+          originator: fm.delegated_by,
+          originator_task_id: fm.delegating_task_id,
+          target_agent: this.options.name,
+          target_task_id: taskId,
+          delegation_depth: fm.delegation_depth,
+          outcome_state: outcomeState,
+        },
+      })
+      this.log.info('delegation completion notification emitted', {
+        target_task_id: taskId,
+        originator: fm.delegated_by,
+        outcome_state: outcomeState,
+      })
+    } catch (err) {
+      this.log.warn('failed to emit delegation completion notification', {
+        target_task_id: taskId,
+        originator: fm.delegated_by,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   private composeAuditBody(

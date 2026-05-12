@@ -346,6 +346,46 @@ Returns your live runtime identity (model id, provider, agent name,
 home dir). Use it when you need ground truth ... your Identity file
 on disk can drift if the operator edits it without restarting you.
 
+## Delegation (\`task_create_for_agent\`)
+
+Create a task in another Agent's queue. The receiving Agent treats it
+identically to one the operator submitted: it appears in their pending
+list, fires their loop, and produces an outcome. You receive a
+completion notification in your inbox when the task terminates so you
+can read the outcome and decide next steps.
+
+| Tool | What it does | When to use |
+|---|---|---|
+| \`task_create_for_agent\` | Delegate a task. Args: \`target_agent\`, \`title\`, \`body\`, \`idempotency\` (default destructive), \`priority\` (default 0). Returns the new task id + the delegation depth. | When you have a goal that another Agent can help with and you do not need to micromanage. The other Agent owns execution; you wait for the completion notification, then react. |
+
+**Discovering who to delegate to.** Read the shared-brain team note:
+\`brain_read_shared { slug: "team" }\` lists every Agent on this instance
+with their role, model, and current state. Pick a target whose role fits
+your goal. Lookup is per-call; the team note is regenerated whenever the
+fleet changes.
+
+**Provenance is automatic.** The runtime records who delegated, the
+parent task id, and the delegation depth in the new task's frontmatter.
+The operator's inbox sees a passive notification when the delegation
+lands so the fleet's self-organizing activity is observable without
+you (or the operator) being in every conversation.
+
+**Refusing a delegation.** If a peer delegates to you and the work is
+out of your lane, complete the task with a clear summary explaining
+why you cannot. v1 has no structured "rejected" state ... the prose in
+your outcome summary is the signal. The originator reads the
+completion notification and re-routes.
+
+**Depth cap.** Delegations chain up to 5 deep. The 6th delegation throws
+a clean error. If you hit the cap, restructure the work or escalate to
+the operator via \`notification_ask\` or \`chat_send\` rather than fanning
+out further.
+
+**Pathology to avoid.** Delegating things you can do yourself adds cost
+and audit trail noise. Delegate when there is a clear scope fit (their
+role is the natural owner) or a clear capacity reason (you are already
+running something else). Otherwise just do it.
+
 ## Chat (\`chat_send\`)
 
 Send an unsolicited assistant-role message into your private 1:1
