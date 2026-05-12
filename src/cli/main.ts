@@ -1621,6 +1621,42 @@ export function buildProgram(): Command {
     })
 
   sharedBrain
+    .command('reseed')
+    .description(
+      'write the starter-pack seed notes into the shared brain. ' +
+        'Default is additive (skip slugs that already exist); --force ' +
+        'overwrites them with the current canonical text.',
+    )
+    .option(
+      '--force',
+      'overwrite existing seed slugs with the current canonical text. ' +
+        'Operator-customized seeds will be lost.',
+    )
+    .action(async (opts: { force?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { seedStarterPack } = await import('../runtime/onboarding/starter-pack.js')
+      const result = await seedStarterPack(home, { force: opts.force ?? false })
+      const lines: string[] = []
+      if (result.added.length > 0) {
+        lines.push(`added ${String(result.added.length)} note(s):`)
+        for (const s of result.added) lines.push(`  + ${s}`)
+      }
+      if (result.overwritten.length > 0) {
+        lines.push(`overwrote ${String(result.overwritten.length)} note(s):`)
+        for (const s of result.overwritten) lines.push(`  ~ ${s}`)
+      }
+      if (result.skipped.length > 0) {
+        lines.push(
+          `skipped ${String(result.skipped.length)} existing note(s) ` +
+            `(re-run with --force to overwrite):`,
+        )
+        for (const s of result.skipped) lines.push(`  = ${s}`)
+      }
+      if (lines.length === 0) lines.push('no seed changes.')
+      console.log(lines.join('\n'))
+    })
+
+  sharedBrain
     .command('import <source-dir>')
     .description('bulk-import a directory of markdown files into the shared brain')
     .option('--dry-run', 'parse + map but do not write')

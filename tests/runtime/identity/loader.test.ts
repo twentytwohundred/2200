@@ -234,7 +234,7 @@ describe('migrator chain', () => {
     const path = await writeAt('v1.md', VALID.replace('schema_version: 5', 'schema_version: 1'))
     const id = await loadIdentity(path)
     expect(id.frontmatter.schema_version).toBe(5)
-    expect(id.frontmatter.cost_caps.daily_usd).toBe(10)
+    expect(id.frontmatter.cost_caps.daily_usd).toBe(50)
     expect(id.frontmatter.cost_caps.warn_at_pct).toBe(80)
     expect(id.frontmatter.cost_caps.reset_at).toBe('00:00 UTC')
     expect(id.frontmatter.cost_caps.on_breach).toBe('block_new_tasks')
@@ -286,11 +286,11 @@ describe('migrator chain', () => {
 })
 
 describe('cost_caps', () => {
-  it('absent cost_caps block defaults to $10/day with warn at 80%, UTC reset, block-new-tasks behavior', async () => {
+  it('absent cost_caps block defaults to $50/day with warn at 80%, UTC reset, block-new-tasks behavior', async () => {
     const path = await writeAt('default-caps.md', VALID)
     const id = await loadIdentity(path)
     expect(id.frontmatter.cost_caps).toEqual({
-      daily_usd: 10,
+      daily_usd: 50,
       warn_at_pct: 80,
       reset_at: '00:00 UTC',
       on_breach: 'block_new_tasks',

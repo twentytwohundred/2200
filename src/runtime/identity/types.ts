@@ -92,11 +92,16 @@ export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*[._]([a-z][a-z0-
 
 /**
  * Default cost cap applied to Identity files that lack a `cost_caps`
- * block. Conservative by design... at current Hobby cadence
- * (single-digit dollars per working day) this gives a real ceiling
- * without being trivially blown through. Users adjust per-Agent.
+ * block. Sized for the 2026-05-12 "production Agents always run on
+ * frontier models" rule: a normal working day on grok-4.3 or
+ * deepseek-reasoner stays well under this, but a runaway loop (model
+ * spinning on a broken tool, ambient-router cascade, etc.) gets caught
+ * before it does real damage. Operators adjust per-Agent as needed.
+ *
+ * History: was $10 when defaults assumed cheap-tier; bumped to $50
+ * after the frontier-model directive landed.
  */
-export const DEFAULT_DAILY_USD_CAP = 10
+export const DEFAULT_DAILY_USD_CAP = 50
 
 /**
  * Default for every cost_caps field. Single source of truth so the

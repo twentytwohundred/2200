@@ -1265,18 +1265,47 @@ const SEEDS: readonly SeedSpec[] = [
   },
 ]
 
+export interface SeedStarterPackResult {
+  /** Slugs that were written for the first time. */
+  added: string[]
+  /** Slugs that were skipped because they already existed (force=false only). */
+  skipped: string[]
+  /** Slugs that were overwritten with current seed text (force=true only). */
+  overwritten: string[]
+}
+
 /**
- * Seed the starter pack into the shared brain. Each note is written
- * only if absent; existing notes (operator-edited or otherwise) are
- * left untouched. Idempotent on re-run.
+ * Seed the starter pack into the shared brain.
+ *
+ * Default behavior (force=false): each note is written only if absent;
+ * existing notes (operator-edited or otherwise) are left untouched.
+ * Idempotent on re-run. This is the right default for supervisor boot
+ * so operator-customized seeds don't get clobbered.
+ *
+ * Force mode (force=true): every seed slug is overwritten with the
+ * current canonical text. Used by `2200 brain reseed --force` when
+ * seed-note text has been updated in code and the operator wants the
+ * live shared brain to match. Operator-customized seeds will be lost;
+ * the operator opts into this by passing --force.
  */
-export async function seedStarterPack(home: string): Promise<void> {
+export async function seedStarterPack(
+  home: string,
+  opts: { force?: boolean } = {},
+): Promise<SeedStarterPackResult> {
+  const force = opts.force ?? false
   const { store, index } = await getOrOpenSharedBrain(home)
   const existing = await store.list({ limit: 1000 })
   const have = new Set(existing.map((n) => n.slug))
 
+  const added: string[] = []
+  const skipped: string[] = []
+  const overwritten: string[] = []
   for (const seed of SEEDS) {
-    if (have.has(seed.slug)) continue
+    const isPresent = have.has(seed.slug)
+    if (isPresent && !force) {
+      skipped.push(seed.slug)
+      continue
+    }
     const result = await store.write({
       title: seed.title,
       body: seed.body,
@@ -1286,7 +1315,10 @@ export async function seedStarterPack(home: string): Promise<void> {
     })
     const note = await store.read(result.slug)
     index.upsert(note)
+    if (isPresent) overwritten.push(seed.slug)
+    else added.push(seed.slug)
   }
+  return { added, skipped, overwritten }
 }
 
 /**
