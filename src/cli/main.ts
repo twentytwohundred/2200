@@ -1871,11 +1871,11 @@ export function buildProgram(): Command {
           hubUrl?: string
         },
       ) => {
-        // Default to "studio" when no name is supplied. Studio is the
-        // install-level pub every Agent auto-joins ... see
-        // wiki/decisions for the canonical-default-pub call. Existing
-        // installs that already have an "ops" or other pub are
-        // unaffected; this only biases new installs.
+        // Default to "studio" when no name is supplied. v1 invariant: one
+        // Studio per home, every Agent auto-joins (per the 2026-05-12 v1
+        // scope lock). Multi-room support is v1.x. The Studio is the only
+        // pub a v1 install creates by default; the `pickTargetPub`
+        // single-pub-fast-path keeps Agent auto-join trivial.
         const pubName = pubNameArg ?? 'studio'
         const home = await resolveHomeFromOpts(program)
         const client = await connectToDaemon(home)
