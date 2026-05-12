@@ -77,6 +77,10 @@ import {
   type TripRecordPersisted,
 } from './detectors/trip-record.js'
 import { auditNarratedCompletion, type AuditFlag } from './audit/narrated-completion.js'
+import {
+  DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
+  resolvePlanningOnlyRetry,
+} from './incomplete-turn.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
 // Match a fenced ```tool block. The leading `\s*` after `tool` admits
@@ -520,8 +524,22 @@ export class AgentLoop {
   private readonly events: LoopEvent[] = []
   private readonly history: Message[] = []
   private iteration = 0
-  /** Number of empty-response nudges issued for the current task. Caps at 1. */
+  /** Number of empty-response nudges issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private emptyResponseNudges = 0
+  /**
+   * Number of successful tool dispatches in this task across all
+   * iterations. Drives the planning-only retry guard: once the agent
+   * has done real work, treat a subsequent text-only turn as a
+   * legitimate stopping point rather than a planning-only stall. This
+   * is the conservative version of OC's `replayMetadata.hadPotentialSideEffects`
+   * gate: simpler than classifying mutating-vs-read tools, and the
+   * tradeoff is that some partial-hallucination cases (work-done +
+   * extra-narrated) won't trigger retry. Those are out of scope here
+   * per the decision record.
+   */
+  private priorSuccessfulToolCallsThisTask = 0
+  /** Number of planning-only retries issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
+  private planningOnlyRetries = 0
   /**
    * True once a `pub_send` or `pub_react` tool call has been dispatched
    * during the current task. Used by the wake-task enforcement path:
@@ -542,7 +560,7 @@ export class AgentLoop {
    * imagined paths).
    */
   private writtenPathsThisTask = new Set<string>()
-  /** Number of "you must call pub.* before terminating" nudges. Caps at 1. */
+  /** Number of "you must call pub.* before terminating" nudges. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private pubWakeNudges = 0
   private readonly nowFn: () => Date
 
@@ -607,6 +625,8 @@ export class AgentLoop {
     this.emptyResponseNudges = 0
     this.pubToolCallsThisTask = 0
     this.pubWakeNudges = 0
+    this.priorSuccessfulToolCallsThisTask = 0
+    this.planningOnlyRetries = 0
     this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
     // If this task is being resumed after a detector trip, inject a forcing
@@ -752,12 +772,42 @@ export class AgentLoop {
           // a directive prompt that says exactly which tool to call;
           // if the next iteration still doesn't comply, the loop
           // terminates as before so the operator can see the gap.
-          if (isPubWakeTask(task) && this.pubToolCallsThisTask === 0 && this.pubWakeNudges < 1) {
+          if (
+            isPubWakeTask(task) &&
+            this.pubToolCallsThisTask === 0 &&
+            this.pubWakeNudges < DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET
+          ) {
             this.pubWakeNudges += 1
             this.history.push({ role: 'assistant', content: response.text })
             this.history.push({
               role: 'tool',
               content: composeWakeNudge(task),
+            })
+            continue
+          }
+          // Planning-only retry: the model produced visible text that
+          // promises action without performing it (e.g. "I'll check
+          // the logs and report back" with zero tool calls). Decision
+          // record: wiki/decisions/2026-05-12-incomplete-turn-detector.md
+          const planningInstruction = resolvePlanningOnlyRetry({
+            assistantText: response.text,
+            lastUserMessage: task.body,
+            priorToolCallsSucceeded: this.priorSuccessfulToolCallsThisTask > 0,
+          })
+          if (
+            planningInstruction !== null &&
+            this.planningOnlyRetries < DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET
+          ) {
+            this.planningOnlyRetries += 1
+            this.log.info('planning-only turn detected; injecting act-now directive', {
+              attempt: this.planningOnlyRetries,
+              budget: DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
+              task_id: task.frontmatter.id,
+            })
+            this.history.push({ role: 'assistant', content: response.text })
+            this.history.push({
+              role: 'tool',
+              content: planningInstruction,
             })
             continue
           }
@@ -773,8 +823,8 @@ export class AgentLoop {
             audit_flags: flag ? [flag] : [],
           }
         }
-        if (this.emptyResponseNudges >= 1) {
-          // Already nudged once; this is a real refusal to respond.
+        if (this.emptyResponseNudges >= DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET) {
+          // Already nudged the maximum number of times; this is a real refusal to respond.
           throw new Error(
             'agent terminated with empty response after nudge; no final answer produced',
           )
@@ -872,6 +922,13 @@ export class AgentLoop {
     // denial or tool error still leaves the loop owing a response.
     if ((call.tool === 'pub_send' || call.tool === 'pub_react') && dispatchError === null) {
       this.pubToolCallsThisTask += 1
+    }
+    // Cumulative successful-tool-call count drives the planning-only
+    // retry guard: once the agent has done real work in this task,
+    // a subsequent text-only "I'll do X next" turn is treated as a
+    // legitimate stopping point rather than a planning-only stall.
+    if (dispatchError === null) {
+      this.priorSuccessfulToolCallsThisTask += 1
     }
     const tEnd = this.nowFn().getTime()
     const durationMs = result?.durationMs ?? tEnd - tStart
