@@ -128,6 +128,14 @@ export const TaskFrontmatterSchema = z.object({
   checkpoint: TaskCheckpointSchema,
   /** Currently-blocking detector context, if any. Mirrors `state == blocked_on_detector`. */
   detector_block: TaskDetectorBlockSchema,
+  /**
+   * Set by the resume RPC: a snapshot of the trip the task just unblocked
+   * from. The loop reads this when it picks up a resumed task and injects
+   * a forcing system-role message to discourage retrying the broken thing.
+   * Reuses the same shape as `detector_block`; cleared/overwritten on the
+   * next resume.
+   */
+  resumed_from_trip: TaskDetectorBlockSchema.optional().default(null),
   /** Outcome on terminal states. */
   outcome: TaskOutcomeSchema,
   /** Error on `errored`. */
@@ -174,6 +182,7 @@ export function newPendingTask(args: {
       title: args.title,
       checkpoint: null,
       detector_block: null,
+      resumed_from_trip: null,
       outcome: null,
       error: null,
       agent_state_at_terminal: null,

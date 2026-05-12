@@ -1395,6 +1395,11 @@ export class Supervisor {
           await store.update(target.frontmatter.id, (fm) => ({
             ...fm,
             state: 'pending',
+            // Preserve the trip context for the loop to read on pickup so it
+            // can inject a forcing message that discourages retrying the
+            // broken thing. Overwrites any previous resume snapshot, which is
+            // the right semantic: only the most recent trip matters.
+            resumed_from_trip: fm.detector_block,
             detector_block: null,
           }))
           resumedId = target.frontmatter.id

@@ -609,6 +609,16 @@ export class AgentLoop {
     this.pubWakeNudges = 0
     this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
+    // If this task is being resumed after a detector trip, inject a forcing
+    // tool-role message before the model's first call. The model otherwise
+    // sees only the original task body and tends to retry the same broken
+    // thing that tripped the detector (observed on 2026-05-11).
+    if (task.frontmatter.resumed_from_trip) {
+      this.history.push({
+        role: 'tool',
+        content: composeResumeGuidance(task.frontmatter.resumed_from_trip),
+      })
+    }
 
     while (this.iteration < this.maxIterations) {
       this.iteration += 1
@@ -1423,6 +1433,53 @@ function isPubWakeTask(task: TaskRecord): boolean {
  * to terminate without calling `pub_send` or `pub_react`. Include the
  * trigger message_id so the model can react to the right message.
  */
+/**
+ * Forcing message injected at the start of a task that was resumed after
+ * a detector trip. Goal: stop the model from retrying the exact thing
+ * that tripped the detector. The shape is short on purpose; the model
+ * needs the rule, not a lecture.
+ */
+function composeResumeGuidance(trip: { kind: string; detail: string; at: string }): string {
+  const prelude = `[Resume after detector trip at ${trip.at}: ${trip.kind}]\n${trip.detail}\n\n`
+  switch (trip.kind) {
+    case 'tool_repetition':
+      return (
+        prelude +
+        'You called the same tool with the same arguments multiple times. ' +
+        'Do not retry that exact call. Either change the arguments, use a different tool, ' +
+        'or surface the situation to the operator with notification_ask or chat_send.'
+      )
+    case 'error_storm':
+      return (
+        prelude +
+        'Five consecutive tool calls failed. Read the most recent error messages above before retrying. ' +
+        'The fix is usually in the error text. If you cannot determine what to change, ' +
+        'do not try again ... surface the situation to the operator with notification_ask or chat_send.'
+      )
+    case 'tool_timeout':
+      return (
+        prelude +
+        'A tool call hit its time ceiling. Do not call the same tool again with the same arguments. ' +
+        'Consider whether the work needs to be broken into smaller steps.'
+      )
+    case 'cost_burst':
+      return (
+        prelude +
+        'You burned through the cost-burst budget for this window. Pause and ask the operator ' +
+        'whether to continue before doing any more model or expensive tool calls.'
+      )
+    case 'no_progress':
+      return (
+        prelude +
+        'You ran many iterations without state change. Step back: what are you actually trying to ' +
+        'accomplish, what is blocking you, and is there an easier path? If you are stuck, surface ' +
+        'it to the operator.'
+      )
+    default:
+      return prelude + 'Read the trip detail above. Do not repeat what you were doing.'
+  }
+}
+
 function composeWakeNudge(task: TaskRecord): string {
   const idMatch = /Message id:\s*(\S+)/.exec(task.body)
   const messageId = idMatch?.[1] ?? '<message_id from the task body>'
