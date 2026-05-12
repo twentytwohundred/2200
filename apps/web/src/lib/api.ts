@@ -413,6 +413,11 @@ export interface OnboardingConfirmResponse {
   transcript_path: string | null
   tools: { server: string; env_hint: string }[]
   schedules: OnboardingScheduleSuggestion[]
+  /** True when the runtime auto-started the new Agent process. v1
+   *  always attempts the start; auto_started=false means it failed. */
+  auto_started: boolean
+  /** Error message when auto_started=false; null on success. */
+  auto_start_error: string | null
 }
 
 export interface Notification {

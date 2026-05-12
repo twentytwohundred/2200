@@ -27,6 +27,7 @@ import fastifyWebsocketImport from '@fastify/websocket'
 import { z, ZodError } from 'zod'
 import type { Supervisor } from '../supervisor/supervisor.js'
 import type { Logger } from '../util/logger.js'
+import { emitNotification } from '../notifications/writer.js'
 import {
   agentBrainIndexPath,
   agentPaths as agentPathsHelper,
@@ -1764,6 +1765,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     } catch {
       // Persistence failure is non-fatal ... the Agent is on disk.
     }
+    // Auto-start the new Agent. Without this, the Agent record is on disk
+    // in `state: 'stopped'` and the seeded orientation task sits in the
+    // queue waiting indefinitely. v1 scope's Capability 1 onboarding
+    // expects "Agent is spawned ... reports ready" to happen from a single
+    // operator action; the start has to fire here, not via a follow-up
+    // CLI call. Failure to start is logged via notification but does not
+    // fail the confirm ... the operator can `2200 agent start <name>`
+    // if anything went sideways.
+    let autoStarted = false
+    let autoStartError: string | null = null
+    try {
+      await supervisor.startAgent(result.agent_name)
+      autoStarted = true
+    } catch (err) {
+      autoStartError = err instanceof Error ? err.message : String(err)
+      try {
+        await emitNotification({
+          home,
+          agentName: result.agent_name,
+          tier: 'important',
+          kind: 'agent.auto_start_failed',
+          body:
+            `Agent **${result.agent_name}** was created from onboarding but auto-start failed: ${autoStartError}\n\n` +
+            `Run \`2200 agent start ${result.agent_name}\` once any underlying issue is addressed.`,
+        })
+      } catch {
+        // best-effort
+      }
+    }
     session.markConfirmed()
     sessions.delete(session.id)
     return {
@@ -1777,6 +1807,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         env_hint: t.env_hint,
       })),
       schedules: preview.schedules,
+      auto_started: autoStarted,
+      auto_start_error: autoStartError,
     }
   })
 

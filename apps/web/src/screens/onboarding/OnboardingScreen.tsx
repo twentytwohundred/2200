@@ -387,6 +387,18 @@ export function OnboardingScreen(): ReactElement {
                 BRAIN NOTE · {phase.result.continuity_note_slug}
               </div>
             ) : null}
+            {phase.result.auto_started ? (
+              <div className={styles.confirmedMeta}>
+                AGENT STARTED · running the orientation task now (read shared brain → write first
+                brain note → introduce in the Studio → chat back to you)
+              </div>
+            ) : (
+              <div className={styles.confirmedMeta}>
+                AGENT NOT STARTED · auto-start failed
+                {phase.result.auto_start_error ? `: ${phase.result.auto_start_error}` : ''}. Run
+                `2200 agent start {phase.result.agent_name}` once the underlying issue is addressed.
+              </div>
+            )}
             <div className={styles.confirmActions}>
               <Button
                 variant="primary"
