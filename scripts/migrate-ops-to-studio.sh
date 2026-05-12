@@ -96,9 +96,13 @@ fi
 if [[ -f "$SUPERVISOR_JSON" ]]; then
   echo "==> updating $SUPERVISOR_JSON"
   # Use Node for safe JSON rewriting (avoids sed-on-JSON pitfalls).
-  node --input-type=module -e "
+  # Env vars must come BEFORE the command for bash to set them on the
+  # invocation; the prior script had them after the command, which is
+  # interpreted as positional args and silently drops them.
+  SUP_JSON="$SUPERVISOR_JSON" node --input-type=module -e "
     import { readFileSync, writeFileSync } from 'node:fs';
     const path = process.env.SUP_JSON;
+    if (!path) { throw new Error('SUP_JSON env var not set'); }
     const s = JSON.parse(readFileSync(path, 'utf8'));
     if (s.pubs && s.pubs.ops && !s.pubs.studio) {
       const old = s.pubs.ops;
@@ -110,23 +114,24 @@ if [[ -f "$SUPERVISOR_JSON" ]]; then
       s.pubs.studio = old;
     }
     writeFileSync(path, JSON.stringify(s, null, 2) + '\n');
-  " SUP_JSON="$SUPERVISOR_JSON"
+  "
 fi
 
 # 7. Rewrite each agent's pub-watermarks.json: rename pubs.ops -> pubs.studio.
 for wm in "$HOME_2200"/agents/*/state/pub-watermarks.json; do
   [[ -f "$wm" ]] || continue
   echo "==> updating $wm"
-  node --input-type=module -e "
+  WM_JSON="$wm" node --input-type=module -e "
     import { readFileSync, writeFileSync } from 'node:fs';
     const path = process.env.WM_JSON;
+    if (!path) { throw new Error('WM_JSON env var not set'); }
     const s = JSON.parse(readFileSync(path, 'utf8'));
     if (s.pubs && s.pubs.ops && !s.pubs.studio) {
       s.pubs.studio = s.pubs.ops;
       delete s.pubs.ops;
     }
     writeFileSync(path, JSON.stringify(s, null, 2) + '\n');
-  " WM_JSON="$wm"
+  "
 done
 
 echo "==> migration complete"
