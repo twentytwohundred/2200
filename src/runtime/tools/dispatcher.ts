@@ -58,9 +58,59 @@ export class ToolArgsError extends Error {
     public readonly tool: string,
     public readonly issues: unknown,
   ) {
-    super(`invalid args for tool '${tool}': ${JSON.stringify(issues)}`)
+    super(formatToolArgsError(tool, issues))
     this.name = 'ToolArgsError'
   }
+}
+
+/**
+ * Render Zod issues (or our own hand-built issue objects) into a string
+ * a model can actually act on: one short line per problem, naming the
+ * field, what was wrong, and what to do. The prior version stringified
+ * the full Zod issue tree; agents would see e.g.
+ *   invalid args for tool 'spotify_api': [{"origin":"string","code":"invalid_format",...}]
+ * which is structurally complete but not actionable. The new shape:
+ *   invalid args for tool 'spotify_api':
+ *     - path: required (got missing); provide a non-empty string
+ *     - limit: must be 1..50 (got 100)
+ */
+function formatToolArgsError(tool: string, issues: unknown): string {
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return `invalid args for tool '${tool}': ${JSON.stringify(issues)}`
+  }
+  const lines: string[] = [`invalid args for tool '${tool}':`]
+  for (const raw of issues) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const issue = raw as {
+      path?: readonly (string | number)[]
+      message?: string
+      code?: string
+      expected?: string
+      received?: string
+      minimum?: number
+      maximum?: number
+      type?: string
+    }
+    const pathStr =
+      issue.path && issue.path.length > 0 ? issue.path.map((p) => String(p)).join('.') : '<args>'
+    let detail = issue.message ?? 'invalid'
+    // Common-case advice strings. The model gets actionable text instead
+    // of having to interpret raw Zod codes.
+    if (issue.code === 'invalid_type' && issue.expected) {
+      const got = issue.received ?? 'missing'
+      detail = `must be ${issue.expected} (got ${got})`
+    } else if (issue.code === 'too_small' && issue.minimum !== undefined) {
+      const what = issue.type === 'string' ? 'min length' : 'min'
+      detail = `${what} ${String(issue.minimum)} (${issue.message ?? 'too small'})`
+    } else if (issue.code === 'too_big' && issue.maximum !== undefined) {
+      const what = issue.type === 'string' ? 'max length' : 'max'
+      detail = `${what} ${String(issue.maximum)} (${issue.message ?? 'too large'})`
+    } else if (issue.code === 'invalid_format') {
+      detail = issue.message ?? 'format invalid'
+    }
+    lines.push(`  - ${pathStr}: ${detail}`)
+  }
+  return lines.join('\n')
 }
 
 export interface DispatcherOptions {
