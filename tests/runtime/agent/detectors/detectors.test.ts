@@ -277,14 +277,12 @@ describe('evaluator', () => {
     expect(evaluateDetectors(ctx([]))).toBeNull()
   })
 
-  it('ACTIVE_DETECTORS includes all five kinds', () => {
+  it('ACTIVE_DETECTORS is the v1 active set (tool_repetition + error_storm)', () => {
+    // Per the 2026-05-12 v1 scope lock, only tool_repetition and error_storm
+    // are active. The other three (cost_burst, no_progress, tool_timeout)
+    // are deferred in place; their source files stay for easy re-add if
+    // symptoms emerge.
     const kinds = ACTIVE_DETECTORS.map((d) => d.kind).sort()
-    expect(kinds).toEqual([
-      'cost_burst',
-      'error_storm',
-      'no_progress',
-      'tool_repetition',
-      'tool_timeout',
-    ])
+    expect(kinds).toEqual(['error_storm', 'tool_repetition'])
   })
 })
