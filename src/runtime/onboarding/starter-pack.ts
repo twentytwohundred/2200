@@ -35,6 +35,7 @@ const PLATFORM_SLUG = '2200-platform'
 const TOOLS_SLUG = '2200-tools'
 const CONVENTIONS_SLUG = '2200-conventions'
 const WORKFLOWS_SLUG = '2200-workflows'
+const SECRETS_SLUG = 'secrets-and-provisioning'
 const SPOTIFY_API_REF_SLUG = 'spotify-api-reference'
 const DISCORD_API_REF_SLUG = 'discord-api-reference'
 const SLACK_API_REF_SLUG = 'slack-api-reference'
@@ -811,6 +812,58 @@ The bulletproof shape:
    and that is the only prefix you ever write or read with.
 `
 
+const SECRETS_NOTE_BODY = `# Secrets & provisioning
+
+## Where secrets live (the actual current architecture)
+
+There are two distinct layers:
+
+### Layer 1: Static env vars injected by the supervisor
+
+| File | Purpose |
+|---|---|
+| \`~/.config/2200/runtime.env\` | API keys for LLM providers (\`DEEPSEEK_API_KEY\`, \`XAI_API_KEY\`, \`ANTHROPIC_API_KEY\`, etc.) AND OAuth client_ids/secrets (\`_2200_OAUTH_SPOTIFY_CLIENT_ID\`, etc.). |
+| \`~/.config/2200/oauth-apps.env\` | Currently mirrors a subset of the above for legacy reasons. The supervisor reads BOTH at boot and merges them into \`process.env\`, which is inherited by Agent processes. |
+
+The supervisor reads these files once at start and injects them via \`process.env\`. **Agents do NOT read these files directly.** Agents see the values as ordinary env vars in their process; tools resolve them by name.
+
+The 2200 daemon's startup log line \`runtime_env_loaded: N\` confirms the file was read and N variables were imported. If a tool fails with "API key missing for X", the variable is not in \`~/.config/2200/runtime.env\`. The operator adds it there and restarts the daemon.
+
+### Layer 2: Per-Agent encrypted credential vault
+
+For OAuth tokens that rotate (access + refresh tokens for Spotify, Gmail, etc.), 2200 has a real vault:
+
+- Per-Agent encrypted store at \`<2200_HOME>/state/credentials/<agent>/<name>.json\` (encrypted with the supervisor's \`master.key\`).
+- Tools use the vault via \`CredentialVault.get/put\`. The Spotify tool reads its access token from the vault on every call.
+- The vault is populated by \`2200 oauth login <provider> <agent>\` (Authorization Code flow): operator runs the command, browser opens, operator authorizes, the access + refresh tokens land in the vault.
+- A supervisor-side **TokenRefreshService** ticks every 60s, scans all vault entries that have a paired refresh token, and rotates the access token when it is within 5 minutes of expiry. Result: agents almost never see an expired access token at call time.
+
+The supervisor log line \`oauth refresh tick {scanned: N, refreshed: M, failed: K, skipped: L}\` is the source of truth for whether the service is healthy. To confirm refresh activity, grep the supervisor log for \`oauth-refresh\`.
+
+## Common confusions to avoid
+
+- **"There's no vault, no TokenRefreshService."** Both exist. Confirm via the source of truth (the supervisor log, or \`src/runtime/credentials/vault.ts\` + \`src/runtime/oauth/refresh-service.ts\`).
+- **"Credentials need to be at \`/commons/reference/oauth-apps.env\`."** They don't. That virtual path is empty; the supervisor reads from \`~/.config/2200/\` (user config dir, outside the 2200_HOME tree). Env-var injection happens at process spawn.
+- **"I should \`shell_run cat ~/.config/2200/oauth-apps.env\`."** Don't. The values are already in your \`process.env\`. Trying to cat the file from an Agent reveals secrets in plan-record bodies and crosses a boundary unnecessarily.
+
+## If you think a credential is missing
+
+Don't speculate. **Verify before asserting.** Two cheap checks:
+
+1. \`system_whoami\` confirms which provider/model your runtime is bound to ... proves the LLM API key is present (otherwise you wouldn't be running).
+2. For OAuth credentials, check the supervisor log: \`oauth refresh tick\` lines name the \`scanned\` count. A missing credential is not in the scanned set.
+
+If verification confirms a credential is genuinely missing, **chat_send the operator** with the specific ask. Do NOT plan around the absence; do NOT wait silently in the pub.
+
+## Provisioning workflow (operator-side, for reference)
+
+1. Operator edits \`~/.config/2200/runtime.env\` or runs \`2200 oauth login <provider> <agent>\`.
+2. Operator restarts the daemon (or for vault writes, no restart needed).
+3. Agent calls a tool; the tool reads from \`process.env\` (Layer 1) or the vault (Layer 2). It works.
+
+That is the full pipeline. No operator-visible "drop a file at this virtual path" step.
+`
+
 const SPOTIFY_API_REF_NOTE_BODY = `# Spotify Web API reference
 
 Endpoint catalog for calling Spotify through the \`spotify_api\` tool.
@@ -1181,6 +1234,13 @@ const SEEDS: readonly SeedSpec[] = [
     body: WORKFLOWS_NOTE_BODY,
     type: 'workflows',
     tags: ['platform', 'workflows', 'orientation'],
+  },
+  {
+    slug: SECRETS_SLUG,
+    title: 'Secrets & provisioning',
+    body: SECRETS_NOTE_BODY,
+    type: 'reference',
+    tags: ['platform', 'secrets', 'provisioning', 'oauth', 'vault'],
   },
   {
     slug: SPOTIFY_API_REF_SLUG,
