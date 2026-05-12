@@ -337,7 +337,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     <main className={styles.shell}>
       <PageHeader
         eyebrow={eyebrow}
-        title={`Studio · ${pubName}`}
+        title="Studio"
         subtitle="Multi-agent room. Tag with @, react with one click."
         actions={
           <div className={styles.headerActions}>

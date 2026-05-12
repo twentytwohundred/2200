@@ -1285,10 +1285,18 @@ export async function regenerateTeamNote(home: string, supervisor: Supervisor): 
 }
 
 /**
- * Build the body for a freshly-spawned Agent's first task. The task
- * tells them to orient via the shared brain (platform, tools,
- * conventions, workflows, team), read their own continuity note,
- * then chat.send the operator a brief.
+ * Build the body for a freshly-spawned Agent's first task.
+ *
+ * Per the 2026-05-12 v1 scope, every new Agent's onboarding sequence is:
+ *   1. Confirm shared brain access (reads)
+ *   2. Write to its own brain to validate the tool surface
+ *   3. Walk into the Studio and introduce itself to peers
+ *   4. Report ready to the operator via chat_send
+ *
+ * The task body below drives all four in order. Step 3 (Studio
+ * introduction) is what makes the new Agent socially visible to the
+ * fleet, not just technically registered. The other Agents see who
+ * arrived, what their lane is, and can address them immediately.
  */
 export function buildOrientationTaskBody(args: {
   agentName: string
@@ -1296,43 +1304,64 @@ export function buildOrientationTaskBody(args: {
   operatorAddressing: string
 }): string {
   return `Welcome. You were just spawned. Before doing anything else, take a
-moment to orient yourself.
+moment to orient yourself and arrive properly.
 
-Steps:
+This task has four phases. Run them in order. Do not skip the
+Studio introduction in phase 3 ... your peers learn you exist from
+that post, not from the task store.
 
-1. \`brain.search_shared('platform')\` and read the
-   "2200 platform overview" note. It tells you what 2200 is, what
-   role you play, and how you wake up.
+## Phase 1 ... read the shared brain (orientation)
 
-2. \`brain.search_shared('tools')\` and read the "Tool reference"
-   note. Every baseline tool you have, with when-to-use guidance.
-   Skim it; you'll come back to it.
+1. \`brain_read_shared { slug: '2200-platform' }\` ... what 2200 is,
+   what role you play, how you wake up.
+2. \`brain_read_shared { slug: '2200-tools' }\` ... every baseline
+   tool with when-to-use guidance. Skim; you'll return to it.
+3. \`brain_read_shared { slug: '2200-conventions' }\` ... style,
+   punctuation, addressing peers, reactions vs replies, and the
+   "reaching the operator" rule. Internalize.
+4. \`brain_read_shared { slug: '2200-workflows' }\` ... common task
+   shapes (chat reply, pub mention, scheduled fire, error
+   handling). Recognize what kind of wake you're in.
+5. \`brain_read_shared { slug: 'team' }\` ... live snapshot of who
+   else is on this instance. Note who you might collaborate with
+   on your lane.
+6. \`brain_read { slug: 'continuity-from-onboarding' }\` ... the
+   conversation that brought you into existence. Your spec from
+   ${args.operatorAddressing}.
 
-3. \`brain.search_shared('conventions')\` and read the
-   "Conventions" note. Communication style, punctuation,
-   addressing peers, reactions vs replies. Internalize this; the
-   operator cares.
+## Phase 2 ... write to your own brain (prove the tool surface)
 
-4. \`brain.search_shared('workflows')\` and read the "Workflows"
-   note. Common task shapes (chat reply, pub mention, scheduled
-   fire, error handling). Helps you recognize what kind of wake
-   you're in.
+7. \`brain_write\` a fresh note with slug \`intro-snapshot\`. Body:
+   a short first-impressions log written for your future self. Two
+   to four sentences each on:
+   - Who you are and your lane (one-liner from your continuity note).
+   - Who you might collaborate with and on what.
+   - Your first concrete move on the lane.
+   This is not throwaway; it is the seed of your operational memory.
 
-5. \`brain.search_shared('team')\` and read the "Team" note. Live
-   snapshot of who else is on this instance. Note who you might
-   collaborate with on your lane.
+## Phase 3 ... walk into the Studio (introduce yourself)
 
-6. Read your own continuity note: \`brain_read('continuity-from-onboarding')\`.
-   This is the conversation that brought you into existence. It is
-   your spec from ${args.operatorAddressing}.
+8. \`pub_send { pub_name: 'studio', content: '<intro> }\` ... your
+   debut in the room. The shape:
+   - Open with "Hi team," and your name + lane in one sentence.
+   - Acknowledge one or two peers whose lanes overlap with yours,
+     tagged with \`@<handle>\` so they wake.
+   - Close with one concrete thing you're picking up first.
+   Keep it under 4 sentences. Do not tag everyone; pick the
+   peers from the team note whose work intersects yours.
 
-7. When you have read those, call \`chat_send\` to deliver a short
-   brief to ${args.operatorAddressing}. Three things:
-   - What 2200 is (in your own words, one sentence).
-   - Who is on the team and who you might work with.
-   - What your first move is on the lane you were hired for
-     (${args.agentRole}). Be concrete, not aspirational.
+## Phase 4 ... report ready to the operator
 
-End the task after \`chat_send\` returns. Do not continue working on
-the lane until ${args.operatorAddressing} replies.`
+9. \`chat_send\` to ${args.operatorAddressing} with a short brief.
+   Four lines:
+   - What 2200 is (one sentence, your own words).
+   - Who is on the team and who you'll work with.
+   - First move on your lane (${args.agentRole}). Concrete, not
+     aspirational.
+   - "I've introduced myself in the Studio and written my
+     intro-snapshot brain note. Ready when you are."
+
+End the task after \`chat_send\` returns. Do not continue working
+on the lane until ${args.operatorAddressing} replies. The
+operator's reply is your green light.`
 }
