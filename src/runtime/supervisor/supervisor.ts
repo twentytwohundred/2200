@@ -20,7 +20,15 @@ import { saveState, loadState } from './state.js'
 import { type SupervisorState, type AgentRecord, type PubRecord } from './types.js'
 import { regenerateFleet } from './fleet.js'
 import { regenerateTeamNote, seedStarterPack } from '../onboarding/starter-pack.js'
-import { spawnAgent, type SpawnedAgent, type SpawnAgentOptions } from './lifecycle.js'
+import {
+  spawnAgent,
+  adoptAgent,
+  isPidAlive,
+  validateAdoptedProcessArgv,
+  defaultBootstrapPath,
+  type TrackedAgent,
+  type SpawnAgentOptions,
+} from './lifecycle.js'
 import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock } from '../identity/types.js'
@@ -110,8 +118,26 @@ export class Supervisor {
   private readonly server: JsonRpcServer
   private readonly connections = new Set<Connection>()
   private readonly agentByConnection = new WeakMap<Connection, string>()
-  private readonly spawned = new Map<string, SpawnedAgent>()
+  private readonly spawned = new Map<string, TrackedAgent>()
   private readonly spawnedPubs = new Map<string, SpawnedPub>()
+  /**
+   * Names of Agents whose current process exit is the result of an
+   * operator-initiated stop (via `stopAgent`). The auto-respawn path in
+   * `handleAgentExit` checks this set to distinguish "process died
+   * unexpectedly, supervisor should respawn it" from "we asked it to
+   * stop, leave it stopped".
+   *
+   * Add on stopAgent entry; remove after the post-stop state update.
+   */
+  private readonly intentionalStops = new Set<string>()
+  /**
+   * Per-Agent respawn timestamps (epoch ms), capped to the last 3. Used
+   * to enforce a crash-respawn budget: if an Agent has been respawned 3
+   * times in the last 60s, the 4th unexpected exit transitions it to
+   * `errored` instead of respawning again. Prevents spawn-crash-spawn
+   * tight loops from burning resources.
+   */
+  private readonly respawnHistory = new Map<string, number[]>()
   /**
    * One PulseWatcher per running Agent (Epic 15 PulseDot live-feed).
    * Started when the agent is spawned, stopped when the agent exits
@@ -401,14 +427,56 @@ export class Supervisor {
       await new Promise((r) => setTimeout(r, 800))
     }
 
+    const expectedBootstrap = defaultBootstrapPath()
+    let agentsRejectedAndRespawned = 0
     for (const [name, record] of Object.entries(this.state.agents)) {
       if (record.state !== 'running') continue
       if (record.pid !== null && isPidAlive(record.pid)) {
-        this.log.info('boot: agent process still alive; adopting', {
+        // Adopt-time validation: confirm the surviving process is running
+        // the currently-deployed bootstrap. If the dist was rebuilt while
+        // the Agent was alive, the process holds stale code in memory and
+        // will service tasks with old behavior (this is the orphan-PID bug
+        // that bit the 2026-05-11 smoke run). Refuse to adopt mismatches;
+        // kill and respawn instead.
+        const valid = validateAdoptedProcessArgv(record.pid, expectedBootstrap)
+        if (valid) {
+          this.log.info('boot: agent process still alive; adopting', {
+            name,
+            pid: record.pid,
+          })
+          const tracked = adoptAgent(name, record.pid, this.log.child('lifecycle'))
+          this.spawned.set(name, tracked)
+          void tracked.exited.then(({ code, signal }) => {
+            void this.handleAgentExit(name, code, signal)
+          })
+          agentsAdopted += 1
+          continue
+        }
+        // Stale-dist process: kill it, then respawn fresh.
+        this.log.warn('boot: adopted process failed argv validation; killing and respawning', {
           name,
           pid: record.pid,
+          expected_bootstrap: expectedBootstrap,
         })
-        agentsAdopted += 1
+        try {
+          const stale = adoptAgent(name, record.pid, this.log.child('lifecycle'))
+          await stale.stop(5000)
+        } catch (err) {
+          this.log.warn('boot: failed to kill stale process; will respawn anyway', {
+            name,
+            pid: record.pid,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+        try {
+          await this.startAgent(name)
+          agentsRejectedAndRespawned += 1
+        } catch (err) {
+          this.log.warn('boot: failed to respawn after rejection', {
+            name,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
         continue
       }
       try {
@@ -426,6 +494,7 @@ export class Supervisor {
       pubs_revived: pubsRevived,
       agents_revived: agentsRevived,
       agents_adopted: agentsAdopted,
+      agents_rejected_and_respawned: agentsRejectedAndRespawned,
       duration_ms: Date.now() - reviveStart,
     })
   }
@@ -854,33 +923,41 @@ export class Supervisor {
 
   /** Send `agent.stop` to a running Agent and wait for graceful exit. */
   async stopAgent(name: string, reason = 'user_requested'): Promise<void> {
-    const spawned = this.spawned.get(name)
-    if (!spawned) {
-      // No running process; mark stopped and persist.
-      await this.updateAgent(name, { state: 'stopped', pid: null })
-      return
-    }
-    // Send the RPC; the Agent acks and then exits. After the OS process
-    // exits, `handleAgentExit` updates the record. If the Agent is
-    // unresponsive, `spawned.stop()` falls back to SIGKILL.
-    const conn = this.findConnectionFor(name)
-    if (conn) {
-      try {
-        // Best-effort: send the stop notification via the existing client
-        // RPC server. We do not use a JsonRpcClient here because the
-        // supervisor is the SERVER side of the connection. Sending a
-        // request from the server side is reserved for a future change
-        // where the supervisor owns a bidirectional client.
-        // For v1, the supervisor signals stop by ending the connection
-        // and sending SIGTERM to the process.
-        await conn.close()
-      } catch {
-        // ignore
+    // Mark the imminent exit as intentional so the auto-respawn path in
+    // `handleAgentExit` does not bring the process back. Always cleared
+    // before return (success or failure).
+    this.intentionalStops.add(name)
+    try {
+      const spawned = this.spawned.get(name)
+      if (!spawned) {
+        // No running process; mark stopped and persist.
+        await this.updateAgent(name, { state: 'stopped', pid: null })
+        return
       }
+      // Send the RPC; the Agent acks and then exits. After the OS process
+      // exits, `handleAgentExit` updates the record. If the Agent is
+      // unresponsive, `spawned.stop()` falls back to SIGKILL (5s timeout).
+      const conn = this.findConnectionFor(name)
+      if (conn) {
+        try {
+          // Best-effort: send the stop notification via the existing client
+          // RPC server. We do not use a JsonRpcClient here because the
+          // supervisor is the SERVER side of the connection. Sending a
+          // request from the server side is reserved for a future change
+          // where the supervisor owns a bidirectional client.
+          // For v1, the supervisor signals stop by ending the connection
+          // and sending SIGTERM/SIGKILL to the process.
+          await conn.close()
+        } catch {
+          // ignore
+        }
+      }
+      await spawned.stop()
+      await this.updateAgent(name, { state: 'stopped', pid: null })
+      this.log.info('Agent stopped', { name, reason })
+    } finally {
+      this.intentionalStops.delete(name)
     }
-    await spawned.stop()
-    await this.updateAgent(name, { state: 'stopped', pid: null })
-    this.log.info('Agent stopped', { name, reason })
   }
 
   /**
@@ -1543,17 +1620,71 @@ export class Supervisor {
       // Already updated by agent.errored RPC.
       return
     }
-    const nextState: AgentRecord['state'] = signal === null && code === 0 ? 'stopped' : 'errored'
-    await this.updateAgent(name, {
-      state: nextState,
-      pid: null,
-      errored_at: nextState === 'errored' ? new Date().toISOString() : record.errored_at,
-      errored_reason:
-        nextState === 'errored'
-          ? `process exited code=${String(code)} signal=${String(signal)}`
-          : record.errored_reason,
+
+    // Was this exit operator-initiated? Then no respawn; transition to stopped.
+    const intentional = this.intentionalStops.has(name)
+    if (intentional || this.isShuttingDown) {
+      const nextState: AgentRecord['state'] = signal === null && code === 0 ? 'stopped' : 'errored'
+      await this.updateAgent(name, {
+        state: nextState,
+        pid: null,
+        errored_at: nextState === 'errored' ? new Date().toISOString() : record.errored_at,
+        errored_reason:
+          nextState === 'errored'
+            ? `process exited code=${String(code)} signal=${String(signal)}`
+            : record.errored_reason,
+      })
+      this.log.info('Agent process exited', { name, code, signal, nextState, intentional: true })
+      return
+    }
+
+    // Unexpected exit. Apply the respawn budget: max 3 respawns in 60s. The
+    // budget prevents a misbehaving agent from triggering a spawn-crash-spawn
+    // tight loop. After exhausting the budget, the agent is left errored so
+    // the operator can investigate.
+    const now = Date.now()
+    const recent = (this.respawnHistory.get(name) ?? []).filter((t) => now - t < 60_000)
+    if (recent.length >= 3) {
+      this.log.warn('Agent crashed too many times in 60s; not respawning', {
+        name,
+        code,
+        signal,
+        recent_respawns: recent.length,
+      })
+      await this.updateAgent(name, {
+        state: 'errored',
+        pid: null,
+        errored_at: new Date().toISOString(),
+        errored_reason: `crashed ${String(recent.length + 1)} times in 60s (code=${String(code)} signal=${String(signal)}); auto-respawn budget exhausted`,
+      })
+      return
+    }
+    recent.push(now)
+    this.respawnHistory.set(name, recent)
+
+    this.log.warn('Agent process exited unexpectedly; auto-respawning', {
+      name,
+      code,
+      signal,
+      attempt: recent.length,
     })
-    this.log.info('Agent process exited', { name, code, signal, nextState })
+
+    // Best-effort respawn. If startAgent throws, fall through to errored.
+    try {
+      await this.startAgent(name)
+      this.log.info('Agent auto-respawned', { name, attempt: recent.length })
+    } catch (err) {
+      this.log.warn('auto-respawn failed', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      await this.updateAgent(name, {
+        state: 'errored',
+        pid: null,
+        errored_at: new Date().toISOString(),
+        errored_reason: `auto-respawn failed after exit code=${String(code)} signal=${String(signal)}: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
   }
 
   private findConnectionFor(name: string): Connection | undefined {
@@ -1757,15 +1888,10 @@ function today(): string {
  * Cheap process-alive probe: signal 0 just checks permission to
  * signal the pid, doesn't actually deliver one. Returns false on
  * ESRCH (no such process) or any other error.
+ *
+ * Implementation moved to ./lifecycle.ts; this comment block kept here
+ * for the next reader who searches supervisor.ts for the function name.
  */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
 
 /**
  * SIGKILL whatever is listening on `port`. Used during boot recovery
