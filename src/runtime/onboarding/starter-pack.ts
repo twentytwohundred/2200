@@ -36,6 +36,8 @@ const TOOLS_SLUG = '2200-tools'
 const CONVENTIONS_SLUG = '2200-conventions'
 const WORKFLOWS_SLUG = '2200-workflows'
 const SPOTIFY_API_REF_SLUG = 'spotify-api-reference'
+const DISCORD_API_REF_SLUG = 'discord-api-reference'
+const SLACK_API_REF_SLUG = 'slack-api-reference'
 const TEAM_SLUG = 'team'
 
 const PLATFORM_NOTE_BODY = `# 2200 platform overview
@@ -420,36 +422,32 @@ per-Agent via your Identity's \`tools:\` array. If your Identity
 declares \`tools: [discord_*]\`, you see Discord tools; otherwise
 they're filtered out at dispatch time.
 
-### Discord (\`discord_*\` ... 5 tools)
+### Discord (\`discord_*\` ... 1 tool)
 
 | Tool | Purpose |
 |---|---|
-| \`discord_send_message\` | Post to a channel (optionally as a reply). |
-| \`discord_list_channels\` | Enumerate channels in a guild. |
-| \`discord_fetch_history\` | Read recent messages in a channel. |
-| \`discord_react\` | Add a reaction emoji to a message. |
-| \`discord_create_thread\` | Spawn a thread (anchored on a message or standalone). |
+| \`discord_api\` | Thin HTTP passthrough to the Discord REST API. Takes \`(method, path, query?, body?)\` and returns the JSON response. Use this for: sending messages, listing channels, fetching history, reactions, threads, member lookups, anything Discord exposes. Read \`discord-api-reference\` in the shared brain for the endpoint catalog. |
 
-Auth: workspace bot token from a Discord app the operator owns.
-The operator sets \`_2200_DISCORD_BOT_TOKEN\` and restarts the daemon.
-You will get a clear "credential missing" error if you try a Discord
-tool before the operator has wired the token.
+Auth: workspace bot token from a Discord app the operator owns. The
+operator sets \`_2200_DISCORD_BOT_TOKEN\` and restarts the daemon. You
+will get a clear "credential missing" error if you call \`discord_api\`
+before the operator has wired the token.
 
-### Slack (\`slack_*\` ... 6 tools)
+### Slack (\`slack_*\` ... 1 tool)
 
 | Tool | Purpose |
 |---|---|
-| \`slack_send_message\` | Post to a channel/DM (optionally as thread reply). |
-| \`slack_list_channels\` | Enumerate workspace channels. |
-| \`slack_fetch_history\` | Read recent messages in a channel. |
-| \`slack_react\` | Add an emoji reaction. |
-| \`slack_get_user\` | Fetch a user's profile by id. |
-| \`slack_get_thread\` | Fetch all messages in a thread. |
+| \`slack_api\` | Thin HTTP passthrough to the Slack Web API. Takes \`(method, path, body?, query?)\` and returns the JSON response. Use this for: sending messages, listing channels, fetching history, reactions, user lookups, threads, anything Slack exposes via REST. Read \`slack-api-reference\` in the shared brain for the endpoint catalog and required scopes. |
 
 Auth: workspace bot token (\`xoxb-...\`) from a Slack app the operator
 owns. The operator sets \`_2200_SLACK_BOT_TOKEN\` and restarts the
 daemon. v1 is outbound-only; the bot does not yet receive incoming
 events.
+
+**Slack response envelope.** Every Web API response includes
+\`ok: boolean\` even on HTTP 200. The tool inspects it and throws a
+clean error when \`ok: false\`, so the model sees actionable text
+instead of a raw envelope.
 
 ### Spotify (\`spotify_*\` ... 2 tools)
 
@@ -894,6 +892,194 @@ body: { uris: ['spotify:track:...', ...] }
 - **Active-device requirement on playback writes.** GET \`me/player/devices\` first if you're unsure; pass \`device_id\` in the query string for \`me/player/play\` etc.
 `
 
+const DISCORD_API_REF_NOTE_BODY = `# Discord REST API reference
+
+Endpoint catalog for calling Discord through the \`discord_api\` tool.
+Read this BEFORE calling \`discord_api\`.
+
+## Tool shape
+
+\`\`\`
+discord_api({
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  path: string,         // 'channels/{id}/messages', etc. Leading '/' or '/api/v10/' stripped.
+  query?: Record<string, string | number | boolean>,
+  body?: any,           // JSON-serialized for POST/PUT/PATCH.
+})
+\`\`\`
+
+Returns the parsed JSON response. 204 No Content (reactions, etc.) returns \`{ ok: true }\`.
+
+## Auth
+
+Bot token from \`_2200_DISCORD_BOT_TOKEN\`. Bot must be invited to the
+target guild with the relevant intent + permission set.
+
+## Common endpoints
+
+### Channels and messages
+
+| Path | Method | Purpose | Body |
+|---|---|---|---|
+| \`channels/{channel.id}/messages\` | GET | Recent messages. query: \`limit\` (1-100), \`before\`, \`after\`, \`around\` (snowflake cursors). | — |
+| \`channels/{channel.id}/messages\` | POST | Post a message. | \`{ content, message_reference?: { message_id }, embeds?, tts?, components? }\` |
+| \`channels/{channel.id}/messages/{message.id}\` | GET / PATCH / DELETE | Fetch / edit / delete a message. | edit: \`{ content }\` |
+| \`channels/{channel.id}/messages/{message.id}/reactions/{emoji}/@me\` | PUT / DELETE | Add / remove the bot's reaction. emoji = URL-encoded Unicode codepoint or \`name:id\` for custom. | — |
+| \`channels/{channel.id}\` | GET | Channel metadata. | — |
+| \`channels/{channel.id}/threads\` | POST | Create a thread anchored on the channel. | \`{ name, auto_archive_duration, type: 11 }\` |
+| \`channels/{channel.id}/messages/{message.id}/threads\` | POST | Create a thread anchored on a message. | \`{ name, auto_archive_duration }\` |
+
+### Guilds
+
+| Path | Method | Purpose |
+|---|---|---|
+| \`guilds/{guild.id}/channels\` | GET | All channels in a guild. |
+| \`guilds/{guild.id}/members\` | GET | Guild members. query: \`limit\` (1-1000), \`after\`. Requires GUILD_MEMBERS intent. |
+| \`guilds/{guild.id}/roles\` | GET | Guild role list. |
+
+### Users
+
+| Path | Method | Purpose |
+|---|---|---|
+| \`users/@me\` | GET | The bot's own profile. |
+| \`users/{user.id}\` | GET | Public profile of any user. |
+
+## Snowflake IDs
+
+Discord IDs are 17-20 digit numeric strings. Channel IDs, message IDs,
+guild IDs all share this shape. Treat them as opaque strings, not numbers.
+
+## Auto-archive durations
+
+For threads: 60, 1440, 4320, 10080 (minutes ... 1h, 1d, 3d, 7d).
+
+## Error codes worth knowing
+
+| Code | Meaning |
+|---|---|
+| 10003 | Channel not found. Check the channel id. |
+| 10004 | Guild not found. Check the guild id. |
+| 10008 | Message not found. Check the message id. |
+| 50001 | Bot lacks access. Invite + permission. |
+| 50013 | Missing permissions for the action. |
+| 50035 | Body is malformed. Read the message for specifics. |
+| 50083 | Thread is archived. Unarchive before posting. |
+
+## HTTP 429
+
+Discord rate-limits aggressively. The error throws cleanly; check \`X-RateLimit-Reset-After\` for retry timing. Do not hammer.
+
+## Gotchas
+
+- **Emoji in reaction paths must be URL-encoded.** For Unicode, encode the
+  full codepoint. For custom emoji, use \`name:id\` literal (the tool
+  passes through unchanged; encode yourself or pass already-encoded).
+- **Send-message rate limits are per channel.** Five messages per 2.5s
+  per channel.
+- **Bot tokens are guild-scoped.** A bot has to be invited to each guild
+  you want it to operate in.
+`
+
+const SLACK_API_REF_NOTE_BODY = `# Slack Web API reference
+
+Endpoint catalog for calling Slack through the \`slack_api\` tool. Read
+this BEFORE calling \`slack_api\`.
+
+## Tool shape
+
+\`\`\`
+slack_api({
+  method?: 'GET' | 'POST',     // default 'POST'
+  path: string,                // 'chat.postMessage', etc. Leading '/' or '/api/' stripped.
+  body?: Record<string, any>,  // JSON-serialized for POST.
+  query?: Record<string, string | number | boolean>,  // for GET, or POST params via URL.
+})
+\`\`\`
+
+Returns the parsed JSON response. Slack always returns HTTP 200 even on
+logical errors; the response \`ok\` field is the source of truth. The tool
+inspects it and throws a clean error if \`ok === false\`.
+
+## Auth
+
+Bot token from \`_2200_SLACK_BOT_TOKEN\` (\`xoxb-...\`). The token's scopes
+determine what endpoints work.
+
+## Common scopes
+
+- \`chat:write\`, \`chat:write.public\` ... post messages.
+- \`channels:read\`, \`groups:read\`, \`im:read\`, \`mpim:read\` ... read channels.
+- \`channels:history\`, \`groups:history\`, \`im:history\`, \`mpim:history\` ... read messages.
+- \`reactions:write\`, \`reactions:read\` ... add and read reactions.
+- \`users:read\` ... look up users.
+
+If you hit \`missing_scope\`, the error message names what's needed.
+
+## Common endpoints
+
+### Messaging
+
+| Path | Method | Body | Notes |
+|---|---|---|---|
+| \`chat.postMessage\` | POST | \`{ channel, text, thread_ts?, blocks?, attachments? }\` | Post a message. \`channel\` can be a channel id or user id (for DM). |
+| \`chat.update\` | POST | \`{ channel, ts, text }\` | Edit a message. |
+| \`chat.delete\` | POST | \`{ channel, ts }\` | Delete a message. |
+| \`reactions.add\` | POST | \`{ channel, timestamp, name }\` | \`name\` is the emoji shortcode WITHOUT colons (e.g. \`thumbsup\`). |
+| \`reactions.remove\` | POST | \`{ channel, timestamp, name }\` | — |
+
+### Channels
+
+| Path | Method | Body / Query | Notes |
+|---|---|---|---|
+| \`conversations.list\` | GET or POST | query: \`types\` (\`public_channel,private_channel,mpim,im\`), \`limit\` (1-1000), \`exclude_archived\` (bool) | List channels. |
+| \`conversations.info\` | GET | query: \`channel\` | Channel metadata. |
+| \`conversations.history\` | GET | query: \`channel\`, \`limit\` (1-200), \`oldest\`, \`latest\` | Messages in a channel. |
+| \`conversations.replies\` | GET | query: \`channel\`, \`ts\`, \`limit\` | Messages in a thread. \`ts\` is the parent message timestamp. |
+| \`conversations.members\` | GET | query: \`channel\`, \`limit\` | Members of a channel. |
+| \`conversations.join\` | POST | \`{ channel }\` | Bot joins the channel (required before posting in many configs). |
+
+### Users
+
+| Path | Method | Query | Notes |
+|---|---|---|---|
+| \`users.info\` | GET | \`user\` | Profile of a user by id. |
+| \`users.list\` | GET | \`limit\`, \`cursor\` | Workspace user directory (paginated). |
+| \`users.lookupByEmail\` | GET | \`email\` | Find a user by email. |
+
+## Timestamps
+
+Slack message timestamps look like \`1715290000.000100\`. They are
+strings, not numbers. Use them as opaque cursors when paginating.
+
+## Channel id prefixes
+
+- \`C...\` ... public channel.
+- \`G...\` ... private channel.
+- \`D...\` ... direct message.
+- \`U...\` or \`W...\` ... user id.
+
+## Error codes worth knowing
+
+| \`error\` | Meaning |
+|---|---|
+| \`channel_not_found\` | Check the channel id; bot may not be invited. |
+| \`not_in_channel\` | Bot needs to be a member; call \`conversations.join\` or have someone invite it. |
+| \`is_archived\` | Unarchive before posting. |
+| \`msg_too_long\` | 40000 chars max. |
+| \`rate_limited\` | Slack rate-limit; retry after the indicated delay. |
+| \`missing_scope\` | Bot OAuth is missing \`needed\`; \`provided\` is what's available. Update + re-install. |
+| \`invalid_auth\` / \`not_authed\` / \`token_revoked\` / \`token_expired\` | Token problem; regenerate in Slack app config. |
+
+## Gotchas
+
+- **Bot must join the channel before posting** in many workspace configs.
+  Call \`conversations.join\` first if you get \`not_in_channel\`.
+- **\`thread_ts\` is the parent's \`ts\`, not the reply's \`ts\`.** Threading
+  off a reply (rather than the root) creates a flat sub-thread.
+- **\`reactions.add.name\` excludes colons.** Use \`thumbsup\`, not \`:thumbsup:\`.
+- **Reactions are bot-scoped.** Each bot can react once per emoji per message; calling \`reactions.add\` a second time errors \`already_reacted\`.
+`
+
 interface SeedSpec {
   slug: string
   title: string
@@ -937,6 +1123,20 @@ const SEEDS: readonly SeedSpec[] = [
     body: SPOTIFY_API_REF_NOTE_BODY,
     type: 'reference',
     tags: ['platform', 'spotify', 'api', 'reference'],
+  },
+  {
+    slug: DISCORD_API_REF_SLUG,
+    title: 'Discord REST API reference',
+    body: DISCORD_API_REF_NOTE_BODY,
+    type: 'reference',
+    tags: ['platform', 'discord', 'api', 'reference'],
+  },
+  {
+    slug: SLACK_API_REF_SLUG,
+    title: 'Slack Web API reference',
+    body: SLACK_API_REF_NOTE_BODY,
+    type: 'reference',
+    tags: ['platform', 'slack', 'api', 'reference'],
   },
 ]
 

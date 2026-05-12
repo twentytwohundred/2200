@@ -1,96 +1,84 @@
 /**
- * Slack tool definitions.
+ * Slack tool surface (passthrough).
  *
- * Six tools in v1 (outbound REST only; no incoming events surface):
- *   - slack_send_message    post to a channel (optionally as thread reply)
- *   - slack_list_channels   enumerate workspace channels
- *   - slack_fetch_history   read messages in a channel
- *   - slack_react           add an emoji reaction to a message
- *   - slack_get_user        fetch user info by id
- *   - slack_get_thread      fetch all messages in a thread
+ * One tool shipped: `slack_api`. Thin HTTP passthrough to the Slack Web
+ * API. The previous 6-wrapper surface (send_message, list_channels,
+ * fetch_history, react, get_user, get_thread) was collapsed into the
+ * passthrough per the 2026-05-12 platform-integration pattern (same
+ * shape as the Spotify pivot landed 2026-05-11).
  *
- * Auth: workspace bot token (`xoxb-...`) only. Search is intentionally
- * omitted from v1 because Slack's `search.messages` endpoint requires
- * a user token; bot tokens get a permission_denied error. If the
- * operator wires the user-OAuth install flow later, search lands
- * alongside.
+ * Why passthrough:
+ *   - Provider SDKs (@slack/web-api) carry version coupling and bundle
+ *     weight for endpoints we mostly do not use. New Slack features
+ *     become a brain-note update, not a code + bundle change.
+ *   - 6 typed wrappers + N future endpoints is a quadratic surface.
  *
- * The output projections drop most of the fat that a raw Slack
- * payload carries: message IDs, channel IDs, and core fields stay; the
- * bulk attachment / blocks / metadata trees are dropped because Agents
- * burning context on them is a token tax with no upside for v1.
+ * The endpoint catalog (paths, methods, required scopes, gotchas) lives
+ * in the shared brain note `slack-api-reference`, seeded by starter-pack.
+ *
+ * Auth: bot token (`xoxb-...`) from `_2200_SLACK_BOT_TOKEN` in the
+ * supervisor env. v1 is outbound-only; no incoming events.
+ *
+ * Slack response envelope: every Web API response carries `ok: boolean`.
+ * On failures, `ok: false` and `error: '<error_code>'`. The tool reads
+ * this envelope and throws a clean error so the model gets actionable
+ * feedback instead of having to inspect the response.
  */
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../../mcp/tool.js'
-import type { SlackClient } from './client.js'
-import { SlackCredentialError } from './client.js'
+import { SlackCredentialError, type SlackClient } from './client.js'
 
-const ChannelIdSchema = z.string().regex(/^[CGD][A-Z0-9]{8,}$/, {
-  message: 'Slack channel/dm ids start with C, G, or D and are alphanumeric',
-})
+const SLACK_API_BASE = 'https://slack.com/api'
 
-const UserIdSchema = z.string().regex(/^[UW][A-Z0-9]{8,}$/, {
-  message: 'Slack user ids start with U or W and are alphanumeric',
-})
-
-const TimestampSchema = z
-  .string()
-  .regex(/^\d+\.\d+$/, { message: 'Slack message timestamps look like "1715290000.000100"' })
-
-const SendMessageArgsSchema = z.object({
-  channel: ChannelIdSchema,
-  text: z.string().min(1).max(40000),
-  thread_ts: TimestampSchema.optional().describe(
-    'If set, post as a reply in this thread (use the parent message ts).',
-  ),
-})
-
-const ListChannelsArgsSchema = z.object({
-  include_archived: z.boolean().default(false),
-  types: z
-    .array(z.enum(['public_channel', 'private_channel', 'mpim', 'im']))
-    .default(['public_channel', 'private_channel']),
-  limit: z.number().int().min(1).max(1000).default(200),
-})
-
-const FetchHistoryArgsSchema = z.object({
-  channel: ChannelIdSchema,
-  limit: z.number().int().min(1).max(200).default(50),
-  oldest: TimestampSchema.optional(),
-  latest: TimestampSchema.optional(),
-})
-
-const ReactArgsSchema = z.object({
-  channel: ChannelIdSchema,
-  timestamp: TimestampSchema,
-  emoji_name: z
+const SlackApiArgsSchema = z.object({
+  method: z
+    .enum(['GET', 'POST'])
+    .optional()
+    .default('POST')
+    .describe(
+      'HTTP method. Slack Web API is mostly POST; a few endpoints (conversations.list, ' +
+        "users.info) also accept GET. Default 'POST'.",
+    ),
+  path: z
     .string()
     .min(1)
-    .max(100)
-    .describe('Emoji shortcode WITHOUT colons. e.g. "thumbsup", not ":thumbsup:".'),
+    .max(200)
+    .describe(
+      "Slack Web API method name. Leading '/' or '/api/' is stripped. " +
+        "Examples: 'chat.postMessage', 'conversations.list', " +
+        "'reactions.add', 'users.info'. " +
+        'See brain note `slack-api-reference` for the endpoint catalog.',
+    ),
+  body: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'JSON request body for POST. Pass as a structured object; will be ' +
+        'JSON-serialized. For chat.postMessage: { channel, text, thread_ts? }. ' +
+        'For most read endpoints, parameters travel in `query` instead.',
+    ),
+  query: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+    .optional()
+    .describe(
+      'URL query parameters. Use for GET endpoints and for POST endpoints that take ' +
+        'params via query (e.g. conversations.history). Numbers and booleans coerced ' +
+        'to strings.',
+    ),
 })
 
-const GetUserArgsSchema = z.object({
-  user: UserIdSchema,
-})
-
-const GetThreadArgsSchema = z.object({
-  channel: ChannelIdSchema,
-  thread_ts: TimestampSchema,
-  limit: z.number().int().min(1).max(200).default(100),
-})
-
-interface SlackErrorPayload {
-  data?: { error?: string; ok?: boolean }
-  code?: string
-  message?: string
+interface SlackEnvelope {
+  ok: boolean
+  error?: string
+  needed?: string
+  provided?: string
+  response_metadata?: { messages?: string[] }
+  warning?: string
 }
 
-function mapSlackError(err: unknown): never {
-  if (err instanceof SlackCredentialError) throw err
-  const e = err as SlackErrorPayload
-  const slackErr = e.data?.error
-  switch (slackErr) {
+function mapSlackError(envelope: SlackEnvelope): never {
+  const err = envelope.error ?? 'unknown_error'
+  switch (err) {
     case 'channel_not_found':
       throw new Error('Slack channel not found. Check the channel id; the bot may not be invited.')
     case 'not_in_channel':
@@ -98,203 +86,123 @@ function mapSlackError(err: unknown): never {
     case 'is_archived':
       throw new Error('Slack channel is archived; unarchive it before posting.')
     case 'msg_too_long':
-      throw new Error('Slack message exceeds the 40,000-char limit; split into multiple posts.')
+      throw new Error('Slack message text exceeds the 40000 character limit.')
     case 'rate_limited':
       throw new Error('Slack rate-limited the request. Retry after the indicated delay.')
+    case 'missing_scope': {
+      const needed = envelope.needed ?? 'unknown'
+      const provided = envelope.provided ?? 'unknown'
+      throw new Error(
+        `Slack rejected the request: missing scope. Needed: ${needed}; provided: ${provided}. ` +
+          `Update the bot's OAuth & Permissions, then re-install to the workspace.`,
+      )
+    }
     case 'invalid_auth':
-    case 'token_expired':
+    case 'not_authed':
     case 'token_revoked':
+    case 'token_expired':
       throw new Error(
-        `Slack rejected the bot token (${slackErr}). Re-issue the token from the app settings and update the env var.`,
+        `Slack rejected the bot token (${err}). The token may have been revoked or expired; ` +
+          `regenerate it in your Slack app config and update _2200_SLACK_BOT_TOKEN.`,
       )
-    case 'missing_scope':
-      throw new Error(
-        `Slack rejected the call: the bot token is missing a required scope (${slackErr}). Add the scope to the app and reinstall.`,
-      )
-    case 'user_not_found':
-      throw new Error('Slack user not found. Check the user id.')
-    case 'thread_not_found':
-      throw new Error('Slack thread not found. Check the thread_ts.')
     default:
-      if (slackErr) {
-        throw new Error(`Slack API error: ${slackErr}.`)
-      }
-      throw new Error(`Slack request failed: ${e.message ?? String(err)}`)
+      throw new Error(`Slack API error: ${err}`)
   }
 }
 
-export function makeSlackTools(client: SlackClient): ToolDefinition[] {
-  const sendMessage = defineTool({
-    name: 'slack_send_message',
-    description:
-      'Post a message to a Slack channel or DM. Optionally post as a reply in a thread by passing `thread_ts`. ' +
-      'Requires the bot to be a member of the channel.',
-    idempotency: 'destructive',
-    argsSchema: SendMessageArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        const result = await web.chat.postMessage({
-          channel: args.channel,
-          text: args.text,
-          ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
-        })
-        return {
-          ok: result.ok,
-          channel: result.channel ?? args.channel,
-          ts: result.ts ?? null,
-        }
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  const listChannels = defineTool({
-    name: 'slack_list_channels',
-    description:
-      'List Slack channels in the workspace. Filters by visibility (public/private/IM/MPIM) and archive state.',
-    idempotency: 'pure',
-    argsSchema: ListChannelsArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        const result = await web.conversations.list({
-          exclude_archived: !args.include_archived,
-          types: args.types.join(','),
-          limit: args.limit,
-        })
-        return (result.channels ?? []).map((c) => ({
-          id: c.id ?? null,
-          name: c.name ?? null,
-          is_private: c.is_private ?? false,
-          is_archived: c.is_archived ?? false,
-          is_member: c.is_member ?? false,
-          topic: c.topic?.value ?? null,
-          purpose: c.purpose?.value ?? null,
-          num_members: c.num_members ?? null,
-        }))
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  const fetchHistory = defineTool({
-    name: 'slack_fetch_history',
-    description:
-      'Fetch recent messages from a Slack channel, newest first. Pass `latest` and/or `oldest` (Slack timestamps) to bound the range.',
-    idempotency: 'pure',
-    argsSchema: FetchHistoryArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        const result = await web.conversations.history({
-          channel: args.channel,
-          limit: args.limit,
-          ...(args.oldest ? { oldest: args.oldest } : {}),
-          ...(args.latest ? { latest: args.latest } : {}),
-        })
-        return (result.messages ?? []).map((m) => ({
-          ts: m.ts ?? null,
-          type: m.type ?? null,
-          subtype: m.subtype ?? null,
-          user: m.user ?? null,
-          text: m.text ?? null,
-          thread_ts: m.thread_ts ?? null,
-          reply_count: m.reply_count ?? 0,
-          reactions: (m.reactions ?? []).map((r) => ({
-            name: r.name ?? null,
-            count: r.count ?? 0,
-          })),
-        }))
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  const react = defineTool({
-    name: 'slack_react',
-    description:
-      'Add an emoji reaction to a Slack message. Pass the emoji shortcode without colons (e.g. "thumbsup", not ":thumbsup:").',
-    idempotency: 'destructive',
-    argsSchema: ReactArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        await web.reactions.add({
-          channel: args.channel,
-          timestamp: args.timestamp,
-          name: args.emoji_name,
-        })
-        return { ok: true }
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  const getUser = defineTool({
-    name: 'slack_get_user',
-    description: "Fetch a Slack user's profile (display name, real name, email if accessible).",
-    idempotency: 'pure',
-    argsSchema: GetUserArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        const result = await web.users.info({ user: args.user })
-        const u = result.user
-        if (!u) return null
-        return {
-          id: u.id ?? null,
-          name: u.name ?? null,
-          real_name: u.real_name ?? null,
-          display_name: u.profile?.display_name ?? null,
-          email: u.profile?.email ?? null,
-          is_bot: u.is_bot ?? false,
-          is_admin: u.is_admin ?? false,
-          tz: u.tz ?? null,
-        }
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  const getThread = defineTool({
-    name: 'slack_get_thread',
-    description: 'Fetch all messages in a Slack thread (parent + replies).',
-    idempotency: 'pure',
-    argsSchema: GetThreadArgsSchema,
-    execute: async (args) => {
-      const web = client.get()
-      try {
-        const result = await web.conversations.replies({
-          channel: args.channel,
-          ts: args.thread_ts,
-          limit: args.limit,
-        })
-        return (result.messages ?? []).map((m) => ({
-          ts: m.ts ?? null,
-          user: m.user ?? null,
-          text: m.text ?? null,
-          thread_ts: m.thread_ts ?? null,
-        }))
-      } catch (err) {
-        mapSlackError(err)
-      }
-    },
-  })
-
-  return [sendMessage, listChannels, fetchHistory, react, getUser, getThread]
+function normalizePath(raw: string): string {
+  let p = raw.trim()
+  if (p.startsWith('/')) p = p.slice(1)
+  if (p.startsWith('api/')) p = p.slice('api/'.length)
+  return p
 }
 
-export const SLACK_TOOL_NAMES = [
-  'slack_send_message',
-  'slack_list_channels',
-  'slack_fetch_history',
-  'slack_react',
-  'slack_get_user',
-  'slack_get_thread',
-] as const
+function buildQueryString(query: Record<string, string | number | boolean> | undefined): string {
+  if (!query) return ''
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(query)) {
+    params.append(k, String(v))
+  }
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
+export interface SlackToolDeps {
+  /** Inject a Slack client (test seam). Default: lazy resolver from env. */
+  client?: SlackClient
+  /** Inject a fetch-compatible function (test seam). Default: global fetch. */
+  fetcher?: typeof fetch
+}
+
+export function makeSlackTools(_client: SlackClient, deps?: SlackToolDeps): ToolDefinition[] {
+  const fetcher = deps?.fetcher ?? fetch
+
+  const resolveToken = (): string => {
+    const raw = process.env['_2200_SLACK_BOT_TOKEN']
+    if (!raw || raw.trim().length === 0) {
+      throw new SlackCredentialError(
+        'Slack bot token is not configured. Set _2200_SLACK_BOT_TOKEN ' +
+          "(an 'xoxb-...' token from your Slack app's OAuth & Permissions page) " +
+          'in the supervisor environment, then restart the daemon.',
+      )
+    }
+    return raw.trim()
+  }
+
+  const apiPassthrough = defineTool({
+    name: 'slack_api',
+    description:
+      'Call the Slack Web API directly. Takes (method, path, body?, query?) and returns the JSON response. ' +
+      'Auth: bot token from the supervisor env (`_2200_SLACK_BOT_TOKEN`). ' +
+      'Read `slack-api-reference` in the shared brain for the endpoint catalog, required OAuth scopes, ' +
+      'and request/response shapes. Use this for: sending messages, listing channels, fetching history, ' +
+      'reactions, user lookups, threads, anything the Slack Web API exposes.',
+    idempotency: 'destructive',
+    argsSchema: SlackApiArgsSchema,
+    execute: async (args) => {
+      const token = resolveToken()
+      const fullUrl = `${SLACK_API_BASE}/${normalizePath(args.path)}${buildQueryString(args.query)}`
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+      }
+      const init: RequestInit = { method: args.method, headers }
+      if (args.body !== undefined && args.method === 'POST') {
+        headers['Content-Type'] = 'application/json; charset=utf-8'
+        init.body = JSON.stringify(args.body)
+      }
+      let response: Response
+      try {
+        response = await fetcher(fullUrl, init)
+      } catch (err) {
+        throw new Error(`Slack fetch failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      let bodyText: string
+      try {
+        bodyText = await response.text()
+      } catch (err) {
+        throw new Error(
+          `Slack response read failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(bodyText)
+      } catch (err) {
+        throw new Error(
+          `Slack response is not JSON (HTTP ${String(response.status)}): ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      // Slack returns 200 even for logical errors; the envelope's `ok`
+      // field is the source of truth.
+      const env = parsed as SlackEnvelope
+      if (!env.ok) {
+        mapSlackError(env)
+      }
+      return parsed
+    },
+  })
+
+  return [apiPassthrough]
+}
+
+export const SLACK_TOOL_NAMES = ['slack_api'] as const

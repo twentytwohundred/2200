@@ -29,24 +29,19 @@ import { spotifyServer } from './spotify/index.js'
 import { slackServer } from './slack/index.js'
 
 export const PLATFORM_TOOL_NAMES: readonly string[] = [
-  // Discord (5) ... pending pivot to discord_api passthrough
-  'discord_send_message',
-  'discord_list_channels',
-  'discord_fetch_history',
-  'discord_react',
-  'discord_create_thread',
+  // Discord (1): passthrough per the 2026-05-11 platform-integration pattern.
+  // The previous 5-wrapper surface (send_message, list_channels, fetch_history,
+  // react, create_thread) was collapsed into discord_api on 2026-05-12.
+  'discord_api',
   // Spotify (2): passthrough + server-side-only cover-upload helper.
   // The previous 12-wrapper surface (search, get_playback_state, create_playlist,
-  // ...) was collapsed into spotify_api per the 2026-05-11 decision record.
+  // ...) was collapsed into spotify_api on 2026-05-11.
   'spotify_api',
   'spotify_set_playlist_cover',
-  // Slack (6) ... pending pivot to slack_api passthrough
-  'slack_send_message',
-  'slack_list_channels',
-  'slack_fetch_history',
-  'slack_react',
-  'slack_get_user',
-  'slack_get_thread',
+  // Slack (1): passthrough per the 2026-05-11 platform-integration pattern.
+  // The previous 6-wrapper surface (send_message, list_channels, fetch_history,
+  // react, get_user, get_thread) was collapsed into slack_api on 2026-05-12.
+  'slack_api',
 ]
 
 export interface PlatformServersOptions {
