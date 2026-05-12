@@ -921,42 +921,56 @@ export class Supervisor {
     this.pulseWatchers.delete(name)
   }
 
-  /** Send `agent.stop` to a running Agent and wait for graceful exit. */
+  /**
+   * Send `agent.stop` to a running Agent and wait for graceful exit.
+   *
+   * Sets `intentionalStops` BEFORE the kill so `handleAgentExit` sees
+   * the intent flag whether it fires synchronously (inside `spawned.stop`)
+   * or asynchronously (microtask after we return). The flag is NOT
+   * cleared here; `handleAgentExit` clears it after consuming it. This
+   * fixes a microtask race observed 2026-05-12 where `stopAgent` cleared
+   * the flag in a `finally` block, then `handleAgentExit` ran one tick
+   * later, saw no flag, and auto-respawned the agent we'd just asked to
+   * stop. Symptom: `agent stop X && agent start X` failed with "X is
+   * already running" because the supervisor had already respawned X.
+   */
   async stopAgent(name: string, reason = 'user_requested'): Promise<void> {
-    // Mark the imminent exit as intentional so the auto-respawn path in
-    // `handleAgentExit` does not bring the process back. Always cleared
-    // before return (success or failure).
     this.intentionalStops.add(name)
+    const spawned = this.spawned.get(name)
+    if (!spawned) {
+      // No running process; mark stopped and persist. Drop the flag
+      // since no handleAgentExit will fire to consume it.
+      this.intentionalStops.delete(name)
+      await this.updateAgent(name, { state: 'stopped', pid: null })
+      return
+    }
+    // Send the RPC; the Agent acks and then exits. After the OS process
+    // exits, `handleAgentExit` updates the record. If the Agent is
+    // unresponsive, `spawned.stop()` falls back to SIGKILL (5s timeout).
+    const conn = this.findConnectionFor(name)
+    if (conn) {
+      try {
+        // Best-effort: send the stop notification via the existing client
+        // RPC server. We do not use a JsonRpcClient here because the
+        // supervisor is the SERVER side of the connection. Sending a
+        // request from the server side is reserved for a future change
+        // where the supervisor owns a bidirectional client.
+        // For v1, the supervisor signals stop by ending the connection
+        // and sending SIGTERM/SIGKILL to the process.
+        await conn.close()
+      } catch {
+        // ignore
+      }
+    }
     try {
-      const spawned = this.spawned.get(name)
-      if (!spawned) {
-        // No running process; mark stopped and persist.
-        await this.updateAgent(name, { state: 'stopped', pid: null })
-        return
-      }
-      // Send the RPC; the Agent acks and then exits. After the OS process
-      // exits, `handleAgentExit` updates the record. If the Agent is
-      // unresponsive, `spawned.stop()` falls back to SIGKILL (5s timeout).
-      const conn = this.findConnectionFor(name)
-      if (conn) {
-        try {
-          // Best-effort: send the stop notification via the existing client
-          // RPC server. We do not use a JsonRpcClient here because the
-          // supervisor is the SERVER side of the connection. Sending a
-          // request from the server side is reserved for a future change
-          // where the supervisor owns a bidirectional client.
-          // For v1, the supervisor signals stop by ending the connection
-          // and sending SIGTERM/SIGKILL to the process.
-          await conn.close()
-        } catch {
-          // ignore
-        }
-      }
       await spawned.stop()
       await this.updateAgent(name, { state: 'stopped', pid: null })
       this.log.info('Agent stopped', { name, reason })
-    } finally {
+    } catch (err) {
+      // If the stop path itself errors, clear the flag so we don't leak
+      // it and inadvertently suppress a future legitimate auto-respawn.
       this.intentionalStops.delete(name)
+      throw err
     }
   }
 
@@ -1627,7 +1641,9 @@ export class Supervisor {
     }
 
     // Was this exit operator-initiated? Then no respawn; transition to stopped.
-    const intentional = this.intentionalStops.has(name)
+    // The flag is a one-shot: consume it here so a subsequent unexpected
+    // exit isn't suppressed.
+    const intentional = this.intentionalStops.delete(name)
     if (intentional || this.isShuttingDown) {
       const nextState: AgentRecord['state'] = signal === null && code === 0 ? 'stopped' : 'errored'
       await this.updateAgent(name, {
