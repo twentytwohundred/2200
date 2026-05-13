@@ -365,6 +365,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/pubs/:name' },
       { method: 'GET', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs/:name/messages' },
+      { method: 'POST', path: '/api/v1/pubs' },
       { method: 'POST', path: '/api/v1/pubs/:name/reactions' },
       { method: 'GET', path: '/api/v1/pubs/attachments/:attId/:filename' },
       { method: 'POST', path: '/api/v1/onboarding' },
@@ -1872,6 +1873,139 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       errored_reason: p.errored_reason,
     }))
     return { items, cursor: { next: null, limit: items.length } }
+  })
+
+  // -- create a pub (Studio creation flow) ---------------------------------
+  // Creates a new pub-server, writes pubs.md for each chosen agent (the
+  // file AgentProcess reads at boot to attach wake sources), and
+  // restarts those agents so they re-attach against the new pub.
+  // Agents must already have pub.identity set in their Identity ...
+  // we don't auto-provision pub identities here.
+  const PubCreateBody = z.object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, {
+        message: 'pub name must be lowercase alphanumeric + dashes',
+      }),
+    members: z.array(z.string().min(1)).min(1).max(50),
+    description: z.string().max(280).optional(),
+  })
+
+  fastify.post('/api/v1/pubs', async (req, reply) => {
+    const body = PubCreateBody.parse(req.body)
+    const snap = supervisor.snapshot()
+    if (snap.pubs[body.name]) {
+      throw new ApiError(409, 'pub_exists', `pub "${body.name}" already exists`)
+    }
+
+    // Validate every named agent exists AND has pub.identity set so
+    // its wake-source attach loop will actually fire.
+    const unknown: string[] = []
+    const unprovisioned: string[] = []
+    for (const m of body.members) {
+      const rec = snap.agents[m]
+      if (!rec) {
+        unknown.push(m)
+        continue
+      }
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        if (!id.frontmatter.pub?.identity) unprovisioned.push(m)
+      } catch {
+        unprovisioned.push(m)
+      }
+    }
+    if (unknown.length > 0) {
+      throw new ApiError(404, 'agent_not_found', `unknown Agent(s): ${unknown.join(', ')}`)
+    }
+    if (unprovisioned.length > 0) {
+      throw new ApiError(
+        409,
+        'agent_pub_unprovisioned',
+        `Agent(s) missing pub.identity in Identity (run identity provisioning first): ${unprovisioned.join(', ')}`,
+      )
+    }
+
+    // Create + start the pub.
+    const created = await supervisor.createPub(body.name, {
+      ...(body.description !== undefined ? { description: body.description } : {}),
+    })
+    try {
+      await supervisor.startPub(body.name)
+    } catch (err) {
+      throw new ApiError(
+        500,
+        'pub_start_failed',
+        `pub record created but startup failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+
+    // Add the new pub to each member's pubs.md and restart so they
+    // attach a wake source. Restarts happen sequentially to avoid
+    // bunching SIGTERMs at the supervisor.
+    //
+    // `seedIfMissing` carries the Agent's *current effective*
+    // membership (resolved from identity.md fallback or
+    // "all running pubs" default) so first-time pubs.md creation
+    // does not drop pubs the Agent was already implicitly in.
+    const { addPubToAgentFile } = await import('../agent/pubs-file.js')
+    const postCreateSnap = supervisor.snapshot()
+    const runningPubsBeforeNew = Object.values(postCreateSnap.pubs)
+      .filter((p) => p.state === 'running' && p.name !== body.name)
+      .map((p) => p.name)
+    const restarted: { name: string; was_running: boolean }[] = []
+    for (const m of body.members) {
+      const rec = snap.agents[m]
+      if (!rec) continue
+      const paths = agentPathsHelper(home, m)
+      let seedIfMissing: string[] = runningPubsBeforeNew
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        const fromIdentity = id.frontmatter.pub?.member_of ?? []
+        if (fromIdentity.length > 0) seedIfMissing = fromIdentity
+      } catch {
+        /* fall back to running-pubs default */
+      }
+      try {
+        await addPubToAgentFile(paths.pubsFile, m, body.name, { seedIfMissing })
+      } catch (err) {
+        throw new ApiError(
+          500,
+          'pubs_file_write_failed',
+          `wrote pub record but failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+      if (wasRunning) {
+        try {
+          await supervisor.stopAgent(m, 'studio_membership_change')
+          await supervisor.startAgent(m)
+          restarted.push({ name: m, was_running: true })
+        } catch (err) {
+          // Membership is written; failed restart leaves operator to
+          // bring the agent back manually. Surface in the response so
+          // the UI can flag it.
+          restarted.push({ name: m, was_running: true })
+          req.log.warn(
+            { err, agent: m, pub: body.name },
+            'agent restart failed after studio membership change',
+          )
+        }
+      } else {
+        restarted.push({ name: m, was_running: false })
+      }
+    }
+
+    void reply.status(201)
+    return {
+      name: body.name,
+      port: created.port,
+      pub_md_path: created.pub_md_path,
+      members: body.members,
+      restarted,
+    }
   })
 
   const PubMessagesQuery = z.object({

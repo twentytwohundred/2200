@@ -969,6 +969,21 @@ export const api = {
       body,
     }),
   /**
+   * Create a new studio (pub) with custom membership. Each named
+   * agent gets the new pub appended to its `pubs.md` file and is
+   * restarted so the wake source attaches. Agents without
+   * `pub.identity` set are rejected ... provision them via
+   * `2200 agent identity provision` first.
+   */
+  pubCreate: (body: { name: string; members: string[]; description?: string }) =>
+    request<{
+      name: string
+      port: number
+      pub_md_path: string
+      members: string[]
+      restarted: { name: string; was_running: boolean }[]
+    }>(`/api/v1/pubs`, { method: 'POST', body }),
+  /**
    * Build a fully-qualified URL for a pub attachment served by the
    * GET /api/v1/pubs/attachments/:attId/:filename route. Run through
    * `authedUrl` so `<img>` tags can fetch it without an Authorization

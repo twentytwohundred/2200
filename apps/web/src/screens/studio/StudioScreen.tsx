@@ -37,6 +37,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Attachment } from '../../chat/Attachment'
+import { NewStudioForm } from './NewStudioForm'
 import {
   ApiError,
   NetworkError,
@@ -120,24 +121,29 @@ export function StudioScreen(): ReactElement {
     const first =
       pubsQuery.data?.items.find((p) => p.state === 'running') ?? pubsQuery.data?.items[0]
     if (!first) {
-      return (
-        <Screen
-          crumbs={['2200', 'studio']}
-          title="Studio"
-          lede="No pubs running on this install."
-          actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
-        >
-          <div className={styles.banner}>
-            Run <code>2200 pub create studio</code> and <code>2200 pub start studio</code> to bring
-            up the default Studio.
-          </div>
-        </Screen>
-      )
+      return <StudioEmpty />
     }
     return <Navigate to={`/studio/${encodeURIComponent(first.name)}`} replace />
   }
 
   return <StudioPubView pubName={pubParam} />
+}
+
+function StudioEmpty(): ReactElement {
+  return (
+    <Screen
+      crumbs={['2200', 'studio']}
+      title="Studio"
+      lede="No studios yet. Create one and pick who's in the room."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
+      <NewStudioForm
+        onClose={() => {
+          /* no-op: empty state stays open until a studio exists */
+        }}
+      />
+    </Screen>
+  )
 }
 
 interface StagedAttachment {
@@ -202,7 +208,8 @@ function parsePubAttachments(content: string): {
   const lines = content.split('\n')
   let idx = 1 // first attachment line
   const attachments: ParsedPubAttachment[] = []
-  const ATT_LINE = /^-\s+\/commons\/scratch\/attachments\/([a-f0-9]+)\/([^\s]+)\s+\(([^,]+),\s*([^)]+)\)\s*$/i
+  const ATT_LINE =
+    /^-\s+\/commons\/scratch\/attachments\/([a-f0-9]+)\/([^\s]+)\s+\(([^,]+),\s*([^)]+)\)\s*$/i
   while (idx < lines.length) {
     const line = lines[idx] ?? ''
     const m = ATT_LINE.exec(line)
@@ -253,6 +260,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   const [draft, setDraft] = useState('')
   const [staged, setStaged] = useState<StagedAttachment[]>([])
   const [stageError, setStageError] = useState<string | null>(null)
+  const [showNewStudio, setShowNewStudio] = useState(false)
 
   const pubQuery = useQuery({
     queryKey: ['pub', pubName],
@@ -510,13 +518,34 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
       crumbs={['2200', 'studio', pubName]}
       title="Studio"
       lede="Multi-agent room. Tag with @, react with one click."
-      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+      actions={
+        <>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setShowNewStudio((v) => !v)
+            }}
+          >
+            {showNewStudio ? 'Close' : '+ New studio'}
+          </Button>
+          <ScreenNavLink to="/">← Fleet</ScreenNavLink>
+        </>
+      }
     >
       {pubQuery.isError && !pubQuery.data ? (
         <Card padding={0}>
           <ErrorState title="Pub unavailable" body={formatError(pubQuery.error)} />
         </Card>
       ) : null}
+
+      {showNewStudio && (
+        <NewStudioForm
+          onClose={() => {
+            setShowNewStudio(false)
+          }}
+        />
+      )}
 
       <div className={styles.body}>
         <aside className={styles.sidebar}>

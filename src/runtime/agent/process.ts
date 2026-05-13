@@ -25,6 +25,7 @@ import { composeModelId, type IdentityRecord } from '../identity/types.js'
 import { resolveProvider } from '../llm/registry.js'
 import type { LLMProvider } from '../llm/provider.js'
 import { agentPaths } from '../storage/layout.js'
+import { readAgentPubsFile } from './pubs-file.js'
 import { TelemetryWriter } from '../telemetry/writer.js'
 import { PulseEmitter } from './pulse/emitter.js'
 import { BudgetTracker } from './budget-tracker.js'
@@ -409,10 +410,32 @@ export class AgentProcess {
 
     const supervisorState = await loadState(this.options.home)
     const allRunning = Object.values(supervisorState.pubs).filter((p) => p.state === 'running')
+
+    // Membership resolution order:
+    //   1. <home>/agents/<name>/pubs.md (the operational source of
+    //      truth, edited by the supervisor's "create studio" flow)
+    //   2. identity.md's pub.member_of (back-compat for the seed team)
+    //   3. all running pubs (fall-through default)
+    let memberOf: string[] | null = null
+    try {
+      const file = await readAgentPubsFile(
+        agentPaths(this.options.home, this.options.name).pubsFile,
+      )
+      if (file !== null) {
+        memberOf = file.pubs
+        this.log.info('pub membership sourced from pubs.md', {
+          count: memberOf.length,
+        })
+      }
+    } catch (err) {
+      this.log.warn('pubs.md unreadable; falling back to identity.pub.member_of', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    memberOf ??= pubBlock.member_of
+
     const targetPubs =
-      pubBlock.member_of.length > 0
-        ? allRunning.filter((p) => pubBlock.member_of.includes(p.name))
-        : allRunning
+      memberOf.length > 0 ? allRunning.filter((p) => memberOf.includes(p.name)) : allRunning
 
     if (targetPubs.length === 0) {
       this.log.info('no running pubs to attach wake sources to', {

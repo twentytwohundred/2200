@@ -106,6 +106,14 @@ export interface AgentPaths {
   readonly chatLog: string
   /** Optional per-Agent avatar image (webp). Sits alongside identity.md; absent when the operator hasn't uploaded one. */
   readonly avatarImage: string
+  /**
+   * Per-Agent pub-membership file. Markdown with frontmatter listing
+   * which pubs the Agent attaches a wake source to on boot. When the
+   * file is absent, AgentProcess falls back to identity.md's
+   * `pub.member_of`. Created/updated by the supervisor's "create
+   * studio" flow; safe for operators to edit by hand.
+   */
+  readonly pubsFile: string
   /** Per-Agent multi-thread chat root (design-system v1.1 port). Each thread is `<chatsDir>/<chat-id>.jsonl`; metadata in `<chatsDir>/index.json`; attachments under `<chatsDir>/<chat-id>/attachments/`. */
   readonly chatsDir: string
   /** Per-Agent chat index.json (chat metadata: id, title, created_at, updated_at, unread, archived). */
@@ -126,6 +134,7 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     chatsDir,
     chatsIndex: join(chatsDir, 'index.json'),
     avatarImage: join(root, 'avatar.webp'),
+    pubsFile: join(root, 'pubs.md'),
   }
 }
 
