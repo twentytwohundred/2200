@@ -156,7 +156,15 @@ export function CommandPalette(): ReactElement {
       group: 'AGENTS',
       label: a.name,
       hint: a.status,
-      leading: <AgentMark id={a.name} name={a.name} size="sm" />,
+      leading: (
+        <AgentMark
+          id={a.name}
+          name={a.name}
+          size="sm"
+          glyph={a.avatar ?? undefined}
+          imageUrl={api.authedUrl(a.avatar_image_url) ?? undefined}
+        />
+      ),
       searchable: `${a.name} ${a.status}`,
       activate: () => {
         void navigate(`/agent/${encodeURIComponent(a.name)}`)
@@ -259,7 +267,15 @@ export function CommandPalette(): ReactElement {
           group: 'COMMANDS',
           label: `Start ${a.name}`,
           hint: a.status,
-          leading: <AgentMark id={a.name} name={a.name} size="sm" />,
+          leading: (
+            <AgentMark
+              id={a.name}
+              name={a.name}
+              size="sm"
+              glyph={a.avatar ?? undefined}
+              imageUrl={api.authedUrl(a.avatar_image_url) ?? undefined}
+            />
+          ),
           searchable: `start ${a.name} resume run agent`,
           activate: () => {
             agentActionMutation.mutate({ name: a.name, action: 'start' })
@@ -272,7 +288,15 @@ export function CommandPalette(): ReactElement {
           group: 'COMMANDS',
           label: `Stop ${a.name}`,
           hint: a.status,
-          leading: <AgentMark id={a.name} name={a.name} size="sm" />,
+          leading: (
+            <AgentMark
+              id={a.name}
+              name={a.name}
+              size="sm"
+              glyph={a.avatar ?? undefined}
+              imageUrl={api.authedUrl(a.avatar_image_url) ?? undefined}
+            />
+          ),
           searchable: `stop ${a.name} pause halt agent`,
           activate: () => {
             agentActionMutation.mutate({ name: a.name, action: 'stop' })

@@ -40,14 +40,12 @@ import {
   Input,
   KV,
   LoadingState,
-  PageHeader,
+  Screen,
+  ScreenNavLink,
   Pill,
   type PillVariant,
   SectionHeader,
 } from '../../primitives'
-import { useTheme } from '../../theme/ThemeProvider'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useLiveSignal } from '../../ws/useLiveSignal'
 import styles from './InboxScreen.module.css'
 
 function tierVariant(tier: string): PillVariant {
@@ -69,8 +67,6 @@ function isTextInput(target: EventTarget | null): boolean {
 }
 
 export function InboxScreen(): ReactElement {
-  const { theme } = useTheme()
-  const live = useLiveSignal()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -248,7 +244,6 @@ export function InboxScreen(): ReactElement {
     [draft, submitResponse],
   )
 
-  const eyebrow = `2200 · INBOX · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
   const totalPending = allPending.length
   const subtitle = (() => {
     const parts: string[] = []
@@ -262,26 +257,17 @@ export function InboxScreen(): ReactElement {
     return `${head} Keyboard: j/k to move, e to respond, d to dismiss.`
   })()
 
-  return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={
-          filterIsActive
-            ? `Inbox · ${String(items.length)} of ${String(totalPending)}`
-            : `Inbox · ${String(items.length)}`
-        }
-        subtitle={subtitle}
-        actions={
-          <div className={styles.headerActions}>
-            <Link to="/" className={styles.back}>
-              ← Fleet
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
+  const titleStr = filterIsActive
+    ? `Inbox · ${String(items.length)} of ${String(totalPending)}`
+    : `Inbox · ${String(items.length)}`
 
+  return (
+    <Screen
+      crumbs={['2200', 'inbox']}
+      title={titleStr}
+      lede={subtitle}
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
       {totalPending > 0 ? (
         <div className={styles.filterBar} role="toolbar" aria-label="Filter inbox">
           <div className={styles.filterGroup}>
@@ -502,7 +488,7 @@ export function InboxScreen(): ReactElement {
           </section>
         </div>
       )}
-    </main>
+    </Screen>
   )
 }
 

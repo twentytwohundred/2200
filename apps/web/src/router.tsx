@@ -38,6 +38,7 @@ export function Router(): ReactElement {
       <Routes>
         <Route path="/" element={<FleetScreen />} />
         <Route path="/agent/:name" element={<AgentDetailScreen />} />
+        <Route path="/agent/:name/chat/:chatId" element={<AgentDetailScreen />} />
         <Route path="/inbox" element={<InboxScreen />} />
         <Route path="/budget" element={<BudgetScreen />} />
         <Route path="/onboarding" element={<OnboardingScreen />} />

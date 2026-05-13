@@ -63,6 +63,8 @@ export interface HomePaths {
   readonly configUserMd: string
   /** User pub credential file (Epic 3 PR B). Mode 0600. */
   readonly configUserPubSecret: string
+  /** Custom OpenAI-compatible LLM endpoints registered by the user. Mode 0600. */
+  readonly configEndpoints: string
 }
 
 export function homePaths(home: string): HomePaths {
@@ -88,6 +90,7 @@ export function homePaths(home: string): HomePaths {
     config,
     configUserMd: join(config, 'user.md'),
     configUserPubSecret: join(config, 'user.pub.secret'),
+    configEndpoints: join(config, 'endpoints.json'),
   }
 }
 
@@ -99,12 +102,19 @@ export interface AgentPaths {
   readonly shared: string
   /** Agent's pub credential file (Epic 3 PR B). Mode 0600. */
   readonly pubSecret: string
-  /** JSONL transcript of the user-Agent chat thread (Epic 15 Phase C). */
+  /** Legacy single-thread JSONL (Epic 15 Phase C). Migrated to chatsDir/default.jsonl by MultiChatStore on first read. */
   readonly chatLog: string
+  /** Optional per-Agent avatar image (webp). Sits alongside identity.md; absent when the operator hasn't uploaded one. */
+  readonly avatarImage: string
+  /** Per-Agent multi-thread chat root (design-system v1.1 port). Each thread is `<chatsDir>/<chat-id>.jsonl`; metadata in `<chatsDir>/index.json`; attachments under `<chatsDir>/<chat-id>/attachments/`. */
+  readonly chatsDir: string
+  /** Per-Agent chat index.json (chat metadata: id, title, created_at, updated_at, unread, archived). */
+  readonly chatsIndex: string
 }
 
 export function agentPaths(home: string, agentName: string): AgentPaths {
   const root = join(home, 'agents', agentName)
+  const chatsDir = join(root, 'chats')
   return {
     root,
     identity: join(root, 'identity.md'),
@@ -113,7 +123,30 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     shared: join(root, 'shared'),
     pubSecret: join(root, 'pub.secret'),
     chatLog: join(root, 'chat.jsonl'),
+    chatsDir,
+    chatsIndex: join(chatsDir, 'index.json'),
+    avatarImage: join(root, 'avatar.webp'),
   }
+}
+
+/** Path to a single chat thread's JSONL file. */
+export function agentChatThreadPath(home: string, agentName: string, chatId: string): string {
+  return join(home, 'agents', agentName, 'chats', `${chatId}.jsonl`)
+}
+
+/** Per-chat attachments directory. Created lazily by the multi-chat store on first attach. */
+export function agentChatAttachmentsDir(home: string, agentName: string, chatId: string): string {
+  return join(home, 'agents', agentName, 'chats', chatId, 'attachments')
+}
+
+export function agentChatAttachmentPath(
+  home: string,
+  agentName: string,
+  chatId: string,
+  attachmentId: string,
+  filename: string,
+): string {
+  return join(agentChatAttachmentsDir(home, agentName, chatId), `${attachmentId}-${filename}`)
 }
 
 /**

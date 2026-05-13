@@ -1,8 +1,8 @@
 .track {
   position: relative;
   width: 100%;
-  background: var(--color-bg-inset);
-  border-radius: var(--radius-pill);
+  background: var(--bg-sunk);
+  border-radius: var(--ds-r-pill);
   overflow: hidden;
 }
 
@@ -10,21 +10,21 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  transition: width var(--duration-normal) var(--ease-out);
+  transition: width var(--ds-dur) var(--ds-ease);
 }
 
 .v-running .fill {
-  background: var(--color-status-running);
+  background: var(--accent);
 }
 
 .v-attention .fill {
-  background: var(--color-status-attention);
+  background: var(--warn);
 }
 
 .v-error .fill {
-  background: var(--color-status-error);
+  background: var(--danger);
 }
 
 .v-idle .fill {
-  background: var(--color-text-muted);
+  background: var(--text-3);
 }

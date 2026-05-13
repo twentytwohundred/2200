@@ -2,53 +2,53 @@
   display: inline-flex;
   align-items: center;
   height: 28px;
-  padding: 0 var(--space-3);
-  background: var(--color-bg-inset);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  font-family: var(--type-family-sans);
+  padding: 0 var(--ds-3);
+  background: var(--bg-sunk);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  font-family: var(--ds-font-sans);
   font-size: 13px;
   letter-spacing: -0.005em;
   outline: none;
   transition:
-    border-color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    background var(--ds-dur-fast) var(--ds-ease);
   width: 100%;
 }
 
 .input:focus {
-  outline: 2px solid var(--color-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 0;
-  border-color: var(--color-border-emphasis);
+  border-color: var(--line-strong);
 }
 
 .input:disabled {
-  color: var(--color-text-disabled);
+  color: var(--text-4);
   cursor: not-allowed;
 }
 
 .input::placeholder {
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .shell {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--ds-2);
   height: 28px;
-  padding: 0 var(--space-3);
-  background: var(--color-bg-inset);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  padding: 0 var(--ds-3);
+  background: var(--bg-sunk);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
   width: 100%;
 }
 
 .shell:focus-within {
-  outline: 2px solid var(--color-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 0;
-  border-color: var(--color-border-emphasis);
+  border-color: var(--line-strong);
 }
 
 .shell .input {
@@ -67,7 +67,7 @@
 .leading {
   display: inline-flex;
   align-items: center;
-  color: var(--color-text-muted);
-  font-family: var(--type-family-mono);
+  color: var(--text-3);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
 }

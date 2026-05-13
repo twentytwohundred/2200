@@ -82,6 +82,15 @@ export interface Agent {
   errored_reason: string | null
   pulse: Pulse | null
   model: AgentModel | null
+  /** Optional emoji / short glyph the user set on the Identity. */
+  avatar: string | null
+  /**
+   * URL to fetch the Agent's uploaded portrait (cropped + compressed
+   * webp). `null` when the operator hasn't uploaded one. When set,
+   * the image takes precedence over `avatar` in the AgentMark.
+   * Includes a cache-busting `?v=<mtime>` so updates land instantly.
+   */
+  avatar_image_url: string | null
 }
 
 /**
@@ -246,6 +255,73 @@ export interface ChatMessage {
 
 export interface ChatPostResponse {
   message: ChatMessage
+  task_id: string
+}
+
+// ── Custom LLM endpoints (Settings → Endpoints) ────────────────────────────
+
+export interface CustomEndpointModelDto {
+  id: string
+  label?: string
+}
+
+export interface CustomEndpointDto {
+  id: string
+  name: string
+  base_url: string
+  api_key_set: boolean
+  models: CustomEndpointModelDto[]
+  created_at: string
+  updated_at: string
+}
+
+// ── Multi-chat (design-system v1.1) ────────────────────────────────────────
+
+export interface ChatThread {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  unread: boolean
+  archived: boolean
+  snippet: string
+  last_user_at: string | null
+}
+
+export type ChatSendMode = 'pure' | 'checkpointed' | 'destructive'
+export type ChatAttachmentKind = 'file' | 'image'
+
+export interface ChatAttachmentRef {
+  id: string
+  kind: ChatAttachmentKind
+  name: string
+  size: number
+  mime: string
+}
+
+export interface ChatAttachmentUploaded extends ChatAttachmentRef {
+  url: string
+}
+
+export interface ChatThreadMessage {
+  id: string
+  chat_id: string
+  ts: string
+  role: 'user' | 'assistant' | 'system'
+  body: string
+  mode: ChatSendMode | null
+  attachments: ChatAttachmentRef[]
+  task_id: string | null
+}
+
+export interface ChatThreadPostBody {
+  body: string
+  mode?: ChatSendMode
+  attachments?: ChatAttachmentRef[]
+}
+
+export interface ChatThreadPostResponse {
+  message: ChatThreadMessage
   task_id: string
 }
 
@@ -554,6 +630,22 @@ export const api = {
     }),
   budget: (name: string) =>
     request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),
+  /**
+   * Edit the Agent's daily cap and/or warn threshold. Writes to
+   * identity.md; the running AgentProcess keeps its loaded cap until
+   * restart, so `applies_on_restart=true` means the operator needs to
+   * cycle the Agent to enforce the new value.
+   */
+  agentBudgetSet: (name: string, body: { daily_usd?: number; warn_at_pct?: number }) =>
+    request<{
+      path: string
+      daily_usd: number
+      warn_at_pct: number
+      applies_on_restart: boolean
+    }>(`/api/v1/agents/${encodeURIComponent(name)}/budget`, {
+      method: 'PUT',
+      body,
+    }),
   agentTools: (name: string) =>
     request<AgentToolsResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tools`),
   agentTasks: (name: string, params?: { state?: TaskState; limit?: number }) => {
@@ -616,6 +708,108 @@ export const api = {
       method: 'POST',
       body: { content },
     }),
+  chatsList: (name: string) =>
+    request<ListEnvelope<ChatThread>>(`/api/v1/agents/${encodeURIComponent(name)}/chats`),
+  chatThreadCreate: (name: string, title?: string) =>
+    request<{ chat: ChatThread }>(`/api/v1/agents/${encodeURIComponent(name)}/chats`, {
+      method: 'POST',
+      body: title !== undefined ? { title } : {},
+    }),
+  chatThreadGet: (name: string, chatId: string) =>
+    request<{ chat: ChatThread }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}`,
+    ),
+  chatThreadRename: (name: string, chatId: string, title: string) =>
+    request<{ chat: ChatThread }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}`,
+      { method: 'PATCH', body: { title } },
+    ),
+  chatThreadArchive: (name: string, chatId: string, archived: boolean) =>
+    request<{ chat: ChatThread }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/archive`,
+      { method: 'POST', body: { archived } },
+    ),
+  chatThreadRead: (name: string, chatId: string) =>
+    request<{ ok: true }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/read`,
+      { method: 'POST' },
+    ),
+  chatMessagesList: (name: string, chatId: string) =>
+    request<ListEnvelope<ChatThreadMessage>>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/messages`,
+    ),
+  chatMessageSend: (name: string, chatId: string, body: ChatThreadPostBody) =>
+    request<ChatThreadPostResponse>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/messages`,
+      { method: 'POST', body },
+    ),
+  chatAttachmentUpload: (
+    name: string,
+    chatId: string,
+    body: { name: string; mime: string; kind: ChatAttachmentKind; data_base64: string },
+  ) =>
+    request<{ attachment: ChatAttachmentUploaded }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/attachments`,
+      { method: 'POST', body },
+    ),
+  chatAttachmentUrl: (name: string, chatId: string, attId: string, filename: string): string =>
+    `/api/v1/agents/${encodeURIComponent(name)}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attId)}/${encodeURIComponent(filename)}`,
+  endpointsList: () => request<ListEnvelope<CustomEndpointDto>>('/api/v1/settings/endpoints'),
+  endpointCreate: (body: {
+    id?: string
+    name: string
+    base_url: string
+    api_key?: string
+    models?: CustomEndpointModelDto[]
+    discover?: boolean
+  }) =>
+    request<{
+      endpoint: CustomEndpointDto
+      discovered_models: { id: string }[]
+      discover_error: { kind: string; message: string } | null
+    }>('/api/v1/settings/endpoints', { method: 'POST', body }),
+  endpointGet: (id: string) =>
+    request<{ endpoint: CustomEndpointDto }>(
+      `/api/v1/settings/endpoints/${encodeURIComponent(id)}`,
+    ),
+  endpointUpdate: (
+    id: string,
+    patch: {
+      name?: string
+      base_url?: string
+      api_key?: string
+      models?: CustomEndpointModelDto[]
+    },
+  ) =>
+    request<{ endpoint: CustomEndpointDto }>(
+      `/api/v1/settings/endpoints/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: patch },
+    ),
+  endpointDelete: (id: string) =>
+    request<{ id: string; deleted: true }>(`/api/v1/settings/endpoints/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  endpointDiscover: (body: { base_url: string; api_key?: string }) =>
+    request<
+      | { ok: true; models: { id: string }[] }
+      | { ok: false; error: { kind: string; message: string } }
+    >('/api/v1/settings/endpoints/discover', { method: 'POST', body }),
+  /**
+   * Build an image-loadable URL for an endpoint that requires the
+   * bearer token. The browser's `<img>` tag cannot set an
+   * Authorization header, so the runtime accepts `?token=...` as an
+   * equivalent (same trick the WebSocket uses). Returns null when
+   * the input is null/empty so callers can do
+   * `imageUrl={api.authedUrl(agent.avatar_image_url)}` without
+   * extra guards.
+   */
+  authedUrl: (url: string | null | undefined): string | null => {
+    if (!url) return null
+    const token = getToken()
+    if (!token) return url
+    const sep = url.includes('?') ? '&' : '?'
+    return `${url}${sep}token=${encodeURIComponent(token)}`
+  },
   identityRead: (name: string) =>
     request<{ path: string; content: string }>(
       `/api/v1/agents/${encodeURIComponent(name)}/identity`,
@@ -625,6 +819,20 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/identity`,
       { method: 'PUT', body: { content } },
     ),
+  agentAvatarSet: (name: string, avatar: string) =>
+    request<{ path: string; avatar: string | null }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/avatar`,
+      { method: 'PUT', body: { avatar } },
+    ),
+  agentAvatarImageSet: (name: string, body: { data_base64: string; mime: string }) =>
+    request<{ path: string; bytes: number; url: string }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/avatar/image`,
+      { method: 'PUT', body },
+    ),
+  agentAvatarImageDelete: (name: string) =>
+    request<{ ok: true }>(`/api/v1/agents/${encodeURIComponent(name)}/avatar/image`, {
+      method: 'DELETE',
+    }),
   agentModelSet: (
     name: string,
     body: { provider: string; model_id: string; followup_model_id?: string | null },

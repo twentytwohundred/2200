@@ -13,9 +13,25 @@ body,
 }
 
 body {
-  font-family: var(--type-family-sans);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
+  font-family: var(--ds-font-sans);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--ds-text-md);
+  line-height: var(--ds-lh-prose);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: color-mix(in oklch, var(--accent) 35%, transparent);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
 }

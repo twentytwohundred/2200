@@ -27,6 +27,7 @@
  * env var (ANTHROPIC_API_KEY, KIMI_API_KEY, etc.). Operators get a
  * working setup just by exporting the env var.
  */
+import { EndpointStore } from '../endpoints/store.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import type { SecretRef } from '../secrets/types.js'
 import { AnthropicProvider } from './anthropic.js'
@@ -41,6 +42,13 @@ export interface ProviderResolveOptions {
   secret?: SecretRef
   /** Inject fetch (testing). */
   fetchImpl?: typeof fetch
+  /**
+   * 2200 home directory. Required when resolving custom endpoints
+   * (`provider: "endpoint:<slug>"`); the registry reads the matching
+   * entry from `<home>/config/endpoints.json`. Optional for built-in
+   * providers, which do not need disk access.
+   */
+  home?: string
 }
 
 interface OpenAICompatibleConfig {
@@ -84,6 +92,37 @@ const LOCAL_DEFAULT_BASE_URL = 'http://localhost:11434/v1'
  * Throws SecretResolveError on secret resolution failure.
  */
 export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLMProvider> {
+  // Custom endpoints registered via the Settings UI. `endpoint:<slug>`
+  // resolves through the EndpointStore at `<home>/config/endpoints.json`.
+  // Each endpoint carries its own base_url + optional bearer; we wrap
+  // them in OpenAIProvider since the discovery / chat-completions surface
+  // they expose is the OpenAI-compatible /v1 shape.
+  if (opts.providerName.startsWith('endpoint:')) {
+    if (!opts.home) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        'custom endpoints require a 2200 home directory; provide opts.home when resolving',
+        opts.providerName,
+      )
+    }
+    const id = opts.providerName.slice('endpoint:'.length)
+    const store = new EndpointStore(opts.home)
+    const entry = await store.get(id)
+    if (!entry) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        `custom endpoint "${id}" is not registered. Add it under Settings → Endpoints.`,
+        opts.providerName,
+      )
+    }
+    return new OpenAIProvider({
+      apiKey: entry.api_key.length > 0 ? entry.api_key : 'local',
+      baseUrl: entry.base_url,
+      providerName: opts.providerName,
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    })
+  }
+
   // The `local` provider is special-cased: API key is optional (Ollama
   // accepts any non-empty bearer; vLLM/LM Studio default to no auth)
   // and the baseUrl is read from process env at resolve time so that

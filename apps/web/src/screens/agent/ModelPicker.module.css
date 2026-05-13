@@ -1,0 +1,45 @@
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0 16px 0 0;
+  font: 500 11.5px/1 var(--ds-font-mono);
+  color: var(--text-3);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.select:hover {
+  color: var(--text);
+}
+
+.select:focus-visible {
+  outline: none;
+  color: var(--text);
+}
+
+.chevron {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  font-size: 9px;
+  color: var(--text-3);
+  pointer-events: none;
+  line-height: 1;
+}
+
+.wrap:hover .chevron {
+  color: var(--text);
+}

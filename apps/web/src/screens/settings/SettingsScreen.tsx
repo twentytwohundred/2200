@@ -20,7 +20,6 @@
  * UI for yet.
  */
 import { useState, type ReactElement } from 'react'
-import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type ProviderSettingsItem } from '../../lib/api'
 import {
@@ -29,12 +28,14 @@ import {
   ErrorState,
   KV,
   LoadingState,
-  PageHeader,
   Pill,
+  Screen,
+  ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
+import { EndpointsSection } from './EndpointsSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
@@ -77,30 +78,13 @@ export function SettingsScreen(): ReactElement {
     staleTime: 30_000,
   })
 
-  const eyebrow = `2200 · SETTINGS · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title="Settings"
-        subtitle="Theme, runtime info, and a reference for management surfaces still on the CLI."
-        actions={
-          <Link
-            to="/"
-            style={{
-              fontFamily: 'var(--type-family-mono)',
-              fontSize: '11px',
-              letterSpacing: '0.08em',
-              color: 'var(--color-text-muted)',
-              textDecoration: 'none',
-            }}
-          >
-            ← FLEET
-          </Link>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'settings']}
+      title="Settings"
+      lede="Theme, runtime info, and a reference for management surfaces still on the CLI."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
       <section>
         <SectionHeader title="THEME" />
         <Card padding={20}>
@@ -148,7 +132,7 @@ export function SettingsScreen(): ReactElement {
               <KV
                 k="API"
                 v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
+                  <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
                     {versionQuery.data?.api ?? '?'}
                   </span>
                 }
@@ -156,7 +140,7 @@ export function SettingsScreen(): ReactElement {
               <KV
                 k="RUNTIME"
                 v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
+                  <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
                     {versionQuery.data?.runtime ?? '?'}
                   </span>
                 }
@@ -174,7 +158,7 @@ export function SettingsScreen(): ReactElement {
               <KV
                 k="PRINCIPAL"
                 v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
+                  <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
                     {meQuery.data ? `${meQuery.data.kind}/${meQuery.data.name}` : '?'}
                   </span>
                 }
@@ -198,6 +182,11 @@ export function SettingsScreen(): ReactElement {
       </section>
 
       <section>
+        <SectionHeader title="ENDPOINTS · CUSTOM LLM SERVERS" />
+        <EndpointsSection />
+      </section>
+
+      <section>
         <SectionHeader title="WHAT YOU CAN DO IN THE CLI" />
         <div className={styles.cliCallout}>
           <div className={styles.cliLabel}>v1 management</div>
@@ -215,7 +204,7 @@ export function SettingsScreen(): ReactElement {
           </div>
         </div>
       </section>
-    </main>
+    </Screen>
   )
 }
 

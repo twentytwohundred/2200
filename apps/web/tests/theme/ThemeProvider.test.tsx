@@ -66,7 +66,7 @@ function installMatchMedia(prefersLight: boolean): void {
 }
 
 beforeEach(() => {
-  document.documentElement.classList.remove('theme-dark', 'theme-light')
+  document.documentElement.classList.remove('dark')
   installMockStorage()
   installMatchMedia(false)
 })
@@ -82,7 +82,7 @@ describe('ThemeProvider initial detection', () => {
     render(wrap(<ProbeTheme />))
 
     expect(screen.getByTestId('theme')).toHaveTextContent('default-light')
-    expect(document.documentElement.classList.contains('theme-light')).toBe(true)
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
   })
 
   it('falls back to prefers-color-scheme: light when no preference is stored', () => {
@@ -97,7 +97,7 @@ describe('ThemeProvider initial detection', () => {
     render(wrap(<ProbeTheme />))
 
     expect(screen.getByTestId('theme')).toHaveTextContent('default-dark')
-    expect(document.documentElement.classList.contains('theme-dark')).toBe(true)
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
   })
 
   it('honours initialTheme prop, ignoring storage and prefers-color-scheme', () => {
@@ -115,19 +115,18 @@ describe('ThemeProvider initial detection', () => {
 })
 
 describe('ThemeProvider transitions', () => {
-  it('setTheme updates the class on <html> and persists to localStorage', () => {
+  it('setTheme toggles the dark class on <html> and persists to localStorage', () => {
     render(
       <ThemeProvider initialTheme="default-dark">
         <ProbeTheme />
       </ThemeProvider>,
     )
 
-    expect(document.documentElement.classList.contains('theme-dark')).toBe(true)
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
 
     fireEvent.click(screen.getByTestId('set-light'))
 
-    expect(document.documentElement.classList.contains('theme-light')).toBe(true)
-    expect(document.documentElement.classList.contains('theme-dark')).toBe(false)
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe('default-light')
   })
 
@@ -140,9 +139,11 @@ describe('ThemeProvider transitions', () => {
 
     fireEvent.click(screen.getByTestId('toggle'))
     expect(screen.getByTestId('theme')).toHaveTextContent('default-light')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
 
     fireEvent.click(screen.getByTestId('toggle'))
     expect(screen.getByTestId('theme')).toHaveTextContent('default-dark')
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
   })
 })
 

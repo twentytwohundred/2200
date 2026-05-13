@@ -1,0 +1,61 @@
+/* ── Shell ─────────────────────────────────────────────────────────── */
+.shell {
+  min-height: 100vh;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: var(--ds-12) var(--ds-10) var(--ds-20);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ds-font-sans);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-8);
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  flex-direction: column;
+  /* Tight default; specific elements override via margin overrides. */
+  gap: var(--ds-2);
+}
+
+.title {
+  /* Pull closer to the breadcrumb above; subRow sits tight below. */
+  margin: var(--ds-4) 0 0;
+  font: 600 44px/1.05 var(--ds-font-sans);
+  letter-spacing: -0.025em;
+  color: var(--text);
+}
+
+.subRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-4);
+  flex-wrap: wrap;
+}
+
+.lede {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 15px;
+  max-width: 64ch;
+}
+
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-5);
+}
+
+.navLink {
+  font: 400 14px/1 var(--ds-font-sans);
+  color: var(--text-2);
+  text-decoration: none;
+  transition: color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.navLink:hover {
+  color: var(--text);
+}

@@ -1,6 +1,6 @@
 .dot {
   display: inline-block;
-  border-radius: var(--radius-pill);
+  border-radius: var(--ds-r-pill);
   background: currentColor;
   flex-shrink: 0;
   vertical-align: middle;
@@ -13,33 +13,33 @@
    side by side. */
 
 .s-resting {
-  color: var(--color-text-muted);
+  color: var(--text-3);
   opacity: 0.55;
 }
 
 .s-working_light {
-  color: var(--color-status-info);
+  color: var(--info);
 }
 
 .s-working_medium {
-  color: var(--color-status-running);
+  color: var(--accent);
 }
 
 .s-working_hard {
-  color: var(--color-status-attention);
+  color: var(--warn);
 }
 
 .s-redlined {
-  color: var(--color-status-error);
+  color: var(--danger);
 }
 
 .s-stopped {
-  color: var(--color-text-muted);
+  color: var(--text-3);
   opacity: 0.3;
 }
 
 .pulse {
-  animation: pulseDotIntensity var(--pulse-period, 1800ms) var(--ease-in-out) infinite;
+  animation: pulseDotIntensity var(--pulse-period, 1800ms) var(--ds-ease) infinite;
 }
 
 @keyframes pulseDotIntensity {

@@ -1,0 +1,27 @@
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  font: 500 11px/1 var(--ds-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.segWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.seg {
+  color: inherit;
+}
+
+.active {
+  color: var(--text-2);
+}
+
+.sep {
+  color: var(--text-4);
+}

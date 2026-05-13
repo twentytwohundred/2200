@@ -124,6 +124,7 @@ export class AgentProcess {
       this.options.provider ??
       (await resolveProvider({
         providerName: this.identity.frontmatter.model.provider,
+        home: this.options.home,
         ...(this.identity.frontmatter.provider_secret
           ? { secret: this.identity.frontmatter.provider_secret }
           : {}),
@@ -436,6 +437,7 @@ export class AgentProcess {
       try {
         const provider = await resolveProvider({
           providerName: routerProvider,
+          home: this.options.home,
           ...(this.identity.frontmatter.provider_secret &&
           routerProvider === this.identity.frontmatter.model.provider
             ? { secret: this.identity.frontmatter.provider_secret }

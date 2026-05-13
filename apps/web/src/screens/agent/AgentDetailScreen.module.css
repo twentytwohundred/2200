@@ -1,588 +1,333 @@
+/* Page chrome (shell + breadcrumb + title + lede + actions) is
+   provided by <Screen>. The Agent screen pins its shell to the
+   viewport so the chat / status / identity panel scrolls internally
+   instead of pushing the page taller. */
 .shell {
-  min-height: 100vh;
-  padding: var(--space-7) var(--space-6) var(--space-9);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: var(--type-family-sans);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  max-width: 1000px;
-  margin: 0 auto;
+  height: 100vh;
+  min-height: 0;
+  padding-bottom: var(--ds-8);
 }
 
-.headerActions {
+/* Title row inside the Screen title: agent name + status pill. */
+.titleRow {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
-.back {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--color-text-muted);
-  text-decoration: none;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.back:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-
-.hero {
+/* ── Body: 260px rail + chat pane ──────────────────────────────────── */
+.body {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: var(--space-5);
+  grid-template-columns: 260px 1fr;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-3);
+  background: var(--bg-elev);
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
 }
 
-.heroText {
+/* ── Rail ──────────────────────────────────────────────────────────── */
+.rail {
+  border-right: 1px solid var(--line-soft);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  min-height: 0;
+}
+
+.identity {
+  padding: 16px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.identityRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+}
+
+.identityText {
   min-width: 0;
 }
 
-.heroName {
-  font-family: var(--type-family-mono);
-  font-size: 24px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--color-text-primary);
-  margin: 0;
-  word-break: break-all;
+.identityName {
+  font: 600 14.5px/1.1 var(--ds-font-sans);
+  color: var(--text);
 }
 
-.heroStatusRow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
+.identityModel {
+  font: 500 11.5px/1 var(--ds-font-mono);
+  color: var(--text-3);
+  margin-top: 2px;
 }
 
-.pulseRow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.heroError {
-  margin: var(--space-2) 0 0;
-  padding: var(--space-3);
-  background: var(--color-status-error-bg);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  color: var(--color-status-error);
-}
-
-.heroErrorLabel {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  margin-right: var(--space-2);
-}
-
-.heroActions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.mono {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  color: var(--color-text-primary);
-}
-
-.monoPath {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  word-break: break-all;
-}
-
-.muted {
-  color: var(--color-text-muted);
-}
-
-.advisory {
-  margin: var(--space-3) 0 0;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  max-width: 60ch;
-}
-
-.budgetHero {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-}
-
-.budgetAmount {
-  font-family: var(--type-family-mono);
-  font-size: 22px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--color-text-primary);
-}
-
-.budgetOf {
-  font-family: var(--type-family-mono);
-  font-size: 13px;
-  color: var(--color-text-muted);
-  margin-left: var(--space-2);
-}
-
-.activityList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.activityRow {
-  display: grid;
-  grid-template-columns: auto auto 1fr auto;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-subtle);
-}
-
-.activityKind {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-}
-
-.activityBody {
-  font-size: 13px;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activityTime {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  color: var(--color-text-muted);
-  letter-spacing: 0.04em;
-}
-
-.sectionLink {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--color-text-muted);
-  text-decoration: none;
-  margin-left: auto;
-}
-
-.sectionLink:hover {
-  color: var(--color-text-primary);
-}
-
-.moreLinks {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.moreLink {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-sm);
-  text-decoration: none;
-  color: var(--color-text-primary);
-  transition: background var(--duration-fast) var(--ease-out);
-}
-
-.moreLink:hover {
-  background: var(--color-bg-hover);
-}
-
-.moreLinkLabel {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  color: var(--color-text-primary);
-  font-weight: 500;
-}
-
-.moreLinkBody {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  line-height: 1.4;
-}
-
-.sendForm {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.sendInput {
+.newChat {
   width: 100%;
-  font-family: var(--type-family-mono);
-  font-size: 13px;
-  padding: var(--space-3);
-  min-height: 96px;
-  resize: vertical;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-primary);
+  margin-top: var(--ds-3);
+  justify-content: center;
 }
 
-.sendInput:focus {
-  outline: none;
-  border-color: var(--color-border-emphasis);
-}
-
-.sendActions {
-  display: flex;
-  gap: var(--space-2);
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.idempotencyGroup {
-  display: inline-flex;
-  gap: var(--space-1);
-}
-
-.idempotencyChip {
-  font-family: var(--type-family-mono);
-  font-size: 10px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--color-border-subtle);
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.idempotencyChip[data-active='true'] {
-  border-color: var(--color-border-emphasis);
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-}
-
-.idempotencyChip:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.sendError {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  color: var(--color-status-error);
-  background: var(--color-bg-elevated);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-}
-
-.sendSuccess {
-  font-family: var(--type-family-sans);
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-elevated);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-}
-
-.taskList {
+.chatList {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  min-height: 0;
 }
 
-.taskRow {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-subtle);
+.chatListHeader {
+  padding: 12px 14px 6px;
 }
 
-.taskHead {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.taskTitle {
-  font-family: var(--type-family-sans);
-  font-size: 13px;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.taskTime {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  color: var(--color-text-muted);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.taskPreview {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  line-height: 1.45;
-}
-
-.taskMeta {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  color: var(--color-text-muted);
-}
-
-.modalBackdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+.chatListInner {
+  padding: 4px 8px 12px;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: var(--space-7);
-  z-index: 50;
+  flex-direction: column;
+  gap: 2px;
   overflow-y: auto;
 }
 
-.modalShell {
-  width: 100%;
-  max-width: 720px;
-  background: var(--color-bg-primary);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-emphasis);
-  padding: var(--space-5);
-  display: grid;
-  gap: var(--space-3);
-}
-
-.modalHeader {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
-.modalTitle {
-  font-size: 18px;
-  font-weight: 500;
-  color: var(--color-text-primary);
+.empty {
   margin: 0;
+  padding: 12px 6px;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.more {
+  padding: 10px 10px 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.moreHeader {
+  padding: 4px 6px 6px;
+}
+
+/* ── Settings (rail) ───────────────────────────────────────────────── */
+.settings {
+  padding: 10px 10px 14px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settingsHeader {
+  padding: 4px 6px 6px;
+}
+
+.settingsDivider {
+  height: 1px;
+  background: var(--line-soft);
+  margin: 6px 6px;
+}
+
+/* Wraps panel bodies (Status, Identity, Budget, Brain, Schedules, Tools)
+   so they scroll inside the pane and have consistent padding. */
+.tabBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-5);
+  padding: var(--ds-5) var(--ds-6);
+  overflow-y: auto;
+  min-height: 0;
   flex: 1;
-  word-break: break-word;
 }
 
-.modalMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  color: var(--color-text-muted);
-}
-
-.modalBody {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.55;
-  color: var(--color-text-primary);
-  background: var(--color-bg-elevated);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  max-height: 40vh;
-  overflow: auto;
-  margin: 0;
-}
-
-.statusGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2) var(--space-4);
-}
-
-@media (max-width: 720px) {
-  .statusGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.chatCard {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-5);
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-  border-radius: var(--radius-md);
-  text-decoration: none;
-  transition: filter var(--duration-fast) var(--ease-out);
-}
-
-.chatCard:hover {
-  filter: brightness(1.05);
-}
-
-.chatCardLabel {
-  font-family: var(--type-family-mono);
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-}
-
-.chatCardBody {
-  font-size: 13px;
-  line-height: 1.45;
-  opacity: 0.85;
-}
-
-.identityEditor {
-  width: 100%;
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  line-height: 1.5;
-  padding: var(--space-3);
-  min-height: 360px;
-  max-height: 70vh;
-  resize: vertical;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-primary);
-  white-space: pre;
-}
-
-.identityEditor:focus {
-  outline: none;
-  border-color: var(--color-border-emphasis);
-}
-
-.identityPre {
-  font-family: var(--type-family-mono);
-  font-size: 12px;
-  line-height: 1.5;
-  padding: var(--space-3);
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-primary);
-  max-height: 400px;
-  overflow: auto;
-  margin: 0;
-  white-space: pre;
-  word-break: normal;
-  overflow-wrap: normal;
-}
-
-.identityPencil {
-  font-size: 14px;
+.railSwitch {
+  appearance: none;
   background: transparent;
-  border: 1px solid var(--color-border-subtle);
-  color: var(--color-text-secondary);
-  border-radius: var(--radius-sm);
-  width: 28px;
-  height: 28px;
+  border: 1px solid transparent;
+  text-align: left;
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-2);
+  padding: 8px 10px;
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+  color: var(--text-2);
+  font: 400 13.5px/1 var(--ds-font-sans);
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.railSwitch:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.railSwitchActive {
+  background: var(--bg-hover);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.railSwitchActive .railSwitchLabel {
+  color: var(--text);
+}
+
+.railSwitchLabel {
+  color: inherit;
+}
+
+.railSwitchSpacer {
+  flex: 1;
+}
+
+.railSwitchHint {
+  font: 500 11px/1 var(--ds-font-mono);
+  color: var(--text-3);
+}
+
+.sidebarLink {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-2);
+  padding: 8px 10px;
+  border-radius: var(--ds-r-2);
+  text-decoration: none;
+  color: var(--text-2);
+  font-size: 13.5px;
+  transition: background var(--ds-dur-fast) var(--ds-ease);
+}
+
+.sidebarLink:hover {
+  background: var(--bg-hover);
+}
+
+.sidebarLinkLabel {
+  color: var(--text);
+}
+
+.sidebarLinkSpacer {
+  flex: 1;
+}
+
+.sidebarLinkHint {
+  font: 500 11px/1 var(--ds-font-mono);
+  color: var(--text-3);
+}
+
+.sidebarLinkArrow {
+  color: var(--text-3);
+}
+
+/* ── Pane ──────────────────────────────────────────────────────────── */
+.pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Floating "jump to latest" button. Shown only when the operator has
+   scrolled away from the bottom of the messages list (atBottom is
+   tracked from the scroll handler). Positioned over the messages
+   region, just above the composer, centered horizontally. */
+.jumpToBottom {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 12px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  padding: 6px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--ds-r-pill);
+  font: 500 12px/1 var(--ds-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: 0 2px 12px color-mix(in oklch, var(--shadow-color, black) 18%, transparent);
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    transform var(--ds-dur-fast) var(--ds-ease);
+}
+
+.jumpToBottom:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-3);
+}
+
+.jumpToBottomArrow {
+  display: inline-block;
+  font: 500 14px/1 var(--ds-font-mono);
+}
+
+.jumpToBottomBadge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--ds-r-pill);
+  background: var(--accent);
+  color: var(--accent-contrast, white);
+  font: 600 10.5px/1 var(--ds-font-mono);
 }
 
-.identityPencil:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+/* Tabs were moved into the rail Settings group. This block is retained
+   as legacy in case anything still references it; safe to delete in
+   a future cleanup. */
+
+.paneHead {
+  padding: 0 24px;
 }
 
-.modelEditor {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.modelLabel {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.modelLabelText {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-}
-
-.modelSelect,
-.modelInput {
-  font-family: var(--type-family-mono);
-  font-size: 13px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-}
-
-.modelSelect:focus,
-.modelInput:focus {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -1px;
-}
-
-.modelSuggestions {
+/* Wraps the scrollable messages region so the jump-to-latest button
+   can pin itself just above the composer regardless of composer
+   height (which grows with the textarea). */
+.messagesWrap {
+  flex: 1;
   display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
 }
 
-.modelSuggestionChip {
-  font-family: var(--type-family-mono);
-  font-size: 11px;
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-primary);
-  color: var(--color-text-secondary);
-  cursor: pointer;
+.messages {
+  flex: 1;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-5);
+  overflow-y: auto;
+  min-height: 0;
 }
 
-.modelSuggestionChip:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+.composer {
+  padding: 12px 24px 24px;
 }
 
-.modelWarning {
+.composerHint {
+  margin-top: var(--ds-2);
+  color: var(--text-3);
   font-size: 12px;
-  color: var(--color-warning, var(--color-text-secondary));
-  font-style: italic;
 }
 
-.modelNote {
-  font-size: 11px;
-  color: var(--color-text-muted);
-  font-style: italic;
+/* ── Empty chat ───────────────────────────────────────────────────── */
+.emptyChat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-4);
+  color: var(--text-3);
+  padding: var(--ds-12);
+}
+
+.emptyChatLede {
+  margin: 0;
+  font-size: 15px;
 }

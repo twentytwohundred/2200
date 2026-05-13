@@ -26,8 +26,18 @@ export type ModelTier = z.infer<typeof ModelTierSchema>
  * hyphens or other separators; matches the regex used by `ModelIdSchema`
  * in `src/runtime/control-plane/protocol.ts`.
  */
-export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+$/, {
-  message: 'model.provider must be lowercase alphanumeric (no separators)',
+/**
+ * Built-in providers are lowercase alphanumeric (`anthropic`,
+ * `deepseek`, `xai`). Custom endpoints registered by the operator use
+ * the `endpoint:<slug>` form (`endpoint:dgx-spark`, `endpoint:lab-vm`)
+ * so the LLM registry can dispatch to the matching `<home>/config/
+ * endpoints.json` entry. The slug after the colon follows the
+ * `EndpointIdSchema` rule: lowercase alphanumeric + dashes, starting
+ * with a letter or digit.
+ */
+export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+(:[a-z0-9][a-z0-9-]{0,49})?$/, {
+  message:
+    'model.provider must be lowercase alphanumeric (e.g. "anthropic") or "endpoint:<slug>" for a custom endpoint',
 })
 
 /**
@@ -405,6 +415,13 @@ export const IdentityFrontmatterSchema = z.object({
         'agent_name must start with a lowercase letter; lowercase letters, digits, underscores, and dashes only',
     }),
   agent_role: z.string().min(1),
+  /**
+   * Optional avatar glyph rendered inside the AgentMark circle (a short
+   * emoji or 1-2 character string). When unset, the AgentMark falls back
+   * to the first letter of the agent's display name. Editable via
+   * `PUT /api/v1/agents/:name/avatar` from the global Settings page.
+   */
+  avatar: z.string().max(8).optional(),
   model: ModelBindingSchema,
   tools: z.array(ToolNameSchema).default([]),
   project_dir: z.string().min(1),

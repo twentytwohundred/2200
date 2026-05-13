@@ -44,6 +44,8 @@ function fakeAgent(name: string, status: string): Agent {
     errored_reason: null,
     pulse: null,
     model: null,
+    avatar: null,
+    avatar_image_url: null,
   }
 }
 

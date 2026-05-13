@@ -1,0 +1,219 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-5);
+}
+
+.previewRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-4);
+  padding: var(--ds-4);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-3);
+}
+
+.previewMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  min-width: 0;
+}
+
+.previewHint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+}
+
+/* ── Drop zone ─────────────────────────────────────────────────────── */
+.dropZone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  padding: var(--ds-5);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--ds-r-3);
+  cursor: pointer;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.dropZone:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-3);
+}
+
+.dropZoneActive {
+  background: var(--bg-hover);
+  border-color: var(--text-2);
+}
+
+.dropPrompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-2);
+  pointer-events: none;
+}
+
+.dropGlyph {
+  font: 600 32px/1 var(--ds-font-sans);
+  color: var(--text-3);
+}
+
+.dropTitle {
+  font: 600 15px/1.3 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.dropHint {
+  color: var(--text-3);
+  font-size: 13px;
+  max-width: 48ch;
+  text-align: center;
+}
+
+.fileInput {
+  display: none;
+}
+
+/* ── Crop ──────────────────────────────────────────────────────────── */
+.cropArea {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.cropFrame {
+  position: relative;
+  width: 100%;
+  height: 360px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-3);
+  overflow: hidden;
+}
+
+.cropControls {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+}
+
+.zoomLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  flex: 0 1 320px;
+}
+
+.zoomRange {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  background: var(--bg-sunk);
+  border-radius: 999px;
+  outline: none;
+}
+
+.zoomRange::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--text);
+  cursor: pointer;
+}
+
+.cropSpacer {
+  flex: 1;
+}
+
+/* ── Uploaded image row ────────────────────────────────────────────── */
+.uploadedRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+}
+
+.uploadedHint {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* ── Glyph row ─────────────────────────────────────────────────────── */
+.glyphRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  flex-wrap: wrap;
+}
+
+.glyphInput {
+  width: 100px;
+  appearance: none;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  padding: 8px 10px;
+  font: 500 18px/1 var(--ds-font-sans);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.glyphInput:focus {
+  border-color: var(--line-strong);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-1);
+}
+
+.swatch {
+  appearance: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.swatch:hover {
+  background: var(--bg-hover);
+  border-color: var(--line-strong);
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}

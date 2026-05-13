@@ -19,6 +19,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactElement } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+// Link kept for inline Settings link inside the body; header back-link uses ScreenNavLink.
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ApiError,
@@ -33,9 +34,7 @@ import {
   type OnboardingTranscriptEntry,
   type ProviderSettingsItem,
 } from '../../lib/api'
-import { Button, Card, PageHeader, SectionHeader } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
+import { Button, Card, Screen, ScreenNavLink, SectionHeader } from '../../primitives'
 import styles from './OnboardingScreen.module.css'
 
 type Phase =
@@ -62,7 +61,6 @@ function formatError(err: unknown): string {
 }
 
 export function OnboardingScreen(): ReactElement {
-  const { theme } = useTheme()
   const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>({ kind: 'intro' })
   const [draft, setDraft] = useState<string>('')
@@ -163,24 +161,13 @@ export function OnboardingScreen(): ReactElement {
     [answerMutation, draft, phase],
   )
 
-  const eyebrow = `2200 · ONBOARDING · ${theme.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title="Spawn an Agent"
-        subtitle="Answer a few questions; 2200 will assemble an Identity, suggest tools and schedules, and stand the Agent up on this instance."
-        actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Link to="/" className={styles.tag}>
-              FLEET
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'onboarding']}
+      title="Spawn an Agent"
+      lede="Answer a few questions; 2200 will assemble an Identity, suggest tools and schedules, and stand the Agent up on this instance."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
       {phase.kind === 'intro' ? (
         <Card padding={20}>
           <div className={styles.intro}>
@@ -421,7 +408,7 @@ export function OnboardingScreen(): ReactElement {
           </div>
         </Card>
       ) : null}
-    </main>
+    </Screen>
   )
 }
 

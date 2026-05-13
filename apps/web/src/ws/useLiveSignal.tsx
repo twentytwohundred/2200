@@ -119,6 +119,23 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'budget.threshold_crossed':
           void queryClient.invalidateQueries({ queryKey: ['budget'] })
           break
+        case 'chat.message':
+        case 'chat.created':
+        case 'chat.renamed':
+        case 'chat.archived':
+        case 'chat.read': {
+          const agent = typeof ev.payload.agent === 'string' ? ev.payload.agent : null
+          const chatId = typeof ev.payload.chat_id === 'string' ? ev.payload.chat_id : null
+          if (agent !== null) {
+            void queryClient.invalidateQueries({ queryKey: ['agentChats', agent] })
+            if (chatId !== null) {
+              void queryClient.invalidateQueries({
+                queryKey: ['agentChatMessages', agent, chatId],
+              })
+            }
+          }
+          break
+        }
         case 'hello':
         case 'heartbeat':
         case 'goodbye':

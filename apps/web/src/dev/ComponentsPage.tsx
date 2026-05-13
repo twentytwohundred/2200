@@ -8,9 +8,9 @@ import {
   Input,
   KV,
   LoadingState,
-  PageHeader,
   Pill,
   ProgressBar,
+  Screen,
   SectionHeader,
   Sparkline,
   UserMark,
@@ -35,18 +35,16 @@ export function ComponentsPage(): ReactElement {
   const { theme, toggle } = useTheme()
 
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={`2200 · DEV · COMPONENTS · ${theme.toUpperCase()}`}
-        title="Component library"
-        subtitle="Every primitive in every state. Engineering reference for Epic 15 implementation."
-        actions={
-          <Button variant="ghost" size="sm" onClick={toggle} kbd="T">
-            switch theme
-          </Button>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'dev', 'components']}
+      title="Component library"
+      lede="Every primitive in every state. Engineering reference for Epic 15 implementation."
+      actions={
+        <Button variant="ghost" size="sm" onClick={toggle} kbd="T">
+          switch theme
+        </Button>
+      }
+    >
       <Section title="Pill · status">
         <div className={styles.row}>
           <Pill variant="running">RUNNING</Pill>
@@ -151,7 +149,7 @@ export function ComponentsPage(): ReactElement {
       <Section title="Headers · Section + Page">
         <Card padding={20}>
           <SectionHeader title="RUNNING · 4" action={<Pill variant="running">LIVE</Pill>} />
-          <p style={{ margin: 0, color: 'var(--color-text-secondary)', fontSize: 13 }}>
+          <p style={{ margin: 0, color: 'var(--text-2)', fontSize: 13 }}>
             Body content sits below the section header. The divider above the body is part of the
             header itself.
           </p>
@@ -160,9 +158,9 @@ export function ComponentsPage(): ReactElement {
 
       <Section title="Sparkline · token-driven color">
         <div className={styles.row}>
-          <Sparkline data={SPARKLINE_DATA} color="var(--color-status-running)" />
-          <Sparkline data={SPARKLINE_DATA} color="var(--color-status-attention)" w={120} h={24} />
-          <Sparkline data={SPARKLINE_DATA} color="var(--color-status-error)" w={160} h={32} />
+          <Sparkline data={SPARKLINE_DATA} color="var(--accent)" />
+          <Sparkline data={SPARKLINE_DATA} color="var(--warn)" w={120} h={24} />
+          <Sparkline data={SPARKLINE_DATA} color="var(--danger)" w={160} h={32} />
           <Sparkline data={[1, 1]} />
         </div>
       </Section>
@@ -203,7 +201,7 @@ export function ComponentsPage(): ReactElement {
           </Card>
         </div>
       </Section>
-    </main>
+    </Screen>
   )
 }
 

@@ -520,7 +520,7 @@ export function buildProgram(): Command {
 
           let provider
           try {
-            provider = await resolveProvider({ providerName })
+            provider = await resolveProvider({ providerName, home })
           } catch (err) {
             rl.close()
             console.error(

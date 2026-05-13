@@ -3,13 +3,13 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-weight: 500;
   letter-spacing: 0.05em;
   user-select: none;
   flex-shrink: 0;
   background: linear-gradient(135deg, var(--user-c-from), var(--user-c-to));
-  color: var(--color-bg-primary);
+  color: var(--bg);
   border: 1px solid var(--user-c-from);
   position: relative;
 }

@@ -78,6 +78,14 @@ import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
+import {
+  MultiChatStore,
+  type ChatMessageRecord as MultiChatMessage,
+  type ChatThread,
+} from '../agent/chat/multi-store.js'
+import { EndpointStore } from '../endpoints/store.js'
+import { EndpointDiscoveryError, discoverModels } from '../endpoints/discover.js'
+import type { CustomEndpoint } from '../endpoints/types.js'
 import { SupervisorPubBridge, PubBridgeError } from '../supervisor/pub-bridge.js'
 import { readRoster } from '../pub/roster.js'
 import { regenerateFleet, fleetPath } from '../supervisor/fleet.js'
@@ -301,6 +309,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/start' },
       { method: 'POST', path: '/api/v1/agents/:name/stop' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
+      { method: 'PUT', path: '/api/v1/agents/:name/budget' },
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
@@ -318,12 +327,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name/identity' },
       { method: 'PUT', path: '/api/v1/agents/:name/identity' },
       { method: 'PUT', path: '/api/v1/agents/:name/model' },
+      { method: 'PUT', path: '/api/v1/agents/:name/avatar' },
+      { method: 'PUT', path: '/api/v1/agents/:name/avatar/image' },
+      { method: 'GET', path: '/api/v1/agents/:name/avatar/image' },
+      { method: 'DELETE', path: '/api/v1/agents/:name/avatar/image' },
       { method: 'GET', path: '/api/v1/settings/providers' },
       { method: 'PUT', path: '/api/v1/settings/providers/:id/key' },
       { method: 'DELETE', path: '/api/v1/settings/providers/:id/key' },
       { method: 'PUT', path: '/api/v1/settings/providers/local/url' },
+      { method: 'GET', path: '/api/v1/settings/endpoints' },
+      { method: 'POST', path: '/api/v1/settings/endpoints' },
+      { method: 'GET', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'PATCH', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'DELETE', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'POST', path: '/api/v1/settings/endpoints/discover' },
       { method: 'GET', path: '/api/v1/agents/:name/chat' },
       { method: 'POST', path: '/api/v1/agents/:name/chat' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats/:chatId' },
+      { method: 'PATCH', path: '/api/v1/agents/:name/chats/:chatId' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/archive' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/read' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats/:chatId/messages' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/messages' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/attachments' },
+      {
+        method: 'GET',
+        path: '/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename',
+      },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -474,6 +506,124 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { provider: 'local', base_url: body.base_url, restart_required: true }
   })
 
+  // -- settings/endpoints (custom OpenAI-compatible servers) -----------------
+  // Operators can register N homelab / appliance LLM endpoints. Each
+  // entry persists to <home>/config/endpoints.json (mode 0600) and the
+  // LLM registry resolves `endpoint:<slug>` provider strings against
+  // the matching record. See src/runtime/endpoints/.
+
+  const endpointStore = new EndpointStore(home)
+
+  fastify.get('/api/v1/settings/endpoints', async () => {
+    const items = await endpointStore.list()
+    return { items: items.map(toEndpointDto), cursor: { next: null, limit: items.length } }
+  })
+
+  const EndpointCreateBody = z.object({
+    id: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,49}$/)
+      .optional(),
+    name: z.string().min(1).max(80),
+    base_url: z.url().max(500),
+    api_key: z.string().max(2000).optional(),
+    models: z
+      .array(z.object({ id: z.string().min(1).max(200), label: z.string().max(200).optional() }))
+      .optional(),
+    /** When true, hit /models and return the discovered list inline. */
+    discover: z.boolean().default(true),
+  })
+
+  fastify.post('/api/v1/settings/endpoints', async (req, reply) => {
+    const body = EndpointCreateBody.parse(req.body)
+    let discovered: { id: string }[] = []
+    let discoverError: { kind: string; message: string } | null = null
+    if (body.discover) {
+      try {
+        const models = await discoverModels({
+          baseUrl: body.base_url,
+          ...(body.api_key !== undefined ? { apiKey: body.api_key } : {}),
+        })
+        discovered = models.map((m) => ({ id: m.id }))
+      } catch (err) {
+        if (err instanceof EndpointDiscoveryError) {
+          discoverError = { kind: err.kind, message: err.message }
+        } else {
+          throw err
+        }
+      }
+    }
+    const entry = await endpointStore.create({
+      ...(body.id !== undefined ? { id: body.id } : {}),
+      name: body.name,
+      base_url: body.base_url,
+      ...(body.api_key !== undefined ? { api_key: body.api_key } : {}),
+      ...(body.models !== undefined ? { models: body.models } : {}),
+    })
+    void reply.status(201)
+    return {
+      endpoint: toEndpointDto(entry),
+      discovered_models: discovered,
+      discover_error: discoverError,
+    }
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const entry = await endpointStore.get(req.params.id)
+    if (!entry) throw notFound('endpoint', req.params.id)
+    return { endpoint: toEndpointDto(entry) }
+  })
+
+  const EndpointPatchBody = z.object({
+    name: z.string().min(1).max(80).optional(),
+    base_url: z.url().max(500).optional(),
+    api_key: z.string().max(2000).optional(),
+    models: z
+      .array(z.object({ id: z.string().min(1).max(200), label: z.string().max(200).optional() }))
+      .optional(),
+  })
+
+  fastify.patch<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const body = EndpointPatchBody.parse(req.body)
+    const existing = await endpointStore.get(req.params.id)
+    if (!existing) throw notFound('endpoint', req.params.id)
+    const patch: Partial<Pick<typeof existing, 'name' | 'base_url' | 'api_key' | 'models'>> = {}
+    if (body.name !== undefined) patch.name = body.name
+    if (body.base_url !== undefined) patch.base_url = body.base_url
+    if (body.api_key !== undefined) patch.api_key = body.api_key
+    if (body.models !== undefined) patch.models = body.models
+    const updated = await endpointStore.update(req.params.id, patch)
+    return { endpoint: toEndpointDto(updated) }
+  })
+
+  fastify.delete<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const existing = await endpointStore.get(req.params.id)
+    if (!existing) throw notFound('endpoint', req.params.id)
+    await endpointStore.delete(req.params.id)
+    return { id: req.params.id, deleted: true as const }
+  })
+
+  const DiscoverProbeBody = z.object({
+    base_url: z.url().max(500),
+    api_key: z.string().max(2000).optional(),
+  })
+
+  fastify.post('/api/v1/settings/endpoints/discover', async (req) => {
+    const body = DiscoverProbeBody.parse(req.body)
+    try {
+      const models = await discoverModels({
+        baseUrl: body.base_url,
+        ...(body.api_key !== undefined ? { apiKey: body.api_key } : {}),
+      })
+      return { ok: true as const, models: models.map((m) => ({ id: m.id })) }
+    } catch (err) {
+      if (err instanceof EndpointDiscoveryError) {
+        return { ok: false as const, error: { kind: err.kind, message: err.message } }
+      }
+      throw err
+    }
+  })
+
   // -- agents --------------------------------------------------------------
   fastify.get('/api/v1/agents', async () => {
     const snap = supervisor.snapshot()
@@ -532,6 +682,52 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       today: today ? toBudgetStateDto(today) : null,
       override: override ? toBudgetOverrideDto(override) : null,
       history: history.map(toBudgetStateDto),
+    }
+  })
+
+  // PUT updates the Agent's per-day budget knobs in identity.md
+  // frontmatter (cost_caps.daily_usd, cost_caps.warn_at_pct). The
+  // change takes effect on the Agent's next start ... the in-process
+  // BudgetTracker holds its loaded cap until restart.
+  const PutAgentBudgetBody = z.object({
+    daily_usd: z.number().positive().max(100_000).optional(),
+    warn_at_pct: z.number().int().min(1).max(99).optional(),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/budget', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutAgentBudgetBody.parse(req.body)
+    if (body.daily_usd === undefined && body.warn_at_pct === undefined) {
+      throw new ApiError(400, 'bad_request', 'provide at least one of daily_usd or warn_at_pct')
+    }
+    const raw = await readFile(rec.identity_path, 'utf8')
+    const updated = applyCostCapsEdit(raw, body)
+    const { writeFile, rm, rename } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    let parsed
+    try {
+      await writeFile(tmpPath, updated, 'utf8')
+      parsed = await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed budget edit produced an invalid Identity: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      daily_usd: parsed.frontmatter.cost_caps.daily_usd,
+      warn_at_pct: parsed.frontmatter.cost_caps.warn_at_pct,
+      applies_on_restart: rec.state === 'running' || rec.state === 'waiting',
     }
   })
 
@@ -1149,6 +1345,110 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- agent avatar --------------------------------------------------------
+  // Operators set a glyph (emoji or short text) that the AgentMark
+  // renders in place of the default initial letter. Empty string
+  // clears the avatar.
+
+  const PutAgentAvatarBody = z.object({
+    avatar: z.string().max(8),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/avatar', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutAgentAvatarBody.parse(req.body)
+    const raw = await readFile(rec.identity_path, 'utf8')
+    const updated = applyAvatarEdit(raw, body.avatar)
+    const { writeFile, rm, rename } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    try {
+      await writeFile(tmpPath, updated, 'utf8')
+      await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed avatar edit produced an invalid Identity: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      avatar: body.avatar.length > 0 ? body.avatar : null,
+    }
+  })
+
+  // -- agent avatar image (uploaded persona portrait) ----------------------
+  // Cropped + client-side-compressed webp posted as base64 lands here.
+  // Server decodes, writes to <home>/agents/<name>/avatar.webp.
+  // Subsequent loads of agent.avatar_image_url hit the GET handler.
+
+  const PutAgentAvatarImageBody = z.object({
+    /** webp/png/jpeg image, ≤256KB after client-side compression. */
+    data_base64: z.string().min(1).max(400_000),
+    /** "webp" (preferred) or "png" or "jpeg". */
+    mime: z.enum(['image/webp', 'image/png', 'image/jpeg']).default('image/webp'),
+  })
+
+  fastify.put<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/avatar/image',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      const body = PutAgentAvatarImageBody.parse(req.body)
+      const buf = Buffer.from(body.data_base64, 'base64')
+      const { avatarImage } = agentPathsHelper(home, req.params.name)
+      const { writeFile, mkdir } = await import('node:fs/promises')
+      await mkdir(dirname(avatarImage), { recursive: true })
+      await writeFile(avatarImage, buf)
+      void reply.status(201)
+      return {
+        path: avatarImage,
+        bytes: buf.byteLength,
+        url: `/api/v1/agents/${encodeURIComponent(req.params.name)}/avatar/image?v=${encodeURIComponent(new Date().toISOString())}`,
+      }
+    },
+  )
+
+  fastify.delete<{ Params: { name: string } }>('/api/v1/agents/:name/avatar/image', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const { avatarImage } = agentPathsHelper(home, req.params.name)
+    try {
+      const { rm } = await import('node:fs/promises')
+      await rm(avatarImage, { force: true })
+    } catch {
+      /* idempotent; ignore */
+    }
+    return { ok: true as const }
+  })
+
+  fastify.get<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/avatar/image',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const { avatarImage } = agentPathsHelper(home, req.params.name)
+      try {
+        const { readFile } = await import('node:fs/promises')
+        const buf = await readFile(avatarImage)
+        void reply.header('cache-control', 'private, max-age=300')
+        void reply.header('content-type', 'image/webp')
+        return await reply.send(buf)
+      } catch {
+        throw notFound('avatar_image', req.params.name)
+      }
+    },
+  )
+
   // -- agent chat (Epic 15 Phase C interaction surface) -------------------
   // Persistent conversation thread with the Agent. Each user message
   // appends to the chat log + spawns a task that sees the full prior
@@ -1227,6 +1527,277 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       task_id: taskId,
     }
   })
+
+  // -- agent chats (design-system v1.1 multi-chat surface) -----------------
+  // Persistent multi-thread chat per Agent. Each Agent has N chats; each
+  // chat is a JSONL stream at <home>/agents/<name>/chats/<chat-id>.jsonl.
+  // The legacy single-thread `chat.jsonl` surfaces as a chat with id
+  // "default" via the MultiChatStore's legacy fallback.
+  //
+  // Wire format: see toMultiChatThreadDto / toMultiChatMessageDto below.
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/chats', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const store = new MultiChatStore(home, req.params.name)
+    const chats = await store.listChats()
+    return {
+      items: chats.map(toMultiChatThreadDto),
+      cursor: { next: null, limit: chats.length },
+    }
+  })
+
+  const ChatCreateBody = z.object({
+    title: z.string().min(1).max(200).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/chats', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = ChatCreateBody.parse(req.body ?? {})
+    const store = new MultiChatStore(home, req.params.name)
+    const created = await store.createChat({
+      ...(body.title !== undefined ? { title: body.title } : {}),
+    })
+    broadcastChatEvent('chat.created', req.params.name, created.id, {
+      title: created.title,
+    })
+    void reply.status(201)
+    return { chat: toMultiChatThreadDto(created) }
+  })
+
+  fastify.get<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+      return { chat: toMultiChatThreadDto(chat) }
+    },
+  )
+
+  const ChatRenameBody = z.object({
+    title: z.string().min(1).max(200),
+  })
+
+  fastify.patch<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatRenameBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const updated = await store.renameChat(req.params.chatId, body.title)
+      broadcastChatEvent('chat.renamed', req.params.name, updated.id, {
+        title: updated.title,
+      })
+      return { chat: toMultiChatThreadDto(updated) }
+    },
+  )
+
+  const ChatArchiveBody = z.object({
+    archived: z.boolean().default(true),
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/archive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatArchiveBody.parse(req.body ?? {})
+      const store = new MultiChatStore(home, req.params.name)
+      const updated = await store.archiveChat(req.params.chatId, body.archived)
+      broadcastChatEvent('chat.archived', req.params.name, updated.id, {
+        archived: updated.archived,
+      })
+      return { chat: toMultiChatThreadDto(updated) }
+    },
+  )
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/read',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      await store.markRead(req.params.chatId)
+      broadcastChatEvent('chat.read', req.params.name, req.params.chatId, {})
+      return { ok: true }
+    },
+  )
+
+  fastify.get<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/messages',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      const messages = await store.listMessages(req.params.chatId)
+      return {
+        items: messages.map(toMultiChatMessageDto),
+        cursor: { next: null, limit: messages.length },
+      }
+    },
+  )
+
+  const ChatMessagePostBody = z.object({
+    body: z.string().min(1),
+    mode: z.enum(['pure', 'checkpointed', 'destructive']).optional(),
+    attachments: z
+      .array(
+        z.object({
+          id: z.string(),
+          kind: z.enum(['file', 'image']),
+          name: z.string(),
+          size: z.number().int().nonnegative(),
+          mime: z.string(),
+        }),
+      )
+      .optional(),
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/messages',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatMessagePostBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+
+      const userMsg = await store.appendMessage({
+        chatId: req.params.chatId,
+        role: 'user',
+        body: body.body,
+        ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+      })
+      broadcastChatEvent('chat.message', req.params.name, req.params.chatId, {
+        message: toMultiChatMessageDto(userMsg),
+      })
+
+      // Spawn an Agent task with the full chat history as context. The
+      // assistant reply is appended by watchAndAppendChatThreadReply
+      // when the task lands in a terminal state.
+      const history = await store.listMessages(req.params.chatId)
+      const recent = history
+        .slice(-21)
+        .filter((m) => m.id !== userMsg.id)
+        .map((m) => ({
+          id: m.id,
+          ts: m.ts,
+          role: m.role,
+          content: m.body,
+          task_id: m.task_id,
+        }))
+      const taskBody = buildChatTaskBody(recent as ChatMessage[], body.body, req.params.name)
+
+      const taskStore = new TaskStore(home, req.params.name)
+      const taskId = newTaskId()
+      const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
+      const idempotency = body.mode ?? 'destructive'
+      const task = newPendingTask({
+        id: taskId,
+        agent: req.params.name,
+        title,
+        body: taskBody,
+        priority: 0,
+        idempotency,
+      })
+      await taskStore.save(task)
+
+      void watchAndAppendChatThreadReply({
+        home,
+        agent: req.params.name,
+        chatId: req.params.chatId,
+        taskId,
+        store,
+        broadcast: broadcastChatEvent,
+        log: log?.child('chat-multi'),
+      })
+
+      void reply.status(201)
+      return {
+        message: toMultiChatMessageDto(userMsg),
+        task_id: taskId,
+      }
+    },
+  )
+
+  // Attachments: base64-inline upload. Stays simple at v1.1; we can
+  // swap in multipart later if needed for large payloads.
+  const AttachmentUploadBody = z.object({
+    name: z.string().min(1).max(200),
+    mime: z.string().min(1).max(100),
+    kind: z.enum(['file', 'image']),
+    data_base64: z.string().min(1).max(15_000_000), // ~11MB raw
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/attachments',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = AttachmentUploadBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+
+      const data = Buffer.from(body.data_base64, 'base64')
+      const ref = await store.saveAttachment({
+        chatId: req.params.chatId,
+        kind: body.kind,
+        name: body.name,
+        mime: body.mime,
+        data,
+      })
+
+      void reply.status(201)
+      return {
+        attachment: {
+          ...ref,
+          url: `/api/v1/agents/${req.params.name}/chats/${req.params.chatId}/attachments/${ref.id}/${encodeURIComponent(ref.name)}`,
+        },
+      }
+    },
+  )
+
+  fastify.get<{
+    Params: { name: string; chatId: string; attId: string; filename: string }
+  }>('/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const store = new MultiChatStore(home, req.params.name)
+    const path = store.attachmentPath(req.params.chatId, req.params.attId, req.params.filename)
+    try {
+      const buf = await (await import('node:fs/promises')).readFile(path)
+      void reply.header('cache-control', 'private, max-age=300')
+      return await reply.send(buf)
+    } catch {
+      throw notFound('attachment', req.params.attId)
+    }
+  })
+
+  function broadcastChatEvent(
+    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    agentName: string,
+    chatId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const msg = JSON.stringify({
+      event,
+      occurred_at: new Date().toISOString(),
+      payload: {
+        agent: agentName,
+        chat_id: chatId,
+        ...payload,
+      },
+    })
+    for (const c of wsClients) c.send(msg)
+  }
 
   // -- fleet ---------------------------------------------------------------
   // The supervisor-maintained Fleet.md gives every consumer a
@@ -1665,7 +2236,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     const script = await loadScriptFile(scriptPath)
     let provider
     try {
-      provider = await resolveProvider({ providerName })
+      provider = await resolveProvider({ providerName, home })
     } catch (err) {
       throw new ApiError(
         503,
@@ -2077,6 +2648,7 @@ async function toAgentDto(
     // log on their own time.
   }
   let model: { provider: string; model_id: string; followup_model_id: string | null } | null = null
+  let avatar: string | null = null
   try {
     const id = await loadIdentity(rec.identity_path)
     model = {
@@ -2084,9 +2656,18 @@ async function toAgentDto(
       model_id: id.frontmatter.model.model_id,
       followup_model_id: id.frontmatter.model.followup_model_id ?? null,
     }
+    avatar = id.frontmatter.avatar ?? null
   } catch {
     // Same tolerance as pulse: a broken Identity should not break
     // the screen. The detail screen shows "?" for the model.
+  }
+  const { avatarImage } = agentPathsHelper(home, rec.name)
+  let avatarImageMtime: string | null = null
+  try {
+    const stat = await (await import('node:fs/promises')).stat(avatarImage)
+    avatarImageMtime = stat.mtime.toISOString()
+  } catch {
+    /* no image uploaded; falls back to glyph or initial */
   }
   return {
     name: rec.name,
@@ -2100,6 +2681,13 @@ async function toAgentDto(
     errored_reason: rec.errored_reason,
     pulse,
     model,
+    avatar,
+    avatar_image_url:
+      avatarImageMtime !== null
+        ? `/api/v1/agents/${encodeURIComponent(rec.name)}/avatar/image?v=${encodeURIComponent(
+            avatarImageMtime,
+          )}`
+        : null,
   }
 }
 
@@ -2380,6 +2968,114 @@ function applyModelEdit(
  * `applyModelEdit` detects a provider switch and needs to clear
  * provider-specific overrides.
  */
+/**
+ * Replace (or insert / remove) the top-level `avatar:` line in the
+ * Identity frontmatter. An empty `value` removes the line entirely so
+ * the agent falls back to the generated AgentMark.
+ */
+function applyAvatarEdit(raw: string, value: string): string {
+  const fmStart = raw.indexOf('---')
+  if (fmStart === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no frontmatter')
+  }
+  const fmEnd = raw.indexOf('\n---', fmStart + 3)
+  if (fmEnd === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity frontmatter is not closed')
+  }
+  const head = raw.slice(0, fmStart + 3)
+  const fm = raw.slice(fmStart + 3, fmEnd + 1)
+  const tail = raw.slice(fmEnd + 1)
+
+  const lines = fm.split('\n')
+  const filtered = lines.filter((l) => !/^avatar:\s*/.test(l))
+
+  if (value.length > 0) {
+    // Insert after agent_role: when present, otherwise at the top of
+    // frontmatter (after the empty leading line).
+    const idx = filtered.findIndex((l) => /^agent_role:\s*/.test(l))
+    const insertAt = idx === -1 ? 1 : idx + 1
+    // Quote with single quotes; the emoji is bytewise safe in YAML
+    // but quoting keeps the parser happy with unusual glyphs.
+    const escaped = value.replace(/'/g, "''")
+    filtered.splice(insertAt, 0, `avatar: '${escaped}'`)
+  }
+  return head + filtered.join('\n') + tail
+}
+
+/**
+ * Update sub-keys of the top-level `cost_caps:` block in Identity
+ * frontmatter. Only the fields present in `patch` are touched; sibling
+ * lines (reset_at, on_breach) are preserved. If the block is missing
+ * entirely the helper inserts a fresh one before any blank-line
+ * terminator so the Zod loader picks it up on re-parse.
+ */
+function applyCostCapsEdit(
+  raw: string,
+  patch: { daily_usd?: number | undefined; warn_at_pct?: number | undefined },
+): string {
+  const fmStart = raw.indexOf('---')
+  if (fmStart === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no frontmatter')
+  }
+  const fmEnd = raw.indexOf('\n---', fmStart + 3)
+  if (fmEnd === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity frontmatter is not closed')
+  }
+  const head = raw.slice(0, fmStart + 3)
+  const fm = raw.slice(fmStart + 3, fmEnd + 1)
+  const tail = raw.slice(fmEnd + 1)
+
+  const lines = fm.split('\n')
+  const headerIdx = lines.findIndex((l) => /^cost_caps:\s*$/.test(l))
+
+  if (headerIdx === -1) {
+    // No block ... synthesize one and insert at the bottom of the
+    // frontmatter (before the final blank line, if any).
+    const block = [
+      'cost_caps:',
+      `  daily_usd: ${String(patch.daily_usd ?? 50)}`,
+      `  warn_at_pct: ${String(patch.warn_at_pct ?? 80)}`,
+      '  reset_at: 00:00 UTC',
+      '  on_breach: block_new_tasks',
+    ]
+    // Insert right before the trailing newline that precedes `---`.
+    const insertAt =
+      lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    lines.splice(insertAt, 0, ...block)
+    return head + lines.join('\n') + tail
+  }
+
+  // Walk the block's child lines and update matching keys in-place.
+  // Stop at the next non-indented, non-empty line.
+  let i = headerIdx + 1
+  let sawDaily = false
+  let sawWarn = false
+  while (i < lines.length) {
+    const line = lines[i] ?? ''
+    if (line !== '' && !/^\s/.test(line)) break
+    if (patch.daily_usd !== undefined && /^\s+daily_usd:\s*/.test(line)) {
+      lines[i] = `  daily_usd: ${String(patch.daily_usd)}`
+      sawDaily = true
+    } else if (patch.warn_at_pct !== undefined && /^\s+warn_at_pct:\s*/.test(line)) {
+      lines[i] = `  warn_at_pct: ${String(patch.warn_at_pct)}`
+      sawWarn = true
+    }
+    i++
+  }
+  // Insert any patch field that didn't already exist as a child line.
+  const inserts: string[] = []
+  if (patch.daily_usd !== undefined && !sawDaily) {
+    inserts.push(`  daily_usd: ${String(patch.daily_usd)}`)
+  }
+  if (patch.warn_at_pct !== undefined && !sawWarn) {
+    inserts.push(`  warn_at_pct: ${String(patch.warn_at_pct)}`)
+  }
+  if (inserts.length > 0) {
+    lines.splice(headerIdx + 1, 0, ...inserts)
+  }
+  return head + lines.join('\n') + tail
+}
+
 function stripTopLevelBlock(lines: string[], key: string): string[] {
   const headerRe = new RegExp(`^${key}:\\s*$`)
   const out: string[] = []
@@ -2468,6 +3164,38 @@ interface ChatMessageDto {
   task_id: string | null
 }
 
+// ── Endpoint DTO ──────────────────────────────────────────────────────────
+
+interface EndpointModelDto {
+  id: string
+  label?: string
+}
+
+interface EndpointDto {
+  id: string
+  name: string
+  base_url: string
+  api_key_set: boolean
+  models: EndpointModelDto[]
+  created_at: string
+  updated_at: string
+}
+
+function toEndpointDto(e: CustomEndpoint): EndpointDto {
+  return {
+    id: e.id,
+    name: e.name,
+    base_url: e.base_url,
+    api_key_set: e.api_key.length > 0,
+    models: e.models.map((m) => ({
+      id: m.id,
+      ...(m.label !== undefined ? { label: m.label } : {}),
+    })),
+    created_at: e.created_at,
+    updated_at: e.updated_at,
+  }
+}
+
 function toChatMessageDto(m: ChatMessage): ChatMessageDto {
   return {
     id: m.id,
@@ -2553,6 +3281,125 @@ async function watchAndAppendChatReply(args: WatchAndAppendArgs): Promise<void> 
     return
   }
   log?.warn('chat reply watcher timed out', { agent, taskId })
+}
+
+// ── Multi-chat helpers ─────────────────────────────────────────────────────
+
+interface MultiChatThreadDto {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  unread: boolean
+  archived: boolean
+  snippet: string
+  last_user_at: string | null
+}
+
+function toMultiChatThreadDto(t: ChatThread): MultiChatThreadDto {
+  return {
+    id: t.id,
+    title: t.title,
+    created_at: t.created_at,
+    updated_at: t.updated_at,
+    unread: t.unread,
+    archived: t.archived,
+    snippet: t.snippet,
+    last_user_at: t.last_user_at,
+  }
+}
+
+interface MultiChatMessageDto {
+  id: string
+  chat_id: string
+  ts: string
+  role: 'user' | 'assistant' | 'system'
+  body: string
+  mode: 'pure' | 'checkpointed' | 'destructive' | null
+  attachments: {
+    id: string
+    kind: 'file' | 'image'
+    name: string
+    size: number
+    mime: string
+  }[]
+  task_id: string | null
+}
+
+function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
+  return {
+    id: m.id,
+    chat_id: m.chat_id,
+    ts: m.ts,
+    role: m.role,
+    body: m.body,
+    mode: m.mode,
+    attachments: m.attachments,
+    task_id: m.task_id,
+  }
+}
+
+interface WatchAndAppendThreadArgs {
+  home: string
+  agent: string
+  chatId: string
+  taskId: string
+  store: MultiChatStore
+  broadcast: (
+    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    agentName: string,
+    chatId: string,
+    payload: Record<string, unknown>,
+  ) => void
+  log: Logger | undefined
+}
+
+/**
+ * Multi-chat counterpart to watchAndAppendChatReply. Polls the task
+ * store for `taskId` and, when terminal, appends an assistant
+ * message into the multi-chat thread + broadcasts a chat.message WS
+ * event. Idempotent ... if a message with this taskId already exists
+ * in the thread, exits without appending.
+ */
+async function watchAndAppendChatThreadReply(args: WatchAndAppendThreadArgs): Promise<void> {
+  const { home, agent, chatId, taskId, store, broadcast, log } = args
+  const taskStore = new TaskStore(home, agent)
+  const deadline = Date.now() + 20 * 60_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5_000))
+    let task: TaskRecord | null
+    try {
+      task = await taskStore.get(taskId)
+    } catch {
+      task = null
+    }
+    if (!task) continue
+    const state = task.frontmatter.state
+    if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
+      continue
+    }
+    const messages = await store.listMessages(chatId)
+    const already = messages.some((m) => m.task_id === taskId)
+    if (already) return
+    let body: string
+    if (state === 'done' && task.frontmatter.outcome) {
+      body = task.frontmatter.outcome.summary
+    } else if (state === 'errored' && task.frontmatter.error) {
+      body = `(error · ${task.frontmatter.error.class}) ${task.frontmatter.error.message}`
+    } else {
+      body = `(task ended in state '${state}' with no outcome)`
+    }
+    const msg = await store.appendMessage({
+      chatId,
+      role: 'assistant',
+      body,
+      taskId,
+    })
+    broadcast('chat.message', agent, chatId, { message: toMultiChatMessageDto(msg) })
+    log?.info('multi-chat reply appended', { agent, chatId, taskId, state })
+    return
+  }
+  log?.warn('multi-chat reply watcher timed out', { agent, chatId, taskId })
 }
 
 function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {

@@ -17,6 +17,19 @@ export interface AgentMarkProps {
   solid?: boolean
   /** Pub-only ring annotation. */
   state?: AgentMarkState
+  /**
+   * Custom glyph (emoji or 1-2 chars) the operator set on the Agent
+   * Identity. When provided, renders inside the circle in place of the
+   * generated initial letter. Empty/undefined falls back to the
+   * monogram.
+   */
+  glyph?: string | null | undefined
+  /**
+   * URL to a portrait image the operator uploaded. When set, fills
+   * the circle (object-fit: cover) and takes precedence over `glyph`.
+   * Null / undefined falls back to glyph → monogram.
+   */
+  imageUrl?: string | null | undefined
   /** Override monogram (rare, e.g. emoji policy escapes). */
   children?: ReactNode
 }
@@ -33,19 +46,41 @@ export function AgentMark({
   size = 'md',
   solid = false,
   state = null,
+  glyph,
+  imageUrl,
   children,
 }: AgentMarkProps): ReactNode {
+  const hasImage = imageUrl !== null && imageUrl !== undefined && imageUrl.length > 0
+  const hasGlyph = glyph !== null && glyph !== undefined && glyph.length > 0
   const classes = cx(
     styles.mark,
     styles[`size-${size}`],
     agentColorClass(id),
     solid ? styles.solid : styles.outline,
     state ? styles[`state-${state}`] : undefined,
+    hasGlyph && !hasImage && styles.markGlyph,
+    hasImage && styles.markImage,
   )
+
+  if (children !== undefined) {
+    return (
+      <span className={classes} title={name} aria-label={name}>
+        {children}
+      </span>
+    )
+  }
+
+  if (hasImage) {
+    return (
+      <span className={classes} title={name} aria-label={name}>
+        <img src={imageUrl} alt="" className={styles.markImg} draggable={false} />
+      </span>
+    )
+  }
 
   return (
     <span className={classes} title={name} aria-label={name}>
-      {children ?? monogram(name)}
+      {hasGlyph ? glyph : monogram(name)}
     </span>
   )
 }

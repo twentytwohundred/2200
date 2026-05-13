@@ -8,7 +8,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import { DEFAULT_THEME, isThemeId, STORAGE_KEY, themeClass, type ThemeId } from './types'
+import { DEFAULT_THEME, isDarkTheme, isThemeId, STORAGE_KEY, type ThemeId } from './types'
 
 interface ThemeContextValue {
   theme: ThemeId
@@ -69,8 +69,11 @@ function detectInitialTheme(): ThemeId {
 function applyThemeClass(theme: ThemeId): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
-  root.classList.remove('theme-dark', 'theme-light')
-  root.classList.add(themeClass(theme))
+  if (isDarkTheme(theme)) {
+    root.classList.add('dark')
+  } else {
+    root.classList.remove('dark')
+  }
 }
 
 export function ThemeProvider({ children, initialTheme }: ThemeProviderProps): ReactElement {

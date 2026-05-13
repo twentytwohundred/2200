@@ -1,11 +1,14 @@
 /**
- * Theme identifiers shipped at v1.
+ * Theme identifiers.
  *
- * The third theme is deferred per the 2026-04-29 session call. When
- * additional themes ship, extend this union (and add the matching
- * generated CSS). The class swap maps `default-dark` to `theme-dark`
- * and `default-light` to `theme-light` to match the
- * design-system/component-contract.md surface.
+ * Light is the default theme (defined in `:root` in
+ * `tokens.css`). Dark is applied by toggling the `dark` class on
+ * `<html>` ... `html.dark { ... }` in `theme-default-dark.css`
+ * overrides the color tokens.
+ *
+ * Theme ids stay namespaced (`default-dark`, `default-light`) so
+ * additional themes can ship later (e.g. high-contrast variants
+ * stacked on a base theme).
  */
 export type ThemeId = 'default-dark' | 'default-light'
 
@@ -20,12 +23,10 @@ export function isThemeId(value: unknown): value is ThemeId {
 export const ALL_THEMES: readonly ThemeId[] = ['default-dark', 'default-light']
 
 /**
- * Maps a theme id to the CSS class name used on the root element.
- * Per the component contract, the class is `theme-dark` or
- * `theme-light` ... not the full theme id. When more themes ship,
- * this mapping evolves (e.g. multiple dark themes layered as
- * `theme-dark.theme-high-contrast`).
+ * Whether a theme should set the `dark` class on the document root.
+ * Light is the default (no class needed); dark overrides via
+ * `html.dark { ... }`.
  */
-export function themeClass(theme: ThemeId): 'theme-dark' | 'theme-light' {
-  return theme === 'default-dark' ? 'theme-dark' : 'theme-light'
+export function isDarkTheme(theme: ThemeId): boolean {
+  return theme === 'default-dark'
 }

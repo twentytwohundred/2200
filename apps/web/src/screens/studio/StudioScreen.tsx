@@ -31,7 +31,7 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
+import { Navigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApiError,
@@ -41,10 +41,16 @@ import {
   type PubMessage,
   type PubReactionDto,
 } from '../../lib/api'
-import { Button, Card, ErrorState, LoadingState, PageHeader, PulseDot, cx } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
-import { useLiveSignal } from '../../ws/useLiveSignal'
+import {
+  Button,
+  Card,
+  cx,
+  ErrorState,
+  LoadingState,
+  PulseDot,
+  Screen,
+  ScreenNavLink,
+} from '../../primitives'
 import styles from './StudioScreen.module.css'
 
 const REACTION_OPTIONS = ['✓', '👍', '👀', '❤️'] as const
@@ -83,8 +89,6 @@ function extractMentions(content: string, members: PubMember[]): string[] {
 
 export function StudioScreen(): ReactElement {
   const { pub: pubParam } = useParams<{ pub?: string }>()
-  const { theme } = useTheme()
-  const live = useLiveSignal()
 
   // If no pub is specified, send the user to the first running pub.
   const pubsQuery = useQuery({
@@ -97,28 +101,28 @@ export function StudioScreen(): ReactElement {
   if (!pubParam) {
     if (pubsQuery.isLoading) {
       return (
-        <main className={styles.shell}>
+        <Screen crumbs={['2200', 'studio']} title="Studio">
           <Card padding={20}>
             <LoadingState rows={3} />
           </Card>
-        </main>
+        </Screen>
       )
     }
     const first =
       pubsQuery.data?.items.find((p) => p.state === 'running') ?? pubsQuery.data?.items[0]
     if (!first) {
       return (
-        <main className={styles.shell}>
-          <PageHeader
-            eyebrow={`2200 · STUDIO · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`}
-            title="Studio"
-            subtitle="No pubs running on this install."
-          />
+        <Screen
+          crumbs={['2200', 'studio']}
+          title="Studio"
+          lede="No pubs running on this install."
+          actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+        >
           <div className={styles.banner}>
             Run <code>2200 pub create studio</code> and <code>2200 pub start studio</code> to bring
             up the default Studio.
           </div>
-        </main>
+        </Screen>
       )
     }
     return <Navigate to={`/studio/${encodeURIComponent(first.name)}`} replace />
@@ -162,8 +166,6 @@ function formatAttachmentSize(n: number): string {
 }
 
 function StudioPubView({ pubName }: { pubName: string }): ReactElement {
-  const { theme } = useTheme()
-  const live = useLiveSignal()
   const queryClient = useQueryClient()
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
@@ -257,8 +259,6 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     if (el) el.scrollTop = el.scrollHeight
   }, [messages.length])
 
-  const eyebrow = `2200 · STUDIO · ${pubName.toUpperCase()} · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
-
   const handleInsertMention = (handle: string): void => {
     const insert = `@${handle} `
     const ta = composerRef.current
@@ -334,21 +334,12 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   }
 
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title="Studio"
-        subtitle="Multi-agent room. Tag with @, react with one click."
-        actions={
-          <div className={styles.headerActions}>
-            <Link to="/" className={styles.back}>
-              ← FLEET
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'studio', pubName]}
+      title="Studio"
+      lede="Multi-agent room. Tag with @, react with one click."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
       {pubQuery.isError && !pubQuery.data ? (
         <Card padding={0}>
           <ErrorState title="Pub unavailable" body={formatError(pubQuery.error)} />
@@ -539,7 +530,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           </div>
         )}
       </form>
-    </main>
+    </Screen>
   )
 }
 

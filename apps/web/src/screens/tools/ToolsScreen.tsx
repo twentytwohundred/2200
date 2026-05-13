@@ -3,13 +3,12 @@
  * declared in the Agent's Identity + the dispatcher's tool-health
  * summary aggregated off Brain run records.
  *
- * Tool installation, OAuth credential management, and Identity
- * editing all happen via the CLI at v1; this screen is the
- * inspection surface that answers "which tools does this Agent
- * have, and how are they performing?"
+ * The page body is extracted into <ToolsBody> so the same surface
+ * can render either standalone here OR inside the Agent screen's
+ * Tools tab.
  */
 import type { ReactElement } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ApiError,
@@ -24,12 +23,11 @@ import {
   ErrorState,
   KV,
   LoadingState,
-  PageHeader,
   Pill,
+  Screen,
+  ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
 import styles from './ToolsScreen.module.css'
 
 function formatTime(value: string | null): string {
@@ -55,147 +53,138 @@ function pillForTool(t: ToolHealthEntry) {
 
 export function ToolsScreen(): ReactElement {
   const { name } = useParams<{ name: string }>()
-  const { theme } = useTheme()
+  return (
+    <Screen
+      crumbs={['2200', 'agent', name ?? '', 'tools']}
+      title={`Tools · ${name ?? ''}`}
+      lede="MCP servers declared by this Agent + run-record health summary."
+      actions={
+        <ScreenNavLink to={`/agent/${encodeURIComponent(name ?? '')}`}>← Agent</ScreenNavLink>
+      }
+    >
+      <ToolsBody agentName={name ?? ''} />
+    </Screen>
+  )
+}
 
+export interface ToolsBodyProps {
+  agentName: string
+}
+
+/**
+ * Pane body for the tools surface. Used by both the standalone
+ * /agent/:name/tools route and the Agent screen's Tools tab.
+ */
+export function ToolsBody({ agentName }: ToolsBodyProps): ReactElement {
   const query = useQuery({
-    queryKey: ['agent-tools', name],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.agentTools(name)
-    },
-    enabled: Boolean(name),
+    queryKey: ['agent-tools', agentName],
+    queryFn: () => api.agentTools(agentName),
+    enabled: agentName.length > 0,
     staleTime: 10_000,
   })
 
-  const eyebrow = `2200 · TOOLS · ${(name ?? '').toUpperCase()} · ${theme.toUpperCase()}`
+  if (query.isLoading) {
+    return (
+      <Card padding={20}>
+        <LoadingState rows={4} />
+      </Card>
+    )
+  }
+  if (query.isError) {
+    return (
+      <Card padding={0}>
+        <ErrorState title="Could not load tools" body={formatError(query.error)} />
+      </Card>
+    )
+  }
+  if (!query.data) return <></>
 
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={`Tools · ${name ?? ''}`}
-        subtitle="MCP servers declared by this Agent + run-record health summary."
-        actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Link
-              to={`/agent/${encodeURIComponent(name ?? '')}`}
-              style={{
-                fontFamily: 'var(--type-family-mono)',
-                fontSize: '11px',
-                letterSpacing: '0.08em',
-                color: 'var(--color-text-muted)',
-                textDecoration: 'none',
-              }}
-            >
-              ← AGENT
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
-      {query.isLoading ? (
-        <Card padding={20}>
-          <LoadingState rows={4} />
-        </Card>
-      ) : query.isError ? (
-        <Card padding={0}>
-          <ErrorState title="Could not load tools" body={formatError(query.error)} />
-        </Card>
-      ) : query.data ? (
-        <>
-          <section>
-            <SectionHeader title={`MCP SERVERS · ${String(query.data.mcp_servers.length)}`} />
-            {query.data.mcp_servers.length === 0 ? (
-              <Card padding={0}>
-                <EmptyState
-                  title="No MCP servers"
-                  body="The Identity declares no mcp_servers[]. Use `2200 agent edit` to add one, or assign Skills via `2200 skill install`."
-                />
-              </Card>
-            ) : (
-              <div className={styles.serverList}>
-                {query.data.mcp_servers.map((s) => (
-                  <ServerCard key={s.name} server={s} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section>
-            <SectionHeader
-              title={`TOOL HEALTH · ${String(query.data.health?.tools.length ?? 0)}`}
+    <>
+      <section>
+        <SectionHeader title={`MCP SERVERS · ${String(query.data.mcp_servers.length)}`} />
+        {query.data.mcp_servers.length === 0 ? (
+          <Card padding={0}>
+            <EmptyState
+              title="No MCP servers"
+              body="The Identity declares no mcp_servers[]. Use `2200 agent edit` to add one, or assign Skills via `2200 skill install`."
             />
-            {query.data.health ? (
-              <Card padding={0}>
-                {query.data.health.tools.length === 0 ? (
-                  <EmptyState
-                    title="No tool activity yet"
-                    body="The Agent has not invoked any tools whose runs were recorded to its Brain."
-                  />
-                ) : (
-                  <table className={styles.healthGrid}>
-                    <thead>
-                      <tr>
-                        <th>TOOL</th>
-                        <th>STATE</th>
-                        <th className="numeric">CALLS</th>
-                        <th className="numeric">OK</th>
-                        <th className="numeric">ERR</th>
-                        <th className="numeric">RECENT FAIL</th>
-                        <th className="numeric">MEAN MS</th>
-                        <th>LAST CALLED</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {query.data.health.tools.map((t) => (
-                        <tr key={t.tool}>
-                          <td>{t.tool}</td>
-                          <td>{pillForTool(t)}</td>
-                          <td className={styles.numeric}>{String(t.total_calls)}</td>
-                          <td className={styles.numeric}>{String(t.ok_calls)}</td>
-                          <td className={styles.numeric}>{String(t.error_calls)}</td>
-                          <td className={styles.numeric}>
-                            {(t.recent_failure_rate * 100).toFixed(0)}%
-                          </td>
-                          <td className={styles.numeric}>{Math.round(t.mean_duration_ms)}</td>
-                          <td>{formatTime(t.last_called_at)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </Card>
-            ) : (
-              <Card padding={20}>
-                <KV
-                  k="HEALTH"
-                  v={
-                    <span style={{ color: 'var(--color-text-muted)' }}>
-                      no run records for this Agent yet
-                    </span>
-                  }
-                />
-              </Card>
-            )}
-          </section>
+          </Card>
+        ) : (
+          <div className={styles.serverList}>
+            {query.data.mcp_servers.map((s) => (
+              <ServerCard key={s.name} server={s} />
+            ))}
+          </div>
+        )}
+      </section>
 
-          <section>
-            <SectionHeader title="HOW TO ADD" />
-            <div className={styles.callout}>
-              <div className={styles.calloutLabel}>v1 management surface</div>
-              <div className={styles.calloutBody}>
-                Tool installation, OAuth credential setup, and Identity edits all happen via the
-                CLI: <code>2200 agent edit</code> for the Identity, <code>2200 oauth login</code>{' '}
-                for credentials, <code>2200 skill install</code> for Skills,{' '}
-                <code>2200 extension install</code> for Extensions. Web-app surface for these is
-                deferred to a later phase.
-              </div>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </main>
+      <section>
+        <SectionHeader title={`TOOL HEALTH · ${String(query.data.health?.tools.length ?? 0)}`} />
+        {query.data.health ? (
+          <Card padding={0}>
+            {query.data.health.tools.length === 0 ? (
+              <EmptyState
+                title="No tool activity yet"
+                body="The Agent has not invoked any tools whose runs were recorded to its Brain."
+              />
+            ) : (
+              <table className={styles.healthGrid}>
+                <thead>
+                  <tr>
+                    <th>TOOL</th>
+                    <th>STATE</th>
+                    <th className="numeric">CALLS</th>
+                    <th className="numeric">OK</th>
+                    <th className="numeric">ERR</th>
+                    <th className="numeric">RECENT FAIL</th>
+                    <th className="numeric">MEAN MS</th>
+                    <th>LAST CALLED</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {query.data.health.tools.map((t) => (
+                    <tr key={t.tool}>
+                      <td>{t.tool}</td>
+                      <td>{pillForTool(t)}</td>
+                      <td className={styles.numeric}>{String(t.total_calls)}</td>
+                      <td className={styles.numeric}>{String(t.ok_calls)}</td>
+                      <td className={styles.numeric}>{String(t.error_calls)}</td>
+                      <td className={styles.numeric}>
+                        {(t.recent_failure_rate * 100).toFixed(0)}%
+                      </td>
+                      <td className={styles.numeric}>{Math.round(t.mean_duration_ms)}</td>
+                      <td>{formatTime(t.last_called_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Card>
+        ) : (
+          <Card padding={20}>
+            <KV
+              k="HEALTH"
+              v={<span style={{ color: 'var(--text-3)' }}>no run records for this Agent yet</span>}
+            />
+          </Card>
+        )}
+      </section>
+
+      <section>
+        <SectionHeader title="HOW TO ADD" />
+        <div className={styles.callout}>
+          <div className={styles.calloutLabel}>v1 management surface</div>
+          <div className={styles.calloutBody}>
+            Tool installation, OAuth credential setup, and Identity edits all happen via the CLI:{' '}
+            <code>2200 agent edit</code> for the Identity, <code>2200 oauth login</code> for
+            credentials, <code>2200 skill install</code> for Skills,{' '}
+            <code>2200 extension install</code> for Extensions. Web-app surface for these is
+            deferred to a later phase.
+          </div>
+        </div>
+      </section>
+    </>
   )
 }
 

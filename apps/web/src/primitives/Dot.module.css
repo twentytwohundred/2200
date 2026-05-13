@@ -1,0 +1,45 @@
+.dot {
+  display: inline-block;
+  border-radius: var(--ds-r-pill);
+  flex-shrink: 0;
+}
+
+.t-running {
+  background: var(--accent);
+}
+
+.t-idle {
+  background: var(--text-4);
+}
+
+.t-error {
+  background: var(--danger);
+}
+
+.t-warn {
+  background: var(--warn);
+}
+
+.t-info {
+  background: var(--info);
+}
+
+.t-off {
+  background: var(--text-4);
+}
+
+.pulse {
+  animation: dotPulse 1600ms var(--ds-ease) infinite;
+}
+
+@keyframes dotPulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 60%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 8px color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+}

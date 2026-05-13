@@ -1,18 +1,11 @@
 /**
  * Brain browser ... read-only per-Agent brain explorer.
  *
- * Two-pane layout: list on the left, focused-note detail on the right.
- * The list defaults to BrainStore.list (most recent first); typing in
- * the search box switches to FTS5 search mode and shows hits with
- * snippets. Selecting a list/search row fetches the full note via
- * /brain/note/:slug and renders the body with frontmatter metadata.
- *
- * Keyboard: j/k move through the visible list; Enter focuses the
- * note view (no-op when already focused). Mirrors the Inbox's
- * V2 Keyboard Triage shape.
+ * Body extracted to <BrainBody> so the same surface can render either
+ * standalone here OR inside the Agent screen's Brain tab.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApiError,
@@ -29,11 +22,10 @@ import {
   ErrorState,
   Input,
   LoadingState,
-  PageHeader,
+  Screen,
+  ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
 import styles from './BrainScreen.module.css'
 
 interface ListRow {
@@ -86,7 +78,25 @@ function rowFromSearchHit(h: BrainSearchHit): ListRow {
 
 export function BrainScreen(): ReactElement {
   const { name } = useParams<{ name: string }>()
-  const { theme } = useTheme()
+  return (
+    <Screen
+      crumbs={['2200', 'agent', name ?? '', 'brain']}
+      title={`Brain · ${name ?? ''}`}
+      lede="Browse and add notes to this Agent's brain."
+      actions={
+        <ScreenNavLink to={`/agent/${encodeURIComponent(name ?? '')}`}>← Agent</ScreenNavLink>
+      }
+    >
+      <BrainBody agentName={name ?? ''} />
+    </Screen>
+  )
+}
+
+export interface BrainBodyProps {
+  agentName: string
+}
+
+export function BrainBody({ agentName }: BrainBodyProps): ReactElement {
   const [query, setQuery] = useState('')
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
   const [composeOpen, setComposeOpen] = useState(false)
@@ -96,22 +106,16 @@ export function BrainScreen(): ReactElement {
   const searchActive = trimmed.length > 0
 
   const listQuery = useQuery({
-    queryKey: ['brain', name, 'list'],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.brainList(name, { limit: 200 })
-    },
-    enabled: Boolean(name) && !searchActive,
+    queryKey: ['brain', agentName, 'list'],
+    queryFn: () => api.brainList(agentName, { limit: 200 }),
+    enabled: agentName.length > 0 && !searchActive,
     staleTime: 10_000,
   })
 
   const searchQuery = useQuery({
-    queryKey: ['brain', name, 'search', trimmed],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.brainSearch(name, trimmed, 50)
-    },
-    enabled: Boolean(name) && searchActive,
+    queryKey: ['brain', agentName, 'search', trimmed],
+    queryFn: () => api.brainSearch(agentName, trimmed, 50),
+    enabled: agentName.length > 0 && searchActive,
     staleTime: 5_000,
   })
 
@@ -123,24 +127,17 @@ export function BrainScreen(): ReactElement {
   }, [searchActive, searchQuery.data, listQuery.data])
 
   const noteQuery = useQuery({
-    queryKey: ['brain', name, 'note', selectedSlug],
+    queryKey: ['brain', agentName, 'note', selectedSlug],
     queryFn: () => {
-      if (!name || !selectedSlug) throw new Error('missing name or slug')
-      return api.brainNote(name, selectedSlug)
+      if (!selectedSlug) throw new Error('missing slug')
+      return api.brainNote(agentName, selectedSlug)
     },
-    enabled: Boolean(name) && Boolean(selectedSlug),
+    enabled: agentName.length > 0 && Boolean(selectedSlug),
     staleTime: 30_000,
   })
 
-  // Keep the focus on a sensible row when the list shrinks or
-  // search/list mode flips.
   useEffect(() => {
-    if (rows.length === 0) {
-      // Don't clear an explicit selection just because the new list
-      // doesn't include it ... let the user keep reading what they
-      // selected even if the new search has different results.
-      return
-    }
+    if (rows.length === 0) return
     if (!selectedSlug || !rows.some((r) => r.slug === selectedSlug)) {
       setSelectedSlug(rows[0]?.slug ?? null)
     }
@@ -152,7 +149,6 @@ export function BrainScreen(): ReactElement {
     return idx === -1 ? 0 : idx
   }, [rows, selectedSlug])
 
-  // j/k navigation (when not in an input).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -175,8 +171,6 @@ export function BrainScreen(): ReactElement {
     }
   }, [rows, focusIdx])
 
-  const eyebrow = `2200 · BRAIN · ${(name ?? '').toUpperCase()} · ${theme.toUpperCase()}`
-
   const activeQuery = searchActive ? searchQuery : listQuery
   const totalLabel = searchActive
     ? `${String(rows.length)} hit${rows.length === 1 ? '' : 's'}`
@@ -187,44 +181,26 @@ export function BrainScreen(): ReactElement {
   }, [])
 
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={`Brain · ${name ?? ''}`}
-        subtitle={`Browse and add notes to this Agent's brain. ${totalLabel}.`}
-        actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Link
-              to={`/agent/${encodeURIComponent(name ?? '')}`}
-              style={{
-                fontFamily: 'var(--type-family-mono)',
-                fontSize: '11px',
-                letterSpacing: '0.08em',
-                color: 'var(--color-text-muted)',
-                textDecoration: 'none',
-              }}
-            >
-              ← AGENT
-            </Link>
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => {
-                setComposeOpen((v) => !v)
-              }}
-            >
-              {composeOpen ? 'Close' : '+ Note'}
-            </Button>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
+    <>
+      <div className={styles.bodyHead}>
+        <span className={styles.bodyMeta}>{totalLabel}</span>
+        <span className={styles.bodySpacer} />
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={() => {
+            setComposeOpen((v) => !v)
+          }}
+        >
+          {composeOpen ? 'Close' : '+ Note'}
+        </Button>
+      </div>
 
-      {composeOpen && name ? (
+      {composeOpen ? (
         <ComposeNote
-          name={name}
+          name={agentName}
           onSaved={(slug) => {
-            void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+            void queryClient.invalidateQueries({ queryKey: ['brain', agentName] })
             setComposeOpen(false)
             setSelectedSlug(slug)
           }}
@@ -240,7 +216,6 @@ export function BrainScreen(): ReactElement {
             onChange={(e) => {
               setQuery(e.target.value)
             }}
-            autoFocus
           />
         </div>
         {searchActive && searchQuery.data ? (
@@ -316,14 +291,14 @@ export function BrainScreen(): ReactElement {
                 </Card>
               ) : noteQuery.data ? (
                 <NoteDetailCard
-                  agentName={name ?? ''}
+                  agentName={agentName}
                   note={noteQuery.data}
                   onSaved={(slug) => {
-                    void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+                    void queryClient.invalidateQueries({ queryKey: ['brain', agentName] })
                     setSelectedSlug(slug)
                   }}
                   onDeleted={() => {
-                    void queryClient.invalidateQueries({ queryKey: ['brain', name] })
+                    void queryClient.invalidateQueries({ queryKey: ['brain', agentName] })
                     setSelectedSlug(null)
                   }}
                 />
@@ -343,7 +318,7 @@ export function BrainScreen(): ReactElement {
           </section>
         </div>
       )}
-    </main>
+    </>
   )
 }
 
@@ -420,7 +395,7 @@ function NoteDetailCard({
     <Card padding={20}>
       {editing ? (
         <form
-          style={{ display: 'grid', gap: 'var(--space-3)' }}
+          style={{ display: 'grid', gap: 'var(--ds-3)' }}
           onSubmit={(e) => {
             e.preventDefault()
             if (editTitle.trim().length === 0 || editBody.trim().length === 0) return
@@ -438,15 +413,15 @@ function NoteDetailCard({
           <textarea
             style={{
               width: '100%',
-              fontFamily: 'var(--type-family-mono)',
+              fontFamily: 'var(--ds-font-mono)',
               fontSize: '13px',
-              padding: 'var(--space-3)',
+              padding: 'var(--ds-3)',
               minHeight: '180px',
               resize: 'vertical',
-              background: 'var(--color-bg-elevated)',
-              border: '1px solid var(--color-border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--color-text-primary)',
+              background: 'var(--bg-elev)',
+              border: '1px solid var(--line-soft)',
+              borderRadius: 'var(--ds-r-1)',
+              color: 'var(--text)',
             }}
             value={editBody}
             onChange={(e) => {
@@ -466,12 +441,12 @@ function NoteDetailCard({
           {saveMutation.error ? (
             <div
               style={{
-                fontFamily: 'var(--type-family-mono)',
+                fontFamily: 'var(--ds-font-mono)',
                 fontSize: '12px',
-                color: 'var(--color-status-error)',
-                background: 'var(--color-bg-elevated)',
-                padding: 'var(--space-2) var(--space-3)',
-                borderRadius: 'var(--radius-sm)',
+                color: 'var(--danger)',
+                background: 'var(--bg-elev)',
+                padding: 'var(--ds-2) var(--ds-3)',
+                borderRadius: 'var(--ds-r-1)',
               }}
             >
               {saveMutation.error instanceof ApiError
@@ -481,7 +456,7 @@ function NoteDetailCard({
                   : String(saveMutation.error)}
             </div>
           ) : null}
-          <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 'var(--ds-2)', justifyContent: 'flex-end' }}>
             <Button
               variant="ghost"
               onClick={() => {
@@ -530,9 +505,9 @@ function NoteDetailCard({
           <div
             style={{
               display: 'flex',
-              gap: 'var(--space-2)',
+              gap: 'var(--ds-2)',
               justifyContent: 'flex-end',
-              marginTop: 'var(--space-3)',
+              marginTop: 'var(--ds-3)',
             }}
           >
             <Button size="sm" variant="ghost" onClick={beginEdit}>
@@ -576,13 +551,13 @@ function NoteDetailCard({
           {deleteMutation.error ? (
             <div
               style={{
-                fontFamily: 'var(--type-family-mono)',
+                fontFamily: 'var(--ds-font-mono)',
                 fontSize: '12px',
-                color: 'var(--color-status-error)',
-                background: 'var(--color-bg-elevated)',
-                padding: 'var(--space-2) var(--space-3)',
-                borderRadius: 'var(--radius-sm)',
-                marginTop: 'var(--space-2)',
+                color: 'var(--danger)',
+                background: 'var(--bg-elev)',
+                padding: 'var(--ds-2) var(--ds-3)',
+                borderRadius: 'var(--ds-r-1)',
+                marginTop: 'var(--ds-2)',
               }}
             >
               {deleteMutation.error instanceof ApiError
@@ -638,7 +613,7 @@ function ComposeNote({ name, onSaved }: ComposeNoteProps): ReactElement {
           if (title.trim().length === 0 || body.trim().length === 0) return
           mutation.mutate()
         }}
-        style={{ display: 'grid', gap: 'var(--space-3)' }}
+        style={{ display: 'grid', gap: 'var(--ds-3)' }}
       >
         <Input
           type="text"
@@ -652,15 +627,15 @@ function ComposeNote({ name, onSaved }: ComposeNoteProps): ReactElement {
         <textarea
           style={{
             width: '100%',
-            fontFamily: 'var(--type-family-mono)',
+            fontFamily: 'var(--ds-font-mono)',
             fontSize: '13px',
-            padding: 'var(--space-3)',
+            padding: 'var(--ds-3)',
             minHeight: '120px',
             resize: 'vertical',
-            background: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border-subtle)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--color-text-primary)',
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--line-soft)',
+            borderRadius: 'var(--ds-r-1)',
+            color: 'var(--text)',
           }}
           placeholder="Body. Markdown is fine."
           value={body}
@@ -681,12 +656,12 @@ function ComposeNote({ name, onSaved }: ComposeNoteProps): ReactElement {
         {mutation.error ? (
           <div
             style={{
-              fontFamily: 'var(--type-family-mono)',
+              fontFamily: 'var(--ds-font-mono)',
               fontSize: '12px',
-              color: 'var(--color-status-error)',
-              background: 'var(--color-bg-elevated)',
-              padding: 'var(--space-2) var(--space-3)',
-              borderRadius: 'var(--radius-sm)',
+              color: 'var(--danger)',
+              background: 'var(--bg-elev)',
+              padding: 'var(--ds-2) var(--ds-3)',
+              borderRadius: 'var(--ds-r-1)',
             }}
           >
             {mutation.error instanceof ApiError
@@ -696,7 +671,7 @@ function ComposeNote({ name, onSaved }: ComposeNoteProps): ReactElement {
                 : String(mutation.error)}
           </div>
         ) : null}
-        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 'var(--ds-2)', justifyContent: 'flex-end' }}>
           <Button
             type="submit"
             variant="primary"

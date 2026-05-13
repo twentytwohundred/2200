@@ -7,7 +7,7 @@ export interface SparklineProps {
   w?: number
   /** Height in px. Default 20. */
   h?: number
-  /** Stroke color. Pass a token, e.g. "var(--color-status-running)". */
+  /** Stroke color. Pass a token, e.g. "var(--accent)". */
   color?: string
 }
 
