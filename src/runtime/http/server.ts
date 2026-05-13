@@ -675,14 +675,33 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // AgentProcess and is not directly reachable from the supervisor.
   fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/budget', async (req) => {
     const snap = supervisor.snapshot()
-    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
     const today = await readBudgetStateToday(home, req.params.name)
     const override = await readBudgetOverride(home, req.params.name)
     const history = await listBudgetHistory(home, req.params.name)
+
+    // Configured cap lives in identity.md (cost_caps.daily_usd).
+    // today.cap_usd in the state file is the *enforced* cap the live
+    // tracker is using, which only changes on Agent restart. Surface
+    // both so the UI can show the operator-set value immediately
+    // after a PUT while still flagging the runtime delta.
+    let configured: { daily_usd: number; warn_at_pct: number } | null = null
+    try {
+      const id = await loadIdentity(rec.identity_path)
+      configured = {
+        daily_usd: id.frontmatter.cost_caps.daily_usd,
+        warn_at_pct: id.frontmatter.cost_caps.warn_at_pct,
+      }
+    } catch {
+      /* leave null; client falls back to today's enforced cap */
+    }
+
     return {
       today: today ? toBudgetStateDto(today) : null,
       override: override ? toBudgetOverrideDto(override) : null,
       history: history.map(toBudgetStateDto),
+      configured,
     }
   })
 

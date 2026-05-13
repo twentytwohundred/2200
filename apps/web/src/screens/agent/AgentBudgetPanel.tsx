@@ -9,6 +9,7 @@ import type { ReactElement } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, NetworkError, api } from '../../lib/api'
 import { Card, ErrorState, KV, LoadingState, Meta, Pill, ProgressBar } from '../../primitives'
+import { BudgetCapEditor } from '../budget/BudgetCapEditor'
 import styles from './AgentBudgetPanel.module.css'
 
 function formatUsd(n: number): string {
@@ -54,6 +55,7 @@ export function AgentBudgetPanel({ agentName }: AgentBudgetPanelProps): ReactEle
   }
 
   const today = query.data?.today ?? null
+  const configured = query.data?.configured ?? null
   const override = query.data?.override ?? null
   const history = (query.data?.history ?? []).slice(-7).reverse()
 
@@ -63,12 +65,22 @@ export function AgentBudgetPanel({ agentName }: AgentBudgetPanelProps): ReactEle
         <Meta>today</Meta>
         <Card padding={24}>
           {today === null ? (
-            <p className={styles.muted}>No spend recorded yet today.</p>
+            <>
+              <p className={styles.muted}>No spend recorded yet today.</p>
+              <BudgetCapEditor
+                agent={agentName}
+                capUsd={configured?.daily_usd ?? null}
+                warnAtPct={configured?.warn_at_pct ?? null}
+                emptyHint={`Set the daily cap below; it activates the next time ${agentName} starts.`}
+              />
+            </>
           ) : (
             <>
               <div className={styles.todayRow}>
                 <span className={styles.spend}>{formatUsd(today.cumulative_usd)}</span>
-                <span className={styles.cap}>of {formatUsd(today.cap_usd)}</span>
+                <span className={styles.cap}>
+                  of {formatUsd(configured?.daily_usd ?? today.cap_usd)}
+                </span>
                 <span className={styles.spacer} />
                 <Pill variant={today.blocked ? 'error' : today.warned_today ? 'attention' : 'info'}>
                   {today.blocked ? 'blocked' : today.warned_today ? 'warn' : 'ok'}
@@ -76,13 +88,23 @@ export function AgentBudgetPanel({ agentName }: AgentBudgetPanelProps): ReactEle
               </div>
               <div className={styles.bar}>
                 <ProgressBar
-                  value={Math.min(100, (today.cumulative_usd / today.cap_usd) * 100)}
+                  value={Math.min(
+                    100,
+                    (today.cumulative_usd / (configured?.daily_usd ?? today.cap_usd)) * 100,
+                  )}
                   ariaLabel="spend versus cap"
                 />
               </div>
               <div className={styles.kvRow}>
                 <KV k="day" v={<span className={styles.mono}>{today.day}</span>} />
-                <KV k="warn at" v={<span className={styles.mono}>{today.warn_at_pct}%</span>} />
+                <KV
+                  k="warn at"
+                  v={
+                    <span className={styles.mono}>
+                      {configured?.warn_at_pct ?? today.warn_at_pct}%
+                    </span>
+                  }
+                />
                 {today.last_recorded_at && (
                   <KV
                     k="last recorded"
@@ -90,6 +112,11 @@ export function AgentBudgetPanel({ agentName }: AgentBudgetPanelProps): ReactEle
                   />
                 )}
               </div>
+              <BudgetCapEditor
+                agent={agentName}
+                capUsd={configured?.daily_usd ?? today.cap_usd}
+                warnAtPct={configured?.warn_at_pct ?? today.warn_at_pct}
+              />
             </>
           )}
         </Card>

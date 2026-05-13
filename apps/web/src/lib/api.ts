@@ -133,6 +133,14 @@ export interface BudgetResponse {
   today: BudgetState | null
   override: BudgetOverride | null
   history: BudgetState[]
+  /**
+   * Operator-set values read from identity.md (cost_caps). The
+   * runtime keeps these separate from `today.cap_usd` (the cap the
+   * live BudgetTracker is enforcing); they only converge after the
+   * Agent restarts. The UI should display `configured.daily_usd` as
+   * the "cap" so a fresh PUT shows up immediately.
+   */
+  configured: { daily_usd: number; warn_at_pct: number } | null
 }
 
 /**

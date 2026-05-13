@@ -9,8 +9,8 @@
  * markers) lands once the per-call telemetry is exposed via a
  * companion API endpoint.
  */
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useState, type ReactElement } from 'react'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { api, type BudgetState } from '../../lib/api'
 import {
   AgentMark,
@@ -24,6 +24,7 @@ import {
   ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
+import { BudgetCapEditor } from './BudgetCapEditor'
 import styles from './BudgetScreen.module.css'
 
 function fmtUsd(n: number): string {
@@ -284,15 +285,19 @@ export function BudgetScreen(): ReactElement {
                       ) : null}
                       <BudgetCapEditor
                         agent={selectedAgent}
-                        capUsd={selectedBudget.today.cap_usd}
-                        warnAtPct={selectedBudget.today.warn_at_pct}
+                        capUsd={
+                          selectedBudget.configured?.daily_usd ?? selectedBudget.today.cap_usd
+                        }
+                        warnAtPct={
+                          selectedBudget.configured?.warn_at_pct ?? selectedBudget.today.warn_at_pct
+                        }
                       />
                     </>
                   ) : (
                     <BudgetCapEditor
                       agent={selectedAgent}
-                      capUsd={null}
-                      warnAtPct={null}
+                      capUsd={selectedBudget.configured?.daily_usd ?? null}
+                      warnAtPct={selectedBudget.configured?.warn_at_pct ?? null}
                       emptyHint={`${selectedAgent} has not made a model call today. Set the daily cap below; it activates the next time ${selectedAgent} starts.`}
                     />
                   )}
@@ -355,147 +360,4 @@ export function BudgetScreen(): ReactElement {
 
 function todayDay(): string {
   return new Date().toISOString().slice(0, 10)
-}
-
-/**
- * Inline cap editor. Click "Edit" to swap the value in place for a
- * number input; Enter or Save commits; Esc or Cancel reverts. Writes
- * `cost_caps.daily_usd` in identity.md via `api.agentBudgetSet`. The
- * running AgentProcess keeps its loaded cap until restart so we show
- * an "applies on restart" hint when applicable.
- */
-function BudgetCapEditor({
-  agent,
-  capUsd,
-  warnAtPct,
-  emptyHint,
-}: {
-  agent: string
-  capUsd: number | null
-  warnAtPct: number | null
-  emptyHint?: string
-}): ReactElement {
-  const qc = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState<string>('')
-  const [appliesOnRestart, setAppliesOnRestart] = useState(false)
-  const inputRef = useRef<HTMLInputElement | null>(null)
-
-  const mutation = useMutation({
-    mutationFn: (next: number) => api.agentBudgetSet(agent, { daily_usd: next }),
-    onSuccess: (result) => {
-      setAppliesOnRestart(result.applies_on_restart)
-      setEditing(false)
-      // Refresh: the GET endpoint reads from the per-day state file
-      // which the AgentProcess owns. The fleet+agents queries also
-      // depend on cap_usd via toAgentDto's identity read.
-      void qc.invalidateQueries({ queryKey: ['budget', agent] })
-      void qc.invalidateQueries({ queryKey: ['agents'] })
-    },
-  })
-
-  useEffect(() => {
-    if (editing) {
-      setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }, 0)
-    }
-  }, [editing])
-
-  const start = (): void => {
-    setDraft(capUsd !== null ? capUsd.toFixed(2) : '50')
-    setEditing(true)
-  }
-
-  const commit = (): void => {
-    const n = Number(draft)
-    if (!Number.isFinite(n) || n <= 0) {
-      setEditing(false)
-      return
-    }
-    if (capUsd !== null && Math.abs(n - capUsd) < 0.005) {
-      setEditing(false)
-      return
-    }
-    mutation.mutate(Number(n.toFixed(2)))
-  }
-
-  const cancel = (): void => {
-    setEditing(false)
-    setDraft('')
-  }
-
-  return (
-    <>
-      <div className={styles.editRow}>
-        <span className={styles.editRowLabel}>DAILY CAP</span>
-        {editing ? (
-          <div className={styles.editForm}>
-            <span className={styles.editPrefix}>$</span>
-            <input
-              ref={inputRef}
-              className={styles.editInput}
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value)
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  commit()
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  cancel()
-                }
-              }}
-              type="number"
-              min="0.01"
-              step="0.01"
-              inputMode="decimal"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              className={styles.editSave}
-              onClick={commit}
-              disabled={mutation.isPending}
-            >
-              {mutation.isPending ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              className={styles.editCancel}
-              onClick={cancel}
-              disabled={mutation.isPending}
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <>
-            <span className={styles.editRowValue}>
-              {capUsd !== null ? `$${capUsd.toFixed(2)}/day` : '— not set —'}
-            </span>
-            {warnAtPct !== null && (
-              <span className={styles.editRowLabel}>· warn at {warnAtPct}%</span>
-            )}
-            <button type="button" className={styles.editTrigger} onClick={start}>
-              Edit
-            </button>
-          </>
-        )}
-      </div>
-      {emptyHint && !editing && <div className={styles.editHint}>{emptyHint}</div>}
-      {appliesOnRestart && !editing && (
-        <div className={styles.editHint}>Saved. Cap activates the next time {agent} starts.</div>
-      )}
-      {mutation.error && (
-        <div className={styles.editHint}>
-          Could not save:{' '}
-          {mutation.error instanceof Error ? mutation.error.message : 'unknown error'}
-        </div>
-      )}
-    </>
-  )
 }
