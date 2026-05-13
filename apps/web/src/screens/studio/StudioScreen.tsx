@@ -512,12 +512,22 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     return p.state === 'working_light' || p.state === 'working_medium' || p.state === 'working_hard'
   })
 
+  // "Studio" is the singular canonical pub the whole fleet lives in.
+  // Anything else is a Room with curated membership ... show the
+  // room name in the title and breadcrumb so the operator knows
+  // which conversation surface they are on.
+  const isStudio = pubName === 'studio'
+  const screenCrumbs: readonly string[] = isStudio ? ['2200', 'studio'] : ['2200', 'rooms', pubName]
+  const screenTitle = isStudio ? 'Studio' : pubName
+  const screenLede = isStudio
+    ? 'The fleet room. Every Agent lives here. Tag with @, react with one click.'
+    : `Room with curated membership. Tag with @, react with one click.`
   return (
     <Screen
       className={styles.shell}
-      crumbs={['2200', 'studio', pubName]}
-      title="Studio"
-      lede="Multi-agent room. Tag with @, react with one click."
+      crumbs={screenCrumbs}
+      title={screenTitle}
+      lede={screenLede}
       actions={
         <>
           <Button
@@ -529,7 +539,9 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           >
             {showNewStudio ? 'Close' : '+ New room'}
           </Button>
-          <ScreenNavLink to="/">← Fleet</ScreenNavLink>
+          <ScreenNavLink to={isStudio ? '/' : '/rooms'}>
+            {isStudio ? '← Fleet' : '← Rooms'}
+          </ScreenNavLink>
         </>
       }
     >
