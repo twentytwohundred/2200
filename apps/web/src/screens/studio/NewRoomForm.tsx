@@ -1,9 +1,14 @@
 /**
- * Inline "+ New Studio" form. Sits at the top of the Studio screen
- * when toggled open. Two fields: studio name + per-agent checklist
+ * Inline "+ New Room" form. Sits at the top of the Studio screen
+ * when toggled open. Two fields: room name + per-agent checklist
  * of who joins on creation. Submit hits POST /api/v1/pubs which
  * creates the pub, writes each chosen agent's pubs.md, and restarts
  * those agents so they attach a wake source.
+ *
+ * Naming: "Studio" is the single canonical pub everyone is in.
+ * "Rooms" are operator-created pubs with curated membership, like
+ * chat-group threads. The substrate is the same pub primitive; this
+ * is purely a UX label change.
  *
  * The form is intentionally inline rather than a modal ... no
  * popups (see [[feedback_no_browser_popups]]) and the agent
@@ -15,9 +20,9 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api } from '../../lib/api'
 import { AgentMark, Button, Meta, cx } from '../../primitives'
-import styles from './NewStudioForm.module.css'
+import styles from './NewRoomForm.module.css'
 
-export interface NewStudioFormProps {
+export interface NewRoomFormProps {
   /** Called when the operator clicks Cancel or after a successful create. */
   onClose: () => void
 }
@@ -37,7 +42,7 @@ function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-export function NewStudioForm({ onClose }: NewStudioFormProps): ReactElement {
+export function NewRoomForm({ onClose }: NewRoomFormProps): ReactElement {
   const qc = useQueryClient()
   const navigate = useNavigate()
 
@@ -88,12 +93,12 @@ export function NewStudioForm({ onClose }: NewStudioFormProps): ReactElement {
   return (
     <form className={styles.form} onSubmit={onSubmit}>
       <div className={styles.head}>
-        <Meta>new studio</Meta>
+        <Meta>new room</Meta>
         <button
           type="button"
           className={styles.closeBtn}
           onClick={onClose}
-          aria-label="Close New Studio form"
+          aria-label="Close New Room form"
         >
           ×
         </button>
@@ -164,14 +169,14 @@ export function NewStudioForm({ onClose }: NewStudioFormProps): ReactElement {
 
       <div className={styles.actions}>
         <span className={styles.hint}>
-          Members get the new studio added to their <span className={styles.slug}>pubs.md</span> and
+          Members get the new room added to their <span className={styles.slug}>pubs.md</span> and
           restart so they attach a wake source.
         </span>
         <Button type="button" variant="ghost" size="sm" onClick={onClose}>
           Cancel
         </Button>
         <Button type="submit" variant="primary" size="md" disabled={!canSubmit}>
-          {mutation.isPending ? 'Creating…' : 'Create studio'}
+          {mutation.isPending ? 'Creating…' : 'Create room'}
         </Button>
       </div>
     </form>

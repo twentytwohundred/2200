@@ -37,7 +37,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Attachment } from '../../chat/Attachment'
-import { NewStudioForm } from './NewStudioForm'
+import { NewRoomForm } from './NewRoomForm'
 import {
   ApiError,
   NetworkError,
@@ -134,12 +134,12 @@ function StudioEmpty(): ReactElement {
     <Screen
       crumbs={['2200', 'studio']}
       title="Studio"
-      lede="No studios yet. Create one and pick who's in the room."
+      lede="No rooms yet. Create one and pick who's in it."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
-      <NewStudioForm
+      <NewRoomForm
         onClose={() => {
-          /* no-op: empty state stays open until a studio exists */
+          /* no-op: empty state stays open until a room exists */
         }}
       />
     </Screen>
@@ -527,7 +527,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               setShowNewStudio((v) => !v)
             }}
           >
-            {showNewStudio ? 'Close' : '+ New studio'}
+            {showNewStudio ? 'Close' : '+ New room'}
           </Button>
           <ScreenNavLink to="/">← Fleet</ScreenNavLink>
         </>
@@ -540,7 +540,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
       ) : null}
 
       {showNewStudio && (
-        <NewStudioForm
+        <NewRoomForm
           onClose={() => {
             setShowNewStudio(false)
           }}

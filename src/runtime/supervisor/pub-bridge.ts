@@ -27,7 +27,7 @@
  */
 import type { HomePaths } from '../storage/layout.js'
 import { loadUserIdentityIfExists } from '../user/loader.js'
-import { readCredentialFile, type PubCredential } from '../pub/keypair.js'
+import { credForPub, readCredentialFile, type PubCredential } from '../pub/keypair.js'
 import { PubClient, type PubMessage, type PubReaction, type RoomState } from '../pub/client.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import type { Supervisor } from './supervisor.js'
@@ -62,7 +62,6 @@ export class SupervisorPubBridge {
   private readonly log: Logger
   private readonly entries = new Map<string, PubBridgeEntry>()
   private cred: PubCredential | null = null
-  private credLoaded = false
 
   constructor(opts: SupervisorPubBridgeOptions) {
     this.paths = opts.paths
@@ -192,7 +191,10 @@ export class SupervisorPubBridge {
       )
     }
     const baseUrl = `http://127.0.0.1:${String(pub.port)}`
-    const client = new PubClient({ baseUrl, cred })
+    // credForPub picks the right per-pub agent_id for the multi-pub
+    // schema; falls back to the legacy cred.agent_id for installs that
+    // predate the map.
+    const client = new PubClient({ baseUrl, cred: credForPub(cred, pub.name) })
     const reactions = new Map<string, PubReaction[]>()
     const reactionOrder: string[] = []
     // Track reactions in-band: every time the pub-server broadcasts
@@ -222,12 +224,17 @@ export class SupervisorPubBridge {
   }
 
   private async ensureCred(): Promise<PubCredential | null> {
-    if (this.credLoaded) return this.cred
-    this.credLoaded = true
+    // Re-read on every connect attempt. The supervisor's "create
+    // room" flow appends new per-pub agent_ids to the cred file; a
+    // long-lived cache would lock the bridge into the cred snapshot
+    // it had at boot and reject every newly-created pub. The cost
+    // is one file read per connect, which is negligible compared to
+    // the network round-trip that follows.
     const user = await loadUserIdentityIfExists(this.paths.configUserMd)
-    if (!user) return null
-    // The user identity schema requires `pub.credentials.source = 'file'`,
-    // so the path is always usable directly.
+    if (!user) {
+      this.cred = null
+      return null
+    }
     this.cred = await readCredentialFile(user.frontmatter.pub.credentials.id)
     return this.cred
   }

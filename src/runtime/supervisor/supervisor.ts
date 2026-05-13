@@ -793,9 +793,10 @@ export class Supervisor {
           adminSecret: targetPubPaths.adminSecret,
           signingKey: targetPubPaths.signingKey,
         })
-        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret)
-        if (updated.agent_id) {
-          agentId = updated.agent_id
+        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, targetPub.name)
+        const registeredId = updated.pub_agent_ids?.[targetPub.name] ?? updated.agent_id
+        if (registeredId) {
+          agentId = registeredId
           registeredIssuer = updated.issuer_url
           await writeCredentialFile(canonicalCredPath, updated)
         }
@@ -1261,11 +1262,12 @@ export class Supervisor {
           adminSecret: targetPubPaths.adminSecret,
           signingKey: targetPubPaths.signingKey,
         })
-        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret)
-        if (updated.agent_id) {
-          agentId = updated.agent_id
+        const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, targetPub.name)
+        const registeredId = updated.pub_agent_ids?.[targetPub.name] ?? updated.agent_id
+        if (registeredId) {
+          agentId = registeredId
           registeredAgainst = targetPub.name
-          // Persist the updated credential (now with agent_id) back to disk.
+          // Persist the updated credential (with per-pub agent_id map) to disk.
           await writeCredentialFile(paths.configUserPubSecret, updated)
         }
       } catch (err) {

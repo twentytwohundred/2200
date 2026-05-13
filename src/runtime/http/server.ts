@@ -32,7 +32,11 @@ import {
   agentBrainIndexPath,
   agentPaths as agentPathsHelper,
   homePaths,
+  pubPaths,
 } from '../storage/layout.js'
+import { createIdentityClient, ensureRegistered } from '../pub/identity-client.js'
+import { readCredentialFile, writeCredentialFile } from '../pub/keypair.js'
+import { readPubSecrets } from '../pub/secrets.js'
 
 import {
   listNotifications,
@@ -1941,6 +1945,91 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         `pub record created but startup failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // Settle: the pub-server is spawned but its HTTP listener may
+    // not yet be bound. The existing supervisor recoverState path
+    // waits 800ms after pub spawn for the same reason. Wait + ping
+    // /agents/me-style endpoint until it responds before we try to
+    // register anyone.
+    {
+      const baseUrl = `http://127.0.0.1:${String(created.port)}`
+      const deadline = Date.now() + 5_000
+      let ready = false
+      while (Date.now() < deadline) {
+        try {
+          // GET / on a pub-server returns 404 once bound; that is the
+          // proof we want. Any fetch resolution (any status) means the
+          // listener is up.
+          await fetch(baseUrl, { method: 'GET' })
+          ready = true
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 200))
+        }
+      }
+      if (!ready) {
+        throw new ApiError(
+          500,
+          'pub_not_ready',
+          `pub started but HTTP listener never bound on ${baseUrl} after 5s`,
+        )
+      }
+    }
+
+    // Register identities with the brand-new pub.
+    //
+    // The pub-server starts empty: no agents and no user are
+    // registered until we explicitly enroll them. Without this step
+    // (1) the supervisor's pub bridge cannot mintToken to fetch the
+    // room state, so the web client sees an empty members list +
+    // never-ending "no messages" empty state; (2) the member Agents
+    // cannot attach a wake source when they restart, so the room
+    // stays cold. Use the existing ensureRegistered helper that
+    // GETs /agents/me first and only registers on 404, so idempotent
+    // re-creates of a same-named pub do not blow up.
+    const newPubPaths = pubPaths(home, body.name)
+    const newPubSecrets = await readPubSecrets({
+      adminSecret: newPubPaths.adminSecret,
+      signingKey: newPubPaths.signingKey,
+    })
+    const newPubClient = createIdentityClient({
+      baseUrl: `http://127.0.0.1:${String(created.port)}`,
+    })
+    const userCredPath = homePaths(home).configUserPubSecret
+    try {
+      const userCred = await readCredentialFile(userCredPath)
+      const updated = await ensureRegistered(
+        newPubClient,
+        userCred,
+        newPubSecrets.adminSecret,
+        body.name,
+      )
+      await writeCredentialFile(userCredPath, updated)
+    } catch (err) {
+      throw new ApiError(
+        500,
+        'user_pub_register_failed',
+        `pub started but user registration failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    for (const m of body.members) {
+      const agentCredPath = agentPathsHelper(home, m).pubSecret
+      try {
+        const cred = await readCredentialFile(agentCredPath)
+        const updated = await ensureRegistered(
+          newPubClient,
+          cred,
+          newPubSecrets.adminSecret,
+          body.name,
+        )
+        await writeCredentialFile(agentCredPath, updated)
+      } catch (err) {
+        throw new ApiError(
+          500,
+          'agent_pub_register_failed',
+          `pub started but ${m} registration failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
 
     // Add the new pub to each member's pubs.md and restart so they
     // attach a wake source. Restarts happen sequentially to avoid
@@ -1988,10 +2077,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           // bring the agent back manually. Surface in the response so
           // the UI can flag it.
           restarted.push({ name: m, was_running: true })
-          req.log.warn(
-            { err, agent: m, pub: body.name },
-            'agent restart failed after studio membership change',
-          )
+          log?.warn('agent restart failed after room membership change', {
+            agent: m,
+            pub: body.name,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
       } else {
         restarted.push({ name: m, was_running: false })

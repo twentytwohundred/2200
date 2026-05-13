@@ -43,7 +43,7 @@ import type { TaskRecord } from './task/types.js'
 import { AgentLoop, type LoopResult } from './loop.js'
 import type { AuditFlag } from './audit/narrated-completion.js'
 import { loadState } from '../supervisor/state.js'
-import { readCredentialFile } from '../pub/keypair.js'
+import { credForPub, readCredentialFile } from '../pub/keypair.js'
 import { getOrCreatePubClient } from '../pub/registry.js'
 import { PubWakeSource } from '../pub/wake-source.js'
 import type { PubClient } from '../pub/client.js'
@@ -492,7 +492,20 @@ export class AgentProcess {
 
     for (const pub of targetPubs) {
       const baseUrl = `http://127.0.0.1:${String(pub.port)}`
-      const client = getOrCreatePubClient(this.options.name, pub.name, { baseUrl, cred })
+      // Pick the per-pub agent_id from the cred map (or fall through
+      // to the legacy single agent_id field for pre-multi-pub creds).
+      const perPubCred = credForPub(cred, pub.name)
+      if (!perPubCred.agent_id) {
+        this.log.info('Agent has no agent_id registered for this pub; skipping wake source', {
+          pub: pub.name,
+        })
+        continue
+      }
+      const perPubAgentId = perPubCred.agent_id
+      const client = getOrCreatePubClient(this.options.name, pub.name, {
+        baseUrl,
+        cred: perPubCred,
+      })
       try {
         await client.connect()
       } catch (err) {
@@ -515,7 +528,7 @@ export class AgentProcess {
       // candidate to peers, but the human can still @-mention us.
       try {
         await upsertRosterEntry(this.options.home, pub.name, {
-          agent_id: cred.agent_id,
+          agent_id: perPubAgentId,
           agent_name: this.options.name,
           display_name: pubBlock.display_name,
           role_blurb: this.identity.frontmatter.agent_role,
@@ -532,7 +545,7 @@ export class AgentProcess {
         agentName: this.options.name,
         pubName: pub.name,
         agent: {
-          agent_id: cred.agent_id,
+          agent_id: perPubAgentId,
           handle: pubBlock.handle,
           ...(pubBlock.domains.length > 0 ? { domains: [...pubBlock.domains] } : {}),
         },
@@ -542,7 +555,10 @@ export class AgentProcess {
       })
       wakeSource.start()
       this.pubWakeSources.push(wakeSource)
-      this.log.info('pub wake source attached', { pub: pub.name, agent_id: cred.agent_id })
+      this.log.info('pub wake source attached', {
+        pub: pub.name,
+        agent_id: perPubAgentId,
+      })
     }
   }
 
