@@ -31,20 +31,19 @@ import {
 } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, NetworkError, api, type Notification } from '../../lib/api'
+import { ApiError, NetworkError, api, type Agent, type Notification } from '../../lib/api'
 import {
+  AgentMark,
   Button,
   Card,
   EmptyState,
   ErrorState,
-  Input,
-  KV,
   LoadingState,
+  Meta,
   Screen,
   ScreenNavLink,
   Pill,
   type PillVariant,
-  SectionHeader,
 } from '../../primitives'
 import styles from './InboxScreen.module.css'
 
@@ -113,6 +112,23 @@ export function InboxScreen(): ReactElement {
   const query = filterIsActive ? filteredQuery : unfilteredQuery
   const items = useMemo(() => query.data?.items ?? [], [query.data])
   const allPending = useMemo(() => unfilteredQuery.data?.items ?? [], [unfilteredQuery.data])
+
+  // Agents lookup so list rows + detail header can render the
+  // operator-set avatar (glyph + portrait) for each notification's
+  // emitter. Cheap React-Query cache hit when this also feeds the
+  // Fleet/Agent screens.
+  const agentsQuery = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.agents(),
+    staleTime: 5_000,
+  })
+  const agentByName = useMemo(() => {
+    const map = new Map<string, Agent>()
+    for (const a of agentsQuery.data?.items ?? []) {
+      map.set(a.name, a)
+    }
+    return map
+  }, [agentsQuery.data])
 
   const tierCounts = useMemo<Record<Tier, number>>(() => {
     const counts: Record<Tier, number> = { critical: 0, important: 0, normal: 0 }
@@ -257,21 +273,29 @@ export function InboxScreen(): ReactElement {
     return `${head} Keyboard: j/k to move, e to respond, d to dismiss.`
   })()
 
-  const titleStr = filterIsActive
-    ? `Inbox · ${String(items.length)} of ${String(totalPending)}`
-    : `Inbox · ${String(items.length)}`
+  const titleNode = (
+    <>
+      Inbox
+      <span className={styles.titleCount}>
+        ·{' '}
+        {filterIsActive
+          ? `${String(items.length)} of ${String(totalPending)}`
+          : String(items.length)}
+      </span>
+    </>
+  )
 
   return (
     <Screen
       crumbs={['2200', 'inbox']}
-      title={titleStr}
+      title={titleNode}
       lede={subtitle}
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
       {totalPending > 0 ? (
         <div className={styles.filterBar} role="toolbar" aria-label="Filter inbox">
           <div className={styles.filterGroup}>
-            <span className={styles.filterLabel}>TIER</span>
+            <Meta>tier</Meta>
             <button
               type="button"
               className={styles.filterChip}
@@ -280,7 +304,7 @@ export function InboxScreen(): ReactElement {
                 updateFilter({ tier: 'all' })
               }}
             >
-              ALL <span className={styles.filterCount}>· {String(totalPending)}</span>
+              all <span className={styles.filterCount}>· {String(totalPending)}</span>
             </button>
             {TIERS.map((t) => (
               <button
@@ -292,14 +316,13 @@ export function InboxScreen(): ReactElement {
                   updateFilter({ tier: t })
                 }}
               >
-                {t.toUpperCase()}{' '}
-                <span className={styles.filterCount}>· {String(tierCounts[t])}</span>
+                {t} <span className={styles.filterCount}>· {String(tierCounts[t])}</span>
               </button>
             ))}
           </div>
           {agentNames.length > 1 || agentFilter ? (
             <div className={styles.filterGroup}>
-              <span className={styles.filterLabel}>AGENT</span>
+              <Meta>agent</Meta>
               <button
                 type="button"
                 className={styles.filterChip}
@@ -308,7 +331,7 @@ export function InboxScreen(): ReactElement {
                   updateFilter({ agent: null })
                 }}
               >
-                ALL
+                all
               </button>
               {agentNames.map((a) => (
                 <button
@@ -338,13 +361,14 @@ export function InboxScreen(): ReactElement {
               ) : null}
             </div>
           ) : null}
+          <span className={styles.filterSpacer} />
           <button
             type="button"
             className={styles.filterReset}
             disabled={!filterIsActive}
             onClick={resetFilters}
           >
-            RESET
+            reset
           </button>
         </div>
       ) : null}
@@ -392,52 +416,88 @@ export function InboxScreen(): ReactElement {
       ) : (
         <div className={styles.split}>
           <section className={styles.list}>
-            <SectionHeader title={`PENDING · ${String(items.length)}`} />
+            <Meta>pending · {String(items.length)}</Meta>
             <ul className={styles.listItems}>
-              {items.map((n, i) => (
-                <li
-                  key={n.id}
-                  className={[styles.listRow, i === focusIdx ? styles.listRowFocused : '']
-                    .filter(Boolean)
-                    .join(' ')}
-                  onMouseEnter={() => {
-                    setFocusIdx(i)
-                  }}
-                  onClick={() => {
-                    setFocusIdx(i)
-                  }}
-                >
-                  <Pill variant={tierVariant(n.tier)} dot={false}>
-                    {n.tier.toUpperCase()}
-                  </Pill>
-                  <span className={styles.listAgent}>{n.agent}</span>
-                  <span className={styles.listKind}>{n.kind}</span>
-                  <span className={styles.listTs}>{n.ts.slice(11, 19)}</span>
-                </li>
-              ))}
+              {items.map((n, i) => {
+                const agent = agentByName.get(n.agent)
+                return (
+                  <li
+                    key={n.id}
+                    className={[styles.listRow, i === focusIdx ? styles.listRowFocused : '']
+                      .filter(Boolean)
+                      .join(' ')}
+                    onMouseEnter={() => {
+                      setFocusIdx(i)
+                    }}
+                    onClick={() => {
+                      setFocusIdx(i)
+                    }}
+                  >
+                    <Pill variant={tierVariant(n.tier)} dot>
+                      {n.tier}
+                    </Pill>
+                    <AgentMark
+                      id={n.agent}
+                      name={n.agent}
+                      size="sm"
+                      glyph={agent?.avatar ?? undefined}
+                      imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
+                    />
+                    <span className={styles.listLabel}>
+                      <span className={styles.listAgent}>{n.agent}</span>
+                      <span className={styles.listKind}>{n.kind}</span>
+                    </span>
+                    <span className={styles.listTs}>{n.ts.slice(11, 19)}</span>
+                  </li>
+                )
+              })}
             </ul>
           </section>
 
           <section className={styles.detail}>
-            <SectionHeader title="FOCUSED" />
+            <Meta>focused</Meta>
             {focused ? (
               <Card padding={20}>
-                <div className={styles.detailHeader}>
-                  <Pill variant={tierVariant(focused.tier)}>{focused.tier.toUpperCase()}</Pill>
-                  <Link
-                    to={`/agent/${encodeURIComponent(focused.agent)}`}
-                    className={styles.detailAgentLink}
-                  >
-                    {focused.agent}
-                  </Link>
+                {(() => {
+                  const focusedAgent = agentByName.get(focused.agent)
+                  return (
+                    <div className={styles.detailHeader}>
+                      <AgentMark
+                        id={focused.agent}
+                        name={focused.agent}
+                        size="md"
+                        glyph={focusedAgent?.avatar ?? undefined}
+                        imageUrl={api.authedUrl(focusedAgent?.avatar_image_url) ?? undefined}
+                      />
+                      <Link
+                        to={`/agent/${encodeURIComponent(focused.agent)}`}
+                        className={styles.detailAgentLink}
+                      >
+                        {focused.agent}
+                      </Link>
+                      <Pill variant={tierVariant(focused.tier)} dot>
+                        {focused.tier}
+                      </Pill>
+                      <span className={styles.detailSpacer} />
+                      <span className={styles.detailTimestamp}>{focused.ts}</span>
+                    </div>
+                  )
+                })()}
+                <div className={styles.kvMini}>
+                  <div className={styles.kvMiniRow}>
+                    <Meta>kind</Meta>
+                    <span className={styles.kvMiniValue}>{focused.kind}</span>
+                  </div>
+                  <div className={styles.kvMiniRow}>
+                    <Meta>id</Meta>
+                    <span className={styles.kvMiniValueMuted}>{focused.id}</span>
+                  </div>
                 </div>
-                <KV k="KIND" v={<span className={styles.mono}>{focused.kind}</span>} />
-                <KV k="ID" v={<span className={styles.mono}>{focused.id}</span>} />
-                <KV k="TIME" v={<span className={styles.mono}>{focused.ts}</span>} />
                 <NotificationBody body={focused.body} />
                 <form onSubmit={onSubmit} className={styles.respondForm}>
-                  <Input
+                  <input
                     ref={inputRef}
+                    className={styles.respondInput}
                     value={draft}
                     onChange={(e) => {
                       setDraft(e.target.value)
@@ -448,27 +508,25 @@ export function InboxScreen(): ReactElement {
                         : 'Type response (optional ack)'
                     }
                   />
-                  <div className={styles.respondActions}>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      kbd="↵"
-                      disabled={!draft.trim() || respondMutation.isPending}
-                    >
-                      {respondMutation.isPending ? 'Sending…' : 'Respond'}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="sm"
-                      kbd="d"
-                      disabled={dismissMutation.isPending}
-                      onClick={dismissFocused}
-                    >
-                      {dismissMutation.isPending ? 'Dismissing…' : 'Dismiss'}
-                    </Button>
-                  </div>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    kbd="↵"
+                    disabled={!draft.trim() || respondMutation.isPending}
+                  >
+                    {respondMutation.isPending ? 'Sending…' : 'Respond'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="md"
+                    kbd="d"
+                    disabled={dismissMutation.isPending}
+                    onClick={dismissFocused}
+                  >
+                    {dismissMutation.isPending ? 'Dismissing…' : 'Dismiss'}
+                  </Button>
                 </form>
                 {(respondMutation.error ?? dismissMutation.error) ? (
                   <p className={styles.detailError}>
@@ -499,12 +557,7 @@ interface NotificationBodyProps {
 function NotificationBody({ body }: NotificationBodyProps): ReactElement | null {
   const trimmed = body.trim()
   if (!trimmed) return null
-  return (
-    <div className={styles.body}>
-      <SectionHeader title="MESSAGE" />
-      <p className={styles.bodyText}>{trimmed}</p>
-    </div>
-  )
+  return <p className={styles.bodyText}>{trimmed}</p>
 }
 
 function errorTitle(error: unknown): string {
