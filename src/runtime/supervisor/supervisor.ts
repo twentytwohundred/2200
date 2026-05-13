@@ -1655,17 +1655,23 @@ export class Supervisor {
     // exit isn't suppressed.
     const intentional = this.intentionalStops.delete(name)
     if (intentional) {
-      const nextState: AgentRecord['state'] = signal === null && code === 0 ? 'stopped' : 'errored'
+      // User-requested stop. Always transition to 'stopped' regardless
+      // of how the OS reported the exit: SIGTERM-ack with code 0 looks
+      // identical to a SIGKILL with code=null, but both express the
+      // same operator intent. Marking either as 'errored' wedges the
+      // Agent and blocks the follow-up startAgent that the Studio-
+      // membership-change flow expects.
       await this.updateAgent(name, {
-        state: nextState,
+        state: 'stopped',
         pid: null,
-        errored_at: nextState === 'errored' ? new Date().toISOString() : record.errored_at,
-        errored_reason:
-          nextState === 'errored'
-            ? `process exited code=${String(code)} signal=${String(signal)}`
-            : record.errored_reason,
       })
-      this.log.info('Agent process exited', { name, code, signal, nextState, intentional: true })
+      this.log.info('Agent process exited', {
+        name,
+        code,
+        signal,
+        nextState: 'stopped',
+        intentional: true,
+      })
       return
     }
     if (this.isShuttingDown) {
