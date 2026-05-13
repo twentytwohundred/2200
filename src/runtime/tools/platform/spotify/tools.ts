@@ -95,6 +95,24 @@ interface SpotifyApiError {
 function mapSpotifyError(err: unknown): never {
   if (err instanceof SpotifyCredentialError) throw err
   const e = err as SpotifyApiError
+  // The Spotify SDK's DefaultResponseValidator throws a generic JS Error
+  // for any 403, with the legacy message "Bad OAuth request (wrong consumer
+  // key, bad nonce, expired timestamp...). Unfortunately, re-authenticating
+  // the user won't help here." That error has no `status` field on our
+  // shape, only a `.message`. Detect it and surface the deprecated-endpoint
+  // hint (the most common live cause is calling /tracks instead of /items).
+  // Without this, models read the "re-authenticating won't help" line and
+  // either give up or chase the wrong thread.
+  if (typeof e.message === 'string' && e.message.includes('Bad OAuth request')) {
+    throw new Error(
+      'Spotify returned 403 Forbidden. The SDK message ("Bad OAuth request, wrong consumer key, bad nonce, ...") is misleading ' +
+        '— your auth is not necessarily broken. The most common live cause is calling a deprecated endpoint: ' +
+        'Spotify migrated `playlists/{id}/tracks` to `playlists/{id}/items` (Feb 2026); calling the legacy /tracks path ' +
+        'returns this exact 403. Try `playlists/{id}/items` instead (or `GET playlists/{id}` which includes the first 100 ' +
+        'items inline). If you really did try /items and still see this, your token may be missing a scope or you are ' +
+        'trying to modify a playlist you do not own.',
+    )
+  }
   const reason = e.reason ?? e.body?.error?.reason ?? extractReasonFromMessage(e.message)
   if (reason === 'PREMIUM_REQUIRED') {
     throw new Error(

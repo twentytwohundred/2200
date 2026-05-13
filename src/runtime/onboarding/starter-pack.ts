@@ -929,8 +929,8 @@ Example: \`spotify_api({ method: 'GET', path: 'search', query: { q: 'Radiohead F
 |---|---|---|
 | \`me\` | GET | Current user profile. Returns \`{ id, display_name, email, country, product }\`. |
 | \`me/playlists\` | GET | List your playlists. query: \`limit\` (1-50, default 20), \`offset\` (default 0). Returns \`{ items: [...], total, next, previous }\`. |
-| \`playlists/{playlist_id}\` | GET | Playlist metadata + first page of tracks. |
-| \`playlists/{playlist_id}/tracks\` | GET | Playlist items. query: \`limit\` (1-100, default 100), \`offset\`, \`market\`, \`fields\` (optional projection). |
+| \`playlists/{playlist_id}\` | GET | Playlist metadata + first page of tracks (under \`items\`). For most cases you don't need a separate /items call; this one returns the first 100 inline. |
+| \`playlists/{playlist_id}/items\` | GET | Paginate the playlist items beyond the first 100. query: \`limit\` (1-100, default 100), \`offset\`, \`market\`, \`fields\` (optional projection). **Do not use the legacy /tracks suffix** — Spotify returns 403 with a misleading "Bad OAuth request" error message. |
 
 ### Playlists (write)
 
@@ -1009,7 +1009,7 @@ body: { uris: ['spotify:track:...', ...] }
 
 ## Gotchas
 
-- **Playlist tracks endpoint is \`/items\`, not \`/tracks\`.** \`POST .../tracks\` was deprecated in the Feb 2026 API migration; it returns 403 with a misleading "Bad OAuth request" message.
+- **Playlist tracks endpoint is \`/items\`, not \`/tracks\`** — for ALL methods (GET, POST, PUT, DELETE). Spotify deprecated the \`/tracks\` suffix in the Feb 2026 API migration. Calls to \`.../tracks\` return 403 with a misleading "Bad OAuth request (wrong consumer key, bad nonce...)" message. Your auth is NOT broken; the endpoint is. Switch to \`.../items\`. Or skip the sub-endpoint entirely for reads: \`GET playlists/{id}\` already includes the first 100 items inline under \`items\`.
 - **Create playlist endpoint is \`POST /me/playlists\`, not \`POST /users/{user_id}/playlists\`.** Same migration; the per-user path returns 403.
 - **Spotify URIs vs IDs.** Body fields take URIs (\`spotify:track:...\`). Path segments take bare IDs. Mixing them up returns 400 or 404.
 - **search query parameter is \`q\`, not \`query\`.** Spotify-specific name. Don't guess.

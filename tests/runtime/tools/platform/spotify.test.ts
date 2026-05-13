@@ -341,6 +341,21 @@ describe('spotify_api: error mapping', () => {
     ).rejects.toThrow(/boolean operators/i)
   })
 
+  it('maps the SDK\'s legacy "Bad OAuth request" 403 message to a /tracks-vs-/items hint', async () => {
+    const { tool, setError } = build()
+    // Reproduce the exact JS Error shape the SDK's DefaultResponseValidator
+    // throws for any 403 (no `status` field; just a `.message` string).
+    setError(
+      new Error(
+        'Bad OAuth request (wrong consumer key, bad nonce, expired timestamp...). ' +
+          'Unfortunately, re-authenticating the user won\'t help here. Body: {"error":{"status":403,"message":"Forbidden"}}',
+      ),
+    )
+    await expect(
+      tool.execute({ method: 'GET', path: 'playlists/2nH7uZhjnAnDAURGVnuG14/tracks' }, ctx()),
+    ).rejects.toThrow(/deprecated endpoint.*\/items/i)
+  })
+
   it('maps a generic 400 with a fallback message', async () => {
     const { tool, setError } = build()
     setError({ status: 400, body: { error: { message: 'Invalid parameter foo' } } })
