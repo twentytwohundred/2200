@@ -984,6 +984,33 @@ export const api = {
       restarted: { name: string; was_running: boolean }[]
     }>(`/api/v1/pubs`, { method: 'POST', body }),
   /**
+   * Add / remove guests from an existing Room. Adds register the
+   * agent with the pub-server and prepend it to pubs.md; removes
+   * drop the pub from pubs.md (the pub-server roster entry stays
+   * since OpenPub has no agent-deletion endpoint). Both restart the
+   * affected agents so wake sources attach/detach.
+   */
+  pubUpdateGuests: (name: string, body: { add_guests?: string[]; remove_guests?: string[] }) =>
+    request<{
+      name: string
+      added: string[]
+      removed: string[]
+      restarted: { name: string; was_running: boolean }[]
+    }>(`/api/v1/pubs/${encodeURIComponent(name)}`, { method: 'PATCH', body }),
+  /**
+   * Destroy a Room. The canonical Studio pub is refused (returns
+   * 409). Caller MUST pass `{ confirm: "DESTROY" }` ... the UI
+   * surfaces this as a typed-confirm input.
+   */
+  pubDestroy: (name: string) =>
+    request<{
+      name: string
+      destroyed: boolean
+      restarted: { name: string; was_running: boolean }[]
+    }>(`/api/v1/pubs/${encodeURIComponent(name)}?confirm=DESTROY`, {
+      method: 'DELETE',
+    }),
+  /**
    * Build a fully-qualified URL for a pub attachment served by the
    * GET /api/v1/pubs/attachments/:attId/:filename route. Run through
    * `authedUrl` so `<img>` tags can fetch it without an Authorization

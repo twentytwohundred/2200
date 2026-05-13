@@ -32,7 +32,7 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
-import { Navigate, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -512,6 +512,41 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     return p.state === 'working_light' || p.state === 'working_medium' || p.state === 'working_hard'
   })
 
+  // Pub-server rosters can accumulate stale entries (failed
+  // registrations leave shadow agents with the same display_name
+  // and a different agent_id). Dedup by display_name for the UI;
+  // the underlying entries are still there until the pub is
+  // destroyed + recreated.
+  const dedupedMembers = useMemo(() => {
+    const seen = new Set<string>()
+    const out: PubMember[] = []
+    for (const m of members) {
+      if (seen.has(m.display_name)) continue
+      seen.add(m.display_name)
+      out.push(m)
+    }
+    return out
+  }, [members])
+
+  // For the "+ Add guest" picker: agents on this instance who
+  // aren't already in the room.
+  const availableToAdd = useMemo(() => {
+    const present = new Set(dedupedMembers.map((m) => m.display_name))
+    return Array.from(agentByName.values())
+      .filter((a) => !present.has(a.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [dedupedMembers, agentByName])
+
+  const guestMutation = useMutation({
+    mutationFn: (body: { add_guests?: string[]; remove_guests?: string[] }) =>
+      api.pubUpdateGuests(pubName, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['pub', pubName] })
+      void queryClient.invalidateQueries({ queryKey: ['pubs'] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+
   // "Studio" is the singular canonical pub the whole fleet lives in.
   // Anything else is a Room with curated membership ... show the
   // room name in the title and breadcrumb so the operator knows
@@ -562,17 +597,18 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
       <div className={styles.body}>
         <aside className={styles.sidebar}>
           <section className={styles.section}>
-            <Meta>members</Meta>
-            {members.length === 0 ? (
+            <Meta>guests</Meta>
+            {dedupedMembers.length === 0 ? (
               <p className={styles.atmosphereText}>
-                {pubQuery.isLoading ? 'Loading…' : 'No members reported yet.'}
+                {pubQuery.isLoading ? 'Loading…' : 'No guests reported yet.'}
               </p>
             ) : (
               <ul className={styles.memberList}>
-                {members.map((m) => {
+                {dedupedMembers.map((m) => {
                   const agent = agentByName.get(m.display_name)
                   const pulse = agent?.pulse ?? null
                   const isYou = meName !== null && m.display_name === meName
+                  const canRemove = !isStudio && !isYou
                   return (
                     <li key={m.agent_id} className={styles.memberRow}>
                       <AgentMark
@@ -594,10 +630,37 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
                           title={`${m.display_name} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
                         />
                       )}
+                      {canRemove && (
+                        <RemoveGuestButton
+                          pubName={pubName}
+                          guest={m.display_name}
+                          disabled={guestMutation.isPending}
+                          onRemove={(g) => {
+                            guestMutation.mutate({ remove_guests: [g] })
+                          }}
+                        />
+                      )}
                     </li>
                   )
                 })}
               </ul>
+            )}
+            {!isStudio && availableToAdd.length > 0 && (
+              <AddGuestPicker
+                available={availableToAdd}
+                agentByName={agentByName}
+                disabled={guestMutation.isPending}
+                onAdd={(name) => {
+                  guestMutation.mutate({ add_guests: [name] })
+                }}
+              />
+            )}
+            {guestMutation.error && (
+              <p className={styles.guestError}>
+                {guestMutation.error instanceof Error
+                  ? guestMutation.error.message
+                  : 'unknown error'}
+              </p>
             )}
           </section>
 
@@ -615,6 +678,13 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               ) : null}
             </section>
           ) : null}
+
+          {!isStudio && (
+            <section className={styles.section}>
+              <Meta>destroy room</Meta>
+              <DestroyRoomPanel pubName={pubName} />
+            </section>
+          )}
         </aside>
 
         <div className={styles.feedWrap}>
@@ -875,5 +945,190 @@ function MessageItem({
         </span>
       </div>
     </article>
+  )
+}
+
+/**
+ * Two-step remove button next to a guest row. First click flips to
+ * "remove?" with danger tint; second click within 3s commits.
+ * Mouse-leave or timeout reverts. No popups
+ * ([[feedback_no_browser_popups]]).
+ */
+function RemoveGuestButton({
+  pubName: _pubName,
+  guest,
+  disabled,
+  onRemove,
+}: {
+  pubName: string
+  guest: string
+  disabled: boolean
+  onRemove: (guest: string) => void
+}): ReactElement {
+  const [armed, setArmed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    [],
+  )
+  return (
+    <button
+      type="button"
+      className={cx(styles.removeBtn, armed && styles.removeBtnArmed)}
+      disabled={disabled}
+      title={armed ? `Click again to remove ${guest}` : `Remove ${guest} from this room`}
+      onClick={() => {
+        if (armed) {
+          if (timer.current) clearTimeout(timer.current)
+          setArmed(false)
+          onRemove(guest)
+        } else {
+          setArmed(true)
+          if (timer.current) clearTimeout(timer.current)
+          timer.current = setTimeout(() => {
+            setArmed(false)
+          }, 3000)
+        }
+      }}
+      onMouseLeave={
+        armed
+          ? () => {
+              setArmed(false)
+              if (timer.current) clearTimeout(timer.current)
+            }
+          : undefined
+      }
+    >
+      {armed ? 'remove?' : '×'}
+    </button>
+  )
+}
+
+/**
+ * Inline picker for agents not currently in the room. Opens a small
+ * dropdown of available agents; clicking one calls `onAdd`.
+ */
+function AddGuestPicker({
+  available,
+  agentByName,
+  disabled,
+  onAdd,
+}: {
+  available: Agent[]
+  agentByName: Map<string, Agent>
+  disabled: boolean
+  onAdd: (name: string) => void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={styles.addGuestWrap}>
+      {open ? (
+        <ul className={styles.addGuestList}>
+          {available.map((a) => {
+            const agent = agentByName.get(a.name)
+            return (
+              <li key={a.name}>
+                <button
+                  type="button"
+                  className={styles.addGuestRow}
+                  disabled={disabled}
+                  onClick={() => {
+                    setOpen(false)
+                    onAdd(a.name)
+                  }}
+                >
+                  <AgentMark
+                    id={a.name}
+                    name={a.name}
+                    size="sm"
+                    glyph={agent?.avatar ?? undefined}
+                    imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
+                  />
+                  <span>{a.name}</span>
+                </button>
+              </li>
+            )
+          })}
+          <li>
+            <button
+              type="button"
+              className={styles.addGuestCancel}
+              onClick={() => {
+                setOpen(false)
+              }}
+            >
+              cancel
+            </button>
+          </li>
+        </ul>
+      ) : (
+        <button
+          type="button"
+          className={styles.addGuestTrigger}
+          disabled={disabled}
+          onClick={() => {
+            setOpen(true)
+          }}
+        >
+          + add guest
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Typed-confirm destroy panel for Rooms. Operator types `DESTROY`
+ * into the input; the button enables when the input matches exactly.
+ * On success, navigate back to /rooms.
+ */
+function DestroyRoomPanel({ pubName }: { pubName: string }): ReactElement {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [confirm, setConfirm] = useState('')
+  const matches = confirm === 'DESTROY'
+  const mutation = useMutation({
+    mutationFn: () => api.pubDestroy(pubName),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pubs'] })
+      void qc.invalidateQueries({ queryKey: ['agents'] })
+      void navigate('/rooms')
+    },
+  })
+  return (
+    <div className={styles.destroyPanel}>
+      <p className={styles.destroyExplain}>
+        Stops the pub-server, removes the room record, deletes its on-disk state, and drops it from
+        every guest's <span className={styles.destroyMono}>pubs.md</span>. Cannot be undone. Type{' '}
+        <span className={styles.destroyMono}>DESTROY</span> below to enable.
+      </p>
+      <input
+        className={styles.destroyInput}
+        value={confirm}
+        onChange={(e) => {
+          setConfirm(e.target.value)
+        }}
+        placeholder="type DESTROY to enable"
+        spellCheck={false}
+        autoCapitalize="characters"
+      />
+      <button
+        type="button"
+        className={cx(styles.destroyBtn, matches && styles.destroyBtnArmed)}
+        disabled={!matches || mutation.isPending}
+        onClick={() => {
+          mutation.mutate()
+        }}
+      >
+        {mutation.isPending ? 'Destroying…' : `Destroy ${pubName}`}
+      </button>
+      {mutation.error && (
+        <p className={styles.guestError}>
+          {mutation.error instanceof Error ? mutation.error.message : 'unknown error'}
+        </p>
+      )}
+    </div>
   )
 }

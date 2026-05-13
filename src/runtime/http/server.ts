@@ -370,6 +370,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs' },
+      { method: 'PATCH', path: '/api/v1/pubs/:name' },
+      { method: 'DELETE', path: '/api/v1/pubs/:name' },
       { method: 'POST', path: '/api/v1/pubs/:name/reactions' },
       { method: 'GET', path: '/api/v1/pubs/attachments/:attId/:filename' },
       { method: 'POST', path: '/api/v1/onboarding' },
@@ -2096,6 +2098,222 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       members: body.members,
       restarted,
     }
+  })
+
+  // -- patch a pub (edit guests) -------------------------------------------
+  // Per Doug 2026-05-13: operators can add/remove "guests" from a Room
+  // after creation, same as a chat group. Remove just drops the pub
+  // from the agent's pubs.md and restarts them (the pub-server roster
+  // entry stays since OpenPub has no agent-deletion endpoint we can
+  // safely call; the agent simply stops attaching a wake source and
+  // no longer receives the room's traffic).
+  const PubPatchBody = z.object({
+    add_guests: z.array(z.string().min(1)).max(50).optional(),
+    remove_guests: z.array(z.string().min(1)).max(50).optional(),
+  })
+
+  fastify.patch<{ Params: { name: string } }>('/api/v1/pubs/:name', async (req) => {
+    const pubName = req.params.name
+    const snap = supervisor.snapshot()
+    const pubRec = snap.pubs[pubName]
+    if (!pubRec) throw notFound('pub', pubName)
+    const body = PubPatchBody.parse(req.body)
+    const adds = body.add_guests ?? []
+    const removes = body.remove_guests ?? []
+    if (adds.length === 0 && removes.length === 0) {
+      throw new ApiError(400, 'bad_request', 'provide at least one of add_guests or remove_guests')
+    }
+    const overlap = adds.filter((a) => removes.includes(a))
+    if (overlap.length > 0) {
+      throw new ApiError(
+        400,
+        'bad_request',
+        `agents listed in both add and remove: ${overlap.join(', ')}`,
+      )
+    }
+    for (const m of [...adds, ...removes]) {
+      if (!snap.agents[m]) throw notFound('agent', m)
+    }
+
+    const { addPubToAgentFile, removePubFromAgentFile } = await import('../agent/pubs-file.js')
+
+    const restarted: { name: string; was_running: boolean }[] = []
+
+    // Adds: register at the pub, then write pubs.md, then restart.
+    if (adds.length > 0) {
+      const newPubPaths = pubPaths(home, pubName)
+      const newPubSecrets = await readPubSecrets({
+        adminSecret: newPubPaths.adminSecret,
+        signingKey: newPubPaths.signingKey,
+      })
+      const client = createIdentityClient({
+        baseUrl: `http://127.0.0.1:${String(pubRec.port)}`,
+      })
+      const runningPubsExcludingTarget = Object.values(snap.pubs)
+        .filter((p) => p.state === 'running' && p.name !== pubName)
+        .map((p) => p.name)
+      for (const m of adds) {
+        const rec = snap.agents[m]
+        if (!rec) continue
+        const credPath = agentPathsHelper(home, m).pubSecret
+        try {
+          const cred = await readCredentialFile(credPath)
+          const updated = await ensureRegistered(client, cred, newPubSecrets.adminSecret, pubName)
+          await writeCredentialFile(credPath, updated)
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'agent_pub_register_failed',
+            `${m} could not be registered at ${pubName}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const seedIfMissing: string[] = runningPubsExcludingTarget
+        try {
+          await addPubToAgentFile(agentPathsHelper(home, m).pubsFile, m, pubName, {
+            seedIfMissing,
+          })
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'pubs_file_write_failed',
+            `wrote registration but failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+        if (wasRunning) {
+          try {
+            await supervisor.stopAgent(m, 'room_membership_change')
+            await supervisor.startAgent(m)
+          } catch (err) {
+            log?.warn('agent restart failed after room membership change', {
+              agent: m,
+              pub: pubName,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        restarted.push({ name: m, was_running: wasRunning })
+      }
+    }
+
+    // Removes: drop the pub from pubs.md, restart. No pub-server
+    // call ... OpenPub has no per-agent deletion endpoint.
+    if (removes.length > 0) {
+      for (const m of removes) {
+        const rec = snap.agents[m]
+        if (!rec) continue
+        try {
+          await removePubFromAgentFile(agentPathsHelper(home, m).pubsFile, m, pubName)
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'pubs_file_write_failed',
+            `failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+        if (wasRunning) {
+          try {
+            await supervisor.stopAgent(m, 'room_membership_change')
+            await supervisor.startAgent(m)
+          } catch (err) {
+            log?.warn('agent restart failed after room membership change', {
+              agent: m,
+              pub: pubName,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        restarted.push({ name: m, was_running: wasRunning })
+      }
+    }
+
+    return {
+      name: pubName,
+      added: adds,
+      removed: removes,
+      restarted,
+    }
+  })
+
+  // -- destroy a pub -------------------------------------------------------
+  // Requires a typed confirmation in the body so a stray fetch can't
+  // wipe a room. Refuses to destroy the canonical "studio" pub.
+  // Updates every affected agent's pubs.md and restarts them before
+  // tearing the pub-server down so they don't flap reconnecting to a
+  // vanished pub.
+  const PubDestroyBody = z.object({
+    confirm: z.literal('DESTROY'),
+  })
+
+  fastify.delete<{ Params: { name: string } }>('/api/v1/pubs/:name', async (req) => {
+    const pubName = req.params.name
+    if (pubName === 'studio') {
+      throw new ApiError(
+        409,
+        'cannot_destroy_studio',
+        'the canonical "studio" pub cannot be destroyed',
+      )
+    }
+    const snap = supervisor.snapshot()
+    if (!snap.pubs[pubName]) throw notFound('pub', pubName)
+    // Parse a confirmation token from EITHER the JSON body OR a
+    // query string `?confirm=DESTROY`. The query form is the
+    // ergonomic path for fetch() callers that don't want to set a
+    // body on DELETE.
+    const query = req.query as Record<string, string | undefined>
+    if (query['confirm'] !== 'DESTROY') {
+      try {
+        PubDestroyBody.parse(req.body)
+      } catch {
+        throw new ApiError(
+          400,
+          'confirm_required',
+          'destructive ... pass {"confirm":"DESTROY"} in the body or ?confirm=DESTROY',
+        )
+      }
+    }
+
+    const { removePubFromAgentFile } = await import('../agent/pubs-file.js')
+
+    // Walk every agent and drop pubName from their pubs.md if
+    // listed. Restart agents that lose a membership so their wake
+    // sources detach before the pub-server disappears.
+    const restarted: { name: string; was_running: boolean }[] = []
+    for (const [agentName, rec] of Object.entries(snap.agents)) {
+      try {
+        const after = await removePubFromAgentFile(
+          agentPathsHelper(home, agentName).pubsFile,
+          agentName,
+          pubName,
+        )
+        if (after === null) continue // pubs.md absent → fallthrough membership; nothing to update
+      } catch (err) {
+        log?.warn('failed clearing pub from pubs.md during destroy', {
+          agent: agentName,
+          pub: pubName,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        continue
+      }
+      const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+      if (wasRunning) {
+        try {
+          await supervisor.stopAgent(agentName, 'pub_destroyed')
+          await supervisor.startAgent(agentName)
+        } catch (err) {
+          log?.warn('agent restart failed after pub destroy', {
+            agent: agentName,
+            pub: pubName,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      restarted.push({ name: agentName, was_running: wasRunning })
+    }
+
+    await supervisor.removePub(pubName)
+    return { name: pubName, destroyed: true, restarted }
   })
 
   const PubMessagesQuery = z.object({

@@ -518,3 +518,191 @@
   border-radius: var(--ds-r-1);
   padding: 1px 6px;
 }
+
+/* ── Guest editor + destroy panel (Rooms only) ─────────────────── */
+
+.removeBtn {
+  margin-left: auto;
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  color: var(--text-3);
+  font:
+    500 11px/1 var(--ds-font-mono);
+  padding: 2px 6px;
+  cursor: pointer;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.removeBtn:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.removeBtnArmed {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 40%, var(--line));
+  background: var(--danger-soft);
+  padding: 2px 8px;
+}
+
+.addGuestWrap {
+  margin-top: 6px;
+}
+
+.addGuestTrigger {
+  appearance: none;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-3);
+  font:
+    500 12px/1 var(--ds-font-mono);
+  padding: 6px 10px;
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.addGuestTrigger:hover {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+
+.addGuestList {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.addGuestRow {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--ds-r-1);
+  color: var(--text);
+  font:
+    500 13px/1 var(--ds-font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+
+.addGuestRow:hover {
+  background: var(--bg-hover);
+}
+
+.addGuestRow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.addGuestCancel {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font:
+    500 11px/1 var(--ds-font-mono);
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.addGuestCancel:hover {
+  color: var(--text);
+}
+
+.guestError {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font:
+    500 12px/1.4 var(--ds-font-mono);
+}
+
+.destroyPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.destroyExplain {
+  margin: 0;
+  font:
+    400 12px/1.5 var(--ds-font-sans);
+  color: var(--text-3);
+}
+
+.destroyMono {
+  font-family: var(--ds-font-mono);
+  font-size: 11.5px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-1);
+  padding: 0 4px;
+  color: var(--text-2);
+}
+
+.destroyInput {
+  width: 100%;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  padding: 8px 10px;
+  font:
+    500 13px/1 var(--ds-font-mono);
+  color: var(--text);
+  letter-spacing: 0.04em;
+  outline: none;
+}
+
+.destroyInput:focus {
+  border-color: var(--line-strong);
+}
+
+.destroyBtn {
+  appearance: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  font:
+    500 12.5px/1 var(--ds-font-sans);
+  padding: 8px 14px;
+  border-radius: var(--ds-r-2);
+  cursor: not-allowed;
+  width: 100%;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.destroyBtnArmed {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 50%, var(--line));
+  cursor: pointer;
+}
+
+.destroyBtnArmed:hover {
+  filter: brightness(1.05);
+}
+
+.destroyBtn:disabled {
+  cursor: not-allowed;
+}

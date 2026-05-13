@@ -12,7 +12,7 @@
  * Reconnection (Agent crashes and is restarted) goes through register again.
  */
 import { rm } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-plane/server.js'
 import { listenUds } from '../control-plane/uds-server.js'
 import type { Connection, Listener } from '../control-plane/transport.js'
@@ -1013,6 +1013,40 @@ export class Supervisor {
     const dir = dirname(agentPaths(this.state.home, name).identity)
     await rm(dir, { recursive: true, force: true })
     this.log.info('Agent removed', { name })
+  }
+
+  /**
+   * Permanently destroy a pub: stop the running pub-server process,
+   * drop the supervisor record, and `rm -rf` the on-disk pub state
+   * directory. The HTTP layer is responsible for updating affected
+   * agents' pubs.md and restarting them BEFORE calling this so the
+   * agents do not flap trying to reconnect to a vanished pub.
+   *
+   * Idempotent: a no-op when the pub record is absent. Caller is
+   * responsible for refusing to call this on the canonical Studio.
+   */
+  async removePub(name: string): Promise<void> {
+    if (!this.state.pubs[name]) return
+    if (this.spawnedPubs.get(name)) {
+      this.pubStopRequested.add(name)
+      try {
+        await this.stopPub(name, 'remove_pub')
+      } catch (err) {
+        this.log.warn('removePub: stopPub failed; continuing with state cleanup', {
+          name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    const next: Record<string, PubRecord> = {}
+    for (const [k, v] of Object.entries(this.state.pubs)) {
+      if (k !== name) next[k] = v
+    }
+    this.state = { ...this.state, pubs: next }
+    await saveState(this.state)
+    const pubDir = join(this.state.home, 'state', 'openpub', name)
+    await rm(pubDir, { recursive: true, force: true })
+    this.log.info('Pub removed', { name, dir: pubDir })
   }
 
   // ---------------------------------------------------------------------------
