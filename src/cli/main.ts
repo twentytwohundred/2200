@@ -93,6 +93,33 @@ async function maybeReloadSchedulerIfDaemonRunning(home: string): Promise<void> 
 }
 
 /**
+ * Load runtime.env and oauth-apps.env from ~/.config/2200/ into
+ * process.env. The supervisor daemon already does this at start, but
+ * fresh CLI invocations like `2200 oauth login` run in the user's bare
+ * shell where those env vars aren't sourced. Without this helper, the
+ * cred check fails even when the values are correctly stored on disk.
+ * Values already present in process.env take precedence (so the
+ * operator can override per-invocation by exporting before running).
+ */
+async function loadOAuthEnvFiles(): Promise<void> {
+  const { loadRuntimeEnv, defaultRuntimeEnvPath } = await import('../runtime/config/runtime-env.js')
+  const pathMod = await import('node:path')
+  const runtimePath = defaultRuntimeEnvPath()
+  const oauthPath = pathMod.join(pathMod.dirname(runtimePath), 'oauth-apps.env')
+  for (const path of [runtimePath, oauthPath]) {
+    try {
+      const env = await loadRuntimeEnv(path)
+      for (const [k, v] of Object.entries(env)) {
+        process.env[k] ??= v
+      }
+    } catch {
+      // Missing files are non-fatal; the caller checks for the keys
+      // it needs and surfaces a clear error if they're absent.
+    }
+  }
+}
+
+/**
  * Yes/no prompt over stdin/stdout. Returns true only on a clear "y" /
  * "yes". Anything else (including a Ctrl-D close) resolves false.
  * Used by destructive verbs (extension install/uninstall/update) where
@@ -2990,13 +3017,21 @@ export function buildProgram(): Command {
           )
           process.exit(1)
         }
+        // Load runtime.env and oauth-apps.env into process.env before
+        // checking creds. The supervisor daemon already loads these at
+        // start, but `2200 oauth login` is a fresh CLI invocation in
+        // the user's bare shell, which has neither sourced. Without
+        // this, the cred check fails even when the creds are correctly
+        // stored on disk (live regression 2026-05-13).
+        await loadOAuthEnvFiles()
         const creds = readClientCredentials(providerName)
         if (!creds.clientId || !creds.clientSecret) {
           console.error(
             `missing OAuth client credentials for ${providerName}.\n` +
+              `  Checked process.env, ~/.config/2200/runtime.env, and ~/.config/2200/oauth-apps.env.\n` +
               `  Register an OAuth app at the provider's console.\n` +
               `  Set the redirect URI to http://127.0.0.1:<port>/callback (the CLI prints the port).\n` +
-              `  Then export:\n` +
+              `  Then add to ~/.config/2200/runtime.env (or oauth-apps.env):\n` +
               `    ${creds.envVarHints.id}=...\n` +
               `    ${creds.envVarHints.secret}=...`,
           )
