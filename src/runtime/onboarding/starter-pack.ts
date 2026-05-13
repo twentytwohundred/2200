@@ -1014,6 +1014,7 @@ body: { uris: ['spotify:track:...', ...] }
 - **Spotify URIs vs IDs.** Body fields take URIs (\`spotify:track:...\`). Path segments take bare IDs. Mixing them up returns 400 or 404.
 - **search query parameter is \`q\`, not \`query\`.** Spotify-specific name. Don't guess.
 - **Premium-required errors are not retryable.** If you get PREMIUM_REQUIRED, surface to the operator. The user has to upgrade or the action can't happen.
+- **Cover-image cap is on the base64 body, not the raw JPEG.** Spotify's "256KB" cap measures the base64-encoded request body, which expands binary by ~4/3. \`spotify_set_playlist_cover\` handles the math (caps raw JPEG at ~190KB), but if you ever upload a cover by a different path, account for that expansion or you will hit a 413 Request Entity Too Large.
 - **Active-device requirement on playback writes.** GET \`me/player/devices\` first if you're unsure; pass \`device_id\` in the query string for \`me/player/play\` etc.
 `
 

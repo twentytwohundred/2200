@@ -37,7 +37,14 @@ import { defineTool, type ToolDefinition } from '../../../mcp/tool.js'
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk'
 import { buildSpotifyApi, SpotifyCredentialError } from './client.js'
 
-const SPOTIFY_COVER_MAX_BYTES = 256_000
+// Spotify's playlist-cover endpoint accepts a base64-encoded JPEG body
+// with a 256KB cap on the BASE64 PAYLOAD, not the raw JPEG. base64
+// expands binary by ~4/3, so a raw JPEG up to ~192KB stays under the
+// 256KB base64 cap. We use 190KB for headroom (the SDK adds a couple
+// hundred bytes of framing on top of the base64). A 256KB cap on the
+// raw JPEG produces a ~341KB base64 body that Spotify rejects with
+// 413 (observed live 2026-05-13).
+const SPOTIFY_COVER_MAX_BYTES = 190_000
 
 const SpotifyApiArgsSchema = z.object({
   method: z
