@@ -34,6 +34,8 @@ import {
 } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   ApiError,
   NetworkError,
@@ -695,7 +697,9 @@ function MessageItem({
           </Tag>
         ))}
       </div>
-      <div className={styles.messageBody}>{message.content}</div>
+      <div className={cx(styles.messageBody, styles.markdown)}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+      </div>
       <div className={styles.messageReactions}>
         {grouped.map(([emoji, list]) => (
           <button
