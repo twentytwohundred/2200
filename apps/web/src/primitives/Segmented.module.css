@@ -1,0 +1,34 @@
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-pill);
+}
+
+.option {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font:
+    500 12px/1 var(--ds-font-mono);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.option:hover {
+  color: var(--text);
+}
+
+.active {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}

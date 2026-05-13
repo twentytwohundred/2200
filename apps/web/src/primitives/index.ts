@@ -74,3 +74,9 @@ export type { BreadcrumbProps } from './Breadcrumb'
 
 export { Screen, ScreenNavLink } from './Screen'
 export type { ScreenProps, ScreenNavLinkProps } from './Screen'
+
+export { Tabs } from './Tabs'
+export type { TabsProps, TabsItem } from './Tabs'
+
+export { Segmented } from './Segmented'
+export type { SegmentedProps, SegmentedOption } from './Segmented'

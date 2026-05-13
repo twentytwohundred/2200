@@ -6,34 +6,19 @@
   margin: 0 auto;
 }
 
-.themeRow {
+/* SettingsBlock pattern from ds-screens.jsx ScreenSettings: Meta label
+   sits on top, body 12px below. The block spacer between groups is
+   handled by the shell's row gap. */
+.block {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.blockBody {
+  display: flex;
+  flex-direction: column;
   gap: var(--ds-3);
-  flex-wrap: wrap;
-}
-
-.themeChip {
-  font-family: var(--ds-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  padding: var(--ds-2) var(--ds-3);
-  border-radius: var(--ds-r-pill);
-  border: 1px solid var(--line-soft);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-  text-transform: uppercase;
-}
-
-.themeChip[data-active='true'] {
-  border-color: var(--line-strong);
-  background: var(--bg-elev);
-  color: var(--text);
-}
-
-.themeChip:hover {
-  background: var(--bg-hover);
 }
 
 .cliCallout {
@@ -208,6 +193,20 @@
 .providerBtnPrimary:hover {
   filter: brightness(1.1);
   background: var(--accent);
+}
+
+/* Two-step destructive arm: first click flips the chip into this state
+   ("click to confirm"); second click within 3s commits. Matches the
+   ChatTitleBar archive pattern. */
+.providerBtnDanger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 40%, var(--line));
+}
+
+.providerBtnDanger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .providerSuggestions {
