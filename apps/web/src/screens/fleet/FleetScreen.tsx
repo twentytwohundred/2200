@@ -92,6 +92,7 @@ export function FleetScreen(): ReactElement {
       lede="Mission control for the agents on this instance."
       actions={
         <>
+          <ScreenNavLink to="/studio">Studio</ScreenNavLink>
           <ScreenNavLink to="/inbox">
             Inbox{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
           </ScreenNavLink>

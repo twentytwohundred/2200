@@ -37,19 +37,24 @@ import {
   ApiError,
   NetworkError,
   api,
+  type Agent,
   type PubMember,
   type PubMessage,
   type PubReactionDto,
 } from '../../lib/api'
 import {
+  AgentMark,
   Button,
   Card,
   cx,
   ErrorState,
+  Kbd,
   LoadingState,
+  Meta,
   PulseDot,
   Screen,
   ScreenNavLink,
+  Tag,
 } from '../../primitives'
 import styles from './StudioScreen.module.css'
 
@@ -199,6 +204,16 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     staleTime: 1_000,
   })
 
+  // Identify which member is the local user so we can render the
+  // "you" tag in the roster. Cached aggressively ... the user's
+  // identity doesn't change within a session.
+  const meQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.me(),
+    staleTime: 60_000,
+  })
+  const meName = meQuery.data?.name ?? null
+
   const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data])
   const members = pubQuery.data?.members ?? []
 
@@ -333,6 +348,12 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     }
   }
 
+  const workingMembers = members.filter((m) => {
+    const p = agentByName.get(m.display_name)?.pulse
+    if (!p) return false
+    return p.state === 'working_light' || p.state === 'working_medium' || p.state === 'working_hard'
+  })
+
   return (
     <Screen
       crumbs={['2200', 'studio', pubName]}
@@ -348,56 +369,63 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
 
       <div className={styles.body}>
         <aside className={styles.sidebar}>
-          <Card padding={16}>
-            <div className={styles.sidebarLabel}>Members</div>
-            {members.length ? (
-              members.map((m) => {
-                const agent = agentByName.get(m.display_name)
-                const pulse = agent?.pulse ?? null
-                return (
-                  <div key={m.agent_id} className={styles.memberRow}>
-                    {pulse ? (
-                      <PulseDot
-                        state={pulse.state}
-                        intensity={pulse.intensity}
-                        size="md"
-                        title={`${m.display_name} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
-                      />
-                    ) : (
-                      <span
-                        className={cx(
-                          styles.memberDot,
-                          m.status !== 'active' && styles.memberDotIdle,
-                        )}
-                      />
-                    )}
-                    <span>{m.display_name}</span>
-                  </div>
-                )
-              })
-            ) : (
-              <div className={styles.atmosphere}>
+          <section className={styles.section}>
+            <Meta>members</Meta>
+            {members.length === 0 ? (
+              <p className={styles.atmosphereText}>
                 {pubQuery.isLoading ? 'Loading…' : 'No members reported yet.'}
-              </div>
+              </p>
+            ) : (
+              <ul className={styles.memberList}>
+                {members.map((m) => {
+                  const agent = agentByName.get(m.display_name)
+                  const pulse = agent?.pulse ?? null
+                  const isYou = meName !== null && m.display_name === meName
+                  return (
+                    <li key={m.agent_id} className={styles.memberRow}>
+                      <AgentMark
+                        id={m.display_name}
+                        name={m.display_name}
+                        size="sm"
+                        glyph={agent?.avatar ?? undefined}
+                        imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
+                      />
+                      <span className={cx(styles.memberName, isYou && styles.memberNameYou)}>
+                        {m.display_name}
+                      </span>
+                      {isYou && <span className={styles.memberYouTag}>you</span>}
+                      {pulse && (
+                        <PulseDot
+                          state={pulse.state}
+                          intensity={pulse.intensity}
+                          size="sm"
+                          title={`${m.display_name} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
+                        />
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
             )}
-          </Card>
+          </section>
+
           {pubQuery.data?.atmosphere ? (
-            <Card padding={16}>
-              <div className={styles.sidebarLabel}>Atmosphere</div>
-              <div className={styles.atmosphere}>
+            <section className={styles.section}>
+              <Meta>atmosphere</Meta>
+              <p className={styles.atmosphereText}>
                 {pubQuery.data.atmosphere.tone ?? '—'}
                 {pubQuery.data.atmosphere.energy ? ` · ${pubQuery.data.atmosphere.energy}` : ''}
-              </div>
+              </p>
               {pubQuery.data.atmosphere.active_topics?.length ? (
-                <div className={cx(styles.atmosphere, styles.atmosphereTopics)}>
-                  Topics: {pubQuery.data.atmosphere.active_topics.join(', ')}
-                </div>
+                <p className={styles.atmosphereTopics}>
+                  topics: {pubQuery.data.atmosphere.active_topics.join(', ')}
+                </p>
               ) : null}
-            </Card>
+            </section>
           ) : null}
         </aside>
 
-        <div ref={timelineRef} className={styles.timeline}>
+        <div ref={timelineRef} className={styles.feed}>
           {messagesQuery.isLoading && messages.length === 0 ? (
             <LoadingState rows={4} />
           ) : messages.length === 0 ? (
@@ -407,6 +435,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               <MessageItem
                 key={m.message_id}
                 message={m}
+                agentByName={agentByName}
                 onReact={(emoji) => {
                   reactMutation.mutate({ message_id: m.message_id, emoji })
                 }}
@@ -414,16 +443,9 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               />
             ))
           )}
-          {/* Inline "thinking..." rows for any pub member whose pulse is in a working_* state. */}
-          {members.map((m) => {
-            const agent = agentByName.get(m.display_name)
-            const p = agent?.pulse
+          {workingMembers.map((m) => {
+            const p = agentByName.get(m.display_name)?.pulse
             if (!p) return null
-            const working =
-              p.state === 'working_light' ||
-              p.state === 'working_medium' ||
-              p.state === 'working_hard'
-            if (!working) return null
             return (
               <div
                 key={`thinking-${m.agent_id}`}
@@ -440,25 +462,25 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
 
       <form className={styles.composer} onSubmit={handleSubmit}>
         {members.length > 0 ? (
-          <div className={styles.composerChips}>
-            <span className={styles.composerChipsLabel}>TAG</span>
+          <div className={styles.composerTagRow}>
+            <Meta>tag</Meta>
             {members.map((m) => (
-              <button
+              <Tag
                 key={m.agent_id}
-                type="button"
-                className={styles.composerChip}
+                agent={m.display_name}
                 onClick={() => {
                   handleInsertMention(m.display_name)
                 }}
               >
                 @{m.display_name}
-              </button>
+              </Tag>
             ))}
           </div>
         ) : null}
+
         {staged.length > 0 || stageError ? (
           <div className={styles.attachmentsRow}>
-            <span className={styles.attachmentsLabel}>FILES</span>
+            <Meta>files</Meta>
             {staged.map((att, idx) => (
               <span key={`${att.filename}-${String(idx)}`} className={styles.attachmentChip}>
                 <span>{att.filename}</span>
@@ -481,54 +503,56 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
             {stageError ? <span className={styles.composerError}>{stageError}</span> : null}
           </div>
         ) : null}
-        <div className={styles.composerRow}>
-          <textarea
-            ref={composerRef}
-            className={styles.composerInput}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value)
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${pubName} … use @<name> to direct it.`}
-          />
-          <button
-            type="button"
-            className={styles.attachButton}
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach files"
-            title="Attach files"
-            disabled={staged.length >= ATTACH_MAX_COUNT}
-          >
-            📎
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="text/*,image/*,application/json,application/yaml,application/x-yaml,application/pdf,.md,.csv,.log,.yml,.yaml"
-            className={styles.hiddenInput}
-            onChange={(e) => {
-              void handleFileSelect(e)
-            }}
-          />
-          <Button
-            type="submit"
-            variant="primary"
-            size="sm"
-            disabled={sendMutation.isPending || draft.trim().length === 0}
-          >
-            {sendMutation.isPending ? 'SENDING…' : 'SEND'}
-          </Button>
+
+        <textarea
+          ref={composerRef}
+          className={styles.composerTextarea}
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value)
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={`Message ${pubName} … use @<name> to direct it.`}
+        />
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="text/*,image/*,application/json,application/yaml,application/x-yaml,application/pdf,.md,.csv,.log,.yml,.yaml"
+          className={styles.hiddenInput}
+          onChange={(e) => {
+            void handleFileSelect(e)
+          }}
+        />
+
+        <div className={styles.composerFoot}>
+          <span className={styles.kbdHint}>
+            <Kbd>↵</Kbd> to send · <Kbd>⇧</Kbd>+<Kbd>↵</Kbd> for newline
+          </span>
+          <div className={styles.composerActions}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={staged.length >= ATTACH_MAX_COUNT}
+            >
+              Attach
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="md"
+              disabled={sendMutation.isPending || draft.trim().length === 0}
+            >
+              {sendMutation.isPending ? 'Sending…' : 'Send'}
+            </Button>
+          </div>
         </div>
         {sendMutation.error ? (
           <div className={styles.composerError}>{formatError(sendMutation.error)}</div>
-        ) : (
-          <div className={styles.composerHint}>
-            ENTER TO SEND · SHIFT+ENTER FOR NEWLINE · 📎 ATTACHES FILES (up to{' '}
-            {String(ATTACH_MAX_COUNT)} files, {formatAttachmentSize(ATTACH_MAX_BYTES)} each)
-          </div>
-        )}
+        ) : null}
       </form>
     </Screen>
   )
@@ -536,10 +560,12 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
 
 function MessageItem({
   message,
+  agentByName,
   onReact,
   reactPending,
 }: {
   message: PubMessage
+  agentByName: Map<string, Agent>
   onReact: (emoji: string) => void
   reactPending: boolean
 }): ReactElement {
@@ -554,19 +580,28 @@ function MessageItem({
     return Array.from(map.entries())
   }, [message.reactions])
 
+  const sender = agentByName.get(message.display_name)
+
   return (
-    <div className={styles.message}>
-      <div className={styles.messageMeta}>
+    <article className={styles.message}>
+      <div className={styles.messageHead}>
+        <AgentMark
+          id={message.display_name}
+          name={message.display_name}
+          size="md"
+          glyph={sender?.avatar ?? undefined}
+          imageUrl={api.authedUrl(sender?.avatar_image_url) ?? undefined}
+        />
         <span className={styles.sender}>{message.display_name}</span>
         <span className={styles.timestamp}>{formatTime(message.timestamp)}</span>
-        {message.mention_names.length > 0 ? (
-          <span className={styles.mentions}>
-            {message.mention_names.map((n) => `@${n}`).join(' ')}
-          </span>
-        ) : null}
+        {message.mention_names.map((n) => (
+          <Tag key={n} agent={n}>
+            @{n}
+          </Tag>
+        ))}
       </div>
-      <div className={styles.content}>{message.content}</div>
-      <div className={styles.reactionsRow}>
+      <div className={styles.messageBody}>{message.content}</div>
+      <div className={styles.messageReactions}>
         {grouped.map(([emoji, list]) => (
           <button
             key={emoji}
@@ -579,7 +614,7 @@ function MessageItem({
             }}
           >
             <span>{emoji}</span>
-            <span>{list.length}</span>
+            <span className={styles.reactionChipCount}>{list.length}</span>
           </button>
         ))}
         <span className={styles.reactPicker}>
@@ -599,6 +634,6 @@ function MessageItem({
           ))}
         </span>
       </div>
-    </div>
+    </article>
   )
 }

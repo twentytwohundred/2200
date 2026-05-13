@@ -185,6 +185,17 @@ export function CommandPalette(): ReactElement {
         },
       },
       {
+        id: 'nav:studio',
+        group: 'NAVIGATE',
+        label: 'Studio',
+        hint: '/studio',
+        searchable: 'studio pub room chat agents members reactions mention',
+        activate: () => {
+          void navigate('/studio')
+          close()
+        },
+      },
+      {
         id: 'nav:inbox',
         group: 'NAVIGATE',
         label: 'Inbox',
