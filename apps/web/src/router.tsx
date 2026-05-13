@@ -11,6 +11,7 @@ import { SchedulesScreen } from './screens/schedules/SchedulesScreen'
 import { SettingsScreen } from './screens/settings/SettingsScreen'
 import { ToolsScreen } from './screens/tools/ToolsScreen'
 import { StudioScreen } from './screens/studio/StudioScreen'
+import { RoomsScreen } from './screens/rooms/RoomsScreen'
 import { FleetDocScreen } from './screens/fleet-doc/FleetDocScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
@@ -49,6 +50,7 @@ export function Router(): ReactElement {
         <Route path="/settings" element={<SettingsScreen />} />
         <Route path="/studio" element={<StudioScreen />} />
         <Route path="/studio/:pub" element={<StudioScreen />} />
+        <Route path="/rooms" element={<RoomsScreen />} />
         <Route path="/fleet" element={<FleetDocScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

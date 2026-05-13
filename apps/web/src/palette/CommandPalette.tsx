@@ -196,6 +196,17 @@ export function CommandPalette(): ReactElement {
         },
       },
       {
+        id: 'nav:rooms',
+        group: 'NAVIGATE',
+        label: 'Rooms',
+        hint: '/rooms',
+        searchable: 'rooms pubs channels chat groups custom membership',
+        activate: () => {
+          void navigate('/rooms')
+          close()
+        },
+      },
+      {
         id: 'nav:inbox',
         group: 'NAVIGATE',
         label: 'Inbox',

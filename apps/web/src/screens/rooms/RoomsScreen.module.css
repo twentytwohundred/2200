@@ -1,0 +1,81 @@
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--ds-4);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-3);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    background var(--ds-dur-fast) var(--ds-ease);
+}
+
+.card:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cardName {
+  font:
+    600 15px/1.1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cardEmpty {
+  margin: 0;
+  font:
+    400 12px/1.4 var(--ds-font-sans);
+  color: var(--text-3);
+}
+
+.memberStack {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memberRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font:
+    500 13px/1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.memberName {
+  color: var(--text);
+}
+
+.cardFoot {
+  display: flex;
+  justify-content: flex-end;
+}

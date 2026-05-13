@@ -100,7 +100,13 @@ class AdoptedAgentImpl implements TrackedAgent {
     this.exited = this.watchForExit()
   }
 
-  /** Poll for process death every 1s. Adopted processes have no `exit` event. */
+  /**
+   * Poll for process death every 100ms. Adopted processes have no
+   * `exit` event so this is how the supervisor's handleAgentExit
+   * eventually fires; tight poll cadence keeps the gap between
+   * stop() returning and `exited` resolving short enough that
+   * follow-up startAgent calls do not race `this.spawned.delete`.
+   */
   private watchForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     return new Promise((resolve) => {
       const tick = (): void => {
@@ -108,24 +114,40 @@ class AdoptedAgentImpl implements TrackedAgent {
           resolve({ code: null, signal: null })
           return
         }
-        setTimeout(tick, 1000)
+        setTimeout(tick, 100)
       }
       tick()
     })
   }
 
   async stop(timeoutMs = 5000): Promise<void> {
-    if (!isPidAlive(this.pid)) return
+    if (!isPidAlive(this.pid)) {
+      // Already dead. `exited` may have fired or be about to fire.
+      // Wait briefly so the supervisor's handleAgentExit can run
+      // before stop() returns; otherwise stopAgent + startAgent
+      // racing through this in <1ms triggers "already running".
+      await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
+      return
+    }
     this.log.debug('sending SIGTERM to adopted process', { name: this.name, pid: this.pid })
     try {
       process.kill(this.pid, 'SIGTERM')
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+        await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
+        return
+      }
       throw err
     }
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
-      if (!isPidAlive(this.pid)) return
+      if (!isPidAlive(this.pid)) {
+        // Wait for the supervisor's exit handler to drain before
+        // returning. See the comment above; same invariant applies
+        // post-SIGTERM as pre-stop.
+        await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
+        return
+      }
       await new Promise((r) => setTimeout(r, 100))
     }
     this.log.warn('adopted process did not respond to SIGTERM, sending SIGKILL', {
@@ -135,11 +157,17 @@ class AdoptedAgentImpl implements TrackedAgent {
     try {
       process.kill(this.pid, 'SIGKILL')
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+        await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
+        return
+      }
       throw err
     }
     for (let i = 0; i < 30; i++) {
-      if (!isPidAlive(this.pid)) return
+      if (!isPidAlive(this.pid)) {
+        await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
+        return
+      }
       await new Promise((r) => setTimeout(r, 100))
     }
     throw new Error(
