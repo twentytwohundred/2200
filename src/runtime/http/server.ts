@@ -366,6 +366,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs/:name/reactions' },
+      { method: 'GET', path: '/api/v1/pubs/attachments/:attId/:filename' },
       { method: 'POST', path: '/api/v1/onboarding' },
       { method: 'GET', path: '/api/v1/onboarding/:id' },
       { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
@@ -2005,6 +2006,55 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     attachments: z.array(PubAttachmentInput).max(ATTACHMENTS_MAX_PER_MESSAGE).optional(),
   })
 
+  // GET attachment files written by the POST /pubs/:name/messages
+  // handler above. The user's web app uses this to render image
+  // previews + offer downloads inline in the Studio timeline; agents
+  // read the same files through their /commons/scratch/... virtual
+  // prefix via fs.read.
+  fastify.get<{ Params: { attId: string; filename: string } }>(
+    '/api/v1/pubs/attachments/:attId/:filename',
+    async (req, reply) => {
+      // Path-component validation: attId must be hex-id-only (no /, no ..)
+      // and filename must not escape. The POST writer enforces these on
+      // ingest; we double-check here to keep this route safe even if a
+      // future writer regresses.
+      if (!/^[a-f0-9]{6,32}$/i.test(req.params.attId)) {
+        throw notFound('attachment', req.params.attId)
+      }
+      if (
+        req.params.filename.includes('/') ||
+        req.params.filename.includes('\\') ||
+        req.params.filename.includes('..')
+      ) {
+        throw notFound('attachment', req.params.filename)
+      }
+      const filePath = join(
+        home,
+        'commons',
+        'scratch',
+        'attachments',
+        req.params.attId,
+        req.params.filename,
+      )
+      const { stat, readFile } = await import('node:fs/promises')
+      let st
+      try {
+        st = await stat(filePath)
+      } catch {
+        throw notFound('attachment', req.params.filename)
+      }
+      if (!st.isFile()) {
+        throw notFound('attachment', req.params.filename)
+      }
+      const buf = await readFile(filePath)
+      const ext = req.params.filename.split('.').pop()?.toLowerCase() ?? ''
+      const mime = inferMimeFromExt(ext)
+      void reply.header('content-type', mime)
+      void reply.header('cache-control', 'private, max-age=3600')
+      void reply.send(buf)
+    },
+  )
+
   fastify.post<{ Params: { name: string } }>('/api/v1/pubs/:name/messages', async (req, reply) => {
     const snap = supervisor.snapshot()
     if (!snap.pubs[req.params.name]) throw notFound('pub', req.params.name)
@@ -2573,6 +2623,32 @@ function extractGeneratedAt(markdown: string): string | null {
 function newAttachmentId(): string {
   // 12 random hex chars; collision risk negligible for the use case.
   return randomBytes(6).toString('hex')
+}
+
+/**
+ * Minimal extension → MIME map. Just enough coverage for the
+ * attachment-serve route ... unknown types fall back to octet-stream
+ * so the browser offers a download instead of trying to render.
+ */
+function inferMimeFromExt(ext: string): string {
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain; charset=utf-8',
+    md: 'text/markdown; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    yaml: 'application/yaml; charset=utf-8',
+    yml: 'application/yaml; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    log: 'text/plain; charset=utf-8',
+    html: 'text/html; charset=utf-8',
+  }
+  return map[ext] ?? 'application/octet-stream'
 }
 
 function formatBytes(n: number): string {

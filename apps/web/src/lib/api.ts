@@ -960,6 +960,14 @@ export const api = {
       method: 'POST',
       body,
     }),
+  /**
+   * Build a fully-qualified URL for a pub attachment served by the
+   * GET /api/v1/pubs/attachments/:attId/:filename route. Run through
+   * `authedUrl` so `<img>` tags can fetch it without an Authorization
+   * header (the runtime accepts `?token=` for read routes).
+   */
+  pubAttachmentUrl: (attId: string, filename: string): string =>
+    `/api/v1/pubs/attachments/${encodeURIComponent(attId)}/${encodeURIComponent(filename)}`,
 }
 
 export interface FleetResponse {

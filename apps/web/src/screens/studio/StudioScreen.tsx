@@ -36,6 +36,7 @@ import { Navigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { Attachment } from '../../chat/Attachment'
 import {
   ApiError,
   NetworkError,
@@ -171,6 +172,77 @@ function formatAttachmentSize(n: number): string {
   if (n < 1024) return `${String(n)} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
+interface ParsedPubAttachment {
+  attId: string
+  filename: string
+  content_type: string
+  size_label: string
+  isImage: boolean
+}
+
+/**
+ * Pub messages with attachments arrive as a single string the runtime
+ * pre-rendered with an "Attached files:" header followed by virtual
+ * paths under /commons/scratch/attachments/<attId>/<filename>.
+ *
+ * Split that out so the timeline can show image previews + file
+ * chips and render only the user-authored body as markdown. The
+ * agent's view of the same message is the raw augmented content;
+ * that path is untouched by this client-side parse.
+ */
+function parsePubAttachments(content: string): {
+  attachments: ParsedPubAttachment[]
+  body: string
+} {
+  if (!content.startsWith('Attached files:\n')) {
+    return { attachments: [], body: content }
+  }
+  const lines = content.split('\n')
+  let idx = 1 // first attachment line
+  const attachments: ParsedPubAttachment[] = []
+  const ATT_LINE = /^-\s+\/commons\/scratch\/attachments\/([a-f0-9]+)\/([^\s]+)\s+\(([^,]+),\s*([^)]+)\)\s*$/i
+  while (idx < lines.length) {
+    const line = lines[idx] ?? ''
+    const m = ATT_LINE.exec(line)
+    if (!m) break
+    const [, attId, filename, contentType, sizeLabel] = m
+    if (attId && filename && contentType && sizeLabel) {
+      attachments.push({
+        attId,
+        filename,
+        content_type: contentType.trim(),
+        size_label: sizeLabel.trim(),
+        isImage: contentType.trim().toLowerCase().startsWith('image/'),
+      })
+    }
+    idx++
+  }
+  if (attachments.length === 0) {
+    return { attachments: [], body: content }
+  }
+  // Skip optional inline-text blocks: `\n--- name (inline) ---` …
+  // `--- end name ---`. They live between the attachment list and
+  // the user content per the runtime's render.
+  while (idx < lines.length) {
+    const line = lines[idx] ?? ''
+    if (/^---\s+.+\s+\(inline\)\s+---$/.test(line)) {
+      // Walk to the matching `--- end <name> ---` (or EOF as fallback).
+      idx++
+      while (idx < lines.length) {
+        const inner = lines[idx] ?? ''
+        idx++
+        if (/^---\s+end\s+.+\s+---$/.test(inner)) break
+      }
+      continue
+    }
+    break
+  }
+  // Skip blank separator the runtime inserts before the user content.
+  while (idx < lines.length && (lines[idx] ?? '') === '') idx++
+  const body = lines.slice(idx).join('\n')
+  return { attachments, body }
 }
 
 function StudioPubView({ pubName }: { pubName: string }): ReactElement {
@@ -678,6 +750,10 @@ function MessageItem({
   }, [message.reactions])
 
   const sender = agentByName.get(message.display_name)
+  const { attachments, body } = useMemo(
+    () => parsePubAttachments(message.content),
+    [message.content],
+  )
 
   return (
     <article className={styles.message}>
@@ -697,8 +773,32 @@ function MessageItem({
           </Tag>
         ))}
       </div>
+      {attachments.length > 0 && (
+        <div className={styles.messageAttachments}>
+          {attachments.map((att) => {
+            const href = api.authedUrl(api.pubAttachmentUrl(att.attId, att.filename)) ?? '#'
+            return (
+              <a
+                key={`${att.attId}-${att.filename}`}
+                href={href}
+                target="_blank"
+                rel="noreferrer noopener"
+                className={styles.attachmentLink}
+                title={`Open ${att.filename}`}
+              >
+                <Attachment
+                  kind={att.isImage ? 'image' : 'file'}
+                  name={att.filename}
+                  size={att.size_label}
+                  {...(att.isImage ? { src: href } : {})}
+                />
+              </a>
+            )
+          })}
+        </div>
+      )}
       <div className={cx(styles.messageBody, styles.markdown)}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
       </div>
       <div className={styles.messageReactions}>
         {grouped.map(([emoji, list]) => (

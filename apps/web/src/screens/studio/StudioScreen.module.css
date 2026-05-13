@@ -184,6 +184,26 @@
   color: var(--text-3);
 }
 
+.messageAttachments {
+  margin-left: 34px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.attachmentLink {
+  display: inline-flex;
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--ds-r-2);
+}
+
+.attachmentLink:hover {
+  filter: brightness(1.05);
+}
+
 .messageBody {
   margin-left: 34px;
   color: var(--text);
