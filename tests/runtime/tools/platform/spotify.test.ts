@@ -183,6 +183,34 @@ describe('spotify_api: path normalization', () => {
     await t.execute({ method: 'POST', path: 'playlists/abc123/items' }, ctx())
     expect(mock.makeRequest.calls[0]!.args[1]).toBe('playlists/abc123/items')
   })
+
+  it('lowercases a capitalized first segment (e.g. "Me/" -> "me/")', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: 'Me/playlists' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('me/playlists')
+  })
+
+  it('lowercases the first segment without touching downstream IDs (case-mixed)', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    // Spotify IDs are mixed-case base62; the second segment must be preserved verbatim.
+    await t.execute({ method: 'GET', path: 'Playlists/2nH7uZhjnAnDAURGVnuG14' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('playlists/2nH7uZhjnAnDAURGVnuG14')
+  })
+
+  it('lowercases a single-segment path', async () => {
+    const mock = makeMockApi()
+    mock.makeRequest.setResult({})
+    const { byName } = withMock(mock)
+    const t = byName('spotify_api')
+    await t.execute({ method: 'GET', path: 'Search' }, ctx())
+    expect(mock.makeRequest.calls[0]!.args[1]).toBe('search')
+  })
 })
 
 describe('spotify_api: query serialization', () => {
@@ -288,6 +316,36 @@ describe('spotify_api: error mapping', () => {
     })
     await expect(tool.execute({ method: 'PUT', path: 'me/player/play' }, ctx())).rejects.toThrow(
       /no active device/i,
+    )
+  })
+
+  it('maps 404 "Service not found" to a case-sensitivity hint', async () => {
+    const { tool, setError } = build()
+    setError({ status: 404, body: { error: { message: 'Service not found' } } })
+    await expect(
+      // Path is pre-normalized; this test asserts the error mapping fires for
+      // any future regression where the SDK propagates "Service not found"
+      // (e.g. an unknown endpoint path).
+      tool.execute({ method: 'GET', path: 'unknown-endpoint' }, ctx()),
+    ).rejects.toThrow(/case-sensitive lowercase/i)
+  })
+
+  it('maps 400 "Invalid limit" to a search-query hint', async () => {
+    const { tool, setError } = build()
+    setError({ status: 400, body: { error: { message: 'Invalid limit' } } })
+    await expect(
+      tool.execute(
+        { method: 'GET', path: 'search', query: { q: 'foo OR bar', type: 'track', limit: 20 } },
+        ctx(),
+      ),
+    ).rejects.toThrow(/boolean operators/i)
+  })
+
+  it('maps a generic 400 with a fallback message', async () => {
+    const { tool, setError } = build()
+    setError({ status: 400, body: { error: { message: 'Invalid parameter foo' } } })
+    await expect(tool.execute({ method: 'GET', path: 'me' }, ctx())).rejects.toThrow(
+      /Invalid parameter foo/,
     )
   })
 })

@@ -120,9 +120,26 @@ function mapSpotifyError(err: unknown): never {
     )
   }
   if (e.status === 404) {
-    throw new Error(
-      `Spotify could not find the requested resource (404): ${e.body?.error?.message ?? e.message ?? 'not found'}.`,
-    )
+    const msg = e.body?.error?.message ?? e.message ?? 'not found'
+    if (msg === 'Service not found') {
+      throw new Error(
+        'Spotify rejected the endpoint path (404 "Service not found"). Spotify paths are case-sensitive lowercase. ' +
+          'Common cause: a capitalized first segment like "Me/playlists" instead of "me/playlists". ' +
+          'Check the brain note `spotify-api-reference` for the canonical endpoint list.',
+      )
+    }
+    throw new Error(`Spotify could not find the requested resource (404): ${msg}.`)
+  }
+  if (e.status === 400) {
+    const msg = e.body?.error?.message ?? e.message ?? 'bad request'
+    if (msg === 'Invalid limit') {
+      throw new Error(
+        'Spotify returned 400 "Invalid limit" but the actual problem may not be the `limit` value. ' +
+          "Spotify's search endpoint sometimes returns this misleading message for queries containing boolean operators " +
+          '(OR / AND / NOT) or unusual structure in `q`. Try simpler search terms in `q` without boolean operators.',
+      )
+    }
+    throw new Error(`Spotify rejected the request (400): ${msg}.`)
   }
   if (e.status === 429) {
     throw new Error('Spotify rate-limited the request (429). Retry after the indicated delay.')
@@ -142,7 +159,17 @@ function normalizePath(raw: string): string {
   let p = raw.trim()
   if (p.startsWith('/')) p = p.slice(1)
   if (p.startsWith('v1/')) p = p.slice(3)
-  return p
+  // Lowercase the first path segment. Spotify endpoints are case-sensitive
+  // and the first segment is always a known lowercase verb (me, search,
+  // playlists, albums, artists, tracks, users, episodes, shows, ...).
+  // Resource IDs only appear AFTER the first segment, so lowercasing
+  // the first segment is safe and protects against models sending
+  // "Me/playlists" instead of "me/playlists" (observed live 2026-05-13).
+  const slashIdx = p.indexOf('/')
+  if (slashIdx === -1) {
+    return p.toLowerCase()
+  }
+  return p.slice(0, slashIdx).toLowerCase() + p.slice(slashIdx)
 }
 
 function buildQueryString(query: Record<string, string | number | boolean> | undefined): string {

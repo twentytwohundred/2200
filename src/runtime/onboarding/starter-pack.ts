@@ -887,6 +887,13 @@ messages: 401 means refresh-pending-retry, 403 means scope/permission,
 means the authorizing user lacks Spotify Premium, NO_ACTIVE_DEVICE
 means no playback device is active.
 
+## Common pitfalls (read this before you call \`spotify_api\`)
+
+- **Paths are lowercase.** Spotify is case-sensitive on the path. \`me/playlists\` works; \`Me/playlists\` returns 404 "Service not found". The tool defensively lowercases the first segment for you, but write paths lowercase from the start.
+- **No boolean operators in \`q\`.** Spotify's search endpoint does NOT support \`OR\` / \`AND\` / \`NOT\` as boolean operators between terms. A query like \`q: 'indie folk 90s OR 2000s'\` will return a misleading 400 "Invalid limit" error (the real problem is \`q\`, not \`limit\`). Use space-separated terms only, or use Spotify's filter syntax (\`year:1990\`, \`genre:indie\`, \`artist:radiohead\`). For year ranges, query twice with different \`year:\` filters and merge the results client-side.
+- **Use the bare ID in URL paths, the URI in JSON bodies.** A path like \`playlists/2nH7uZhj.../items\` takes the bare ID. A body like \`{ uris: ['spotify:track:6rqhFg...'] }\` takes the URI. They are not interchangeable.
+- **Verify before claiming.** A \`spotify_api\` call that fails (any non-2xx status) made no change. Do not narrate "updated the playlist" or "added the track" unless the tool returned a successful response. If you don't know whether a call succeeded, GET the resource again and look at the actual state.
+
 ## Auth model
 
 The OAuth token in your vault was minted with these scopes:
