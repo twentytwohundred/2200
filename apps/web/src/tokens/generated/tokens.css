@@ -3,8 +3,8 @@
 
 :root {
   /* Type */
-  --ds-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --ds-font-mono: JetBrains Mono, ui-monospace, SF Mono, Menlo, Consolas, monospace;
+  --ds-font-sans: 'Switzer', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ds-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
   --ds-text-2xs: 11px;
   --ds-text-xs: 12px;
@@ -100,7 +100,7 @@
   --shadow-2: 0 1px 0 rgba(15,18,22,.04), 0 8px 24px -8px rgba(15,18,22,.10);
   --shadow-pop: 0 12px 48px -12px rgba(15,18,22,.22);
 
-  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--line-strong);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in oklch, var(--accent) 70%, transparent);
 
   color-scheme: light;
 }

@@ -35,7 +35,7 @@ html.dark {
   --shadow-2: 0 1px 0 rgba(0,0,0,.4), 0 8px 28px -8px rgba(0,0,0,.6);
   --shadow-pop: 0 12px 56px -12px rgba(0,0,0,.7);
 
-  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--line-strong);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in oklch, var(--accent) 60%, transparent);
 
   color-scheme: dark;
 }
