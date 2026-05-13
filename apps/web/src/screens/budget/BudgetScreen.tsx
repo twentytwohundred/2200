@@ -68,9 +68,10 @@ export function BudgetScreen(): ReactElement {
   })
 
   // Fleet total: sum cumulative + cap across all agents that have
-  // a `today` row. Agents with no spend yet today contribute 0/0
-  // so the bar reflects the active fleet, not 0/<sum-of-caps> when
-  // nobody has called a model.
+  // a `today` row. Cap prefers `configured.daily_usd` (the live
+  // identity.md value) over `today.cap_usd` (the cap the running
+  // tracker is enforcing) so a cap edit shows up in the fleet total
+  // immediately instead of waiting for the next agent restart.
   const fleetTotal = useMemo(() => {
     let cumulative = 0
     let cap = 0
@@ -80,7 +81,7 @@ export function BudgetScreen(): ReactElement {
       const today = q.data?.today
       if (!today) continue
       cumulative += today.cumulative_usd
-      cap += today.cap_usd
+      cap += q.data?.configured?.daily_usd ?? today.cap_usd
       if (today.blocked) blocked = true
       if (today.warned_today) warned = true
     }
@@ -169,8 +170,9 @@ export function BudgetScreen(): ReactElement {
             <ul className={styles.agentGrid}>
               {agents.map((a, i) => {
                 const today = perAgentBudget[i]?.data?.today ?? null
+                const configured = perAgentBudget[i]?.data?.configured ?? null
                 const cum = today?.cumulative_usd ?? 0
-                const cap = today?.cap_usd ?? 0
+                const cap = configured?.daily_usd ?? today?.cap_usd ?? 0
                 const variant: 'auto' | 'error' | 'attention' = today?.blocked
                   ? 'error'
                   : today?.warned_today
@@ -232,36 +234,40 @@ export function BudgetScreen(): ReactElement {
                 <Card padding={20}>
                   {selectedBudget.today ? (
                     <>
-                      <div className={styles.heroRow}>
-                        <div className={styles.heroPrimary}>
-                          <span className={styles.heroAmount}>
-                            {fmtUsd(selectedBudget.today.cumulative_usd)}
-                          </span>
-                          <span className={styles.heroOf}>
-                            of {fmtUsd(selectedBudget.today.cap_usd)}
-                          </span>
-                        </div>
-                        {pillForState(selectedBudget.today)}
-                      </div>
-                      <ProgressBar
-                        value={selectedBudget.today.cumulative_usd}
-                        max={selectedBudget.today.cap_usd}
-                        variant={
-                          selectedBudget.today.blocked
-                            ? 'error'
-                            : selectedBudget.today.warned_today
-                              ? 'attention'
-                              : 'auto'
-                        }
-                      />
-                      <KV
-                        k="WARN AT"
-                        v={
-                          <span className={styles.mono}>
-                            {String(selectedBudget.today.warn_at_pct)}%
-                          </span>
-                        }
-                      />
+                      {(() => {
+                        const detailCap =
+                          selectedBudget.configured?.daily_usd ?? selectedBudget.today.cap_usd
+                        const detailWarn =
+                          selectedBudget.configured?.warn_at_pct ?? selectedBudget.today.warn_at_pct
+                        return (
+                          <>
+                            <div className={styles.heroRow}>
+                              <div className={styles.heroPrimary}>
+                                <span className={styles.heroAmount}>
+                                  {fmtUsd(selectedBudget.today.cumulative_usd)}
+                                </span>
+                                <span className={styles.heroOf}>of {fmtUsd(detailCap)}</span>
+                              </div>
+                              {pillForState(selectedBudget.today)}
+                            </div>
+                            <ProgressBar
+                              value={selectedBudget.today.cumulative_usd}
+                              max={detailCap}
+                              variant={
+                                selectedBudget.today.blocked
+                                  ? 'error'
+                                  : selectedBudget.today.warned_today
+                                    ? 'attention'
+                                    : 'auto'
+                              }
+                            />
+                            <KV
+                              k="WARN AT"
+                              v={<span className={styles.mono}>{String(detailWarn)}%</span>}
+                            />
+                          </>
+                        )
+                      })()}
                       <KV
                         k="LAST RECORDED"
                         v={
