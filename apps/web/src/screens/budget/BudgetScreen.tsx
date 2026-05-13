@@ -108,7 +108,7 @@ export function BudgetScreen(): ReactElement {
         <Card padding={0}>
           <EmptyState
             title="No Agents to budget"
-            body="Spawn an Agent first; their daily spend appears here once the loop runs."
+            body="Build an Agent first; their daily spend appears here once the loop runs."
           />
         </Card>
       ) : (

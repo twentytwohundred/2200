@@ -245,9 +245,9 @@ export function CommandPalette(): ReactElement {
       {
         id: 'cmd:spawn',
         group: 'COMMANDS',
-        label: 'Spawn an Agent',
+        label: 'Build an Agent',
         hint: '/onboarding',
-        searchable: 'spawn new agent onboarding create card stack interview',
+        searchable: 'build spawn new agent onboarding create card stack interview',
         activate: () => {
           void navigate('/onboarding')
           close()

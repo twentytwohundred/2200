@@ -105,7 +105,7 @@ export function FleetScreen(): ReactElement {
               void navigate('/onboarding')
             }}
           >
-            Spawn agent
+            Build Agent
           </Button>
         </>
       }
@@ -152,7 +152,7 @@ export function FleetScreen(): ReactElement {
                 void navigate('/onboarding')
               }}
             >
-              Spawn an Agent
+              Build an Agent
             </Button>
           }
         />

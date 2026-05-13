@@ -164,7 +164,7 @@ export function OnboardingScreen(): ReactElement {
   return (
     <Screen
       crumbs={['2200', 'onboarding']}
-      title="Spawn an Agent"
+      title="Build an Agent"
       lede="Answer a few questions; 2200 will assemble an Identity, suggest tools and schedules, and stand the Agent up on this instance."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >

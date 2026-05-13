@@ -90,12 +90,12 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
-  it('exposes a Spawn an Agent command pointing at /onboarding', async () => {
+  it('exposes a Build an Agent command pointing at /onboarding', async () => {
     agentsMock.mockResolvedValue({ items: [], cursor: { next: null, limit: 50 } })
     renderWithProviders(<CommandPalette />)
     openPalette()
     await screen.findByPlaceholderText(/Search agents, navigate/)
-    expect(screen.getByText('Spawn an Agent')).toBeInTheDocument()
+    expect(screen.getByText('Build an Agent')).toBeInTheDocument()
     expect(screen.getByText('/onboarding')).toBeInTheDocument()
   })
 
