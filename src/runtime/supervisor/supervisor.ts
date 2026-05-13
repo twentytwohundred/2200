@@ -429,8 +429,18 @@ export class Supervisor {
 
     const expectedBootstrap = defaultBootstrapPath()
     let agentsRejectedAndRespawned = 0
+    // Any non-terminal state was a live Agent at last shutdown; revive it.
+    // 'stopped' is operator-requested rest; 'errored' is crashed beyond the
+    // respawn budget. Both stay down until the operator brings them back.
+    const reviveStates: AgentRecord['state'][] = [
+      'running',
+      'waiting',
+      'blocked_on_user',
+      'blocked_on_agent',
+      'blocked_on_detector',
+    ]
     for (const [name, record] of Object.entries(this.state.agents)) {
-      if (record.state !== 'running') continue
+      if (!reviveStates.includes(record.state)) continue
       if (record.pid !== null && isPidAlive(record.pid)) {
         // Adopt-time validation: confirm the surviving process is running
         // the currently-deployed bootstrap. If the dist was rebuilt while
@@ -1644,7 +1654,7 @@ export class Supervisor {
     // The flag is a one-shot: consume it here so a subsequent unexpected
     // exit isn't suppressed.
     const intentional = this.intentionalStops.delete(name)
-    if (intentional || this.isShuttingDown) {
+    if (intentional) {
       const nextState: AgentRecord['state'] = signal === null && code === 0 ? 'stopped' : 'errored'
       await this.updateAgent(name, {
         state: nextState,
@@ -1656,6 +1666,33 @@ export class Supervisor {
             : record.errored_reason,
       })
       this.log.info('Agent process exited', { name, code, signal, nextState, intentional: true })
+      return
+    }
+    if (this.isShuttingDown) {
+      // Daemon-driven shutdown: the operator didn't ask for this Agent to
+      // stop, they asked for the supervisor to stop. Preserve the Agent's
+      // last live state (running / waiting / blocked_*) so the next boot's
+      // state-recovery pass revives it. Only the pid is cleared.
+      const nextState: AgentRecord['state'] =
+        signal === null && code === 0
+          ? record.state // graceful exit, keep last live state for revive
+          : 'errored'
+      await this.updateAgent(name, {
+        state: nextState,
+        pid: null,
+        errored_at: nextState === 'errored' ? new Date().toISOString() : record.errored_at,
+        errored_reason:
+          nextState === 'errored'
+            ? `process exited during daemon shutdown code=${String(code)} signal=${String(signal)}`
+            : record.errored_reason,
+      })
+      this.log.info('Agent process exited during shutdown', {
+        name,
+        code,
+        signal,
+        nextState,
+        will_revive_next_boot: nextState !== 'errored',
+      })
       return
     }
 
