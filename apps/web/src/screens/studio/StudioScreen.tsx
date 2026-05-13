@@ -22,6 +22,7 @@
  * with a different emoji replaces.
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -268,11 +269,86 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     },
   })
 
-  // Autoscroll to the bottom on new messages.
+  // Sticky-bottom autoscroll: only follow new messages when the
+  // operator is already at the bottom. If they've scrolled up to
+  // re-read, leave them where they are and tick an unread badge on
+  // the floating "jump to latest" button.
+  const [atBottom, setAtBottom] = useState(true)
+  const [unreadBelow, setUnreadBelow] = useState(0)
+  const SCROLL_BOTTOM_THRESHOLD = 80
+
+  const updateAtBottom = useCallback((): boolean => {
+    const el = timelineRef.current
+    if (!el) return true
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    const next = distance <= SCROLL_BOTTOM_THRESHOLD
+    setAtBottom(next)
+    if (next) setUnreadBelow(0)
+    return next
+  }, [])
+
+  const scrollAnimRef = useRef<number | null>(null)
+  const scrollToBottom = useCallback((smooth: boolean): void => {
+    const el = timelineRef.current
+    if (!el) return
+    if (scrollAnimRef.current !== null) {
+      cancelAnimationFrame(scrollAnimRef.current)
+      scrollAnimRef.current = null
+    }
+    const target = el.scrollHeight - el.clientHeight
+    if (!smooth || Math.abs(target - el.scrollTop) < 8) {
+      el.scrollTop = target
+      setAtBottom(true)
+      setUnreadBelow(0)
+      return
+    }
+    const start = el.scrollTop
+    const distance = target - start
+    const duration = 260
+    const startTs = performance.now()
+    let cancelled = false
+    const onUserScroll = (): void => {
+      cancelled = true
+    }
+    el.addEventListener('wheel', onUserScroll, { passive: true, once: true })
+    el.addEventListener('touchmove', onUserScroll, { passive: true, once: true })
+    const tick = (now: number): void => {
+      if (cancelled) {
+        scrollAnimRef.current = null
+        return
+      }
+      const t = Math.min(1, (now - startTs) / duration)
+      const eased = 1 - Math.pow(1 - t, 3)
+      el.scrollTop = start + distance * eased
+      if (t < 1) {
+        scrollAnimRef.current = requestAnimationFrame(tick)
+      } else {
+        scrollAnimRef.current = null
+        setAtBottom(true)
+        setUnreadBelow(0)
+        el.removeEventListener('wheel', onUserScroll)
+        el.removeEventListener('touchmove', onUserScroll)
+      }
+    }
+    scrollAnimRef.current = requestAnimationFrame(tick)
+  }, [])
+
+  // Track message-count deltas so the unread-below badge only ticks
+  // when new content actually arrives (not on every poll refetch).
+  const prevMsgCountRef = useRef(messages.length)
   useEffect(() => {
     const el = timelineRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length])
+    if (!el) return
+    const prev = prevMsgCountRef.current
+    const grew = messages.length > prev
+    prevMsgCountRef.current = messages.length
+    if (atBottom) {
+      el.scrollTop = el.scrollHeight
+      setUnreadBelow(0)
+    } else if (grew) {
+      setUnreadBelow((n) => n + (messages.length - prev))
+    }
+  }, [messages.length, atBottom])
 
   const handleInsertMention = (handle: string): void => {
     const insert = `@${handle} `
@@ -356,6 +432,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
 
   return (
     <Screen
+      className={styles.shell}
       crumbs={['2200', 'studio', pubName]}
       title="Studio"
       lede="Multi-agent room. Tag with @, react with one click."
@@ -425,38 +502,56 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           ) : null}
         </aside>
 
-        <div ref={timelineRef} className={styles.feed}>
-          {messagesQuery.isLoading && messages.length === 0 ? (
-            <LoadingState rows={4} />
-          ) : messages.length === 0 ? (
-            <div className={styles.empty}>No messages in {pubName} yet. Say hi below.</div>
-          ) : (
-            messages.map((m) => (
-              <MessageItem
-                key={m.message_id}
-                message={m}
-                agentByName={agentByName}
-                onReact={(emoji) => {
-                  reactMutation.mutate({ message_id: m.message_id, emoji })
-                }}
-                reactPending={reactMutation.isPending}
-              />
-            ))
+        <div className={styles.feedWrap}>
+          <div ref={timelineRef} className={styles.feed} onScroll={updateAtBottom}>
+            {messagesQuery.isLoading && messages.length === 0 ? (
+              <LoadingState rows={4} />
+            ) : messages.length === 0 ? (
+              <div className={styles.empty}>No messages in {pubName} yet. Say hi below.</div>
+            ) : (
+              messages.map((m) => (
+                <MessageItem
+                  key={m.message_id}
+                  message={m}
+                  agentByName={agentByName}
+                  onReact={(emoji) => {
+                    reactMutation.mutate({ message_id: m.message_id, emoji })
+                  }}
+                  reactPending={reactMutation.isPending}
+                />
+              ))
+            )}
+            {workingMembers.map((m) => {
+              const p = agentByName.get(m.display_name)?.pulse
+              if (!p) return null
+              return (
+                <div
+                  key={`thinking-${m.agent_id}`}
+                  className={styles.thinkingRow}
+                  title={`${m.display_name} · ${p.state} (intensity ${p.intensity.toFixed(2)})`}
+                >
+                  <PulseDot state={p.state} intensity={p.intensity} size="sm" />
+                  <span>{m.display_name} is thinking…</span>
+                </div>
+              )
+            })}
+          </div>
+          {!atBottom && (
+            <button
+              type="button"
+              className={styles.jumpToBottom}
+              onClick={() => {
+                scrollToBottom(true)
+              }}
+              aria-label="Jump to latest message"
+            >
+              {unreadBelow > 0 && <span className={styles.jumpToBottomBadge}>{unreadBelow}</span>}
+              <span>Jump to latest</span>
+              <span className={styles.jumpToBottomArrow} aria-hidden="true">
+                ↓
+              </span>
+            </button>
           )}
-          {workingMembers.map((m) => {
-            const p = agentByName.get(m.display_name)?.pulse
-            if (!p) return null
-            return (
-              <div
-                key={`thinking-${m.agent_id}`}
-                className={styles.thinkingRow}
-                title={`${m.display_name} · ${p.state} (intensity ${p.intensity.toFixed(2)})`}
-              >
-                <PulseDot state={p.state} intensity={p.intensity} size="sm" />
-                <span>{m.display_name} is thinking…</span>
-              </div>
-            )
-          })}
         </div>
       </div>
 
