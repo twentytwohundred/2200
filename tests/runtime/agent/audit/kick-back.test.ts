@@ -128,15 +128,17 @@ function silentAudit(): ClaimEvidenceAuditResult {
 }
 
 describe('AgentLoop · audit kick-back', () => {
-  it('fires kick-back on important severity, then accepts a corrected reply', async () => {
+  it('kick-back: agent recovers by ACTUALLY DOING THE WORK via tool call', async () => {
     const dispatcher = makeDispatcher()
     const taskStore = new TaskStore(home, 'hobby')
     const ap = agentPaths(home, 'hobby')
     const provider = new ScriptedProvider([
-      // turn 1: hallucinated claim
-      'I wrote /project/totally-fake.txt with the content hello.',
-      // turn 2: agent admits and rewrites
-      'Sorry. I did not actually write any file. Acknowledging.',
+      // turn 1: hallucinated claim (no tool call)
+      'I wrote /project/note.md with the content hello.',
+      // turn 2 (after kick-back): actually do the work
+      '```tool\n{"tool":"fs_write","args":{"path":"/project/note.md","content":"hello"},"predicted_outcome":"ok","reason":"actually do it"}\n```',
+      // turn 3: re-summarize
+      'Done. /project/note.md now exists with the content hello.',
     ])
     let auditCalls = 0
     const loop = new AgentLoop({
@@ -150,8 +152,61 @@ describe('AgentLoop · audit kick-back', () => {
       claimEvidenceAudit: async () => {
         auditCalls += 1
         await Promise.resolve()
-        // First audit: contradicted. Second audit: silent (the agent
-        // corrected its narration, no claim left to verify).
+        // First audit (turn 1): contradicted → kick back
+        // Second audit (turn 3): silent because the agent re-summarized
+        // accurately AND the tool log now backs the prior claim
+        return auditCalls === 1 ? importantAudit() : silentAudit()
+      },
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 'demo',
+      body: 'write hello to /project/note.md',
+      idempotency: 'destructive',
+    })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    if (r.kind === 'done') {
+      // turn1 + kickback + tool turn + summarize = 3 iterations
+      expect(r.iterations).toBe(3)
+      expect(r.audit_kickbacks).toBe(1)
+      expect(r.claim_audit?.severity).toBe('silent')
+    }
+    // Audit ran twice: once per "I think I'm done" moment.
+    expect(auditCalls).toBe(2)
+  })
+
+  it('text-only escape after kick-back triggers ANOTHER kick-back (no-escape)', async () => {
+    // Doug's bar: a plain-text "I did not do it" reply is not a valid
+    // end-state. The loop must demand action OR formal ask via tool.
+    const dispatcher = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new ScriptedProvider([
+      // turn 1: hallucinated claim
+      'I wrote /project/totally-fake.txt with the content hello.',
+      // turn 2: text-only ack-and-bail (no tool call, no new claim)
+      'Sorry. I did not actually write any file. Acknowledging.',
+      // turn 3: another text-only ack
+      'I cannot do this work.',
+      // turn 4: still text only
+      'Acknowledged again.',
+    ])
+    let auditCalls = 0
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      claimEvidenceAudit: async () => {
+        auditCalls += 1
+        await Promise.resolve()
+        // First audit: flagged. Subsequent: silent (no claims in text-only acks).
         return auditCalls === 1 ? importantAudit() : silentAudit()
       },
     })
@@ -166,12 +221,64 @@ describe('AgentLoop · audit kick-back', () => {
     const r = await loop.run(task)
     expect(r.kind).toBe('done')
     if (r.kind === 'done') {
-      expect(r.iterations).toBe(2)
-      expect(r.audit_kickbacks).toBe(1)
-      expect(r.summary).toContain('did not actually write')
-      expect(r.claim_audit?.severity).toBe('silent')
+      // 1 initial fab + 3 text-only escape attempts = 4 iterations,
+      // 3 kick-backs (one for the fab, two for the no-escape rule).
+      expect(r.iterations).toBe(4)
+      expect(r.audit_kickbacks).toBe(3)
     }
-    expect(auditCalls).toBe(2)
+  })
+
+  it('formal ask via tool call satisfies the bar (path 2: blocked-with-ask)', async () => {
+    // Doug's bar: agent must either DO the work or formally ASK via tool.
+    // Simulating the ask path: agent calls notification_create (mocked
+    // here as fs_write since it's a real tool the test dispatcher has,
+    // but the principle holds: any send-class tool call counts as a
+    // formal ask in production).
+    const dispatcher = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    const provider = new ScriptedProvider([
+      // turn 1: hallucinated
+      'I wrote /project/note.md with hello.',
+      // turn 2: formal ask via fs_write to a project file (in production
+      // this would be notification_create / chat_send; using fs_write
+      // here keeps the test focused on the loop behavior).
+      '```tool\n{"tool":"fs_write","args":{"path":"/project/blocked.md","content":"I need a credential to proceed."},"predicted_outcome":"ask recorded","reason":"formal ask"}\n```',
+      // turn 3: summarize the ask
+      'I cannot complete the work without a credential. I have recorded the ask in /project/blocked.md.',
+    ])
+    let auditCalls = 0
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      claimEvidenceAudit: async () => {
+        auditCalls += 1
+        await Promise.resolve()
+        return auditCalls === 1 ? importantAudit() : silentAudit()
+      },
+    })
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 'demo',
+      body: 'do something needing a credential',
+      idempotency: 'destructive',
+    })
+    await taskStore.save(task)
+    const r = await loop.run(task)
+    expect(r.kind).toBe('done')
+    if (r.kind === 'done') {
+      // turn1 + kickback + tool turn + summarize = 3 iterations
+      expect(r.iterations).toBe(3)
+      expect(r.audit_kickbacks).toBe(1)
+      expect(r.claim_audit?.severity).toBe('silent')
+      expect(r.summary).toContain('cannot complete')
+    }
   })
 
   it('exhausts the kick-back budget then finalizes anyway with the flag set', async () => {
