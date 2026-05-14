@@ -319,6 +319,42 @@ export interface ChatAttachmentUploaded extends ChatAttachmentRef {
   url: string
 }
 
+/**
+ * Runtime-side discriminator for system-authored messages. Currently
+ * one value: `audit` (claim-vs-evidence audit card from the post-task
+ * pipeline). The renderer routes on this to swap the message body
+ * for the structured AuditCard component.
+ */
+export type ChatMessageKind = 'audit'
+
+/**
+ * Structured audit card payload. The runtime serializes this into the
+ * `body` field of an audit message as a JSON envelope; the renderer
+ * parses it back. Stable wire shape across the runtime ↔ web boundary
+ * so a runtime upgrade can't silently break the renderer.
+ */
+export interface AuditCardClaim {
+  category: 'file_create' | 'file_read' | 'external_send' | 'tool_invoke' | 'process_count'
+  verb: string
+  object: string
+  status: 'verified' | 'unverified' | 'contradicted'
+  note: string
+  path?: string
+  tool?: string
+  target?: string
+  count?: number
+}
+
+export interface AuditCardEnvelope {
+  envelope: 'audit_card_v1'
+  task_id: string
+  severity: 'silent' | 'passive' | 'normal' | 'important'
+  summary: string
+  destructive: boolean
+  at: string
+  claims: AuditCardClaim[]
+}
+
 export interface ChatThreadMessage {
   id: string
   chat_id: string
@@ -328,6 +364,8 @@ export interface ChatThreadMessage {
   mode: ChatSendMode | null
   attachments: ChatAttachmentRef[]
   task_id: string | null
+  /** System-role discriminator; see ChatMessageKind. */
+  kind: ChatMessageKind | null
 }
 
 export interface ChatThreadPostBody {
