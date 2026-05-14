@@ -3792,6 +3792,31 @@ interface TaskDetailDto extends TaskListDto {
   idempotency: string
   /** Priority (default 0). */
   priority: number
+  /**
+   * Claim-vs-evidence audit summary attached to the task by the
+   * post-task pipeline. Null on tasks that ran before the audit
+   * substrate existed and on tasks where the audit failed silently.
+   * Surface for ops + the chat-side inline audit card.
+   */
+  audit: TaskAuditDto | null
+}
+
+interface TaskAuditDto {
+  severity: 'silent' | 'passive' | 'normal' | 'important'
+  summary: string
+  destructive: boolean
+  at: string
+  claims: {
+    category: string
+    verb: string
+    object: string
+    status: 'verified' | 'unverified' | 'contradicted'
+    note: string
+    path?: string
+    tool?: string
+    target?: string
+    count?: number
+  }[]
 }
 
 interface ChatMessageDto {
@@ -4107,6 +4132,28 @@ function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {
     checkpoint_taken_at: fm.checkpoint?.taken_at ?? null,
     idempotency: fm.idempotency,
     priority: fm.priority,
+    audit: fm.audit
+      ? {
+          severity: fm.audit.severity,
+          summary: fm.audit.summary,
+          destructive: fm.audit.destructive,
+          at: fm.audit.at,
+          claims: fm.audit.claims.map((c) => {
+            const out: TaskAuditDto['claims'][number] = {
+              category: c.category,
+              verb: c.verb,
+              object: c.object,
+              status: c.status,
+              note: c.note,
+            }
+            if (c.path !== undefined) out.path = c.path
+            if (c.tool !== undefined) out.tool = c.tool
+            if (c.target !== undefined) out.target = c.target
+            if (c.count !== undefined) out.count = c.count
+            return out
+          }),
+        }
+      : null,
   }
 }
 

@@ -70,12 +70,23 @@ export interface ExtractClaimsArgs {
   provider: LLMProvider
   /** Model id under the provider (e.g. "claude-haiku-4-5-20251001"). */
   modelId: string
+  /**
+   * Optional sink for non-fatal extraction failures. Lets the caller
+   * surface "the cheap model said something we couldn't parse" without
+   * exception-throwing back through the audit pipeline. The audit pass
+   * passes a logger.warn binding here.
+   */
+  onWarn?: (reason: string, details?: Record<string, unknown>) => void
 }
 
 /**
  * Run the extraction. Returns `[]` on any failure (LLM error, parse
  * failure, schema mismatch); the audit pass treats this as "nothing
  * to verify" rather than failing the task. Reliability over coverage.
+ *
+ * Failures surface via `onWarn` (if provided) so the operator can
+ * debug "why isn't the audit catching anything?" without grepping
+ * silent-error code paths.
  */
 export async function extractClaims(args: ExtractClaimsArgs): Promise<ExtractedClaim[]> {
   // Skip empty / trivial bodies. Saves a cheap-model call per pure
@@ -92,22 +103,43 @@ export async function extractClaims(args: ExtractClaimsArgs): Promise<ExtractedC
       maxTokens: 1200,
       temperature: 0,
     })
-  } catch {
+  } catch (err) {
+    args.onWarn?.('cheap-model call failed', {
+      provider: args.provider.name,
+      modelId: args.modelId,
+      error: err instanceof Error ? err.message : String(err),
+    })
     return []
   }
 
   const json = extractJsonArray(response.text)
-  if (json === null) return []
+  if (json === null) {
+    args.onWarn?.('cheap-model output had no JSON array', {
+      provider: args.provider.name,
+      modelId: args.modelId,
+      preview: response.text.slice(0, 200),
+    })
+    return []
+  }
 
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
-  } catch {
+  } catch (err) {
+    args.onWarn?.('cheap-model output was not valid JSON', {
+      error: err instanceof Error ? err.message : String(err),
+      preview: json.slice(0, 200),
+    })
     return []
   }
 
   const validated = ClaimsArraySchema.safeParse(parsed)
-  if (!validated.success) return []
+  if (!validated.success) {
+    args.onWarn?.('cheap-model output did not match claim schema', {
+      issues: validated.error.issues.slice(0, 3),
+    })
+    return []
+  }
   // Drop the explicit-undefined optionals that Zod parses into the
   // object; the ExtractedClaim type uses exactOptionalPropertyTypes
   // so undefined-keyed properties don't match.
