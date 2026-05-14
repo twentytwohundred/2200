@@ -42,6 +42,10 @@ import { TaskStore } from './task/store.js'
 import type { TaskRecord } from './task/types.js'
 import { AgentLoop, type LoopResult } from './loop.js'
 import type { AuditFlag } from './audit/narrated-completion.js'
+import { runClaimEvidenceAudit } from './audit/claim-evidence.js'
+import { appendAuditEntry } from './audit/brain-log.js'
+import type { ClaimEvidenceAuditResult, ClaimAuditRecord } from './audit/types.js'
+import type { TaskAudit, TaskAuditClaim } from './task/types.js'
 import { loadState } from '../supervisor/state.js'
 import { credForPub, readCredentialFile } from '../pub/keypair.js'
 import { getOrCreatePubClient } from '../pub/registry.js'
@@ -650,6 +654,12 @@ export class AgentProcess {
   private async recordResult(taskId: string, result: LoopResult): Promise<void> {
     if (!this.taskStore) return
     if (result.kind === 'done') {
+      // Run the claim-vs-evidence audit BEFORE persisting the task's
+      // terminal state so the audit result lands on the same record.
+      // Best-effort: any audit failure degrades to a null `audit`
+      // field and a brain log line ... never blocks task completion.
+      const auditResult = await this.runAuditPass(taskId, result)
+      const taskAudit = auditResult ? auditResultToTaskAudit(auditResult) : null
       const updated = await this.taskStore.update(taskId, (fm) => ({
         ...fm,
         state: 'done',
@@ -658,6 +668,7 @@ export class AgentProcess {
           at: new Date().toISOString(),
           iterations: result.iterations,
         },
+        audit: taskAudit,
         agent_state_at_terminal: this.machine.state,
       }))
       // Post-task audit notification. Currently only narrated_completion fires
@@ -693,6 +704,40 @@ export class AgentProcess {
               error: err instanceof Error ? err.message : String(err),
             })
           }
+        }
+      }
+      // Claim-vs-evidence audit notification ... fires when severity
+      // routes the result above 'silent'. Tier maps directly from the
+      // aggregated severity.
+      if (updated && auditResult && auditResult.severity !== 'silent') {
+        try {
+          await emitNotification({
+            home: this.options.home,
+            agentName: this.options.name,
+            tier: severityToTier(auditResult.severity),
+            kind: 'audit_claim_evidence',
+            body: this.composeClaimEvidenceAuditBody(
+              taskId,
+              updated.frontmatter.title,
+              auditResult,
+            ),
+            extras: {
+              task_id: taskId,
+              audit_severity: auditResult.severity,
+              audit_summary: auditResult.summary,
+              audit_record_count: auditResult.records.length,
+            },
+          })
+          this.log.warn('claim-evidence audit flag emitted', {
+            task_id: taskId,
+            severity: auditResult.severity,
+            summary: auditResult.summary,
+          })
+        } catch (err) {
+          this.log.warn('failed to emit claim-evidence audit notification', {
+            task_id: taskId,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
       }
       if (updated) {
@@ -792,6 +837,98 @@ export class AgentProcess {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  /**
+   * Drive the claim-vs-evidence audit pass for a completed task.
+   *
+   * Best-effort throughout: any failure (no provider, LLM error,
+   * verifier blow-up) returns null so the caller can persist the
+   * task with a null audit field. The brain log is written first ...
+   * even an empty/all-silent audit gets a log entry so the operator
+   * can grep "this task was audited."
+   *
+   * Skips the audit for `pure` tasks (Q&A) where there's no work to
+   * verify. Destructive + checkpointed tasks are the prime targets.
+   */
+  private async runAuditPass(
+    taskId: string,
+    result: Extract<LoopResult, { kind: 'done' }>,
+  ): Promise<ClaimEvidenceAuditResult | null> {
+    if (!this.loop || !this.identity || !this.provider) return null
+    const idempotency = await this.taskIdempotency(taskId)
+    if (idempotency === 'pure' || idempotency === null) return null
+    const events = this.loop.eventLog()
+    try {
+      const out = await runClaimEvidenceAudit({
+        home: this.options.home,
+        agentName: this.options.name,
+        finalMessage: result.summary,
+        destructive: idempotency === 'destructive',
+        events,
+        provider: this.provider,
+        modelId: auditModelForProvider(this.provider.name),
+      })
+      // Best-effort brain log append. Failures here are logged but
+      // do not affect the audit return.
+      try {
+        await appendAuditEntry({
+          home: this.options.home,
+          agentName: this.options.name,
+          taskId,
+          at: new Date().toISOString(),
+          destructive: out.destructive,
+          result: out,
+        })
+      } catch (err) {
+        this.log.warn('audit brain log append failed', {
+          task_id: taskId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      return out
+    } catch (err) {
+      this.log.warn('claim-evidence audit pass failed', {
+        task_id: taskId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return null
+    }
+  }
+
+  private async taskIdempotency(
+    taskId: string,
+  ): Promise<TaskRecord['frontmatter']['idempotency'] | null> {
+    if (!this.taskStore) return null
+    const t = await this.taskStore.get(taskId)
+    return t?.frontmatter.idempotency ?? null
+  }
+
+  private composeClaimEvidenceAuditBody(
+    taskId: string,
+    taskTitle: string,
+    audit: ClaimEvidenceAuditResult,
+  ): string {
+    const lines: string[] = [
+      `Agent: ${this.options.name}`,
+      `Task: ${taskId}`,
+      `Title: ${taskTitle}`,
+      ``,
+      `**Audit: ${audit.summary}**`,
+      ``,
+    ]
+    for (const r of audit.records) {
+      const marker =
+        r.outcome.status === 'verified' ? '✓' : r.outcome.status === 'contradicted' ? '✗' : '⚠'
+      const note = r.outcome.status === 'verified' ? r.outcome.evidence : r.outcome.reason
+      lines.push(`${marker} ${r.claim.verb} ${r.claim.object}`)
+      lines.push(`   ${note}`)
+    }
+    lines.push(``)
+    lines.push(
+      `Audit details persist at \`<home>/agents/${this.options.name}/brain/audit-log.md\`.`,
+    )
+    return lines.join('\n')
   }
 
   private composeAuditBody(
@@ -968,5 +1105,84 @@ export class AgentProcess {
   /** Inspect the current state machine (testing / introspection). */
   get state(): string {
     return this.machine.state
+  }
+}
+
+/**
+ * Pick the cheap audit model id for a given host-agent provider. The
+ * audit pass needs a low-cost structured-output model; the host
+ * agent's frontier model would be overkill (and would scale audit
+ * cost linearly with task cost).
+ *
+ * Default: Anthropic Haiku. Operators who run on a non-Anthropic
+ * provider get the closest cheap analogue. Local providers fall back
+ * to their own default model_id ... the loop's cheap config is good
+ * enough.
+ */
+function auditModelForProvider(providerName: string): string {
+  switch (providerName) {
+    case 'anthropic':
+      return 'claude-haiku-4-5-20251001'
+    case 'deepseek':
+      return 'deepseek-chat'
+    case 'openai':
+      return 'gpt-4.1-mini'
+    case 'kimi':
+      return 'kimi-k1.5'
+    case 'openrouter':
+      return 'anthropic/claude-haiku-4-5'
+    case 'gemini':
+      return 'gemini-2.0-flash-exp'
+    case 'local':
+      return 'default'
+    default:
+      return 'claude-haiku-4-5-20251001'
+  }
+}
+
+/** Map audit severity to the notifications.tier vocabulary. */
+function severityToTier(
+  severity: ClaimEvidenceAuditResult['severity'],
+): 'passive' | 'normal' | 'important' | 'critical' {
+  switch (severity) {
+    case 'silent':
+      return 'passive'
+    case 'passive':
+      return 'passive'
+    case 'normal':
+      return 'normal'
+    case 'important':
+      return 'important'
+  }
+}
+
+/**
+ * Convert an in-memory ClaimEvidenceAuditResult into the wire-shape
+ * TaskAudit that lives in task frontmatter. Flattens the verified /
+ * unverified / contradicted `evidence` and `reason` strings into a
+ * single `note` field so the wire format stays narrow.
+ */
+function auditResultToTaskAudit(audit: ClaimEvidenceAuditResult): TaskAudit {
+  const claims: TaskAuditClaim[] = audit.records.map((r: ClaimAuditRecord) => {
+    const note = r.outcome.status === 'verified' ? r.outcome.evidence : r.outcome.reason
+    const out: TaskAuditClaim = {
+      category: r.claim.category,
+      verb: r.claim.verb,
+      object: r.claim.object,
+      status: r.outcome.status,
+      note,
+    }
+    if (r.claim.path !== undefined) out.path = r.claim.path
+    if (r.claim.tool !== undefined) out.tool = r.claim.tool
+    if (r.claim.target !== undefined) out.target = r.claim.target
+    if (r.claim.count !== undefined) out.count = r.claim.count
+    return out
+  })
+  return {
+    severity: audit.severity,
+    summary: audit.summary,
+    destructive: audit.destructive,
+    at: new Date().toISOString(),
+    claims,
   }
 }
