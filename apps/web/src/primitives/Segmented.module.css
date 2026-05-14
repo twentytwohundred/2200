@@ -11,8 +11,7 @@
   border: 0;
   background: transparent;
   color: var(--text-3);
-  font:
-    500 12px/1 var(--ds-font-mono);
+  font: 500 12px/1 var(--ds-font-mono);
   letter-spacing: 0.04em;
   text-transform: lowercase;
   padding: 7px 14px;

@@ -24,9 +24,7 @@ body {
   /* Switzer ss01 = alternate `a`/`g` for the "two voices" feel; */
   /* ss02 = tighter punctuation. Set globally so headings, body, */
   /* buttons, and Pill all pick them up. */
-  font-feature-settings:
-    'ss01',
-    'ss02';
+  font-feature-settings: 'ss01', 'ss02';
 }
 
 /* Mono helper class. Any inline span that needs JetBrains Mono can
@@ -34,9 +32,7 @@ body {
 /* slashed zero, ss02 = the matched punctuation set. */
 .mono {
   font-family: var(--ds-font-mono);
-  font-feature-settings:
-    'zero',
-    'ss02';
+  font-feature-settings: 'zero', 'ss02';
 }
 
 ::selection {

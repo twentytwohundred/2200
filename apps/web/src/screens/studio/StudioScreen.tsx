@@ -658,7 +658,6 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               ) : null}
             </section>
           ) : null}
-
         </aside>
 
         <div className={styles.feedWrap}>
@@ -1112,8 +1111,8 @@ function DestroyRoomFooter({ pubName }: { pubName: string }): ReactElement {
             </button>
           </div>
           <p className={styles.destroyExplain}>
-            Stops the pub-server, removes the room record, deletes its on-disk state, and drops
-            it from every guest's <span className={styles.destroyMono}>pubs.md</span>. Cannot be
+            Stops the pub-server, removes the room record, deletes its on-disk state, and drops it
+            from every guest's <span className={styles.destroyMono}>pubs.md</span>. Cannot be
             undone. Type <span className={styles.destroyMono}>DESTROY</span> below to enable.
           </p>
           <input

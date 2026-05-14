@@ -132,11 +132,7 @@ export function RoomsScreen(): ReactElement {
                     <span className={styles.cardName}>{r.name}</span>
                     <Pill
                       variant={
-                        r.state === 'running'
-                          ? 'running'
-                          : r.state === 'errored'
-                            ? 'error'
-                            : 'idle'
+                        r.state === 'running' ? 'running' : r.state === 'errored' ? 'error' : 'idle'
                       }
                       size="xs"
                       dot
@@ -161,9 +157,7 @@ export function RoomsScreen(): ReactElement {
                                 name={m.display_name}
                                 size="sm"
                                 glyph={agent?.avatar ?? undefined}
-                                imageUrl={
-                                  api.authedUrl(agent?.avatar_image_url) ?? undefined
-                                }
+                                imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
                               />
                               <span className={styles.memberName}>{m.display_name}</span>
                             </li>

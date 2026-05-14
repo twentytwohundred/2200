@@ -12,8 +12,7 @@
   border: 0;
   background: transparent;
   color: var(--text-3);
-  font:
-    500 13px/1 var(--ds-font-sans);
+  font: 500 13px/1 var(--ds-font-sans);
   padding: 8px 14px;
   border-radius: calc(var(--ds-r-2) - 2px);
   cursor: pointer;

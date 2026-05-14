@@ -35,8 +35,7 @@
 }
 
 .cardName {
-  font:
-    600 15px/1.1 var(--ds-font-sans);
+  font: 600 15px/1.1 var(--ds-font-sans);
   color: var(--text);
 }
 
@@ -48,8 +47,7 @@
 
 .cardEmpty {
   margin: 0;
-  font:
-    400 12px/1.4 var(--ds-font-sans);
+  font: 400 12px/1.4 var(--ds-font-sans);
   color: var(--text-3);
 }
 
@@ -66,8 +64,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font:
-    500 13px/1 var(--ds-font-sans);
+  font: 500 13px/1 var(--ds-font-sans);
   color: var(--text);
 }
 

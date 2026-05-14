@@ -48,8 +48,7 @@
   border: 1px solid var(--line);
   border-radius: var(--ds-r-2);
   padding: 10px 12px;
-  font:
-    400 14.5px/1.45 var(--ds-font-sans);
+  font: 400 14.5px/1.45 var(--ds-font-sans);
   color: var(--text);
   outline: none;
   transition: border-color var(--ds-dur-fast) var(--ds-ease);
@@ -60,8 +59,7 @@
 }
 
 .fieldHint {
-  font:
-    400 12px/1.4 var(--ds-font-sans);
+  font: 400 12px/1.4 var(--ds-font-sans);
   color: var(--text-3);
 }
 
@@ -113,14 +111,12 @@
 }
 
 .agentName {
-  font:
-    500 14px/1 var(--ds-font-sans);
+  font: 500 14px/1 var(--ds-font-sans);
   color: var(--text);
 }
 
 .agentStatus {
-  font:
-    500 11px/1 var(--ds-font-mono);
+  font: 500 11px/1 var(--ds-font-mono);
   color: var(--text-3);
   letter-spacing: 0.04em;
 }
@@ -133,8 +129,7 @@
   border: 1px solid var(--line);
   border-radius: var(--ds-r-1);
   background: var(--bg);
-  font:
-    600 13px/1 var(--ds-font-mono);
+  font: 600 13px/1 var(--ds-font-mono);
   color: transparent;
 }
 
@@ -153,15 +148,13 @@
 
 .hint {
   flex: 1;
-  font:
-    400 12px/1.4 var(--ds-font-sans);
+  font: 400 12px/1.4 var(--ds-font-sans);
   color: var(--text-3);
   min-width: 200px;
 }
 
 .errorRow {
-  font:
-    500 12px/1.4 var(--ds-font-mono);
+  font: 500 12px/1.4 var(--ds-font-mono);
   color: var(--danger);
   background: var(--danger-soft);
   border: 1px solid color-mix(in oklch, var(--danger) 25%, transparent);
