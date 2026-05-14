@@ -128,7 +128,7 @@ describe('computeBackoffMs', () => {
 
 describe('McpServerManager', () => {
   it('discovers tools on first spawn and registers forwarding definitions', async () => {
-    const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo', 'fake.read'] })
+    const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo', 'fake_read'] })
     const manager = new McpServerManager({
       serverName: 'fake',
       spawnArgs: SPAWN_ARGS,
@@ -136,13 +136,13 @@ describe('McpServerManager', () => {
       spawn: () => Promise.resolve(fake.handle),
     })
     await manager.start()
-    expect([...manager.knownToolNames].sort()).toEqual(['fake.echo', 'fake.read'])
-    expect(manager.tools.has('fake.echo')).toBe(true)
+    expect([...manager.knownToolNames].sort()).toEqual(['fake_echo', 'fake_read'])
+    expect(manager.tools.has('fake_echo')).toBe(true)
     expect(manager.isUp).toBe(true)
   })
 
   it('forwards tool calls to the current handle', async () => {
-    const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo'] })
+    const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const manager = new McpServerManager({
       serverName: 'fake',
       spawnArgs: SPAWN_ARGS,
@@ -150,16 +150,16 @@ describe('McpServerManager', () => {
       spawn: () => Promise.resolve(fake.handle),
     })
     await manager.start()
-    const tool = manager.tools.get('fake.echo')!
+    const tool = manager.tools.get('fake_echo')!
     const result = (await tool.execute({}, FAKE_CTX)) as { ok: boolean; tool: string }
     expect(result.ok).toBe(true)
-    expect(result.tool).toBe('fake.echo')
+    expect(result.tool).toBe('fake_echo')
   })
 
   it('emits a Passive notification on the first restart', async () => {
     let attempt = 0
-    const handle1 = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo'] })
-    const handle2 = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo'] })
+    const handle1 = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
+    const handle2 = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const spawn = vi.fn(() => {
       attempt++
       return Promise.resolve(attempt === 1 ? handle1.handle : handle2.handle)
@@ -203,8 +203,8 @@ describe('McpServerManager', () => {
   it('throws "currently down" on tool calls while the server is between spawns', async () => {
     let resolveSpawn: ((value: StdioMcpServerHandle) => void) | undefined
     let spawnInvocations = 0
-    const initialHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo'] })
-    const replacementHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake.echo'] })
+    const initialHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
+    const replacementHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const spawn = async (): Promise<StdioMcpServerHandle> => {
       spawnInvocations++
       if (spawnInvocations === 1) return initialHandle.handle
@@ -222,7 +222,7 @@ describe('McpServerManager', () => {
       sleep: () => Promise.resolve(),
     })
     await manager.start()
-    const tool = manager.tools.get('fake.echo')!
+    const tool = manager.tools.get('fake_echo')!
 
     // Kill the underlying server.
     initialHandle.triggerClose()

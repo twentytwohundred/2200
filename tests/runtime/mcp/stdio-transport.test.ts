@@ -72,19 +72,19 @@ describe('spawnStdioMcpServer', () => {
     handle = await spawnFakeServer({ name: 'fake' })
     expect(handle.name).toBe('fake')
     const toolNames = Array.from(handle.tools.keys()).sort()
-    expect(toolNames).toEqual(['fake.echo', 'fake.fail', 'fake.read_env'])
+    expect(toolNames).toEqual(['fake_echo', 'fake_fail', 'fake_read_env'])
   })
 
   it('describes each tool from the MCP server description field', async () => {
     handle = await spawnFakeServer()
-    const echo = handle.tools.get('fake.echo')!
+    const echo = handle.tools.get('fake_echo')!
     expect(echo.description).toContain('Echo a message')
     expect(echo.idempotency).toBe('destructive')
   })
 
   it('routes a successful tool call and returns the content array', async () => {
     handle = await spawnFakeServer()
-    const echo = handle.tools.get('fake.echo')!
+    const echo = handle.tools.get('fake_echo')!
     const result = (await echo.execute({ message: 'hello world' }, FAKE_CTX)) as {
       content: { type: string; text: string }[]
     }
@@ -94,9 +94,9 @@ describe('spawnStdioMcpServer', () => {
 
   it('translates MCP error responses (isError: true) into thrown errors', async () => {
     handle = await spawnFakeServer()
-    const fail = handle.tools.get('fake.fail')!
+    const fail = handle.tools.get('fake_fail')!
     await expect(fail.execute({ reason: 'simulated failure' }, FAKE_CTX)).rejects.toThrow(
-      /fake\.fail/,
+      /fake_fail/,
     )
     await expect(fail.execute({ reason: 'another' }, FAKE_CTX)).rejects.toThrow(/another/)
   })
@@ -105,7 +105,7 @@ describe('spawnStdioMcpServer', () => {
     handle = await spawnFakeServer({
       env: { CUSTOM_VAR_FOR_TEST: 'a-test-secret-value' },
     })
-    const readEnv = handle.tools.get('fake.read_env')!
+    const readEnv = handle.tools.get('fake_read_env')!
     const result = (await readEnv.execute({ name: 'CUSTOM_VAR_FOR_TEST' }, FAKE_CTX)) as {
       content: { type: string; text: string }[]
     }
@@ -114,8 +114,8 @@ describe('spawnStdioMcpServer', () => {
 
   it('namespaces tools by the supplied server name', async () => {
     handle = await spawnFakeServer({ name: 'github' })
-    expect(Array.from(handle.tools.keys())).toContain('github.echo')
-    expect(handle.tools.has('fake.echo')).toBe(false)
+    expect(Array.from(handle.tools.keys())).toContain('github_echo')
+    expect(handle.tools.has('fake_echo')).toBe(false)
   })
 
   it('close() shuts down without throwing', async () => {

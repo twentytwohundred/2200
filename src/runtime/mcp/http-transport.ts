@@ -85,7 +85,10 @@ export async function spawnHttpMcpServer(args: SpawnHttpMcpArgs): Promise<HttpMc
 
   const toolMap = new Map<string, ToolDefinition>()
   for (const tool of listResult.tools) {
-    const namespacedName = `${args.name}.${tool.name}`
+    // Underscore separator; matches stdio transport. See the note there
+    // for the full reasoning (OpenAI native function-calling regex
+    // rejects dots; tool-grant expansion handles both wildcard forms).
+    const namespacedName = `${args.name}_${tool.name}`
     toolMap.set(
       namespacedName,
       makeExternalToolDefinition({

@@ -90,8 +90,8 @@ describe('spawnHttpMcpServer', () => {
     })
     try {
       expect(handle.tools.size).toBe(1)
-      expect(handle.tools.has('remote.echo')).toBe(true)
-      const tool = handle.tools.get('remote.echo')!
+      expect(handle.tools.has('remote_echo')).toBe(true)
+      const tool = handle.tools.get('remote_echo')!
       const result = (await tool.execute({ message: 'hi' }, {} as never)) as {
         content: { type: string; text: string }[]
       }
@@ -133,7 +133,7 @@ describe('spawnHttpMcpServer', () => {
       url: running.url,
     })
     try {
-      expect(handle.tools.has('hosted_mcp.echo')).toBe(true)
+      expect(handle.tools.has('hosted_mcp_echo')).toBe(true)
     } finally {
       await handle.close()
     }

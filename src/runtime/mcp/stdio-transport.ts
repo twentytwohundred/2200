@@ -132,7 +132,15 @@ export async function spawnStdioMcpServer(args: SpawnStdioMcpArgs): Promise<Stdi
 
   const toolMap = new Map<string, ToolDefinition>()
   for (const tool of listResult.tools) {
-    const namespacedName = `${args.name}.${tool.name}`
+    // Underscore separator for the namespace ... matches the runtime
+    // convention since session 13 + the tool-grant expansion logic +
+    // the OpenAI native function-calling regex `^[a-zA-Z0-9_-]+$`
+    // (which rejects dots, breaking providers that surface MCP tools
+    // through native function calling). Identity wildcard grants like
+    // `openpub.*` and `openpub_*` both expand correctly via
+    // `expandToolGrants`, so this convention switch is backward
+    // compatible with existing Identity files.
+    const namespacedName = `${args.name}_${tool.name}`
     toolMap.set(
       namespacedName,
       makeExternalToolDefinition({
