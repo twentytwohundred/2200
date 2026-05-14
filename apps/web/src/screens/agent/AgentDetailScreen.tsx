@@ -342,10 +342,18 @@ export function AgentDetailScreen(): ReactElement {
     setUnreadBelow(0)
   }, [activeChatId])
 
-  // When new messages land or the streaming cursor advances, keep the
-  // viewport pinned to the bottom *only* if the operator was already
-  // there. If they scrolled up to read history, leave their position
-  // alone and surface an unread-below count on the floating button.
+  // Watch the live ToolStream so chip arrivals re-trigger the
+  // auto-scroll effect below. Without this, the placeholder + each
+  // new chip extend past the visible chat box while the operator
+  // sits at "the bottom" of the message list.
+  const pendingStream = useToolStream(pendingTaskId)
+  const pendingStepsCount = pendingStream?.steps.length ?? 0
+
+  // When new messages land, the streaming cursor advances, or new
+  // tool chips arrive, keep the viewport pinned to the bottom *only*
+  // if the operator was already there. If they scrolled up to read
+  // history, leave their position alone and surface an unread-below
+  // count on the floating button.
   const prevMsgCountRef = useRef(messages.length)
   useEffect(() => {
     const el = messagesScrollRef.current
@@ -359,7 +367,7 @@ export function AgentDetailScreen(): ReactElement {
     } else if (grew) {
       setUnreadBelow((n) => n + (messages.length - prev))
     }
-  }, [messages.length, pendingTaskId, streamingChars, atBottom])
+  }, [messages.length, pendingTaskId, streamingChars, atBottom, pendingStepsCount])
 
   return (
     <Screen
