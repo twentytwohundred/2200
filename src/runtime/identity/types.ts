@@ -466,6 +466,19 @@ export const IdentityFrontmatterSchema = z.object({
    * preserving v4 semantics ... an Agent with no entry uses only
    * the baseline tools.
    */
+  /**
+   * Archive marker (Epic 17). Present when an operator has archived
+   * the Agent. The directory has been renamed to `<name>-archived-<date>`
+   * and the `agent_name` field updated to match. Listing this block in
+   * frontmatter lets the UI render the date + reason without re-parsing
+   * the directory name. Absence means a live (non-archived) Agent.
+   */
+  archived: z
+    .object({
+      at: z.string().min(1),
+      reason: z.string().optional(),
+    })
+    .optional(),
   mcp_servers: z
     .array(McpServerSpecSchema)
     .default([])

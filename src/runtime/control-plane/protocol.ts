@@ -31,6 +31,7 @@ export const AgentStateSchema = z.enum([
   'blocked_on_detector',
   'errored',
   'stopped',
+  'archived',
 ])
 export type AgentState = z.infer<typeof AgentStateSchema>
 

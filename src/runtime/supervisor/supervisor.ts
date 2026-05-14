@@ -11,7 +11,9 @@
  * the connection to the named Agent for the duration of that connection.
  * Reconnection (Agent crashes and is restarted) goes through register again.
  */
-import { rm } from 'node:fs/promises'
+import { rm, readFile, writeFile } from 'node:fs/promises'
+import { applyArchiveEdit, pickArchiveName, renameAgentTrees, todayUtc } from '../agent/archive.js'
+import { readAgentPubsFile, writeAgentPubsFile } from '../agent/pubs-file.js'
 import { dirname, join } from 'node:path'
 import { JsonRpcServer, type Handlers, type HandlerContext } from '../control-plane/server.js'
 import { listenUds } from '../control-plane/uds-server.js'
@@ -66,6 +68,17 @@ import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/se
 import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
+
+/**
+ * Strip the `-archived-<YYYY-MM-DD>[-N]` suffix from an archived
+ * agent's name. Returns the stripped name if the suffix matches,
+ * otherwise the input unchanged. Used by `unarchiveAgent` to compute
+ * the default restore target.
+ */
+function stripArchiveSuffix(name: string): string {
+  const m = /^(.+)-archived-\d{4}-\d{2}-\d{2}(?:-\d+)?$/.exec(name)
+  return m?.[1] ?? name
+}
 
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
@@ -1013,6 +1026,178 @@ export class Supervisor {
     const dir = dirname(agentPaths(this.state.home, name).identity)
     await rm(dir, { recursive: true, force: true })
     this.log.info('Agent removed', { name })
+  }
+
+  /**
+   * Archive an Agent. Stops the running process, drops the Agent from
+   * its pubs.md (so future starts attach no wake sources), cancels its
+   * scheduled tasks, renames every per-Agent on-disk subtree (agents/,
+   * state/agents/, state/brain/, state/budget/, state/credentials/,
+   * state/identities/, state/telemetry/) from `<name>/` to
+   * `<name>-archived-<YYYY-MM-DD>/`, rewrites identity.md so its
+   * `agent_name` matches the new dir + adds an `archived` block, and
+   * updates the supervisor record. The original name is freed for
+   * reuse.
+   *
+   * Returns the chosen archived name (which may carry a `-2` suffix
+   * if a same-day archive collision happened).
+   */
+  async archiveAgent(name: string, opts: { reason?: string } = {}): Promise<string> {
+    const rec = this.state.agents[name]
+    if (!rec) throw new Error(`no Agent record for ${name}`)
+    if (rec.state === 'archived') throw new Error(`Agent ${name} is already archived`)
+
+    const archivedName = pickArchiveName(this.state.home, name, todayUtc())
+    const archivedAt = new Date().toISOString()
+
+    // Stop the process (if any). Forces user-stop semantics so the
+    // exit handler routes to 'stopped' rather than auto-respawning.
+    if (this.spawned.get(name)) {
+      await this.stopAgent(name, 'archive')
+    }
+    this.stopPulseWatcher(name)
+
+    // Clear pubs.md so the archived Agent attaches no wake sources if
+    // anyone re-spawns it. (We won't, but defense in depth.)
+    try {
+      const pubsFile = agentPaths(this.state.home, name).pubsFile
+      const existing = await readAgentPubsFile(pubsFile)
+      if (existing && existing.pubs.length > 0) {
+        await writeAgentPubsFile(pubsFile, name, [])
+      }
+    } catch (err) {
+      this.log.warn('archive: failed to clear pubs.md; continuing', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // Cancel scheduled tasks. Removing the schedules dir under the
+    // OLD name avoids carrying stale entries through the rename ...
+    // schedule entries embed `agent: <old-name>` and would otherwise
+    // fire against a non-existent record post-rename.
+    const stateAgentsDir = join(this.state.home, 'state', 'agents', name)
+    await rm(stateAgentsDir, { recursive: true, force: true })
+    try {
+      await this.scheduler.reload()
+    } catch (err) {
+      this.log.warn('archive: scheduler reload failed; continuing', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // Rewrite identity.md (agent_name + archived block) BEFORE the
+    // rename ... the file is at the old path until renameAgentTrees
+    // moves it.
+    const identityPath = agentPaths(this.state.home, name).identity
+    const raw = await readFile(identityPath, 'utf8')
+    const updated = applyArchiveEdit(raw, {
+      agent_name: archivedName,
+      archived: {
+        at: archivedAt,
+        ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+      },
+    })
+    await writeFile(identityPath, updated, 'utf8')
+
+    // Move every per-Agent subtree.
+    await renameAgentTrees(this.state.home, name, archivedName)
+
+    // Rebuild the supervisor record under the new name and persist.
+    const archivedRec: AgentRecord = {
+      ...rec,
+      name: archivedName,
+      state: 'archived',
+      pid: null,
+      spawned_at: null,
+      identity_path: agentPaths(this.state.home, archivedName).identity,
+      current_task_id: null,
+    }
+    const nextAgents: Record<string, AgentRecord> = {}
+    for (const [k, v] of Object.entries(this.state.agents)) {
+      if (k === name) nextAgents[archivedName] = archivedRec
+      else nextAgents[k] = v
+    }
+    this.state = { ...this.state, agents: nextAgents }
+    await saveState(this.state)
+
+    this.log.info('Agent archived', { from: name, to: archivedName })
+    if (this.webHandle) {
+      this.webHandle.broadcast({
+        event: 'agent.archived',
+        payload: { from: name, to: archivedName, archived_at: archivedAt },
+      })
+    }
+    void this.regenerateFleetSafe()
+    return archivedName
+  }
+
+  /**
+   * Reverse `archiveAgent`. Renames the on-disk subtrees back to the
+   * target name (default: strip the `-archived-<date>` suffix), clears
+   * the `archived` frontmatter block, and restores the supervisor
+   * record to the `stopped` state. Does NOT auto-start the Agent ...
+   * the operator brings it back up explicitly.
+   *
+   * Refuses if the target name is already in use; the operator can
+   * pass `rename_to` to pick a different available name.
+   */
+  async unarchiveAgent(name: string, opts: { rename_to?: string } = {}): Promise<string> {
+    const rec = this.state.agents[name]
+    if (!rec) throw new Error(`no Agent record for ${name}`)
+    if (rec.state !== 'archived') throw new Error(`Agent ${name} is not archived`)
+
+    const target = opts.rename_to ?? stripArchiveSuffix(name)
+    if (!/^[a-z][a-z0-9_-]*$/.test(target)) {
+      throw new Error(
+        `unarchive target "${target}" is not a valid agent name (lowercase, digits, _, - only)`,
+      )
+    }
+    if (target === name) {
+      throw new Error(`unarchive target must differ from the archived name`)
+    }
+    if (this.state.agents[target]) {
+      throw new Error(`agent name "${target}" is already in use; pass rename_to to pick another`)
+    }
+
+    // Rewrite identity.md to clear the archived block and restore the
+    // agent_name. File is at the OLD (archived) path until the rename
+    // below moves it.
+    const identityPath = agentPaths(this.state.home, name).identity
+    const raw = await readFile(identityPath, 'utf8')
+    const updated = applyArchiveEdit(raw, { agent_name: target, archived: null })
+    await writeFile(identityPath, updated, 'utf8')
+
+    // Move every per-Agent subtree back to the target name.
+    await renameAgentTrees(this.state.home, name, target)
+
+    const restored: AgentRecord = {
+      ...rec,
+      name: target,
+      state: 'stopped',
+      pid: null,
+      spawned_at: null,
+      last_heartbeat: null,
+      identity_path: agentPaths(this.state.home, target).identity,
+    }
+    const nextAgents: Record<string, AgentRecord> = {}
+    for (const [k, v] of Object.entries(this.state.agents)) {
+      if (k === name) nextAgents[target] = restored
+      else nextAgents[k] = v
+    }
+    this.state = { ...this.state, agents: nextAgents }
+    await saveState(this.state)
+
+    this.log.info('Agent unarchived', { from: name, to: target })
+    if (this.webHandle) {
+      this.webHandle.broadcast({
+        event: 'agent.unarchived',
+        payload: { from: name, to: target },
+      })
+    }
+    void this.regenerateFleetSafe()
+    return target
   }
 
   /**

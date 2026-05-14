@@ -312,6 +312,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
       { method: 'POST', path: '/api/v1/agents/:name/stop' },
+      { method: 'POST', path: '/api/v1/agents/:name/archive' },
+      { method: 'POST', path: '/api/v1/agents/:name/unarchive' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
       { method: 'PUT', path: '/api/v1/agents/:name/budget' },
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
@@ -671,6 +673,84 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       await supervisor.stopAgent(req.params.name, reason)
       const after = supervisor.snapshot().agents[req.params.name]
       if (!after) throw notFound('agent', req.params.name)
+      return await toAgentDto(home, after)
+    },
+  )
+
+  // -- archive / unarchive -------------------------------------------------
+  // Archive renames the per-Agent on-disk subtrees to
+  // `<name>-archived-<YYYY-MM-DD>` so the original name is freed for
+  // a future Agent of the same name. Brain, chats, identity, schedules
+  // (deleted) all move with the rename. Unarchive reverses it ... by
+  // default restores the pre-archive name; pass `rename_to` to land on
+  // a different name when the original is no longer free.
+  const ArchiveAgentBody = z
+    .object({
+      reason: z.string().min(1).max(500).optional(),
+    })
+    .optional()
+
+  fastify.post<{ Params: { name: string }; Body: { reason?: string } | undefined }>(
+    '/api/v1/agents/:name/archive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      if (rec.state === 'archived') {
+        throw new ApiError(409, 'already_archived', `agent ${req.params.name} is already archived`)
+      }
+      const parsed = ArchiveAgentBody.parse(req.body)
+      let archivedName: string
+      try {
+        archivedName = await supervisor.archiveAgent(req.params.name, {
+          ...(parsed?.reason !== undefined ? { reason: parsed.reason } : {}),
+        })
+      } catch (err) {
+        throw new ApiError(500, 'archive_failed', err instanceof Error ? err.message : String(err))
+      }
+      const after = supervisor.snapshot().agents[archivedName]
+      if (!after) throw notFound('agent', archivedName)
+      return await toAgentDto(home, after)
+    },
+  )
+
+  const UnarchiveAgentBody = z
+    .object({
+      rename_to: z
+        .string()
+        .min(1)
+        .regex(/^[a-z][a-z0-9_-]*$/, {
+          message:
+            'rename_to must start with a lowercase letter; lowercase letters, digits, _, - only',
+        })
+        .optional(),
+    })
+    .optional()
+
+  fastify.post<{ Params: { name: string }; Body: { rename_to?: string } | undefined }>(
+    '/api/v1/agents/:name/unarchive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      if (rec.state !== 'archived') {
+        throw new ApiError(409, 'not_archived', `agent ${req.params.name} is not archived`)
+      }
+      const parsed = UnarchiveAgentBody.parse(req.body)
+      let restored: string
+      try {
+        restored = await supervisor.unarchiveAgent(req.params.name, {
+          ...(parsed?.rename_to !== undefined ? { rename_to: parsed.rename_to } : {}),
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('already in use')) {
+          throw new ApiError(409, 'name_in_use', msg)
+        }
+        throw new ApiError(500, 'unarchive_failed', msg)
+      }
+      const after = supervisor.snapshot().agents[restored]
+      if (!after) throw notFound('agent', restored)
       return await toAgentDto(home, after)
     },
   )
@@ -2362,11 +2442,19 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         atmosphere = room.atmosphere ?? null
       }
       const runningAgentIds = new Set<string>()
+      const knownLiveAgentNames = new Set<string>()
       for (const ag of Object.values(snap.agents)) {
+        if (ag.state === 'archived') continue
+        knownLiveAgentNames.add(ag.name)
         if (ag.state === 'running') runningAgentIds.add(ag.name)
       }
       for (const r of roster.agents) {
         if (merged.has(r.agent_id)) continue
+        // Drop roster entries whose agent_name no longer maps to a
+        // live (non-archived) Agent. Covers: deleted Agents, archived
+        // Agents (renamed in supervisor state), and orphaned roster
+        // rows from earlier broken create attempts.
+        if (!knownLiveAgentNames.has(r.agent_name)) continue
         merged.set(r.agent_id, {
           agent_id: r.agent_id,
           display_name: r.display_name,
@@ -3186,6 +3274,7 @@ async function toAgentDto(
   }
   let model: { provider: string; model_id: string; followup_model_id: string | null } | null = null
   let avatar: string | null = null
+  let archived: { at: string; reason?: string } | null = null
   try {
     const id = await loadIdentity(rec.identity_path)
     model = {
@@ -3194,6 +3283,11 @@ async function toAgentDto(
       followup_model_id: id.frontmatter.model.followup_model_id ?? null,
     }
     avatar = id.frontmatter.avatar ?? null
+    if (id.frontmatter.archived) {
+      archived = id.frontmatter.archived.reason
+        ? { at: id.frontmatter.archived.at, reason: id.frontmatter.archived.reason }
+        : { at: id.frontmatter.archived.at }
+    }
   } catch {
     // Same tolerance as pulse: a broken Identity should not break
     // the screen. The detail screen shows "?" for the model.
@@ -3225,6 +3319,7 @@ async function toAgentDto(
             avatarImageMtime,
           )}`
         : null,
+    archived,
   }
 }
 
