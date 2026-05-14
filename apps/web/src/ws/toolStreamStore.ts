@@ -43,6 +43,13 @@ const TASK_TTL_MS = 5 * 60_000 // hard cap; covers a model latency outlier
 class ToolStreamStoreImpl {
   private readonly byTask = new Map<string, ToolStreamState>()
   private readonly listeners = new Set<Listener>()
+  /**
+   * task_id → chat_id mapping. Set by the chat send path so any
+   * subsequent tool_event WS payload that references the task can be
+   * routed back to the originating chat for cross-chat pulse UX.
+   * Cleared on `evict(taskId)` along with the per-task state.
+   */
+  private readonly chatByTask = new Map<string, string>()
 
   /** External-store subscribe contract for useSyncExternalStore. */
   subscribe = (listener: Listener): (() => void) => {
@@ -55,6 +62,33 @@ class ToolStreamStoreImpl {
   /** Snapshot for a given task ... returns the SAME reference until a real change. */
   getForTask = (taskId: string): ToolStreamState | null => {
     return this.byTask.get(taskId) ?? null
+  }
+
+  /** Register that this task originated from a specific chat. */
+  noteTaskChat = (taskId: string, chatId: string): void => {
+    if (this.chatByTask.get(taskId) === chatId) return
+    this.chatByTask.set(taskId, chatId)
+    this.emit()
+  }
+
+  /**
+   * Snapshot of "is this chat actively working" — true if any task tied
+   * to the chat has an in-flight tool step OR has not finished yet.
+   * Used by the cross-chat avatar pulse on the chat sidebar.
+   */
+  isChatActive = (agent: string, chatId: string): boolean => {
+    for (const [taskId, mappedChat] of this.chatByTask) {
+      if (mappedChat !== chatId) continue
+      const state = this.byTask.get(taskId)
+      if (!state) continue
+      if (state.agent !== agent) continue
+      if (state.finished_at !== undefined) continue
+      // Active if any step is still active OR if no end-event has marked
+      // the run finished. The "no steps yet" case is the early-thinking
+      // window before the first tool fires; that still counts.
+      return true
+    }
+    return false
   }
 
   ingestStart(params: {
@@ -145,7 +179,10 @@ class ToolStreamStoreImpl {
 
   /** Drop the state for a task. Called after the streaming-phase fade. */
   evict(taskId: string): void {
-    if (this.byTask.delete(taskId)) this.emit()
+    let changed = false
+    if (this.byTask.delete(taskId)) changed = true
+    if (this.chatByTask.delete(taskId)) changed = true
+    if (changed) this.emit()
   }
 
   private evictStale(): void {

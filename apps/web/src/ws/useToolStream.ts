@@ -13,3 +13,16 @@ export function useToolStream(taskId: string | null): ToolStreamState | null {
     () => null,
   )
 }
+
+/**
+ * Subscribe to "is this chat actively working" — true while the agent
+ * is mid-task in the named chat. Used by the chat sidebar to pulse
+ * the row for chats the operator isn't currently viewing.
+ */
+export function useChatActivity(agent: string, chatId: string | null): boolean {
+  return useSyncExternalStore(
+    toolStreamStore.subscribe,
+    () => (chatId === null ? false : toolStreamStore.isChatActive(agent, chatId)),
+    () => false,
+  )
+}

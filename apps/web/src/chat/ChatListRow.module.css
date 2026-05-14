@@ -63,3 +63,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.workingPulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--ds-r-pill);
+  background: var(--accent);
+  flex: 0 0 auto;
+  margin-right: 2px;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: chatRowPulse 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes chatRowPulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+    opacity: 0.95;
+  }
+  70% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+    opacity: 0.55;
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+    opacity: 0.95;
+  }
+}

@@ -53,7 +53,8 @@ import {
   type ComposerAttachment,
   type ComposerMode,
 } from '../../chat'
-import { useToolStream } from '../../ws/useToolStream'
+import { useChatActivity, useToolStream } from '../../ws/useToolStream'
+import { toolStreamStore } from '../../ws/toolStreamStore'
 import { ModelPicker } from './ModelPicker'
 import { AgentStatusPanel } from './AgentStatusPanel'
 import { AgentIdentityPanel } from './AgentIdentityPanel'
@@ -205,6 +206,10 @@ export function AgentDetailScreen(): ReactElement {
         chatId = created.chat.id
       }
       const res = await sendMessageWithAttachments(agentName, chatId, args)
+      // Tag the new task with its originating chat so the cross-chat
+      // avatar pulse can light up rows for chats the operator isn't
+      // currently viewing.
+      toolStreamStore.noteTaskChat(res.task_id, chatId)
       setPendingTaskId(res.task_id)
       void queryClient.invalidateQueries({
         queryKey: ['agentChatMessages', agentName, chatId],
@@ -315,11 +320,13 @@ export function AgentDetailScreen(): ReactElement {
     const reply = messages.find((m) => m.id === streamingId)
     if (!reply) {
       setStreamingId(null)
+      if (pendingTaskId !== null) toolStreamStore.evict(pendingTaskId)
       setPendingTaskId(null)
       return
     }
     if (streamingChars >= reply.body.length) {
       setStreamingId(null)
+      if (pendingTaskId !== null) toolStreamStore.evict(pendingTaskId)
       setPendingTaskId(null)
       return
     }
@@ -329,7 +336,7 @@ export function AgentDetailScreen(): ReactElement {
     return () => {
       clearTimeout(t)
     }
-  }, [streamingId, streamingChars, messages])
+  }, [streamingId, streamingChars, messages, pendingTaskId])
 
   // If the chat changes mid-stream, drop the streaming animation and
   // reset the scroll-position tracking so the new thread snaps to its
@@ -444,8 +451,10 @@ export function AgentDetailScreen(): ReactElement {
                 <p className={styles.empty}>No chats yet. Click + New chat to start.</p>
               )}
               {liveChats.map((c) => (
-                <ChatListRow
+                <ChatListRowWithActivity
                   key={c.id}
+                  agent={agentName}
+                  chatId={c.id}
                   title={c.title}
                   snippet={c.snippet}
                   time={formatChatTime(c.updated_at)}
@@ -634,6 +643,36 @@ export function AgentDetailScreen(): ReactElement {
       </div>
     </Screen>
   )
+}
+
+interface ChatListRowWithActivityProps {
+  agent: string
+  chatId: string
+  title: string
+  snippet?: string
+  time?: string
+  active?: boolean
+  unread?: boolean
+  onClick?: () => void
+}
+
+/**
+ * ChatListRow wrapper that subscribes to cross-chat activity. When the
+ * agent is mid-task in a chat the operator isn't viewing, the row
+ * shows a soft pulse so the operator can see "this thread is moving."
+ */
+function ChatListRowWithActivity({
+  agent,
+  chatId,
+  active = false,
+  ...rest
+}: ChatListRowWithActivityProps): ReactElement {
+  const working = useChatActivity(agent, chatId)
+  // Suppress the pulse on the row the operator is currently looking
+  // at ... they already see the live ToolStream + thinking placeholder
+  // in the main pane.
+  const showPulse = working && !active
+  return <ChatListRow {...rest} active={active} working={showPulse} />
 }
 
 function RailSwitch({

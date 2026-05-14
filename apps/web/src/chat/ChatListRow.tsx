@@ -8,6 +8,13 @@ export interface ChatListRowProps {
   time?: string
   active?: boolean
   unread?: boolean
+  /**
+   * Soft accent pulse alongside the title when the agent is mid-task
+   * in this chat but the operator is viewing a different chat. Lets
+   * sidebar rows reflect "the thread is moving" without yanking
+   * attention.
+   */
+  working?: boolean
   onClick?: () => void
 }
 
@@ -22,6 +29,7 @@ export function ChatListRow({
   time,
   active = false,
   unread = false,
+  working = false,
   onClick,
 }: ChatListRowProps): ReactNode {
   return (
@@ -32,6 +40,7 @@ export function ChatListRow({
       aria-current={active ? 'page' : undefined}
     >
       <div className={styles.head}>
+        {working && <span className={styles.workingPulse} aria-label="agent working" />}
         <span className={styles.title} title={title}>
           {title}
         </span>
