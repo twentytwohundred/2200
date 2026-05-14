@@ -96,6 +96,40 @@ export const TaskOutcomeSchema = z
   .nullable()
 export type TaskOutcome = z.infer<typeof TaskOutcomeSchema>
 
+/**
+ * Claim-vs-evidence audit summary. Populated post-task by the
+ * audit pass. Optional ... older tasks predating the audit and
+ * tasks where the audit failed silently land with no audit block.
+ *
+ * The shape here is a wire-compatible snapshot of the
+ * ClaimEvidenceAuditResult, kept narrow so future enrichments to
+ * the in-memory type don't break old task files on disk.
+ */
+export const TaskAuditClaimSchema = z.object({
+  category: z.enum(['file_create', 'file_read', 'external_send', 'tool_invoke', 'process_count']),
+  verb: z.string(),
+  object: z.string(),
+  status: z.enum(['verified', 'unverified', 'contradicted']),
+  note: z.string(),
+  path: z.string().optional(),
+  tool: z.string().optional(),
+  target: z.string().optional(),
+  count: z.number().int().optional(),
+})
+export type TaskAuditClaim = z.infer<typeof TaskAuditClaimSchema>
+
+export const TaskAuditSchema = z
+  .object({
+    severity: z.enum(['silent', 'passive', 'normal', 'important']),
+    summary: z.string(),
+    destructive: z.boolean(),
+    /** ISO 8601 UTC of the audit pass. */
+    at: z.string(),
+    claims: z.array(TaskAuditClaimSchema),
+  })
+  .nullable()
+export type TaskAudit = z.infer<typeof TaskAuditSchema>
+
 /** Error context on an `errored` task. */
 export const TaskErrorSchema = z
   .object({
@@ -153,6 +187,14 @@ export const TaskFrontmatterSchema = z.object({
   /** Error on `errored`. */
   error: TaskErrorSchema,
   /**
+   * Post-task claim-vs-evidence audit result. Optional ... absent on
+   * tasks that completed before the audit pass existed and on tasks
+   * where the audit failed silently (no cheap-model provider, parse
+   * failure, etc.). Surfaces in the inbox + as an inline chat audit
+   * card when severity is not 'silent'.
+   */
+  audit: TaskAuditSchema.optional().default(null),
+  /**
    * Mirror of the live agent state at the moment the task transitioned to a
    * terminal state. Useful for post-mortem grep ("which tasks errored while
    * agent was blocked_on_detector?").
@@ -204,6 +246,7 @@ export function newPendingTask(args: {
       delegation_depth: args.delegation_depth ?? 0,
       outcome: null,
       error: null,
+      audit: null,
       agent_state_at_terminal: null,
     },
     body: args.body,

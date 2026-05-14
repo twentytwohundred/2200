@@ -1889,7 +1889,13 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   })
 
   function broadcastChatEvent(
-    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    event:
+      | 'chat.message'
+      | 'chat.created'
+      | 'chat.renamed'
+      | 'chat.archived'
+      | 'chat.read'
+      | 'chat.audit_flag',
     agentName: string,
     chatId: string,
     payload: Record<string, unknown>,
@@ -3956,6 +3962,12 @@ interface MultiChatMessageDto {
     mime: string
   }[]
   task_id: string | null
+  /**
+   * Runtime-side discriminator for system-authored messages. Currently
+   * just `audit` (claim-vs-evidence audit card); future system kinds
+   * pick their own enum value.
+   */
+  kind: 'audit' | null
 }
 
 function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
@@ -3968,6 +3980,7 @@ function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
     mode: m.mode,
     attachments: m.attachments,
     task_id: m.task_id,
+    kind: m.kind,
   }
 }
 
@@ -3978,7 +3991,13 @@ interface WatchAndAppendThreadArgs {
   taskId: string
   store: MultiChatStore
   broadcast: (
-    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    event:
+      | 'chat.message'
+      | 'chat.created'
+      | 'chat.renamed'
+      | 'chat.archived'
+      | 'chat.read'
+      | 'chat.audit_flag',
     agentName: string,
     chatId: string,
     payload: Record<string, unknown>,
@@ -4029,6 +4048,45 @@ async function watchAndAppendChatThreadReply(args: WatchAndAppendThreadArgs): Pr
     })
     broadcast('chat.message', agent, chatId, { message: toMultiChatMessageDto(msg) })
     log?.info('multi-chat reply appended', { agent, chatId, taskId, state })
+    // Claim-vs-evidence audit surfacing. The audit pass writes its
+    // result to task.frontmatter.audit before the task transitions to
+    // 'done'; we render it as a system-role chat card with
+    // `kind: 'audit'` whenever severity routes above 'silent'. The
+    // body is a stable JSON envelope so the web renderer can show the
+    // structured card; clients that don't recognize the kind fall
+    // back to displaying the body verbatim.
+    const audit = task.frontmatter.audit
+    if (audit && audit.severity !== 'silent') {
+      try {
+        const auditMsg = await store.appendMessage({
+          chatId,
+          role: 'system',
+          kind: 'audit',
+          body: JSON.stringify({
+            envelope: 'audit_card_v1',
+            task_id: taskId,
+            severity: audit.severity,
+            summary: audit.summary,
+            destructive: audit.destructive,
+            at: audit.at,
+            claims: audit.claims,
+          }),
+          taskId,
+        })
+        broadcast('chat.audit_flag', agent, chatId, {
+          message: toMultiChatMessageDto(auditMsg),
+          severity: audit.severity,
+          summary: audit.summary,
+        })
+      } catch (err) {
+        log?.warn('multi-chat audit card append failed', {
+          agent,
+          chatId,
+          taskId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
     return
   }
   log?.warn('multi-chat reply watcher timed out', { agent, chatId, taskId })

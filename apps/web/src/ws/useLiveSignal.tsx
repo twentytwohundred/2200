@@ -126,7 +126,8 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'chat.created':
         case 'chat.renamed':
         case 'chat.archived':
-        case 'chat.read': {
+        case 'chat.read':
+        case 'chat.audit_flag': {
           const agent = typeof ev.payload.agent === 'string' ? ev.payload.agent : null
           const chatId = typeof ev.payload.chat_id === 'string' ? ev.payload.chat_id : null
           if (agent !== null) {

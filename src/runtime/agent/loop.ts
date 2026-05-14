@@ -1503,6 +1503,20 @@ export class AgentLoop {
     return this.events
   }
 
+  /**
+   * Production accessor for the recent event log. The audit pass
+   * reads this after the loop returns to verify the agent's final
+   * message against the actual tool transcript.
+   *
+   * Returns a snapshot. The internal buffer is a ring; callers that
+   * cache the reference may see further mutations as new events
+   * land. The audit pass calls this once per terminal turn so the
+   * snapshot reflects exactly the events that produced the task.
+   */
+  eventLog(): readonly LoopEvent[] {
+    return [...this.events]
+  }
+
   /** Test-only accessor: the iteration counter. */
   get _iterations(): number {
     return this.iteration

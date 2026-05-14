@@ -44,6 +44,7 @@ import {
   type PillVariant,
 } from '../../primitives'
 import {
+  AuditCard,
   ChatComposer,
   ChatListRow,
   ChatMessage,
@@ -759,6 +760,12 @@ function renderMessages(
     if (day !== lastDay) {
       lastDay = day
       out.push(<DayDivider key={`d-${day}`} label={formatDayLabel(day)} />)
+    }
+    // Runtime-side system messages with kind='audit' render as the
+    // structured AuditCard, not a regular chat bubble.
+    if (m.role === 'system' && m.kind === 'audit') {
+      out.push(<AuditCard key={m.id} body={m.body} ts={m.ts} />)
+      continue
     }
     out.push(
       <ChatMessage
