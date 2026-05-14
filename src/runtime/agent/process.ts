@@ -860,6 +860,13 @@ export class AgentProcess {
     if (idempotency === 'pure' || idempotency === null) return null
     const events = this.loop.eventLog()
     try {
+      // Pick the cheap-tier model for the host's provider. When no
+      // cheap mapping exists (unknown provider, custom endpoint slug),
+      // fall back to the host's own model id ... the audit costs more
+      // but never fails silently because the cheap model didn't exist.
+      const cheapModel = auditModelForProvider(this.provider.name)
+      const auditModelId =
+        cheapModel === 'default' ? this.identity.frontmatter.model.model_id : cheapModel
       const out = await runClaimEvidenceAudit({
         home: this.options.home,
         agentName: this.options.name,
@@ -867,7 +874,14 @@ export class AgentProcess {
         destructive: idempotency === 'destructive',
         events,
         provider: this.provider,
-        modelId: auditModelForProvider(this.provider.name),
+        modelId: auditModelId,
+        onWarn: (reason, details) => {
+          this.log.warn(`audit extraction: ${reason}`, {
+            task_id: taskId,
+            audit_model: auditModelId,
+            ...(details ?? {}),
+          })
+        },
       })
       // Best-effort brain log append. Failures here are logged but
       // do not affect the audit return.
@@ -1133,10 +1147,16 @@ function auditModelForProvider(providerName: string): string {
       return 'anthropic/claude-haiku-4-5'
     case 'gemini':
       return 'gemini-2.0-flash-exp'
+    case 'xai':
+      return 'grok-4-fast'
     case 'local':
       return 'default'
     default:
-      return 'claude-haiku-4-5-20251001'
+      // Custom OpenAI-compatible endpoint slug (`endpoint:<id>`) or
+      // some future provider. The host's own model_id is the safest
+      // fallback ... the audit pays a real-cost call instead of
+      // failing silently.
+      return 'default'
   }
 }
 

@@ -44,6 +44,13 @@ export interface RunClaimEvidenceAuditArgs {
   provider: LLMProvider
   /** Model id for the cheap-model call. */
   modelId: string
+  /**
+   * Optional warning sink for non-fatal failures inside the
+   * extraction pass. Lets the caller surface "audit was attempted
+   * but the cheap-model call failed / parsed empty" without an
+   * exception bubble.
+   */
+  onWarn?: (reason: string, details?: Record<string, unknown>) => void
 }
 
 /**
@@ -58,6 +65,7 @@ export async function runClaimEvidenceAudit(
     body: args.finalMessage,
     provider: args.provider,
     modelId: args.modelId,
+    ...(args.onWarn ? { onWarn: args.onWarn } : {}),
   })
 
   if (claims.length === 0) {
