@@ -419,9 +419,15 @@
   box-sizing: border-box;
 }
 
-.composerTextarea:focus {
+.composerTextarea:focus,
+.composerTextarea:focus-visible {
   outline: none;
   border-color: var(--line-strong);
+  /* Overrides the global accent-tinted focus ring (main.css) for
+     the chat entry. Per Doug, the room/agent composer should give
+     no visible focus chrome ... the cursor blink already says
+     "you're typing." */
+  box-shadow: none;
 }
 
 .composerFoot {

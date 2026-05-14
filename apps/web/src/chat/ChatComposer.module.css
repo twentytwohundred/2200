@@ -28,6 +28,14 @@
   color: var(--text);
 }
 
+/* Kill the global accent-tinted focus ring (main.css) on the chat
+   entry. The .wrap focus-within border-color change is the only
+   focus chrome we want on this surface per Doug. */
+.textarea:focus,
+.textarea:focus-visible {
+  box-shadow: none;
+}
+
 .textarea::placeholder {
   color: var(--text-4);
 }
