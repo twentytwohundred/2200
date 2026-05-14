@@ -2988,7 +2988,10 @@ export function buildProgram(): Command {
     .description(
       'run the OAuth flow for <provider>, store the refresh token in <agent> vault as <name>',
     )
-    .option('--name <name>', 'credential name in the vault (default: <provider>-<scopes-tag>)')
+    .option(
+      '--name <name>',
+      'credential name in the vault (default: <provider>; tool integrations look this up by provider slug)',
+    )
     .option('--scopes <list>', 'comma-separated scopes (default: provider defaults)')
     .option('--port <p>', 'specific localhost port for the redirect server', (v) => parseInt(v, 10))
     .option('--timeout <s>', 'wait this many seconds for the user to complete the flow', (v) =>
@@ -3043,7 +3046,18 @@ export function buildProgram(): Command {
               .map((s) => s.trim())
               .filter((s) => s.length > 0)
           : provider.defaultScopes
-        const credentialName = opts.name ?? `${providerName}-${scopesTag(Array.from(scopes))}`
+        // Default to the bare provider name. The legacy default
+        // (`${providerName}-${scopesTag}`) was a footgun: every tool
+        // that consumes this credential looks it up by provider slug,
+        // so the verbose default landed creds in the vault under a
+        // name no caller searched for. Operators who really do want
+        // multiple per-provider creds keep the `--name` knob.
+        const credentialName = opts.name ?? providerName
+        if (opts.name === undefined) {
+          console.log(
+            `# storing in vault as "${providerName}" (override with --name <name> for multiple per-provider creds)`,
+          )
+        }
 
         const { runOAuthFlow } = await import('../runtime/oauth/flow.js')
         const { CredentialVault } = await import('../runtime/credentials/vault.js')
@@ -3289,7 +3303,7 @@ export function buildProgram(): Command {
             'Create a Spotify app at https://developer.spotify.com/dashboard, add ' +
             '`http://127.0.0.1:<any-port>/callback` to the Redirect URIs, then export ' +
             `${SPOTIFY_CLIENT_ID_ENV} and _2200_OAUTH_SPOTIFY_CLIENT_SECRET, then run ` +
-            '`2200 oauth login spotify <agent> --name spotify`.',
+            '`2200 oauth login spotify <agent>` (the credential lands in the vault as "spotify" by default, which is what the spotify_* tools look up).',
         },
       ]
       console.log('# platform credentials')
@@ -3317,20 +3331,6 @@ export function buildProgram(): Command {
   registerWebCommands(program)
 
   return program
-}
-
-function scopesTag(scopes: string[]): string {
-  if (scopes.length === 0) return 'default'
-  // Take the last path component of the first scope as a short tag.
-  const first = scopes[0] ?? 'default'
-  const idx = first.lastIndexOf('/')
-  const tail = idx >= 0 ? first.slice(idx + 1) : first
-  return (
-    tail
-      .replace(/[^a-z0-9-]/gi, '-')
-      .toLowerCase()
-      .slice(0, 24) || 'default'
-  )
 }
 
 /**

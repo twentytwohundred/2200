@@ -87,8 +87,10 @@ const SetPlaylistCoverArgsSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Virtual path to the cover image (e.g. '/project/covers/today.jpg'). " +
-        "PNG / WebP / JPEG accepted; we re-encode to JPEG and resize to fit Spotify's 256KB cap.",
+      "Virtual path to the cover image under one of the 2200 fs prefixes: '/project/...', '/shared/...', '/brain/...', or '/commons/...'. " +
+        "For example, '/project/covers/today.jpg' resolves to <home>/agents/<you>/project/covers/today.jpg. " +
+        "PNG / WebP / JPEG accepted; we re-encode to JPEG and resize to fit Spotify's 256KB cap. " +
+        'Host filesystem paths (e.g. `/Users/...` or `~/Desktop/...`) are not supported ... save or upload the file under one of the fs prefixes first.',
     ),
 })
 
@@ -261,7 +263,19 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
     pathArgs: [{ argName: 'image_path', operation: 'read' }],
     execute: async (args, ctx) => {
       const playlistId = stripPlaylistUriPrefix(args.playlist_id)
-      const raw = await readFile(args.image_path)
+      let raw: Buffer
+      try {
+        raw = await readFile(args.image_path)
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') {
+          throw new Error(
+            `cover image not found at "${args.image_path}". image_path must be a 2200 virtual path (e.g. /project/covers/cover.jpg). ` +
+              `Save the image under /project, /shared, /brain, or /commons before calling this tool.`,
+          )
+        }
+        throw err
+      }
       let quality = 85
       let maxEdge = 1000
       let jpeg = await sharp(raw)
