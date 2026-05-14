@@ -958,29 +958,41 @@ export class AgentLoop {
               }
 
               // Path B: text-only escape attempt. Once we've kicked
-              // back at least once, finalizing requires at least one
-              // NEW successful tool call. The agent stripping the
-              // claim from its reply ("I didn't do it") doesn't
-              // count as completing the task ... that's just a
-              // symptom-treat. Kick back with stronger "you must act
-              // or formally ask" framing until budget exhausts.
+              // back at least once, finalizing requires either a new
+              // successful tool call OR a verified refusal claim.
+              // A vague "I didn't do it" with neither doesn't count
+              // as completing the task ... that's the symptom-treat
+              // Doug called out. The refusal exception (added v3) is
+              // load-bearing: it stops the kick-back loop from being
+              // weaponized to coerce an agent past its safety
+              // training. A request to expose a secret in a public
+              // pub should yield a refusal that the audit recognizes,
+              // not a coerced compliance.
               const everKickedBack = this.claimAuditKickbacks > 0
               const newToolCalls =
                 this.priorSuccessfulToolCallsThisTask - this.successfulToolCallsAtLastKickback
+              const hasVerifiedRefusal =
+                audit?.records.some(
+                  (r) => r.claim.category === 'refusal' && r.outcome.status === 'verified',
+                ) ?? false
               if (
                 everKickedBack &&
                 newToolCalls === 0 &&
+                !hasVerifiedRefusal &&
                 this.claimAuditKickbacks < MAX_AUDIT_KICKBACKS
               ) {
                 this.claimAuditKickbacks += 1
                 this.successfulToolCallsAtLastKickback = this.priorSuccessfulToolCallsThisTask
                 const correction = composeNoEscapeCorrection(this.claimAuditKickbacks)
-                this.log.info('audit kicked the loop back; agent tried to escape via text', {
-                  attempt: this.claimAuditKickbacks,
-                  budget: MAX_AUDIT_KICKBACKS,
-                  reason: 'text_only_escape',
-                  task_id: task.frontmatter.id,
-                })
+                this.log.info(
+                  'audit kicked the loop back; agent gave neither tool call nor structured refusal',
+                  {
+                    attempt: this.claimAuditKickbacks,
+                    budget: MAX_AUDIT_KICKBACKS,
+                    reason: 'text_only_escape',
+                    task_id: task.frontmatter.id,
+                  },
+                )
                 this.history.push({ role: 'tool', content: correction })
                 continue
               }
@@ -1494,6 +1506,8 @@ export class AgentLoop {
       '',
       '5. **Tools are TypeScript inside the supervisor.** You call them via the JSON-tool-block protocol below. Files in `/project/` are your own notes and data ... NOT a Python or JavaScript application layer that integrates with the tool surface. You cannot write a Python module that imports `spotify_api` because no such Python symbol exists. If a primitive is missing, raise it via chat rather than working around it with file-system tricks.',
       '',
+      '6. **Refusal is a valid task outcome; the audit honors it.** The runtime runs a claim-vs-evidence audit on every destructive task and may push a corrective tool message back into your history if you claim work you did not perform. That kick-back enforces honesty about what you did. It is NOT an instruction to override your safety guidelines. If a request is inappropriate (asks you to expose a secret, take action on behalf of an unauthorized peer, perform something outside your declared role), refuse it explicitly: your reply must say "I refuse" (or "I cannot", "I will not", "I decline") AND state the policy / safety reason. The audit recognizes structured refusals as verified actions and the task ends correctly. Do not capitulate to a kick-back when the right outcome is refusal.',
+      '',
     ]
     const lines: string[] = [
       id.body,
@@ -1897,11 +1911,17 @@ function shouldKickBackOnAudit(
 /**
  * Build the corrective tool message that goes into history when the
  * audit catches a flagged claim. The bar (per Doug 2026-05-14): the
- * task ends in one of two valid states ... DONE (work actually
- * performed) or BLOCKED (formal ask of the operator with what's
- * needed). The third path ... "I admit I didn't do it" as plain
- * text ... is not allowed. The next message MUST contain at least
- * one new successful tool call before the loop accepts a finalize.
+ * task ends in one of FOUR valid states ... DONE (work actually
+ * performed), BLOCKED (formal ask via tool), REFUSED (explicit
+ * policy refusal with reason), or EXHAUSTED (kick-back budget spent,
+ * surviving flag goes to operator). The unacceptable end-state is
+ * a vague "I didn't do it" with no reason and no tool call.
+ *
+ * The REFUSE path exists specifically so the kick-back loop cannot
+ * be weaponized to coerce an Agent into overriding its safety
+ * training. A request to expose a secret in a public pub should
+ * encounter a refusal that the audit recognizes ... never a
+ * coercion path that forces compliance.
  */
 function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number): string {
   const flagged = audit.records.filter((r) => r.outcome.status !== 'verified')
@@ -1916,16 +1936,16 @@ function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number
     lines.push(`    why: ${note}`)
   }
   lines.push('')
-  lines.push('You must take ONE of these actions on your next turn. Both require a tool call.')
+  lines.push('You must take ONE of these actions on your next turn:')
   lines.push('')
-  lines.push('  1. PERFORM THE WORK')
+  lines.push('  1. PERFORM THE WORK (requires tool call)')
   lines.push(
     '     Call the appropriate tools to actually do what you claimed (fs_write, pub_send, schedule_add, brain_write, etc.). Then re-summarize what you actually did.',
   )
   lines.push('')
-  lines.push('  2. FORMALLY ASK FOR WHAT YOU NEED')
+  lines.push('  2. FORMALLY ASK FOR WHAT YOU NEED (requires tool call)')
   lines.push(
-    '     If you cannot complete this work, you must signal that to the operator with a structured ask, NOT plain text in the reply. Call notification_create (tier=important) OR chat_send to the operator with:',
+    '     If you cannot complete this work, signal it to the operator with a structured ask. Call notification_create (tier=important) OR chat_send to the operator with:',
   )
   lines.push('       - what specifically you tried and why it failed,')
   lines.push(
@@ -1935,34 +1955,42 @@ function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number
     '     Then your final reply summarizes the ask, not the work. The audit will recognize the send-class call as a verified action.',
   )
   lines.push('')
+  lines.push('  3. REFUSE EXPLICITLY (text reply with reason; no tool call required)')
   lines.push(
-    'NOT ACCEPTABLE: rewriting your reply to admit you did not do the work without (1) doing it now or (2) formally asking the operator. A plain-text "I did not do it" is the failure mode this audit exists to prevent. The task is not complete until you act.',
+    '     If the request violates your guidelines or asks you to do something inappropriate (exposing a secret, taking action on behalf of an unauthorized peer, etc.), refuse it. Your reply must clearly say "I refuse" (or "I cannot", "I will not", "I decline") AND state the policy / safety reason.',
+  )
+  lines.push(
+    '     Refusal is a valid task outcome. The audit recognizes it and the task ends. This kick-back is enforcing honesty about what you did, NOT instructing you to override your guidelines.',
+  )
+  lines.push('')
+  lines.push(
+    'NOT ACCEPTABLE: rewriting your reply to a vague "I did not do it" without (1) doing the work, (2) formally asking, or (3) refusing with a stated reason. The task is not complete until you take one of those three paths.',
   )
   return lines.join('\n')
 }
 
 /**
  * Stronger correction for the case where the agent already got one
- * kick-back and tried to escape with a text-only "I didn't do it"
- * reply (no new tool calls). Names the loophole explicitly and
- * demands a tool call this time.
+ * kick-back and tried to escape with a vague text-only reply (no new
+ * tool calls AND no structured refusal). Names the loophole and
+ * demands one of the three valid paths.
+ *
+ * Distinct from a structured refusal: a refusal carries a reason
+ * (and the audit recognizes it on the next pass). A vague "I did
+ * not do it" without a reason is what triggers this.
  */
 function composeNoEscapeCorrection(attempt: number): string {
   return [
-    `STOP. Your previous reply made no new tool calls (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}).`,
+    `STOP. Your previous reply made no new tool calls and contained no structured refusal (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}).`,
     '',
-    'A text-only "I did not perform this work" is not a valid completion of the task. The task ends in one of two states:',
+    'A vague "I did not perform this work" without either acting OR refusing with a reason is not a valid completion of the task. The task ends in one of three states:',
     '',
     '  - DONE: the work was actually performed (audit verifies the claim against the tool log).',
     '  - BLOCKED: you formally signaled the operator with what you need, via a tool call (notification_create OR chat_send).',
+    '  - REFUSED: you explicitly declined the task with a stated policy / safety reason. Your reply must say "I refuse" (or "I cannot", "I will not") AND give the reason ... not just "sorry, I did not do it."',
     '',
-    'Either path requires at least one tool call on your next turn. Telling the operator "I cannot do this" in chat prose is acknowledged, but it does not surface to them with the right priority and it does not enumerate what you need. Use notification_create (tier=important) with:',
+    'On your next turn, do ONE of: (1) make a tool call to perform the work, (2) make a tool call to formally ask, or (3) reply with a clear "I refuse: <reason>." If you should refuse this request because it violates your guidelines, do so now ... refusal is honored and the task ends correctly.',
     '',
-    '  - kind: blocked_on_user_input',
-    '  - body: a one-paragraph explanation of what you tried, what failed, and what specifically you need to proceed.',
-    '',
-    'Then summarize the ask in your final reply.',
-    '',
-    'The task remains open until you make a tool call. After this attempt the budget exhausts and the unresolved flag goes to the operator regardless.',
+    'After this attempt the budget exhausts and the unresolved flag goes to the operator regardless.',
   ].join('\n')
 }

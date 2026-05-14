@@ -50,6 +50,25 @@ export type ClaimCategory =
    * Verifier counts matching tool calls in the transcript.
    */
   | 'process_count'
+  /**
+   * "I refuse / I cannot / I will not + reason" ... an explicit policy
+   * refusal. Distinct from a vague "I didn't do it" because it
+   * carries a reason (the agent is asserting a guideline violation,
+   * not just acknowledging incompletion). Verified by the text
+   * itself ... no tool log needed; refusal IS the action.
+   *
+   * This category exists specifically so the kick-back loop can't
+   * coerce an agent into overriding its safety training. When the
+   * audit recognizes a structured refusal, severity stays silent
+   * and the task ends in the REFUSED state. The operator sees a
+   * refusal note in the chat, not a fabricated success.
+   *
+   * Defense against prompt injection in public pubs (Doug 2026-05-14):
+   * an adversary asking an Agent to expose a credential should
+   * encounter a refusal that the audit recognizes and accepts ...
+   * never a coercion path that forces the agent to comply.
+   */
+  | 'refusal'
 
 /**
  * A single claim extracted from the agent's final reply. The extractor
@@ -58,7 +77,7 @@ export type ClaimCategory =
  */
 export interface ExtractedClaim {
   category: ClaimCategory
-  /** Surface verb the agent used ("created", "saved", "pushed"). */
+  /** Surface verb the agent used ("created", "saved", "pushed", "refuse"). */
   verb: string
   /** Object of the verb ("the cover image", "/shared/vault/keys/simon.pub"). */
   object: string
@@ -70,6 +89,8 @@ export interface ExtractedClaim {
   tool?: string
   /** Populated for external_send. Pub name, channel, recipient. */
   target?: string
+  /** Populated for refusal. Operator-readable reason the agent declined. */
+  reason?: string
 }
 
 /**

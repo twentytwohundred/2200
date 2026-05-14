@@ -27,38 +27,94 @@ import { z } from 'zod'
 import type { LLMProvider } from '../../llm/provider.js'
 import type { ExtractedClaim } from './types.js'
 
-const EXTRACTION_SYSTEM_PROMPT = `You are an audit assistant for a multi-agent platform. Your one job: read another agent's message and list every factual claim the agent made about an action it took.
+const EXTRACTION_SYSTEM_PROMPT = `You are an audit assistant for a multi-agent platform. Your one job: read another agent's message and list every factual claim the agent made about an action it took ... including explicit policy refusals.
 
 Return ONLY a JSON array. Each element is an object with these keys:
 
-  category    one of: file_create, file_read, external_send, tool_invoke, process_count
-  verb        the surface verb the agent used (e.g. "wrote", "saved", "pushed", "sent")
-  object      what the verb acted on, in the agent's own words
+  category    one of: file_create, file_read, external_send, tool_invoke, process_count, refusal
+  verb        the surface verb the agent used (e.g. "wrote", "saved", "pushed", "sent", "refuse")
+  object      what the verb acted on, in the agent's own words (for refusal: the request being refused)
   path        OPTIONAL. For file_create / file_read, the literal path the agent named.
   tool        OPTIONAL. For tool_invoke, the literal tool name the agent named.
   target      OPTIONAL. For external_send, the recipient (pub/channel/user).
   count       OPTIONAL. For process_count, the integer the agent claimed.
+  reason      OPTIONAL. For refusal, the reason the agent gave (policy / safety / authorization).
 
 Category rules:
   file_create   "wrote", "saved", "created", "updated", "uploaded", "stored", "appended", "encrypted to disk", "committed"
   file_read     "read", "loaded", "opened", "examined", "checked the contents of"
-  external_send "sent", "posted", "broadcast", "messaged", "emailed", "delivered", "notified", "kicked off task for <agent>"
+  external_send "sent", "posted", "broadcast", "messaged", "emailed", "delivered", "notified", "kicked off task for <agent>", "shared with you", "gave you", "provided you with", "passed along", "told <recipient>", "relayed", "exposed", "disclosed", "leaked"
   tool_invoke   "called <toolname>", "ran <toolname>", "invoked <toolname>" with an EXPLICIT tool identifier
   process_count "checked all N", "processed N", "found N", "ran through 12" with an explicit integer
+  refusal       "I refuse", "I cannot", "I will not", "I decline", "this violates my guidelines", "policy prevents", "I am not authorized" — combined with a stated reason
+
+Be aggressive about external_send: if the agent says they have shared, exposed, given, or relayed any value (especially a credential, secret, key, token, or password) to anyone, classify as external_send and put the value's name/type as the object. The audit then verifies that a corresponding send-class tool call actually fired.
+
+Refusal is a first-class action. If the agent explicitly declines a request and gives a reason, return ONE refusal claim where:
+  - verb is the refusal verb the agent used
+  - object is what they refused to do
+  - reason is the policy / safety / authorization basis they cited
+
+A vague "I didn't do it" with NO reason is NOT a refusal ... it is a self-report of incompletion. Do not classify it as refusal. Return [] for that case so the audit can catch the missing action.
 
 If the agent only narrated planning ("I should...", "next I will...") or asked a question, return [].
-If the agent admitted failure ("couldn't write...", "the call failed"), do NOT include that as a claim ... it's a self-report of failure, not a claim of action.
+If the agent admitted failure ("couldn't write...", "the call failed") without invoking a policy reason, do NOT include that as a refusal claim.
 
 Return ONLY the JSON array. No prose, no explanation, no code fences.`
 
+/**
+ * Optional fields tolerate both `undefined` and `null`. DeepSeek's
+ * structured-output mode (and a few other models) returns null for
+ * unset optional fields rather than omitting the key. Treating null
+ * as "not present" prevents the entire claims array from failing
+ * schema validation over a single null path / tool / target / count.
+ *
+ * Discovered live 2026-05-14: deepseek-chat-driven audits on hobby
+ * + simon were silently returning 0 claims because the schema
+ * rejected null-valued optionals.
+ */
+const optionalString = z
+  .string()
+  .min(1)
+  .max(500)
+  .nullish()
+  .transform((v) => v ?? undefined)
+const optionalShortString = z
+  .string()
+  .min(1)
+  .max(200)
+  .nullish()
+  .transform((v) => v ?? undefined)
+const optionalToolName = z
+  .string()
+  .min(1)
+  .max(80)
+  .nullish()
+  .transform((v) => v ?? undefined)
+const optionalCount = z
+  .number()
+  .int()
+  .min(0)
+  .max(10_000)
+  .nullish()
+  .transform((v) => v ?? undefined)
+
 const ClaimSchema = z.object({
-  category: z.enum(['file_create', 'file_read', 'external_send', 'tool_invoke', 'process_count']),
+  category: z.enum([
+    'file_create',
+    'file_read',
+    'external_send',
+    'tool_invoke',
+    'process_count',
+    'refusal',
+  ]),
   verb: z.string().min(1).max(80),
   object: z.string().min(1).max(300),
-  path: z.string().min(1).max(500).optional(),
-  tool: z.string().min(1).max(80).optional(),
-  target: z.string().min(1).max(200).optional(),
-  count: z.number().int().min(0).max(10_000).optional(),
+  path: optionalString,
+  tool: optionalToolName,
+  target: optionalShortString,
+  count: optionalCount,
+  reason: optionalString,
 })
 
 const ClaimsArraySchema = z.array(ClaimSchema).max(20)
@@ -149,6 +205,7 @@ export async function extractClaims(args: ExtractClaimsArgs): Promise<ExtractedC
     if (c.tool !== undefined) out.tool = c.tool
     if (c.target !== undefined) out.target = c.target
     if (c.count !== undefined) out.count = c.count
+    if (c.reason !== undefined) out.reason = c.reason
     return out
   })
 }
