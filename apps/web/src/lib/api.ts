@@ -91,6 +91,14 @@ export interface Agent {
    * Includes a cache-busting `?v=<mtime>` so updates land instantly.
    */
   avatar_image_url: string | null
+  /**
+   * Archive metadata. Present when the Agent has been archived
+   * (directory renamed to `<name>-archived-<YYYY-MM-DD>`, status
+   * `archived`). The UI uses `at` to display the archive date and
+   * `reason` (when set) for the operator's note. `null` for live
+   * Agents.
+   */
+  archived: { at: string; reason?: string } | null
 }
 
 /**
@@ -635,6 +643,28 @@ export const api = {
     request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}/stop`, {
       method: 'POST',
       body: reason ? { reason } : undefined,
+    }),
+  /**
+   * Archive an Agent. Renames every per-Agent on-disk subtree to
+   * `<name>-archived-<YYYY-MM-DD>` so the original name is freed for
+   * a future Agent. Brain, chats, identity move with the rename;
+   * scheduled tasks are cancelled. Returns the renamed Agent record.
+   */
+  agentArchive: (name: string, reason?: string) =>
+    request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}/archive`, {
+      method: 'POST',
+      body: reason ? { reason } : undefined,
+    }),
+  /**
+   * Reverse archive. By default restores the pre-archive name; pass
+   * `rename_to` to land on a different name (necessary if the
+   * original is now in use). Does not auto-start the Agent ... the
+   * operator brings it back up explicitly.
+   */
+  agentUnarchive: (name: string, rename_to?: string) =>
+    request<Agent>(`/api/v1/agents/${encodeURIComponent(name)}/unarchive`, {
+      method: 'POST',
+      body: rename_to ? { rename_to } : undefined,
     }),
   budget: (name: string) =>
     request<BudgetResponse>(`/api/v1/agents/${encodeURIComponent(name)}/budget`),

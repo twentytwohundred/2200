@@ -6,7 +6,7 @@
  * lives below the header.
  */
 import type { ReactElement } from 'react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type Agent } from '../../lib/api'
@@ -58,12 +58,14 @@ function pillLabel(status: string): string {
   if (status === 'blocked_on_user') return 'needs you'
   if (status === 'blocked_on_agent') return 'warn'
   if (status === 'blocked_on_detector') return 'paused'
+  if (status === 'archived') return 'archived'
   if (status === 'errored') return 'error'
   return status.replace(/_/g, ' ')
 }
 
 export function FleetScreen(): ReactElement {
   const navigate = useNavigate()
+  const [showArchived, setShowArchived] = useState(false)
 
   const query = useQuery({
     queryKey: ['agents'],
@@ -78,12 +80,15 @@ export function FleetScreen(): ReactElement {
     staleTime: 5_000,
   })
 
-  const groups = useMemo(() => group(query.data?.items ?? []), [query.data])
+  const allItems = query.data?.items ?? []
+  const archivedItems = useMemo(() => allItems.filter((a) => a.status === 'archived'), [allItems])
+  const liveItems = useMemo(() => allItems.filter((a) => a.status !== 'archived'), [allItems])
+  const groups = useMemo(() => group(liveItems), [liveItems])
   const pendingCount = inboxQuery.data?.items.length ?? 0
 
   const isLoading = query.isLoading
   const isError = query.isError
-  const isEmpty = !isLoading && !isError && (query.data?.items.length ?? 0) === 0
+  const isEmpty = !isLoading && !isError && liveItems.length === 0 && archivedItems.length === 0
 
   return (
     <Screen
@@ -179,6 +184,34 @@ export function FleetScreen(): ReactElement {
             agents={groups.idle}
             empty="No idle agents."
           />
+          {archivedItems.length > 0 && (
+            <section className={styles.band}>
+              <div className={styles.bandHead}>
+                <button
+                  type="button"
+                  className={styles.archivedToggle}
+                  onClick={() => {
+                    setShowArchived((v) => !v)
+                  }}
+                  aria-expanded={showArchived}
+                >
+                  <Meta>
+                    {showArchived ? '▾' : '▸'} archived · {String(archivedItems.length)}
+                  </Meta>
+                </button>
+                <span className={styles.bandRule} />
+              </div>
+              {showArchived && (
+                <ul className={styles.grid}>
+                  {archivedItems.map((a) => (
+                    <li key={a.name} className={styles.cell}>
+                      <AgentCard agent={a} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
         </div>
       )}
     </Screen>
@@ -221,11 +254,19 @@ function Band({ label, count, agents, empty }: BandProps): ReactElement {
 // ── AgentCard ──────────────────────────────────────────────────────────────
 
 function AgentCard({ agent }: { agent: Agent }): ReactElement {
-  const taskValue = agent.current_task_id ? agent.current_task_id.slice(0, 24) : 'no current task'
+  const isArchived = agent.status === 'archived'
+  const archivedAt = agent.archived?.at ?? null
+  const taskValue = isArchived
+    ? archivedAt
+      ? `archived ${new Date(archivedAt).toLocaleDateString()}`
+      : 'archived'
+    : agent.current_task_id
+      ? agent.current_task_id.slice(0, 24)
+      : 'no current task'
   return (
     <Link
-      to={`/agent/${encodeURIComponent(agent.name)}`}
-      className={styles.card}
+      to={`/agent/${encodeURIComponent(agent.name)}?tab=identity`}
+      className={cx(styles.card, isArchived && styles.cardArchived)}
       aria-label={`Open ${agent.name}`}
     >
       <div className={styles.cardRow}>
@@ -242,7 +283,7 @@ function AgentCard({ agent }: { agent: Agent }): ReactElement {
         <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>
       </div>
       <div className={styles.cardTask}>
-        <Meta>task</Meta>
+        <Meta>{isArchived ? 'state' : 'task'}</Meta>
         <span className={styles.cardTaskValue}>{taskValue}</span>
       </div>
     </Link>

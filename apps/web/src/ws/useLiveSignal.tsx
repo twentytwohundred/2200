@@ -75,7 +75,9 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'agent.status_changed':
         case 'agent.task_started':
         case 'agent.task_finished':
-        case 'agent.task_errored': {
+        case 'agent.task_errored':
+        case 'agent.archived':
+        case 'agent.unarchived': {
           void queryClient.invalidateQueries({ queryKey: ['agents'] })
           // Also invalidate the per-Agent tasks list when the runtime
           // signals a task state change. The task list is keyed on

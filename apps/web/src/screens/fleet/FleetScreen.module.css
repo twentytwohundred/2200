@@ -85,6 +85,25 @@
   box-shadow: var(--focus);
 }
 
+.cardArchived {
+  opacity: 0.6;
+  filter: saturate(0.4);
+}
+
+.cardArchived:hover {
+  opacity: 0.85;
+  filter: saturate(0.6);
+}
+
+.archivedToggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+
 .cardRow {
   display: flex;
   align-items: center;
