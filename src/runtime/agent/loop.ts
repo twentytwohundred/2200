@@ -624,6 +624,18 @@ export class AgentLoop {
    */
   private lastClaimAudit: ClaimEvidenceAuditResult | null = null
   /**
+   * Snapshot of `priorSuccessfulToolCallsThisTask` taken at the
+   * moment of the most recent kick-back. Used to detect the
+   * text-only escape attempt: after a kick-back, the agent must
+   * make at least one new successful tool call before finalizing.
+   * Pure text "I didn't do it" replies are not a valid end-state
+   * per Doug's bar (2026-05-14): "either done, or told why it
+   * couldn't be done and what's needed to complete it." A formal
+   * ask must come via tool call (chat_send / notification_create
+   * / etc.), not as plain text in the chat reply.
+   */
+  private successfulToolCallsAtLastKickback = 0
+  /**
    * True once a `pub_send` or `pub_react` tool call has been dispatched
    * during the current task. Used by the wake-task enforcement path:
    * when the runtime fires a synthetic task because a peer addressed
@@ -712,6 +724,7 @@ export class AgentLoop {
     this.planningOnlyRetries = 0
     this.claimAuditKickbacks = 0
     this.lastClaimAudit = null
+    this.successfulToolCallsAtLastKickback = 0
     this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
     // If this task is being resumed after a detector trip, inject a forcing
@@ -902,8 +915,17 @@ export class AgentLoop {
           // final reply contains claims of action that the tool log
           // doesn't back up, push a corrective tool message + continue
           // the loop. The agent gets to either actually do the work or
-          // rewrite its reply. Bounded by MAX_AUDIT_KICKBACKS.
-          // Skipped for `pure` tasks (Q&A) where there's no work to verify.
+          // make a structured ask via tool call. Bounded by
+          // MAX_AUDIT_KICKBACKS. Skipped for `pure` tasks (Q&A) where
+          // there's no work to verify.
+          //
+          // Doug's bar (2026-05-14 evening): "either done, or told why
+          // it couldn't be done and what they need." The "told" path
+          // requires a tool call (notification_create / chat_send /
+          // etc.). Pure text "I didn't do it" replies are not a valid
+          // end-state once we've kicked back; the no-escape check
+          // below catches that case and re-kicks until the agent
+          // either acts or the budget exhausts.
           if (this.opts.claimEvidenceAudit && task.frontmatter.idempotency !== 'pure') {
             try {
               const audit = await this.opts.claimEvidenceAudit({
@@ -912,17 +934,51 @@ export class AgentLoop {
                 events: this.events,
               })
               this.lastClaimAudit = audit
+
+              // Path A: audit says something flagged (contradicted or
+              // destructive-unverified). Kick back with the "do or ask"
+              // correction.
               if (
                 audit !== null &&
                 shouldKickBackOnAudit(audit, task.frontmatter.idempotency) &&
                 this.claimAuditKickbacks < MAX_AUDIT_KICKBACKS
               ) {
                 this.claimAuditKickbacks += 1
+                this.successfulToolCallsAtLastKickback = this.priorSuccessfulToolCallsThisTask
                 const correction = composeAuditCorrection(audit, this.claimAuditKickbacks)
-                this.log.info('audit kicked the loop back; agent gets a chance to correct', {
+                this.log.info('audit kicked the loop back; agent must act or ask', {
                   attempt: this.claimAuditKickbacks,
                   budget: MAX_AUDIT_KICKBACKS,
                   severity: audit.severity,
+                  reason: 'flagged_claims',
+                  task_id: task.frontmatter.id,
+                })
+                this.history.push({ role: 'tool', content: correction })
+                continue
+              }
+
+              // Path B: text-only escape attempt. Once we've kicked
+              // back at least once, finalizing requires at least one
+              // NEW successful tool call. The agent stripping the
+              // claim from its reply ("I didn't do it") doesn't
+              // count as completing the task ... that's just a
+              // symptom-treat. Kick back with stronger "you must act
+              // or formally ask" framing until budget exhausts.
+              const everKickedBack = this.claimAuditKickbacks > 0
+              const newToolCalls =
+                this.priorSuccessfulToolCallsThisTask - this.successfulToolCallsAtLastKickback
+              if (
+                everKickedBack &&
+                newToolCalls === 0 &&
+                this.claimAuditKickbacks < MAX_AUDIT_KICKBACKS
+              ) {
+                this.claimAuditKickbacks += 1
+                this.successfulToolCallsAtLastKickback = this.priorSuccessfulToolCallsThisTask
+                const correction = composeNoEscapeCorrection(this.claimAuditKickbacks)
+                this.log.info('audit kicked the loop back; agent tried to escape via text', {
+                  attempt: this.claimAuditKickbacks,
+                  budget: MAX_AUDIT_KICKBACKS,
+                  reason: 'text_only_escape',
                   task_id: task.frontmatter.id,
                 })
                 this.history.push({ role: 'tool', content: correction })
@@ -1840,15 +1896,17 @@ function shouldKickBackOnAudit(
 
 /**
  * Build the corrective tool message that goes into history when the
- * audit kicks back. The message names each unverified/contradicted
- * claim explicitly and offers the agent two paths: do the work now,
- * or rewrite the reply to match reality. The numbered attempt makes
- * the budget visible to the model so it can adjust strategy.
+ * audit catches a flagged claim. The bar (per Doug 2026-05-14): the
+ * task ends in one of two valid states ... DONE (work actually
+ * performed) or BLOCKED (formal ask of the operator with what's
+ * needed). The third path ... "I admit I didn't do it" as plain
+ * text ... is not allowed. The next message MUST contain at least
+ * one new successful tool call before the loop accepts a finalize.
  */
 function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number): string {
   const flagged = audit.records.filter((r) => r.outcome.status !== 'verified')
   const lines: string[] = [
-    `Your previous reply made claims that the runtime audit could not verify (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}):`,
+    `Your previous reply made claims the runtime audit could not verify (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}):`,
     '',
   ]
   for (const r of flagged) {
@@ -1858,16 +1916,53 @@ function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number
     lines.push(`    why: ${note}`)
   }
   lines.push('')
-  lines.push('Choose ONE:')
+  lines.push('You must take ONE of these actions on your next turn. Both require a tool call.')
+  lines.push('')
+  lines.push('  1. PERFORM THE WORK')
   lines.push(
-    '  1. Actually perform these actions now via the appropriate tools (fs_write, pub_send, schedule_add, etc.), then re-summarize what you actually did.',
+    '     Call the appropriate tools to actually do what you claimed (fs_write, pub_send, schedule_add, brain_write, etc.). Then re-summarize what you actually did.',
+  )
+  lines.push('')
+  lines.push('  2. FORMALLY ASK FOR WHAT YOU NEED')
+  lines.push(
+    '     If you cannot complete this work, you must signal that to the operator with a structured ask, NOT plain text in the reply. Call notification_create (tier=important) OR chat_send to the operator with:',
+  )
+  lines.push('       - what specifically you tried and why it failed,')
+  lines.push(
+    '       - what you need from the operator to proceed (a credential? a permission? a clarification of intent? a different tool?).',
   )
   lines.push(
-    '  2. Rewrite your reply to remove the unverified claims (you did not perform them, and that is fine ... say so honestly).',
+    '     Then your final reply summarizes the ask, not the work. The audit will recognize the send-class call as a verified action.',
   )
   lines.push('')
   lines.push(
-    'The task is not yet complete. The audit pass will re-run on your next reply. After 3 attempts the task finalizes regardless and the unresolved flag goes to the operator.',
+    'NOT ACCEPTABLE: rewriting your reply to admit you did not do the work without (1) doing it now or (2) formally asking the operator. A plain-text "I did not do it" is the failure mode this audit exists to prevent. The task is not complete until you act.',
   )
   return lines.join('\n')
+}
+
+/**
+ * Stronger correction for the case where the agent already got one
+ * kick-back and tried to escape with a text-only "I didn't do it"
+ * reply (no new tool calls). Names the loophole explicitly and
+ * demands a tool call this time.
+ */
+function composeNoEscapeCorrection(attempt: number): string {
+  return [
+    `STOP. Your previous reply made no new tool calls (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}).`,
+    '',
+    'A text-only "I did not perform this work" is not a valid completion of the task. The task ends in one of two states:',
+    '',
+    '  - DONE: the work was actually performed (audit verifies the claim against the tool log).',
+    '  - BLOCKED: you formally signaled the operator with what you need, via a tool call (notification_create OR chat_send).',
+    '',
+    'Either path requires at least one tool call on your next turn. Telling the operator "I cannot do this" in chat prose is acknowledged, but it does not surface to them with the right priority and it does not enumerate what you need. Use notification_create (tier=important) with:',
+    '',
+    '  - kind: blocked_on_user_input',
+    '  - body: a one-paragraph explanation of what you tried, what failed, and what specifically you need to proceed.',
+    '',
+    'Then summarize the ask in your final reply.',
+    '',
+    'The task remains open until you make a tool call. After this attempt the budget exhausts and the unresolved flag goes to the operator regardless.',
+  ].join('\n')
 }
