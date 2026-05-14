@@ -781,17 +781,12 @@ function ThinkingPlaceholder({
       ...(s.arg_summary !== null ? { arg: s.arg_summary } : {}),
       state: s.state === 'errored' ? ('done' as const) : s.state,
     })) ?? []
-  if (steps.length === 0 && streamingReply === null) {
-    return (
-      <ChatMessage
-        from="agent"
-        who={agent}
-        agentGlyph={agentGlyph}
-        agentImageUrl={agentImageUrl}
-        thinking
-      />
-    )
-  }
+  // Always render ToolStream while a task is pending. When no tool
+  // events have arrived yet ToolStream renders a single generic
+  // "thinking" chip with the spinner ... that's the canonical
+  // working state per HANDOFF.md §6. The bare ChatMessage(thinking)
+  // dots are only the fallback for environments where the WS isn't
+  // wired at all.
   return (
     <ToolStream
       who={agent}

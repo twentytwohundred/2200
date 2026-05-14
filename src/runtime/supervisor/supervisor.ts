@@ -1403,6 +1403,13 @@ export class Supervisor {
         // next 2s poll cycle.
         const name = this.agentByConnection.get(ctx.connection)
         if (!name) return { ack: true as const }
+        this.log.info('tool event', {
+          agent: name,
+          kind: params.kind,
+          tool: params.tool,
+          arg_summary: params.arg_summary ?? null,
+          ws_subscribers: this.webHandle ? 'connected' : 'no_web',
+        })
         if (this.webHandle) {
           this.webHandle.broadcast({
             event: 'agent.tool_event',
