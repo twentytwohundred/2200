@@ -52,6 +52,16 @@ export const AttachmentRefSchema = z.object({
 })
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>
 
+/**
+ * Discriminator for system-role messages emitted by the runtime
+ * itself rather than the agent or operator. v1 has just one kind:
+ * `audit` for claim-vs-evidence audit cards. Future system-authored
+ * messages pick their own enum value here so the renderer can route
+ * them. Null for normal user / assistant / system messages.
+ */
+export const ChatMessageKindSchema = z.enum(['audit']).nullable().default(null)
+export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>
+
 export const ChatMessageRecordSchema = z.object({
   schema_version: z.literal(1),
   id: z.string().min(1),
@@ -63,6 +73,8 @@ export const ChatMessageRecordSchema = z.object({
   attachments: z.array(AttachmentRefSchema).default([]),
   /** Optional reference to a task this message is the body/outcome of. */
   task_id: z.string().nullable().default(null),
+  /** Runtime-side discriminator; see ChatMessageKindSchema. */
+  kind: ChatMessageKindSchema,
 })
 export type ChatMessageRecord = z.infer<typeof ChatMessageRecordSchema>
 
@@ -96,6 +108,8 @@ export interface AppendMessageArgs {
   taskId?: string | null
   now?: () => Date
   id?: string
+  /** System-role discriminator; surfaces in the renderer routing. */
+  kind?: ChatMessageKind
 }
 
 export interface CreateChatArgs {
@@ -308,6 +322,7 @@ export class MultiChatStore {
       mode: args.mode ?? null,
       attachments: args.attachments ?? [],
       task_id: args.taskId ?? null,
+      kind: args.kind ?? null,
     }
     const path = this.threadPath(args.chatId)
     await mkdir(dirname(path), { recursive: true })
@@ -407,6 +422,7 @@ export class MultiChatStore {
             mode: null,
             attachments: [],
             task_id: typeof obj.task_id === 'string' ? obj.task_id : null,
+            kind: null,
           })
         } catch {
           /* skip malformed legacy line */
