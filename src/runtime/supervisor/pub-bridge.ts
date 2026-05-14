@@ -25,9 +25,16 @@
  *     does not currently rebuild on pub-server restart; in practice
  *     the daemon restarts both, so v1 doesn't need that fancy.
  */
-import type { HomePaths } from '../storage/layout.js'
+import { type HomePaths, pubPaths } from '../storage/layout.js'
 import { loadUserIdentityIfExists } from '../user/loader.js'
-import { credForPub, readCredentialFile, type PubCredential } from '../pub/keypair.js'
+import {
+  credForPub,
+  readCredentialFile,
+  writeCredentialFile,
+  type PubCredential,
+} from '../pub/keypair.js'
+import { createIdentityClient, ensureRegistered } from '../pub/identity-client.js'
+import { readPubSecrets } from '../pub/secrets.js'
 import { PubClient, type PubMessage, type PubReaction, type RoomState } from '../pub/client.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import type { Supervisor } from './supervisor.js'
@@ -191,10 +198,34 @@ export class SupervisorPubBridge {
       )
     }
     const baseUrl = `http://127.0.0.1:${String(pub.port)}`
-    // credForPub picks the right per-pub agent_id for the multi-pub
-    // schema; falls back to the legacy cred.agent_id for installs that
-    // predate the map.
-    const client = new PubClient({ baseUrl, cred: credForPub(cred, pub.name) })
+    // Auto-register the user on first contact with this pub. Rooms
+    // created before the per-pub agent_id substrate landed do not
+    // have a user entry in cred.pub_agent_ids, and the supervisor's
+    // bridge cannot mint a token without one. ensureRegistered is
+    // idempotent (getMe first; 404 -> register; matched id ->
+    // return as-is), so the cost is one round-trip per pub
+    // per supervisor lifetime when the entry is missing.
+    let effectiveCred = cred
+    if (!cred.pub_agent_ids?.[pub.name] && !cred.agent_id) {
+      // No fallback either; nothing to authenticate with yet. Pass
+      // through so the eventual mintToken returns a clean error.
+    } else if (!cred.pub_agent_ids?.[pub.name]) {
+      try {
+        const adminSecret = await readAdminSecretForPub(this.paths.home, pub.name)
+        const identityClient = createIdentityClient({ baseUrl })
+        const updated = await ensureRegistered(identityClient, cred, adminSecret, pub.name)
+        if (updated !== cred) {
+          await persistUserCred(this.paths, updated)
+          effectiveCred = updated
+        }
+      } catch (err) {
+        this.log.warn('supervisor pub bridge: user auto-register failed; continuing', {
+          pub: pub.name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    const client = new PubClient({ baseUrl, cred: credForPub(effectiveCred, pub.name) })
     const reactions = new Map<string, PubReaction[]>()
     const reactionOrder: string[] = []
     // Track reactions in-band: every time the pub-server broadcasts
@@ -266,4 +297,19 @@ export class PubBridgeError extends Error {
     super(message)
     this.name = 'PubBridgeError'
   }
+}
+
+async function readAdminSecretForPub(home: string, pubName: string): Promise<string> {
+  const pp = pubPaths(home, pubName)
+  const secrets = await readPubSecrets({
+    adminSecret: pp.adminSecret,
+    signingKey: pp.signingKey,
+  })
+  return secrets.adminSecret
+}
+
+async function persistUserCred(paths: HomePaths, cred: PubCredential): Promise<void> {
+  const user = await loadUserIdentityIfExists(paths.configUserMd)
+  if (!user) return
+  await writeCredentialFile(user.frontmatter.pub.credentials.id, cred)
 }

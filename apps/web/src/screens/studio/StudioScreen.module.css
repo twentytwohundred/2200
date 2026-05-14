@@ -635,10 +635,102 @@
     500 12px/1.4 var(--ds-font-mono);
 }
 
-.destroyPanel {
+/* Destroy this room: small footer link below the composer; clicking
+   it opens a floating overlay anchored just above. Out of sight
+   until the operator reaches for it. */
+.destroyFooter {
+  position: relative;
+  display: flex;
+  justify-content: flex-start;
+  padding: 4px 24px 12px;
+}
+
+.destroyTrigger {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font:
+    400 11px/1.2 var(--ds-font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 2px 4px;
+  text-transform: lowercase;
+}
+
+.destroyTrigger:hover {
+  color: var(--danger);
+}
+
+.destroyOverlay {
+  position: absolute;
+  left: 24px;
+  bottom: calc(100% - 4px);
+  width: min(420px, calc(100% - 48px));
+  background: var(--bg-elev);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--ds-r-3);
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-pop);
+  z-index: 10;
+}
+
+.destroyOverlayHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.destroyOverlayTitle {
+  font:
+    600 14px/1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.destroyOverlayClose {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ds-r-2);
+  font:
+    500 14px/1 var(--ds-font-sans);
+  cursor: pointer;
+}
+
+.destroyOverlayClose:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.destroyOverlayActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.destroyCancelBtn {
+  appearance: none;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  font:
+    500 12.5px/1 var(--ds-font-sans);
+  padding: 8px 14px;
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+}
+
+.destroyCancelBtn:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
 }
 
 .destroyExplain {
@@ -677,6 +769,7 @@
 
 .destroyBtn {
   appearance: none;
+  flex: 1 1 auto;
   background: var(--bg-elev);
   border: 1px solid var(--line);
   color: var(--text-3);
@@ -685,7 +778,6 @@
   padding: 8px 14px;
   border-radius: var(--ds-r-2);
   cursor: not-allowed;
-  width: 100%;
   transition:
     background var(--ds-dur-fast) var(--ds-ease),
     color var(--ds-dur-fast) var(--ds-ease),

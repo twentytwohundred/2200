@@ -679,12 +679,6 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
             </section>
           ) : null}
 
-          {!isStudio && (
-            <section className={styles.section}>
-              <Meta>destroy room</Meta>
-              <DestroyRoomPanel pubName={pubName} />
-            </section>
-          )}
         </aside>
 
         <div className={styles.feedWrap}>
@@ -834,6 +828,8 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           <div className={styles.composerError}>{formatError(sendMutation.error)}</div>
         ) : null}
       </form>
+
+      {!isStudio && <DestroyRoomFooter pubName={pubName} />}
     </Screen>
   )
 }
@@ -1080,15 +1076,20 @@ function AddGuestPicker({
 }
 
 /**
- * Typed-confirm destroy panel for Rooms. Operator types `DESTROY`
- * into the input; the button enables when the input matches exactly.
- * On success, navigate back to /rooms.
+ * Tiny "destroy this room" trigger that lives below the composer.
+ * Click opens a floating overlay anchored above the link with the
+ * typed-DESTROY input + button. Keeps the destructive surface out
+ * of the way until the operator reaches for it.
+ *
+ * On destroy success, navigate back to /rooms.
  */
-function DestroyRoomPanel({ pubName }: { pubName: string }): ReactElement {
+function DestroyRoomFooter({ pubName }: { pubName: string }): ReactElement {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
   const [confirm, setConfirm] = useState('')
   const matches = confirm === 'DESTROY'
+
   const mutation = useMutation({
     mutationFn: () => api.pubDestroy(pubName),
     onSuccess: () => {
@@ -1097,38 +1098,91 @@ function DestroyRoomPanel({ pubName }: { pubName: string }): ReactElement {
       void navigate('/rooms')
     },
   })
+
+  // Esc closes the overlay.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: globalThis.KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const close = (): void => {
+    setOpen(false)
+    setConfirm('')
+  }
+
   return (
-    <div className={styles.destroyPanel}>
-      <p className={styles.destroyExplain}>
-        Stops the pub-server, removes the room record, deletes its on-disk state, and drops it from
-        every guest's <span className={styles.destroyMono}>pubs.md</span>. Cannot be undone. Type{' '}
-        <span className={styles.destroyMono}>DESTROY</span> below to enable.
-      </p>
-      <input
-        className={styles.destroyInput}
-        value={confirm}
-        onChange={(e) => {
-          setConfirm(e.target.value)
-        }}
-        placeholder="type DESTROY to enable"
-        spellCheck={false}
-        autoCapitalize="characters"
-      />
+    <div className={styles.destroyFooter}>
+      {open && (
+        <div className={styles.destroyOverlay} role="dialog" aria-label="Destroy room">
+          <div className={styles.destroyOverlayHead}>
+            <span className={styles.destroyOverlayTitle}>Destroy "{pubName}"</span>
+            <button
+              type="button"
+              className={styles.destroyOverlayClose}
+              onClick={close}
+              aria-label="Cancel destroy"
+            >
+              ×
+            </button>
+          </div>
+          <p className={styles.destroyExplain}>
+            Stops the pub-server, removes the room record, deletes its on-disk state, and drops
+            it from every guest's <span className={styles.destroyMono}>pubs.md</span>. Cannot be
+            undone. Type <span className={styles.destroyMono}>DESTROY</span> below to enable.
+          </p>
+          <input
+            className={styles.destroyInput}
+            value={confirm}
+            onChange={(e) => {
+              setConfirm(e.target.value)
+            }}
+            placeholder="type DESTROY to enable"
+            spellCheck={false}
+            autoCapitalize="characters"
+            autoFocus
+          />
+          <div className={styles.destroyOverlayActions}>
+            <button
+              type="button"
+              className={styles.destroyCancelBtn}
+              onClick={close}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={cx(styles.destroyBtn, matches && styles.destroyBtnArmed)}
+              disabled={!matches || mutation.isPending}
+              onClick={() => {
+                mutation.mutate()
+              }}
+            >
+              {mutation.isPending ? 'Destroying…' : `Destroy ${pubName}`}
+            </button>
+          </div>
+          {mutation.error && (
+            <p className={styles.guestError}>
+              {mutation.error instanceof Error ? mutation.error.message : 'unknown error'}
+            </p>
+          )}
+        </div>
+      )}
       <button
         type="button"
-        className={cx(styles.destroyBtn, matches && styles.destroyBtnArmed)}
-        disabled={!matches || mutation.isPending}
+        className={styles.destroyTrigger}
         onClick={() => {
-          mutation.mutate()
+          setOpen((v) => !v)
         }}
       >
-        {mutation.isPending ? 'Destroying…' : `Destroy ${pubName}`}
+        {open ? 'cancel' : 'destroy this room'}
       </button>
-      {mutation.error && (
-        <p className={styles.guestError}>
-          {mutation.error instanceof Error ? mutation.error.message : 'unknown error'}
-        </p>
-      )}
     </div>
   )
 }
