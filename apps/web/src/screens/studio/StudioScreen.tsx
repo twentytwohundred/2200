@@ -260,7 +260,6 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   const [draft, setDraft] = useState('')
   const [staged, setStaged] = useState<StagedAttachment[]>([])
   const [stageError, setStageError] = useState<string | null>(null)
-  const [showNewStudio, setShowNewStudio] = useState(false)
 
   const pubQuery = useQuery({
     queryKey: ['pub', pubName],
@@ -564,20 +563,9 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
       title={screenTitle}
       lede={screenLede}
       actions={
-        <>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              setShowNewStudio((v) => !v)
-            }}
-          >
-            {showNewStudio ? 'Close' : '+ New room'}
-          </Button>
-          <ScreenNavLink to={isStudio ? '/' : '/rooms'}>
-            {isStudio ? '← Fleet' : '← Rooms'}
-          </ScreenNavLink>
-        </>
+        <ScreenNavLink to={isStudio ? '/' : '/rooms'}>
+          {isStudio ? '← Fleet' : '← Rooms'}
+        </ScreenNavLink>
       }
     >
       {pubQuery.isError && !pubQuery.data ? (
@@ -585,14 +573,6 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
           <ErrorState title="Pub unavailable" body={formatError(pubQuery.error)} />
         </Card>
       ) : null}
-
-      {showNewStudio && (
-        <NewRoomForm
-          onClose={() => {
-            setShowNewStudio(false)
-          }}
-        />
-      )}
 
       <div className={styles.body}>
         <aside className={styles.sidebar}>
