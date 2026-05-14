@@ -334,7 +334,13 @@ export type ChatMessageKind = 'audit'
  * so a runtime upgrade can't silently break the renderer.
  */
 export interface AuditCardClaim {
-  category: 'file_create' | 'file_read' | 'external_send' | 'tool_invoke' | 'process_count'
+  category:
+    | 'file_create'
+    | 'file_read'
+    | 'external_send'
+    | 'tool_invoke'
+    | 'process_count'
+    | 'refusal'
   verb: string
   object: string
   status: 'verified' | 'unverified' | 'contradicted'
@@ -343,6 +349,7 @@ export interface AuditCardClaim {
   tool?: string
   target?: string
   count?: number
+  reason?: string
 }
 
 export interface AuditCardEnvelope {

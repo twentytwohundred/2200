@@ -196,6 +196,37 @@ describe('verifyClaim · tool_invoke', () => {
   })
 })
 
+describe('verifyClaim · refusal', () => {
+  it('verified when refusal carries a non-trivial reason', async () => {
+    const claim: ExtractedClaim = {
+      category: 'refusal',
+      verb: 'refuse',
+      object: 'share the API key',
+      reason: 'sharing credentials in a public pub violates my policy',
+    }
+    const out = await verifyClaim(claim, ctx([]))
+    expect(out.status).toBe('verified')
+  })
+  it('verified when reason lives in the object field (no separate reason)', async () => {
+    const claim: ExtractedClaim = {
+      category: 'refusal',
+      verb: 'cannot',
+      object: 'expose the credential because it would breach security policy',
+    }
+    const out = await verifyClaim(claim, ctx([]))
+    expect(out.status).toBe('verified')
+  })
+  it('unverified when refusal has no reason at all', async () => {
+    const claim: ExtractedClaim = {
+      category: 'refusal',
+      verb: 'refuse',
+      object: 'no',
+    }
+    const out = await verifyClaim(claim, ctx([]))
+    expect(out.status).toBe('unverified')
+  })
+})
+
 describe('verifyClaim · process_count', () => {
   it('verified when counts match exactly', async () => {
     const claim: ExtractedClaim = {

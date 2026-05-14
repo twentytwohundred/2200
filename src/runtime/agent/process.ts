@@ -1176,6 +1176,7 @@ function auditResultToTaskAudit(audit: ClaimEvidenceAuditResult): TaskAudit {
     if (r.claim.tool !== undefined) out.tool = r.claim.tool
     if (r.claim.target !== undefined) out.target = r.claim.target
     if (r.claim.count !== undefined) out.count = r.claim.count
+    if (r.claim.reason !== undefined) out.reason = r.claim.reason
     return out
   })
   return {

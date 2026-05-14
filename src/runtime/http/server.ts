@@ -3816,6 +3816,7 @@ interface TaskAuditDto {
     tool?: string
     target?: string
     count?: number
+    reason?: string
   }[]
 }
 
@@ -4150,6 +4151,7 @@ function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {
             if (c.tool !== undefined) out.tool = c.tool
             if (c.target !== undefined) out.target = c.target
             if (c.count !== undefined) out.count = c.count
+            if (c.reason !== undefined) out.reason = c.reason
             return out
           }),
         }

@@ -68,6 +68,8 @@ export async function verifyClaim(
       return verifyToolInvoke(claim, ctx)
     case 'process_count':
       return verifyProcessCount(claim, ctx)
+    case 'refusal':
+      return verifyRefusal(claim)
   }
 }
 
@@ -253,6 +255,35 @@ function verifyProcessCount(claim: ExtractedClaim, ctx: VerifierContext): ClaimO
   return {
     status: 'contradicted',
     reason: `claim said ${String(claim.count)}; transcript shows ${String(successful)} successful tool call${successful === 1 ? '' : 's'}`,
+  }
+}
+
+/**
+ * refusal: agent explicitly declined the task with a reason. Verified
+ * by its own text ... refusal IS the action; no tool log needed. We
+ * require a non-trivial reason (the verb + object together carry the
+ * "why") so a vague "I refuse" without justification falls back to
+ * unverified ... that ambiguity should kick back, asking the agent
+ * to either commit to the refusal with a reason or take action.
+ *
+ * This is the safety valve for prompt injection (Doug 2026-05-14):
+ * an Agent asked in a public pub to expose a credential should
+ * refuse with reason; the audit recognizes it; severity stays
+ * silent; the kick-back loop never fires. The agent's safety
+ * training is honored, not overridden by audit coercion.
+ */
+function verifyRefusal(claim: ExtractedClaim): ClaimOutcome {
+  const reason = claim.reason ?? claim.object
+  if (!reason || reason.trim().length < 8) {
+    return {
+      status: 'unverified',
+      reason:
+        'refusal claim has no clear reason; restate as "I refuse: <reason>" so the operator can act',
+    }
+  }
+  return {
+    status: 'verified',
+    evidence: `policy refusal recognized: "${claim.verb} ${reason.slice(0, 120)}"`,
   }
 }
 

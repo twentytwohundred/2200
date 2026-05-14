@@ -106,7 +106,14 @@ export type TaskOutcome = z.infer<typeof TaskOutcomeSchema>
  * the in-memory type don't break old task files on disk.
  */
 export const TaskAuditClaimSchema = z.object({
-  category: z.enum(['file_create', 'file_read', 'external_send', 'tool_invoke', 'process_count']),
+  category: z.enum([
+    'file_create',
+    'file_read',
+    'external_send',
+    'tool_invoke',
+    'process_count',
+    'refusal',
+  ]),
   verb: z.string(),
   object: z.string(),
   status: z.enum(['verified', 'unverified', 'contradicted']),
@@ -115,6 +122,7 @@ export const TaskAuditClaimSchema = z.object({
   tool: z.string().optional(),
   target: z.string().optional(),
   count: z.number().int().optional(),
+  reason: z.string().optional(),
 })
 export type TaskAuditClaim = z.infer<typeof TaskAuditClaimSchema>
 
