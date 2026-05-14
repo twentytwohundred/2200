@@ -78,6 +78,15 @@ import {
   upsertRuntimeEnvKey,
 } from '../config/runtime-env.js'
 import { aggregateToolHealth } from '../tools/health.js'
+import {
+  installSkillFromSource,
+  listSkillCredentials,
+  previewSkillInstall,
+  SkillOrchestratorError,
+  uninstallSkillFromHome,
+  updateSkillCredential,
+} from '../skills/orchestrator.js'
+import { listSkills } from '../skills/registry.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
@@ -381,6 +390,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
       { method: 'POST', path: '/api/v1/onboarding/:id/confirm' },
       { method: 'DELETE', path: '/api/v1/onboarding/:id' },
+      { method: 'GET', path: '/api/v1/skills' },
+      { method: 'POST', path: '/api/v1/skills/preview' },
+      { method: 'POST', path: '/api/v1/skills/install' },
+      { method: 'DELETE', path: '/api/v1/skills/:name' },
+      { method: 'GET', path: '/api/v1/skills/:name/credentials' },
+      { method: 'PUT', path: '/api/v1/skills/:name/credentials/:agent/:envKey' },
       { method: 'WS', path: '/api/v1/ws' },
     ],
   }))
@@ -1074,6 +1089,142 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       agent: req.params.name,
       mcp_servers: identityServers,
       health: healthSummary,
+    }
+  })
+
+  // -- skills: preview / install / uninstall / list -----------------------
+  // Operator pastes a URL into Settings → runtime fetches the SKILL.md
+  // → preview renders → operator supplies env values + selects agents →
+  // install commits. See wiki/decisions/2026-05-14-skill-ingest-substrate.md.
+  const SkillPreviewBody = z.object({
+    source: z.string().min(1),
+  })
+
+  fastify.post('/api/v1/skills/preview', async (req) => {
+    const parsed = SkillPreviewBody.parse(req.body)
+    try {
+      return await previewSkillInstall({ source: parsed.source })
+    } catch (err) {
+      if (err instanceof SkillOrchestratorError) {
+        throw new ApiError(
+          err.code === 'PARSE_FAILED' ? 422 : 400,
+          err.code.toLowerCase(),
+          err.message,
+        )
+      }
+      throw err
+    }
+  })
+
+  const SkillInstallBody = z.object({
+    source: z.string().min(1),
+    agents: z.array(z.string().min(1)).default([]),
+    secrets: z
+      .record(z.string(), z.record(z.string(), z.record(z.string(), z.string())))
+      .default({}),
+    force: z.boolean().optional(),
+  })
+
+  fastify.post('/api/v1/skills/install', async (req) => {
+    const parsed = SkillInstallBody.parse(req.body)
+    const snap = supervisor.snapshot()
+    for (const agent of parsed.agents) {
+      if (!snap.agents[agent]) throw notFound('agent', agent)
+    }
+    try {
+      return await installSkillFromSource({
+        home,
+        source: parsed.source,
+        agents: parsed.agents,
+        secrets: parsed.secrets,
+        ...(parsed.force !== undefined ? { force: parsed.force } : {}),
+      })
+    } catch (err) {
+      if (err instanceof SkillOrchestratorError) {
+        const status = err.code === 'PARSE_FAILED' || err.code === 'SECRETS_INCOMPLETE' ? 422 : 400
+        throw new ApiError(status, err.code.toLowerCase(), err.message)
+      }
+      throw err
+    }
+  })
+
+  fastify.get('/api/v1/skills', async () => {
+    const entries = await listSkills(home)
+    return { items: entries }
+  })
+
+  const SkillUninstallBody = z
+    .object({
+      agents: z.array(z.string().min(1)).default([]),
+    })
+    .optional()
+
+  fastify.delete<{ Params: { name: string }; Body: { agents?: string[] } | undefined }>(
+    '/api/v1/skills/:name',
+    async (req) => {
+      const parsed = SkillUninstallBody.parse(req.body) ?? { agents: [] }
+      const snap = supervisor.snapshot()
+      const agentsToScrub = parsed.agents.length > 0 ? parsed.agents : Object.keys(snap.agents)
+      try {
+        return await uninstallSkillFromHome({
+          home,
+          name: req.params.name,
+          agents: agentsToScrub,
+        })
+      } catch (err) {
+        if (err instanceof SkillOrchestratorError) {
+          throw new ApiError(400, err.code.toLowerCase(), err.message)
+        }
+        throw err
+      }
+    },
+  )
+
+  // -- skill credentials (rotate / update keys) ---------------------------
+  // For a given installed skill, surface the per-Agent vault credentials
+  // that the install wired up. Update writes a new value into the vault;
+  // operator-supplied restart of the affected Agent picks it up. Refuses
+  // to update credentials whose name doesn't carry the skill's prefix
+  // (defense in depth: skill-management UI never overwrites a non-skill
+  // secret like an oauth token).
+  fastify.get<{ Params: { name: string } }>('/api/v1/skills/:name/credentials', async (req) => {
+    const snap = supervisor.snapshot()
+    const liveAgents = Object.entries(snap.agents)
+      .filter(([, rec]) => rec.state !== 'archived')
+      .map(([n]) => n)
+    const groups = await listSkillCredentials({
+      home,
+      skillName: req.params.name,
+      agents: liveAgents,
+    })
+    return { skill_name: req.params.name, agents: groups }
+  })
+
+  const SkillCredentialUpdateBody = z.object({
+    value: z.string().min(1),
+  })
+
+  fastify.put<{
+    Params: { name: string; agent: string; envKey: string }
+    Body: { value: string }
+  }>('/api/v1/skills/:name/credentials/:agent/:envKey', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.agent]) throw notFound('agent', req.params.agent)
+    const parsed = SkillCredentialUpdateBody.parse(req.body)
+    try {
+      return await updateSkillCredential({
+        home,
+        skillName: req.params.name,
+        agentName: req.params.agent,
+        envKey: decodeURIComponent(req.params.envKey),
+        value: parsed.value,
+      })
+    } catch (err) {
+      if (err instanceof SkillOrchestratorError) {
+        const status = err.code === 'SECRETS_INCOMPLETE' ? 422 : 400
+        throw new ApiError(status, err.code.toLowerCase(), err.message)
+      }
+      throw err
     }
   })
 

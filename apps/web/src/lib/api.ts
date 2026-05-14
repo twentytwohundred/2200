@@ -226,6 +226,99 @@ export interface AgentToolsResponse {
 }
 
 /**
+ * Skill ingest API ... see
+ * wiki/decisions/2026-05-14-skill-ingest-substrate.md for the wire
+ * shape and the wizard flow this drives.
+ */
+export type SkillToolClass =
+  | 'file_create'
+  | 'file_read'
+  | 'external_send'
+  | 'tool_invoke'
+  | 'process_count'
+
+export type SkillRequiredSecretKind = 'stdio_env' | 'http_bearer' | 'http_header'
+
+export interface SkillRequiredSecret {
+  key: string
+  kind: SkillRequiredSecretKind
+}
+
+export type SkillExtractedServer =
+  | {
+      name: string
+      transport: 'stdio'
+      command: string
+      args: string[]
+      required_secrets: SkillRequiredSecret[]
+      source: 'frontmatter' | 'body'
+    }
+  | {
+      name: string
+      transport: 'http'
+      url: string
+      auth_kind: 'none' | 'bearer'
+      required_secrets: SkillRequiredSecret[]
+      source: 'frontmatter' | 'body'
+    }
+
+export interface SkillPreview {
+  name: string
+  description: string
+  body_preview: string
+  tags: string[]
+  declared_tools: string[]
+  mcp_servers: SkillExtractedServer[]
+  tool_classes: Record<string, SkillToolClass>
+  tool_classes_warnings: string[]
+  source_kind: 'local' | 'github' | 'skill_url'
+}
+
+export interface SkillInstallResult {
+  skill: { name: string; description: string; path: string }
+  mcp_installed_for: string[]
+  requires_restart: string[]
+  warnings: string[]
+}
+
+export interface SkillListEntry {
+  name: string
+  description: string
+  tags: string[]
+  status: 'ok' | 'invalid'
+  reason?: string
+}
+
+export interface SkillUninstallResult {
+  removed: boolean
+  removed_from_agents: string[]
+  requires_restart: string[]
+}
+
+export interface SkillCredentialEntry {
+  env_key: string
+  credential_name: string
+  set_at: string | null
+}
+
+export interface SkillCredentialAgentGroup {
+  agent: string
+  server_name: string
+  credentials: SkillCredentialEntry[]
+}
+
+export interface SkillCredentialsResponse {
+  skill_name: string
+  agents: SkillCredentialAgentGroup[]
+}
+
+export interface SkillCredentialUpdateResult {
+  credential_name: string
+  set_at: string
+  requires_restart: string
+}
+
+/**
  * Task interaction (Epic 15 Phase C). Posting `{ body }` enqueues a
  * pending task; the running Agent's loop picks it up.
  */
@@ -1093,6 +1186,35 @@ export const api = {
    */
   pubAttachmentUrl: (attId: string, filename: string): string =>
     `/api/v1/pubs/attachments/${encodeURIComponent(attId)}/${encodeURIComponent(filename)}`,
+
+  skillsList: () => request<ListEnvelope<SkillListEntry>>('/api/v1/skills'),
+  skillsPreview: (source: string) =>
+    request<SkillPreview>('/api/v1/skills/preview', {
+      method: 'POST',
+      body: { source },
+    }),
+  skillsInstall: (body: {
+    source: string
+    agents: string[]
+    secrets: Record<string, Record<string, Record<string, string>>>
+    force?: boolean
+  }) =>
+    request<SkillInstallResult>('/api/v1/skills/install', {
+      method: 'POST',
+      body,
+    }),
+  skillsUninstall: (name: string, agents?: string[]) =>
+    request<SkillUninstallResult>(`/api/v1/skills/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      body: agents ? { agents } : undefined,
+    }),
+  skillCredentials: (name: string) =>
+    request<SkillCredentialsResponse>(`/api/v1/skills/${encodeURIComponent(name)}/credentials`),
+  skillCredentialUpdate: (name: string, agent: string, envKey: string, value: string) =>
+    request<SkillCredentialUpdateResult>(
+      `/api/v1/skills/${encodeURIComponent(name)}/credentials/${encodeURIComponent(agent)}/${encodeURIComponent(envKey)}`,
+      { method: 'PUT', body: { value } },
+    ),
 }
 
 export interface FleetResponse {

@@ -1,0 +1,440 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.empty {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 64ch;
+}
+
+.addRow {
+  display: flex;
+}
+
+/* ── Row ───────────────────────────────────────────────────────────── */
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  margin-bottom: var(--ds-2);
+}
+
+.rowTitle {
+  font: 600 16px/1 var(--ds-font-sans);
+  color: var(--text);
+  flex: 1;
+}
+
+.rowBody {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: var(--ds-2);
+}
+
+.tagList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-1);
+}
+
+.tag {
+  font: 500 11px/1 var(--ds-font-mono);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-1);
+  padding: 3px 6px;
+  color: var(--text-2);
+}
+
+.invalidReason {
+  margin-top: var(--ds-2);
+  color: var(--danger);
+  font-size: 12px;
+  font-family: var(--ds-font-mono);
+}
+
+/* ── Credential management ───────────────────────────────────────── */
+.credentialBox {
+  margin-top: var(--ds-3);
+  padding: var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.credentialAgent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+}
+
+.credentialAgentHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-2);
+}
+
+.credentialAgentMeta {
+  color: var(--text-3);
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+}
+
+.credentialField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+}
+
+.credentialFieldHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-2);
+}
+
+.credentialFieldKey {
+  font: 500 12px/1 var(--ds-font-mono);
+  color: var(--text);
+}
+
+.credentialFieldMeta {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.credentialFieldRow {
+  display: flex;
+  gap: var(--ds-2);
+}
+
+.credentialFieldError {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* ── Success banner ───────────────────────────────────────────────── */
+.successHead {
+  color: var(--text);
+  font-size: 14px;
+  margin-bottom: var(--ds-2);
+}
+
+.successBody {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.successAgents {
+  font-family: var(--ds-font-mono);
+  color: var(--text);
+}
+
+.successActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--ds-2);
+}
+
+/* ── Restart banner (warn-tinted) ─────────────────────────────────── */
+.restartBanner {
+  padding: var(--ds-2) var(--ds-3);
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg-sunk));
+  border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--line));
+  border-radius: var(--ds-r-2);
+  margin: var(--ds-2) 0;
+}
+
+.restartHead {
+  font: 600 13px/1.4 var(--ds-font-sans);
+  color: var(--warn);
+  margin-bottom: var(--ds-1);
+  letter-spacing: 0.02em;
+}
+
+.restartBody {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: var(--ds-2);
+}
+
+.restartRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+}
+
+.restartRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.restartAgent {
+  font: 500 13px/1 var(--ds-font-mono);
+  color: var(--text);
+  min-width: 80px;
+}
+
+.restartError {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.restartAll {
+  margin-top: var(--ds-2);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Wizard ───────────────────────────────────────────────────────── */
+.wizardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--ds-3);
+}
+
+.wizardField {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ds-2);
+  margin-bottom: var(--ds-3);
+}
+
+.wizardLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.wizardInput {
+  flex: 1;
+  padding: 8px 10px;
+  font: 500 13px/1.4 var(--ds-font-mono);
+  background: var(--bg-sunk);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  outline: none;
+}
+
+.wizardInput:focus {
+  border-color: var(--accent);
+}
+
+.wizardPreview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+  margin-top: var(--ds-3);
+  padding-top: var(--ds-3);
+  border-top: 1px solid var(--line);
+}
+
+.previewHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.previewName {
+  font: 600 16px/1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.previewDescription {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.previewBodyDetails > summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: var(--ds-1) 0;
+}
+
+.previewBody {
+  margin: 0;
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  font: 500 12px/1.5 var(--ds-font-mono);
+  color: var(--text-2);
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.subHeading {
+  font: 500 11px/1 var(--ds-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.serverList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+}
+
+.serverCard {
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+}
+
+.serverHead {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  margin-bottom: var(--ds-1);
+}
+
+.serverMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  flex-wrap: wrap;
+}
+
+.serverMeta code {
+  font: 500 12px/1.5 var(--ds-font-mono);
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.agentPicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-2);
+}
+
+.agentCheckbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-1);
+  padding: 4px 8px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-1);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.secretsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.secretsGroup {
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+}
+
+.secretsGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--ds-2);
+}
+
+.serverSecrets {
+  margin-bottom: var(--ds-2);
+}
+
+.serverSecretsLabel {
+  font: 500 11px/1 var(--ds-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  margin-bottom: var(--ds-1);
+}
+
+.secretField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  margin-bottom: var(--ds-2);
+}
+
+.secretLabel {
+  font: 500 11px/1 var(--ds-font-mono);
+  color: var(--text-2);
+}
+
+.warnings {
+  margin: 0;
+  padding-left: var(--ds-3);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.warnings li {
+  margin-bottom: 4px;
+}
+
+.knowledgeOnlyNote {
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.knowledgeOnlyNote code {
+  font: 500 12px/1 var(--ds-font-mono);
+  color: var(--text);
+}
+
+.wizardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ds-2);
+}
+
+.wizardHint {
+  color: var(--text-2);
+  font-size: 12px;
+}

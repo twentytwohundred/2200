@@ -142,4 +142,14 @@ export interface VerifierContext {
   agentName: string
   /** The transcript of tool calls + their outcomes. */
   events: readonly LoopEvent[]
+  /**
+   * Per-Identity tool-class overlay. Maps a fully-qualified tool name
+   * (as it appears in `tool_call_end.tool`) to its audit class.
+   * Contributed by installed skills via `tool_classes` frontmatter
+   * (see `src/runtime/agent/audit/overlay.ts`). Treated as an
+   * extension to the locked class sets in `verifiers.ts`: a tool
+   * named in the overlay is considered a member of the matching
+   * class. Empty / absent overlay = default behavior.
+   */
+  toolClassOverlay?: Record<string, string>
 }

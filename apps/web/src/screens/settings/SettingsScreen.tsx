@@ -37,6 +37,7 @@ import {
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
 import { EndpointsSection } from './EndpointsSection'
+import { SkillsSection } from './SkillsSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
@@ -178,6 +179,13 @@ export function SettingsScreen(): ReactElement {
         <Meta>endpoints · custom llm servers</Meta>
         <div className={styles.blockBody}>
           <EndpointsSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>skills &amp; mcp servers</Meta>
+        <div className={styles.blockBody}>
+          <SkillsSection />
         </div>
       </section>
 

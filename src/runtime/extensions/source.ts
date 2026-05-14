@@ -1,38 +1,46 @@
 /**
- * Extension install source resolution (Epic 12 Phase B).
+ * Extension / Skill install source resolution.
  *
- * `2200 extension install <source>` accepts:
+ * `2200 extension install <source>` and the web-driven skill install
+ * path both accept:
  *
  *   - **Local directory**: an absolute or `~`-relative path to a
- *     directory containing a manifest.json. This is the
- *     authoritative path during local Extension development.
+ *     directory containing a manifest.json (Extension) or SKILL.md
+ *     (Skill). This is the authoritative path during local
+ *     development.
  *
  *   - **GitHub URL**: an `https://github.com/<owner>/<repo>` URL or
  *     the shorthand `github:<owner>/<repo>`. The runtime shallow-
  *     clones the repo to a temp directory and treats the clone root
  *     as the local-directory case from then on.
  *
+ *   - **Single SKILL.md URL**: an http(s) URL whose path ends in
+ *     `/skill.md` (case-insensitive, query string allowed). The
+ *     resolver fetches the file, writes it as `SKILL.md` into a
+ *     temp directory, and returns that as the root. This is how
+ *     vanity-published skill files like `https://openpub.ai/skill.md`
+ *     install in one paste.
+ *
  *   - **(future)** npm package identifier, marketplace slug,
  *     pre-built tarball URL. None at v1; the resolver throws
  *     `UnsupportedSourceError` so the surface is clean for the next
  *     sub-phase to extend.
  *
- * `resolveSource` always returns a working directory containing a
- * (purported) manifest.json plus a cleanup function. The orchestrator
- * validates the manifest, copies the directory into place, then calls
- * cleanup which is a no-op for local dirs and an `rm -rf` for cloned
- * temp dirs.
+ * `resolveSource` always returns a working directory plus a cleanup
+ * function. The orchestrator validates the contents, copies the
+ * directory into place, then calls cleanup which is a no-op for local
+ * dirs and an `rm -rf` for cloned or fetched temp dirs.
  *
- * No git authentication at v1: only public GitHub repos work. Private
- * repos (and other hosts) wait until OAuth + per-source token storage
- * lands alongside the marketplace work.
+ * No git or fetch authentication at v1: only public sources work.
+ * Private repos and authed URLs wait until OAuth + per-source token
+ * storage lands alongside the marketplace work.
  */
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
-export type ResolvedSourceKind = 'local' | 'github'
+export type ResolvedSourceKind = 'local' | 'github' | 'skill_url'
 
 export interface ResolvedSource {
   /** Where the manifest.json + bundled files live. */
@@ -72,6 +80,15 @@ export class SourceResolutionError extends Error {
 const GITHUB_URL_RE = /^https?:\/\/github\.com\/([^\s/]+)\/([^\s/]+?)(?:\.git)?\/?$/
 const GITHUB_SHORTHAND_RE = /^github:([^\s/]+)\/([^\s/]+)$/
 
+/**
+ * Match an http(s) URL whose path component ends in `/skill.md`
+ * (case-insensitive). Optional trailing query string allowed. Fragment
+ * not allowed (rare in practice, ambiguous semantics). GitHub URLs are
+ * filtered out separately so the github resolver wins on raw.github
+ * URLs that happen to end in /SKILL.md.
+ */
+const SKILL_MD_URL_RE = /^https?:\/\/[^\s]+\/skill\.md(?:\?[^\s#]*)?$/i
+
 export function parseGithubSource(source: string): { owner: string; repo: string } | null {
   const url = GITHUB_URL_RE.exec(source)
   if (url) {
@@ -84,6 +101,10 @@ export function parseGithubSource(source: string): { owner: string; repo: string
     if (owner && repo) return { owner, repo }
   }
   return null
+}
+
+export function isSkillMdUrl(source: string): boolean {
+  return SKILL_MD_URL_RE.test(source)
 }
 
 /**
@@ -103,6 +124,8 @@ export interface ResolveSourceOptions {
   makeTempDir?: () => Promise<string>
   /** Override git executable location (testing or constrained envs). */
   gitBinary?: string
+  /** Override the fetch implementation (testing). */
+  fetchImpl?: typeof fetch
 }
 
 /**
@@ -126,10 +149,14 @@ export async function resolveSource(
     return resolveGithubSource(trimmed, github, options)
   }
 
-  // Anything that looks like an http(s) URL but did not parse as GitHub
-  // is unsupported at v1. Fail fast rather than treating it as a local
-  // path, which would only lead to a confusing "directory does not
-  // exist" error.
+  if (isSkillMdUrl(trimmed)) {
+    return resolveSkillMdUrl(trimmed, options)
+  }
+
+  // Anything that looks like an http(s) URL but did not parse as a
+  // supported source is rejected at v1. Fail fast rather than treating
+  // it as a local path, which would only lead to a confusing "directory
+  // does not exist" error.
   if (/^https?:\/\//.test(trimmed)) {
     throw new UnsupportedSourceError(trimmed)
   }
@@ -171,6 +198,52 @@ async function resolveGithubSource(
   return {
     rootDir: cloneInto,
     kind: 'github',
+    origin,
+    cleanup: async () => {
+      await rm(tempDir, { recursive: true, force: true })
+    },
+  }
+}
+
+async function resolveSkillMdUrl(
+  origin: string,
+  options: ResolveSourceOptions,
+): Promise<ResolvedSource> {
+  const makeTempDir = options.makeTempDir ?? (() => mkdtemp(join(tmpdir(), '2200-skill-url-')))
+  const fetchImpl = options.fetchImpl ?? fetch
+  const tempDir = await makeTempDir()
+  let response: Response
+  try {
+    response = await fetchImpl(origin, {
+      headers: { Accept: 'text/markdown, text/plain, */*' },
+      redirect: 'follow',
+    })
+  } catch (err) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    throw new SourceResolutionError(
+      `failed to fetch SKILL.md from ${origin}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (!response.ok) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    throw new SourceResolutionError(
+      `fetch of ${origin} returned ${String(response.status)} ${response.statusText || ''}`.trim(),
+    )
+  }
+  const body = await response.text()
+  if (body.trim().length === 0) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    throw new SourceResolutionError(`SKILL.md at ${origin} is empty`)
+  }
+  try {
+    await writeFile(join(tempDir, 'SKILL.md'), body, 'utf8')
+  } catch (err) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    throw err
+  }
+  return {
+    rootDir: tempDir,
+    kind: 'skill_url',
     origin,
     cleanup: async () => {
       await rm(tempDir, { recursive: true, force: true })

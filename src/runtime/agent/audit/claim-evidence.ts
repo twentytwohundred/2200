@@ -28,6 +28,7 @@ import type { LoopEvent } from '../detectors/types.js'
 import { extractClaims } from './claim-extractor.js'
 import type { AuditSeverity, ClaimAuditRecord, ClaimEvidenceAuditResult } from './types.js'
 import { verifyClaim } from './verifiers.js'
+import { loadAuditOverlay } from './overlay.js'
 
 export interface RunClaimEvidenceAuditArgs {
   /** 2200_HOME. */
@@ -77,6 +78,17 @@ export async function runClaimEvidenceAudit(
     }
   }
 
+  // Per-Agent tool-class overlay (skill-installed audit hints). One read
+  // per audit pass; merged into the verifier's class predicates so
+  // newly-installed skill tools classify correctly without per-tool
+  // wiring in verifiers.ts.
+  let toolClassOverlay: Record<string, string> = {}
+  try {
+    toolClassOverlay = await loadAuditOverlay(args.home, args.agentName)
+  } catch (err) {
+    args.onWarn?.(`audit overlay load failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
   const records: ClaimAuditRecord[] = []
   for (const claim of claims) {
     try {
@@ -84,6 +96,7 @@ export async function runClaimEvidenceAudit(
         home: args.home,
         agentName: args.agentName,
         events: args.events,
+        toolClassOverlay,
       })
       records.push({ claim, outcome })
     } catch (err) {

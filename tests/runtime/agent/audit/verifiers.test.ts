@@ -275,3 +275,68 @@ describe('verifyClaim · process_count', () => {
     expect(out.status).toBe('unverified')
   })
 })
+
+describe('verifyClaim · toolClassOverlay extends class predicates', () => {
+  const ctxWith = (events: LoopEvent[], overlay: Record<string, string>) => ({
+    home,
+    agentName: 'hobby',
+    events,
+    toolClassOverlay: overlay,
+  })
+
+  it('treats an overlay-classified tool as external_send for verification', async () => {
+    const claim: ExtractedClaim = {
+      category: 'external_send',
+      verb: 'checked into',
+      object: 'The Open Bar',
+    }
+    const out = await verifyClaim(
+      claim,
+      ctxWith([makeToolEnd('openpub.check_in', true)], {
+        'openpub.check_in': 'external_send',
+      }),
+    )
+    expect(out.status).toBe('verified')
+  })
+
+  it('treats an overlay-classified tool as file_read for verification', async () => {
+    const claim: ExtractedClaim = {
+      category: 'file_read',
+      verb: 'looked at',
+      object: 'the pub directory',
+    }
+    const out = await verifyClaim(
+      claim,
+      ctxWith([makeToolEnd('openpub.search_pubs', true)], {
+        'openpub.search_pubs': 'file_read',
+      }),
+    )
+    expect(out.status).toBe('verified')
+  })
+
+  it('leaves an external_send claim unverified when the matching tool is not in any class', async () => {
+    const claim: ExtractedClaim = {
+      category: 'external_send',
+      verb: 'sent',
+      object: 'a thing',
+    }
+    const out = await verifyClaim(
+      claim,
+      ctxWith([makeToolEnd('openpub.check_in', true)], {
+        // wrong class in the overlay
+        'openpub.check_in': 'file_read',
+      }),
+    )
+    expect(out.status).toBe('unverified')
+  })
+
+  it('does not classify a tool that is not in the overlay even if the verb suggests it', async () => {
+    const claim: ExtractedClaim = {
+      category: 'external_send',
+      verb: 'sent',
+      object: 'something',
+    }
+    const out = await verifyClaim(claim, ctxWith([makeToolEnd('unknown.tool', true)], {}))
+    expect(out.status).toBe('unverified')
+  })
+})

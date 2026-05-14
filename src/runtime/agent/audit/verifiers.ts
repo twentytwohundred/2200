@@ -24,6 +24,11 @@ import type { ClaimOutcome, ExtractedClaim, VerifierContext } from './types.js'
  * when at least one of these returned ok=true with a matching path in
  * its args. Kept as a static list rather than introspecting the
  * registry so the audit is robust to mid-flight tool additions.
+ *
+ * Skills can extend this set per-Agent via the overlay file at
+ * `<home>/state/identities/<agent>/identity-audit-overlay.json` (see
+ * `audit/overlay.ts`). The verifiers consult `ctx.toolClassOverlay`
+ * alongside these constants ... the overlay is additive only.
  */
 const WRITE_CLASS_TOOLS = new Set([
   'fs_write',
@@ -51,6 +56,17 @@ const SEND_CLASS_TOOLS = new Set([
   'discord_api',
   'task_create_for_agent',
 ])
+
+function isInClass(
+  tool: string,
+  baseline: Set<string>,
+  ctx: VerifierContext,
+  klass: string,
+): boolean {
+  if (baseline.has(tool)) return true
+  if (ctx.toolClassOverlay?.[tool] === klass) return true
+  return false
+}
 
 /** Dispatch on category. */
 export async function verifyClaim(
@@ -88,7 +104,9 @@ async function verifyFileCreate(
   claim: ExtractedClaim,
   ctx: VerifierContext,
 ): Promise<ClaimOutcome> {
-  const writeCalls = findToolCallEnds(ctx.events, (t) => WRITE_CLASS_TOOLS.has(t))
+  const writeCalls = findToolCallEnds(ctx.events, (t) =>
+    isInClass(t, WRITE_CLASS_TOOLS, ctx, 'file_create'),
+  )
   if (writeCalls.length === 0) {
     return {
       status: 'unverified',
@@ -156,7 +174,9 @@ async function verifyFileCreate(
  * because a successful read does not leave a trace.
  */
 function verifyFileRead(claim: ExtractedClaim, ctx: VerifierContext): ClaimOutcome {
-  const readCalls = findToolCallEnds(ctx.events, (t) => READ_CLASS_TOOLS.has(t))
+  const readCalls = findToolCallEnds(ctx.events, (t) =>
+    isInClass(t, READ_CLASS_TOOLS, ctx, 'file_read'),
+  )
   if (readCalls.length === 0) {
     return {
       status: 'unverified',
@@ -182,7 +202,9 @@ function verifyFileRead(claim: ExtractedClaim, ctx: VerifierContext): ClaimOutco
  * read receipt at v1), only that the agent dispatched.
  */
 function verifyExternalSend(claim: ExtractedClaim, ctx: VerifierContext): ClaimOutcome {
-  const sendCalls = findToolCallEnds(ctx.events, (t) => SEND_CLASS_TOOLS.has(t))
+  const sendCalls = findToolCallEnds(ctx.events, (t) =>
+    isInClass(t, SEND_CLASS_TOOLS, ctx, 'external_send'),
+  )
   if (sendCalls.length === 0) {
     return {
       status: 'unverified',
