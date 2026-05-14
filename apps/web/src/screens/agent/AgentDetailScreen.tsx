@@ -304,9 +304,9 @@ export function AgentDetailScreen(): ReactElement {
     setStreamingChars(0)
   }, [messages, pendingTaskId, streamingId])
 
-  // Advance the streaming cursor. ~6 chars per 28ms ≈ 200 chars/sec ≈
-  // 35 wps ... a touch faster than Claude's web cadence but feels live
-  // without dragging on long replies. When the cursor catches up to
+  // Advance the streaming cursor word-by-word, ~70ms per word, so
+  // the reveal reads as natural speech-pace prose rather than the
+  // character-stutter we had before. When the cursor catches up to
   // the end of the reply we clear BOTH streamingId and pendingTaskId
   // so the ThinkingPlaceholder unmounts and the regular ChatMessage
   // takes over as the final, persisted record of the turn.
@@ -324,8 +324,8 @@ export function AgentDetailScreen(): ReactElement {
       return
     }
     const t = setTimeout(() => {
-      setStreamingChars((c) => Math.min(c + 6, reply.body.length))
-    }, 28)
+      setStreamingChars((c) => nextWordBoundary(reply.body, c))
+    }, 70)
     return () => {
       clearTimeout(t)
     }
@@ -802,6 +802,25 @@ function ThinkingPlaceholder({
       agentImageUrl={agentImageUrl}
     />
   )
+}
+
+/**
+ * Walk forward to the next "end-of-word" index after `pos`. Skips any
+ * leading whitespace, then non-whitespace, returning the index AT the
+ * first whitespace that follows ... so successive calls reveal one
+ * word's worth of prose at a time. Caller clamps to body.length.
+ */
+function nextWordBoundary(body: string, pos: number): number {
+  let i = pos
+  // Skip any whitespace at the cursor.
+  while (i < body.length && /\s/.test(body[i] ?? '')) i++
+  // Skip the next run of non-whitespace (the word itself).
+  while (i < body.length && !/\s/.test(body[i] ?? '')) i++
+  // Stop on the trailing whitespace so the rendered chunk ends with
+  // the word and one space (helps readability).
+  if (i < body.length) i++
+  if (i <= pos) return pos + 1 // safety: never stall
+  return i
 }
 
 function formatDayLabel(day: string): string {
