@@ -359,6 +359,39 @@ export class AgentProcess {
           /* best-effort */
         })
       },
+      // Claim-vs-evidence audit hook ... runs at every "I think I'm
+      // done" moment in the loop. The loop pushes a corrective tool
+      // message back into history when the verdict is contradicted
+      // (or unverified on a destructive task), giving the agent a
+      // chance to actually do the work or rewrite its reply.
+      claimEvidenceAudit: async ({ finalMessage, destructive, events }) => {
+        if (!this.provider || !this.identity) return null
+        const cheapModel = auditModelForProvider(this.provider.name)
+        const auditModelId =
+          cheapModel === 'default' ? this.identity.frontmatter.model.model_id : cheapModel
+        try {
+          return await runClaimEvidenceAudit({
+            home: this.options.home,
+            agentName: this.options.name,
+            finalMessage,
+            destructive,
+            events,
+            provider: this.provider,
+            modelId: auditModelId,
+            onWarn: (reason, details) => {
+              this.log.warn(`audit extraction: ${reason}`, {
+                audit_model: auditModelId,
+                ...(details ?? {}),
+              })
+            },
+          })
+        } catch (err) {
+          this.log.warn('claim-evidence audit pass failed', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return null
+        }
+      },
     })
 
     const result = await this.client.call('agent.register', {
@@ -654,12 +687,38 @@ export class AgentProcess {
   private async recordResult(taskId: string, result: LoopResult): Promise<void> {
     if (!this.taskStore) return
     if (result.kind === 'done') {
-      // Run the claim-vs-evidence audit BEFORE persisting the task's
-      // terminal state so the audit result lands on the same record.
-      // Best-effort: any audit failure degrades to a null `audit`
-      // field and a brain log line ... never blocks task completion.
-      const auditResult = await this.runAuditPass(taskId, result)
+      // The audit pass already ran inside the loop (with kick-back
+      // budget). The result on `result.claim_audit` reflects the
+      // FINAL state ... after any retries the agent took to either
+      // do the work or correct its narration. Persist + surface it
+      // here. Brain log gets every audited turn (including silent
+      // ones) for the always-on greppable history.
+      const auditResult = result.claim_audit
       const taskAudit = auditResult ? auditResultToTaskAudit(auditResult) : null
+      if (auditResult) {
+        try {
+          await appendAuditEntry({
+            home: this.options.home,
+            agentName: this.options.name,
+            taskId,
+            at: new Date().toISOString(),
+            destructive: auditResult.destructive,
+            result: auditResult,
+          })
+        } catch (err) {
+          this.log.warn('audit brain log append failed', {
+            task_id: taskId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      if (result.audit_kickbacks > 0) {
+        this.log.info('task finalized after audit kick-backs', {
+          task_id: taskId,
+          kickbacks: result.audit_kickbacks,
+          final_severity: auditResult?.severity ?? null,
+        })
+      }
       const updated = await this.taskStore.update(taskId, (fm) => ({
         ...fm,
         state: 'done',
@@ -837,85 +896,6 @@ export class AgentProcess {
         error: err instanceof Error ? err.message : String(err),
       })
     }
-  }
-
-  /**
-   * Drive the claim-vs-evidence audit pass for a completed task.
-   *
-   * Best-effort throughout: any failure (no provider, LLM error,
-   * verifier blow-up) returns null so the caller can persist the
-   * task with a null audit field. The brain log is written first ...
-   * even an empty/all-silent audit gets a log entry so the operator
-   * can grep "this task was audited."
-   *
-   * Skips the audit for `pure` tasks (Q&A) where there's no work to
-   * verify. Destructive + checkpointed tasks are the prime targets.
-   */
-  private async runAuditPass(
-    taskId: string,
-    result: Extract<LoopResult, { kind: 'done' }>,
-  ): Promise<ClaimEvidenceAuditResult | null> {
-    if (!this.loop || !this.identity || !this.provider) return null
-    const idempotency = await this.taskIdempotency(taskId)
-    if (idempotency === 'pure' || idempotency === null) return null
-    const events = this.loop.eventLog()
-    try {
-      // Pick the cheap-tier model for the host's provider. When no
-      // cheap mapping exists (unknown provider, custom endpoint slug),
-      // fall back to the host's own model id ... the audit costs more
-      // but never fails silently because the cheap model didn't exist.
-      const cheapModel = auditModelForProvider(this.provider.name)
-      const auditModelId =
-        cheapModel === 'default' ? this.identity.frontmatter.model.model_id : cheapModel
-      const out = await runClaimEvidenceAudit({
-        home: this.options.home,
-        agentName: this.options.name,
-        finalMessage: result.summary,
-        destructive: idempotency === 'destructive',
-        events,
-        provider: this.provider,
-        modelId: auditModelId,
-        onWarn: (reason, details) => {
-          this.log.warn(`audit extraction: ${reason}`, {
-            task_id: taskId,
-            audit_model: auditModelId,
-            ...(details ?? {}),
-          })
-        },
-      })
-      // Best-effort brain log append. Failures here are logged but
-      // do not affect the audit return.
-      try {
-        await appendAuditEntry({
-          home: this.options.home,
-          agentName: this.options.name,
-          taskId,
-          at: new Date().toISOString(),
-          destructive: out.destructive,
-          result: out,
-        })
-      } catch (err) {
-        this.log.warn('audit brain log append failed', {
-          task_id: taskId,
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-      return out
-    } catch (err) {
-      this.log.warn('claim-evidence audit pass failed', {
-        task_id: taskId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return null
-    }
-  }
-
-  private async taskIdempotency(
-    taskId: string,
-  ): Promise<TaskRecord['frontmatter']['idempotency'] | null> {
-    if (!this.taskStore) return null
-    const t = await this.taskStore.get(taskId)
-    return t?.frontmatter.idempotency ?? null
   }
 
   private composeClaimEvidenceAuditBody(
