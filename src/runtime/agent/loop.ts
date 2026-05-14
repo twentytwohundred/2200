@@ -77,6 +77,19 @@ import {
   type TripRecordPersisted,
 } from './detectors/trip-record.js'
 import { auditNarratedCompletion, type AuditFlag } from './audit/narrated-completion.js'
+import type { ClaimEvidenceAuditResult } from './audit/types.js'
+import type { TaskIdempotency } from '../control-plane/protocol.js'
+
+/**
+ * How many times the loop will push the agent back through with a
+ * corrective tool message before finalizing. Three feels right for
+ * v1: the first kick-back catches a hallucinated narration, a second
+ * catches a botched correction, a third is the "agent really cannot
+ * complete this work" signal that should land in the operator's
+ * inbox. Past three, the loop returns done with the audit flag still
+ * set ... the operator picks it up.
+ */
+const MAX_AUDIT_KICKBACKS = 3
 import {
   DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
   resolvePlanningOnlyRetry,
@@ -510,6 +523,27 @@ export interface AgentLoopOptions {
     error_class?: string | null
     duration_ms?: number
   }) => void
+  /**
+   * Claim-vs-evidence audit hook. Optional. When present, the loop
+   * runs the audit pass at the moment the agent appears to be done
+   * (text-only response, no tool calls left to dispatch). If the
+   * audit's severity is `important` (any contradicted) or `normal`
+   * (any unverified on a destructive task), the loop pushes a
+   * corrective tool message into history and continues ... the
+   * agent gets the chance to either actually do the work or
+   * rewrite its reply to match reality. Bounded by
+   * MAX_AUDIT_KICKBACKS; once the budget exhausts, the loop
+   * finalizes anyway and the AgentProcess surfaces the persistent
+   * audit flag in the inbox.
+   *
+   * Returning `null` skips the audit (e.g. for `pure` tasks where
+   * there's no work to verify).
+   */
+  claimEvidenceAudit?: (args: {
+    finalMessage: string
+    destructive: boolean
+    events: readonly LoopEvent[]
+  }) => Promise<ClaimEvidenceAuditResult | null>
 }
 
 export type LoopResult =
@@ -524,6 +558,23 @@ export type LoopResult =
        * surface flags as notifications.
        */
       audit_flags: AuditFlag[]
+      /**
+       * Final claim-vs-evidence audit result for this turn. Populated
+       * when `opts.claimEvidenceAudit` returned a non-null result on
+       * the LAST iteration before the loop returned (i.e. after any
+       * kick-backs had run). Null when the audit was skipped (pure
+       * task or no audit hook installed). The AgentProcess writes
+       * this to task frontmatter + the brain log + the inline chat
+       * card.
+       */
+      claim_audit: ClaimEvidenceAuditResult | null
+      /**
+       * Number of times the audit kicked the loop back during this
+       * task. Useful for telemetry: a non-zero count means the agent
+       * narrated work it had not done and either corrected itself
+       * within the budget or got finalized with the flag still set.
+       */
+      audit_kickbacks: number
     }
   | {
       kind: 'tripped'
@@ -557,6 +608,21 @@ export class AgentLoop {
   private priorSuccessfulToolCallsThisTask = 0
   /** Number of planning-only retries issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private planningOnlyRetries = 0
+  /**
+   * Number of times the claim-vs-evidence audit has kicked the loop
+   * back during the current task. Capped by MAX_AUDIT_KICKBACKS so a
+   * persistently failing agent doesn't loop forever; once exhausted
+   * the loop finalizes anyway and the surviving audit flag goes to
+   * the operator's inbox.
+   */
+  private claimAuditKickbacks = 0
+  /**
+   * Most recent audit result for this task (across kick-back
+   * iterations). Returned alongside the LoopResult so AgentProcess
+   * can persist it to task frontmatter + the brain log + the
+   * inline chat audit card.
+   */
+  private lastClaimAudit: ClaimEvidenceAuditResult | null = null
   /**
    * True once a `pub_send` or `pub_react` tool call has been dispatched
    * during the current task. Used by the wake-task enforcement path:
@@ -644,6 +710,8 @@ export class AgentLoop {
     this.pubWakeNudges = 0
     this.priorSuccessfulToolCallsThisTask = 0
     this.planningOnlyRetries = 0
+    this.claimAuditKickbacks = 0
+    this.lastClaimAudit = null
     this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
     // If this task is being resumed after a detector trip, inject a forcing
@@ -829,6 +897,46 @@ export class AgentLoop {
             continue
           }
           this.history.push({ role: 'assistant', content: response.text })
+
+          // Claim-vs-evidence audit: cure-not-symptom. If the agent's
+          // final reply contains claims of action that the tool log
+          // doesn't back up, push a corrective tool message + continue
+          // the loop. The agent gets to either actually do the work or
+          // rewrite its reply. Bounded by MAX_AUDIT_KICKBACKS.
+          // Skipped for `pure` tasks (Q&A) where there's no work to verify.
+          if (this.opts.claimEvidenceAudit && task.frontmatter.idempotency !== 'pure') {
+            try {
+              const audit = await this.opts.claimEvidenceAudit({
+                finalMessage: response.text,
+                destructive: task.frontmatter.idempotency === 'destructive',
+                events: this.events,
+              })
+              this.lastClaimAudit = audit
+              if (
+                audit !== null &&
+                shouldKickBackOnAudit(audit, task.frontmatter.idempotency) &&
+                this.claimAuditKickbacks < MAX_AUDIT_KICKBACKS
+              ) {
+                this.claimAuditKickbacks += 1
+                const correction = composeAuditCorrection(audit, this.claimAuditKickbacks)
+                this.log.info('audit kicked the loop back; agent gets a chance to correct', {
+                  attempt: this.claimAuditKickbacks,
+                  budget: MAX_AUDIT_KICKBACKS,
+                  severity: audit.severity,
+                  task_id: task.frontmatter.id,
+                })
+                this.history.push({ role: 'tool', content: correction })
+                continue
+              }
+            } catch (err) {
+              this.log.warn('claim-evidence audit threw; finalizing without kick-back', {
+                task_id: task.frontmatter.id,
+                error: err instanceof Error ? err.message : String(err),
+              })
+              this.lastClaimAudit = null
+            }
+          }
+
           const flag = auditNarratedCompletion({
             events: this.events,
             idempotency: task.frontmatter.idempotency,
@@ -838,6 +946,8 @@ export class AgentLoop {
             summary: response.text,
             iterations: this.iteration,
             audit_flags: flag ? [flag] : [],
+            claim_audit: this.lastClaimAudit,
+            audit_kickbacks: this.claimAuditKickbacks,
           }
         }
         if (this.emptyResponseNudges >= DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET) {
@@ -1702,4 +1812,62 @@ async function readFleetSafe(home: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * Decide whether the loop should kick back into the agent based on
+ * the audit verdict. The rule:
+ *
+ *   - severity 'important' (any contradicted) → always kick back
+ *   - severity 'normal' (any unverified on a destructive task) → kick back
+ *   - severity 'passive' (any unverified on a non-destructive task) → no kick (operator informed via inbox only)
+ *   - severity 'silent' → no kick (nothing flagged)
+ *
+ * The non-destructive 'passive' bucket is allowed to finalize because
+ * "I read the file" claims on a checkpointed Q&A turn don't always
+ * have a matching read-class tool call (the model might have answered
+ * from prior context). We can tighten this later if false-negatives
+ * become a complaint; for now the operator gets the inbox flag.
+ */
+function shouldKickBackOnAudit(
+  audit: ClaimEvidenceAuditResult,
+  idempotency: TaskIdempotency,
+): boolean {
+  if (audit.severity === 'important') return true
+  if (audit.severity === 'normal' && idempotency === 'destructive') return true
+  return false
+}
+
+/**
+ * Build the corrective tool message that goes into history when the
+ * audit kicks back. The message names each unverified/contradicted
+ * claim explicitly and offers the agent two paths: do the work now,
+ * or rewrite the reply to match reality. The numbered attempt makes
+ * the budget visible to the model so it can adjust strategy.
+ */
+function composeAuditCorrection(audit: ClaimEvidenceAuditResult, attempt: number): string {
+  const flagged = audit.records.filter((r) => r.outcome.status !== 'verified')
+  const lines: string[] = [
+    `Your previous reply made claims that the runtime audit could not verify (attempt ${String(attempt)} of ${String(MAX_AUDIT_KICKBACKS)}):`,
+    '',
+  ]
+  for (const r of flagged) {
+    const marker = r.outcome.status === 'contradicted' ? 'CONTRADICTED' : 'UNVERIFIED'
+    const note = r.outcome.status === 'verified' ? '' : r.outcome.reason
+    lines.push(`  [${marker}] "${r.claim.verb} ${r.claim.object}"`)
+    lines.push(`    why: ${note}`)
+  }
+  lines.push('')
+  lines.push('Choose ONE:')
+  lines.push(
+    '  1. Actually perform these actions now via the appropriate tools (fs_write, pub_send, schedule_add, etc.), then re-summarize what you actually did.',
+  )
+  lines.push(
+    '  2. Rewrite your reply to remove the unverified claims (you did not perform them, and that is fine ... say so honestly).',
+  )
+  lines.push('')
+  lines.push(
+    'The task is not yet complete. The audit pass will re-run on your next reply. After 3 attempts the task finalizes regardless and the unresolved flag goes to the operator.',
+  )
+  return lines.join('\n')
 }
