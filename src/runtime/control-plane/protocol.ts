@@ -77,6 +77,35 @@ export const AgentHeartbeatResultSchema = z.object({
 })
 export type AgentHeartbeatResult = z.infer<typeof AgentHeartbeatResultSchema>
 
+/**
+ * A→S: live tool-call event from the AgentLoop. Powers the ToolStream
+ * UI in the web app: each running tool surfaces as a chip with the
+ * `tool` name and a short `arg_summary`, the spinning ring resolves
+ * to a check on the `end` event. The supervisor fans these out over
+ * WebSocket to subscribed clients so the chat surface stays live
+ * without polling.
+ */
+export const AgentToolEventParamsSchema = z.object({
+  kind: z.enum(['start', 'end']),
+  task_id: z.string(),
+  call_id: z.string(),
+  tool: z.string(),
+  /** Optional one-line argument label for the chip. */
+  arg_summary: z.string().nullable().optional(),
+  /** Only on `end`. */
+  ok: z.boolean().optional(),
+  /** Only on `end`. */
+  error_class: z.string().nullable().optional(),
+  /** Only on `end`. */
+  duration_ms: z.number().optional(),
+})
+export type AgentToolEventParams = z.infer<typeof AgentToolEventParamsSchema>
+
+export const AgentToolEventResultSchema = z.object({
+  ack: z.literal(true),
+})
+export type AgentToolEventResult = z.infer<typeof AgentToolEventResultSchema>
+
 /** S→A: supervisor asks Agent to stop gracefully. */
 export const AgentStopParamsSchema = z.object({
   reason: z.string(),
@@ -596,6 +625,10 @@ export const METHODS = {
   'agent.heartbeat': {
     params: AgentHeartbeatParamsSchema,
     result: AgentHeartbeatResultSchema,
+  },
+  'agent.toolEvent': {
+    params: AgentToolEventParamsSchema,
+    result: AgentToolEventResultSchema,
   },
   'agent.stop': {
     params: AgentStopParamsSchema,

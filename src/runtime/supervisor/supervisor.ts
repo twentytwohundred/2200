@@ -1395,6 +1395,33 @@ export class Supervisor {
         })
         return { ack: true as const }
       },
+      'agent.toolEvent': (params, ctx: HandlerContext) => {
+        // Pass-through fanout: each tool call start/end becomes a
+        // WebSocket event the web app's ToolStream subscribes to.
+        // Also nudges the agents-list query to refetch so the Fleet
+        // pulse dot updates instantly instead of waiting for the
+        // next 2s poll cycle.
+        const name = this.agentByConnection.get(ctx.connection)
+        if (!name) return { ack: true as const }
+        if (this.webHandle) {
+          this.webHandle.broadcast({
+            event: 'agent.tool_event',
+            payload: {
+              agent: name,
+              kind: params.kind,
+              task_id: params.task_id,
+              call_id: params.call_id,
+              tool: params.tool,
+              arg_summary: params.arg_summary ?? null,
+              ok: params.ok ?? null,
+              error_class: params.error_class ?? null,
+              duration_ms: params.duration_ms ?? null,
+              at: new Date().toISOString(),
+            },
+          })
+        }
+        return { ack: true as const }
+      },
       'agent.errored': async (params, ctx: HandlerContext) => {
         const name = this.agentByConnection.get(ctx.connection)
         if (name) {

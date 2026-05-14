@@ -493,6 +493,23 @@ export interface AgentLoopOptions {
    * limits, all of which gate on the hosted tiers.
    */
   runtimeMode?: RuntimeMode
+  /**
+   * Fire-and-forget hook the loop calls at the start + end of every
+   * tool call. Wires the chat surface's live ToolStream UI ... each
+   * call surfaces as a chip the moment it starts, resolves to a
+   * check when it ends. Failures here are caller-swallowed so a
+   * disconnected bridge never breaks the loop.
+   */
+  toolEventEmitter?: (event: {
+    kind: 'start' | 'end'
+    task_id: string
+    call_id: string
+    tool: string
+    arg_summary?: string | null
+    ok?: boolean
+    error_class?: string | null
+    duration_ms?: number
+  }) => void
 }
 
 export type LoopResult =
@@ -893,6 +910,19 @@ export class AgentLoop {
       iteration: this.iteration,
     }
     this.pushEvent(startEvent)
+    // Live ToolStream surface for the web app (Epic 15.x). Fire-and-
+    // forget; failures inside the emitter never break the loop.
+    try {
+      this.opts.toolEventEmitter?.({
+        kind: 'start',
+        task_id: task.frontmatter.id,
+        call_id: 'pending',
+        tool: call.tool,
+        arg_summary: summarizeToolArgs(call.tool, call.args),
+      })
+    } catch {
+      /* observability is best-effort */
+    }
 
     const dispatchInput: DispatchInput = {
       tool: call.tool,
@@ -947,6 +977,19 @@ export class AgentLoop {
       ...(dispatchError ? { error_class: dispatchError.class } : {}),
     }
     this.pushEvent(endEvent)
+    try {
+      this.opts.toolEventEmitter?.({
+        kind: 'end',
+        task_id: task.frontmatter.id,
+        call_id: callId,
+        tool: call.tool,
+        ok: dispatchError === null,
+        ...(dispatchError ? { error_class: dispatchError.class } : {}),
+        duration_ms: durationMs,
+      })
+    } catch {
+      /* observability is best-effort */
+    }
 
     // Track brain writes for the no_progress detector.
     if (dispatchError === null && (call.tool === 'brain_write' || call.tool === 'fs_write')) {
@@ -1547,6 +1590,71 @@ function composeResumeGuidance(trip: { kind: string; detail: string; at: string 
     default:
       return prelude + 'Read the trip detail above. Do not repeat what you were doing.'
   }
+}
+
+/**
+ * One-line human-readable label for the ToolStream chip. The chip
+ * displays `<tool> <summary>`; this picks the most operator-readable
+ * argument (path, name, id, query) and truncates to ~40 chars.
+ *
+ * Heuristic: walk a handful of well-known key names in priority
+ * order, fall back to the first string value, then to the args hash.
+ * Never includes secrets ... env, token, auth, key, secret are
+ * dropped.
+ */
+function summarizeToolArgs(_tool: string, args: Record<string, unknown>): string | null {
+  const PRIORITY_KEYS = [
+    'path',
+    'file',
+    'filename',
+    'name',
+    'slug',
+    'id',
+    'message_id',
+    'agent_name',
+    'pub',
+    'channel',
+    'room',
+    'url',
+    'endpoint',
+    'query',
+    'q',
+    'search',
+    'prompt',
+    'title',
+    'task',
+    'note',
+    'method',
+    'verb',
+  ]
+  const REDACTED_KEYS = new Set([
+    'token',
+    'env',
+    'key',
+    'api_key',
+    'access_token',
+    'secret',
+    'password',
+    'authorization',
+    'auth',
+  ])
+  for (const k of PRIORITY_KEYS) {
+    const v = args[k]
+    if (typeof v === 'string' && v.length > 0) return clamp(v, 40)
+    if (typeof v === 'number') return String(v)
+  }
+  for (const [k, v] of Object.entries(args)) {
+    if (REDACTED_KEYS.has(k.toLowerCase())) continue
+    if (typeof v === 'string' && v.length > 0) return clamp(v, 40)
+    if (typeof v === 'number') return String(v)
+  }
+  // Fall back: omit the chip arg entirely so the chip is just "<tool>".
+  return null
+}
+
+function clamp(s: string, n: number): string {
+  if (s.length <= n) return s
+  return s.slice(0, n - 1) + '…'
 }
 
 function composeWakeNudge(task: TaskRecord): string {

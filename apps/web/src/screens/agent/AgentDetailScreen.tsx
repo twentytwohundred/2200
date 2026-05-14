@@ -49,9 +49,11 @@ import {
   ChatMessage,
   ChatTitleBar,
   DayDivider,
+  ToolStream,
   type ComposerAttachment,
   type ComposerMode,
 } from '../../chat'
+import { useToolStream } from '../../ws/useToolStream'
 import { ModelPicker } from './ModelPicker'
 import { AgentStatusPanel } from './AgentStatusPanel'
 import { AgentIdentityPanel } from './AgentIdentityPanel'
@@ -288,28 +290,37 @@ export function AgentDetailScreen(): ReactElement {
   }, [])
 
   // When the assistant message that closes out `pendingTaskId` lands
-  // in the messages list, kick off the typewriter animation.
+  // in the messages list, kick off the typewriter animation. We keep
+  // pendingTaskId set during the streaming phase so the ThinkingPlaceholder
+  // (which renders the live ToolStream) stays mounted and can swap from
+  // phase=tools to phase=streaming, fading the chips out as the reply
+  // types in.
   useEffect(() => {
     if (pendingTaskId === null) return
+    if (streamingId !== null) return
     const reply = messages.find((m) => m.task_id === pendingTaskId && m.role === 'assistant')
     if (!reply) return
     setStreamingId(reply.id)
     setStreamingChars(0)
-    setPendingTaskId(null)
-  }, [messages, pendingTaskId])
+  }, [messages, pendingTaskId, streamingId])
 
   // Advance the streaming cursor. ~6 chars per 28ms ≈ 200 chars/sec ≈
   // 35 wps ... a touch faster than Claude's web cadence but feels live
-  // without dragging on long replies.
+  // without dragging on long replies. When the cursor catches up to
+  // the end of the reply we clear BOTH streamingId and pendingTaskId
+  // so the ThinkingPlaceholder unmounts and the regular ChatMessage
+  // takes over as the final, persisted record of the turn.
   useEffect(() => {
     if (streamingId === null) return
     const reply = messages.find((m) => m.id === streamingId)
     if (!reply) {
       setStreamingId(null)
+      setPendingTaskId(null)
       return
     }
     if (streamingChars >= reply.body.length) {
       setStreamingId(null)
+      setPendingTaskId(null)
       return
     }
     const t = setTimeout(() => {
@@ -691,13 +702,17 @@ function renderMessages(
   const out: ReactElement[] = []
   let lastDay = ''
   for (const m of messages) {
+    // When ThinkingPlaceholder is in streaming-phase for THIS reply,
+    // it owns the visual; suppress the regular ChatMessage to avoid
+    // double-render. The ThinkingPlaceholder will unmount + this
+    // ChatMessage will appear once streamingChars catches up and the
+    // effect clears pendingTaskId.
+    if (pendingTaskId !== null && m.id === streamingId) continue
     const day = m.ts.slice(0, 10)
     if (day !== lastDay) {
       lastDay = day
       out.push(<DayDivider key={`d-${day}`} label={formatDayLabel(day)} />)
     }
-    const isStreaming = m.id === streamingId
-    const bodyText = isStreaming ? m.body.slice(0, streamingChars) : m.body
     out.push(
       <ChatMessage
         key={m.id}
@@ -706,8 +721,7 @@ function renderMessages(
         agentGlyph={agentGlyph}
         agentImageUrl={agentImageUrl}
         time={m.ts.slice(11, 16)}
-        body={bodyText}
-        streamingCursor={isStreaming}
+        body={m.body}
         attachments={m.attachments.map((a) => ({
           id: a.id,
           kind: a.kind,
@@ -719,17 +733,75 @@ function renderMessages(
   }
   if (pendingTaskId !== null) {
     out.push(
-      <ChatMessage
+      <ThinkingPlaceholder
         key="__thinking__"
+        agent={agent}
+        agentGlyph={agentGlyph}
+        agentImageUrl={agentImageUrl}
+        taskId={pendingTaskId}
+        streamingReply={
+          streamingId !== null
+            ? (messages.find((m) => m.id === streamingId)?.body.slice(0, streamingChars) ?? '')
+            : null
+        }
+      />,
+    )
+  }
+  return out
+}
+
+/**
+ * Live "agent is working" surface. Subscribes to the per-task tool
+ * event store; renders a ToolStream with chips while tool calls are
+ * in flight, falls back to the simple thinking-dots ChatMessage when
+ * there are no tool events yet (provider didn't surface them, or the
+ * agent just hasn't called anything yet).
+ *
+ * When the assistant reply lands (`streamingReply` is non-null), we
+ * transition phase from `tools` to `streaming` so the chip stack
+ * fades out and the reply types in below.
+ */
+function ThinkingPlaceholder({
+  agent,
+  agentGlyph,
+  agentImageUrl,
+  taskId,
+  streamingReply,
+}: {
+  agent: string
+  agentGlyph: string | null
+  agentImageUrl: string | null
+  taskId: string
+  streamingReply: string | null
+}): ReactElement {
+  const stream = useToolStream(taskId)
+  const steps =
+    stream?.steps.map((s) => ({
+      what: s.tool,
+      ...(s.arg_summary !== null ? { arg: s.arg_summary } : {}),
+      state: s.state === 'errored' ? ('done' as const) : s.state,
+    })) ?? []
+  if (steps.length === 0 && streamingReply === null) {
+    return (
+      <ChatMessage
         from="agent"
         who={agent}
         agentGlyph={agentGlyph}
         agentImageUrl={agentImageUrl}
         thinking
-      />,
+      />
     )
   }
-  return out
+  return (
+    <ToolStream
+      who={agent}
+      steps={steps}
+      phase={streamingReply !== null ? 'streaming' : 'tools'}
+      reply={streamingReply ?? ''}
+      agentGlyph={agentGlyph}
+      agentImageUrl={agentImageUrl}
+    />
+  )
 }
 
 function formatDayLabel(day: string): string {

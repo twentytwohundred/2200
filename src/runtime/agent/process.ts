@@ -319,6 +319,9 @@ export class AgentProcess {
     const { toNativeToolSpecs } = await import('../llm/tool-spec.js')
     const nativeToolSpecs = toNativeToolSpecs(registry, allowedToolNames)
 
+    const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
+    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
+
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -334,10 +337,25 @@ export class AgentProcess {
       pulseEmitter: this.pulseEmitter,
       skillProvider: new FilesystemSkillProvider(this.options.home),
       runtimeMode,
+      // Live tool-event firehose for the web app's ToolStream UI.
+      // Fire-and-forget; loop swallows our errors so a dropped
+      // supervisor connection cannot stall the task pipeline.
+      toolEventEmitter: (event) => {
+        const payload = {
+          kind: event.kind,
+          task_id: event.task_id,
+          call_id: event.call_id,
+          tool: event.tool,
+          ...(event.arg_summary !== undefined ? { arg_summary: event.arg_summary } : {}),
+          ...(event.ok !== undefined ? { ok: event.ok } : {}),
+          ...(event.error_class !== undefined ? { error_class: event.error_class } : {}),
+          ...(event.duration_ms !== undefined ? { duration_ms: event.duration_ms } : {}),
+        }
+        void this.client?.call('agent.toolEvent', payload).catch(() => {
+          /* best-effort */
+        })
+      },
     })
-
-    const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
-    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
 
     const result = await this.client.call('agent.register', {
       name: this.options.name,

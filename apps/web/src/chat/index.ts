@@ -15,3 +15,6 @@ export type { ChatTitleBarProps } from './ChatTitleBar'
 
 export { DayDivider } from './DayDivider'
 export type { DayDividerProps } from './DayDivider'
+
+export { ToolStream } from './ToolStream'
+export type { ToolStreamProps, ToolStreamPhase, ToolStep } from './ToolStream'
