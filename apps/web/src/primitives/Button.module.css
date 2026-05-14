@@ -2,22 +2,22 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
+  gap: var(--ds-2);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  font-family: var(--type-family-sans);
+  border-radius: var(--ds-r-2);
+  font-family: var(--ds-font-sans);
   font-weight: 500;
   letter-spacing: -0.005em;
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease);
   white-space: nowrap;
 }
 
 .btn:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -29,17 +29,17 @@
 .body {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--ds-2);
 }
 
 .kbd {
   display: inline-flex;
   align-items: center;
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 10px;
   letter-spacing: 0.05em;
   padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--ds-r-1);
   background: color-mix(in oklch, currentColor 12%, transparent);
   opacity: 0.85;
 }
@@ -47,19 +47,19 @@
 /* Sizes */
 .s-sm {
   height: 24px;
-  padding: 0 var(--space-3);
+  padding: 0 var(--ds-3);
   font-size: 12px;
 }
 
 .s-md {
   height: 28px;
-  padding: 0 var(--space-4);
+  padding: 0 var(--ds-4);
   font-size: 13px;
 }
 
 .s-lg {
   height: 36px;
-  padding: 0 var(--space-5);
+  padding: 0 var(--ds-5);
   font-size: 14px;
 }
 
@@ -81,20 +81,20 @@
 
 /* Variants */
 .v-default {
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-  border-color: var(--color-border-default);
+  background: var(--bg-elev);
+  color: var(--text);
+  border-color: var(--line);
 }
 
 .v-default:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-emphasis);
+  background: var(--bg-hover);
+  border-color: var(--line-strong);
 }
 
 .v-primary {
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-  border-color: var(--color-accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--line-strong);
 }
 
 .v-primary:hover:not(:disabled) {
@@ -103,21 +103,21 @@
 
 .v-ghost {
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--text-2);
   border-color: transparent;
 }
 
 .v-ghost:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .v-destructive {
   background: transparent;
-  color: var(--color-status-error);
-  border-color: var(--color-status-error);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .v-destructive:hover:not(:disabled) {
-  background: var(--color-status-error-bg);
+  background: var(--danger-soft);
 }

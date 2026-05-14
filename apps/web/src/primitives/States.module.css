@@ -3,10 +3,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-9) var(--space-6);
+  gap: var(--ds-3);
+  padding: var(--ds-16) var(--ds-6);
   text-align: center;
-  color: var(--color-text-secondary);
+  color: var(--text-2);
 }
 
 .icon {
@@ -15,15 +15,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-muted);
-  font-family: var(--type-family-mono);
+  color: var(--text-3);
+  font-family: var(--ds-font-mono);
   font-size: 18px;
 }
 
 .title {
   font-size: 14px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text);
   margin: 0;
 }
 
@@ -31,40 +31,40 @@
   font-size: 13px;
   margin: 0;
   max-width: 48ch;
-  color: var(--color-text-secondary);
+  color: var(--text-2);
 }
 
 .action {
-  margin-top: var(--space-2);
+  margin-top: var(--ds-2);
   display: inline-flex;
-  gap: var(--space-2);
+  gap: var(--ds-2);
 }
 
 .errorShell {
-  background: var(--color-status-error-bg);
-  border: 1px solid color-mix(in oklch, var(--color-status-error) 35%, transparent);
-  border-radius: var(--radius-lg);
-  padding: var(--space-7) var(--space-6);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in oklch, var(--danger) 35%, transparent);
+  border-radius: var(--ds-r-3);
+  padding: var(--ds-8) var(--ds-6);
 }
 
 .errorTitle {
-  color: var(--color-status-error);
+  color: var(--danger);
 }
 
 /* Loading skeleton */
 .skeleton {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) 0;
+  gap: var(--ds-3);
+  padding: var(--ds-3) 0;
 }
 
 .skeletonRow {
   display: block;
   height: 14px;
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-sm);
-  animation: skeletonPulse 1.6s var(--ease-in-out) infinite;
+  background: var(--bg-elev);
+  border-radius: var(--ds-r-1);
+  animation: skeletonPulse 1.6s var(--ds-ease) infinite;
 }
 
 .skeletonRow:nth-child(odd) {

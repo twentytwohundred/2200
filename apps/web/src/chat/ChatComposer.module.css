@@ -1,0 +1,117 @@
+.wrap {
+  background: var(--bg-elev);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--ds-r-3);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.wrap:focus-within {
+  border-color: var(--line-strong);
+}
+
+.tray {
+  padding: 12px 12px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-2);
+}
+
+.textarea {
+  width: 100%;
+  resize: none;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 14px 16px 8px;
+  font: 400 15px/1.55 var(--ds-font-sans);
+  color: var(--text);
+}
+
+/* Kill the global accent-tinted focus ring (main.css) on the chat
+   entry. The .wrap focus-within border-color change is the only
+   focus chrome we want on this surface per Doug. */
+.textarea:focus,
+.textarea:focus-visible {
+  box-shadow: none;
+}
+
+.textarea::placeholder {
+  color: var(--text-4);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  padding: 8px 10px 10px;
+}
+
+.plus {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-2);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ds-r-pill);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  flex: 0 0 auto;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.plus:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--line-strong);
+}
+
+.fileInput {
+  display: none;
+}
+
+.modeWrap {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-pill);
+  background: var(--bg-sunk);
+  overflow: hidden;
+}
+
+.modeBtn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 6px 12px;
+  font: 500 11.5px/1 var(--ds-font-mono);
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.modeBtn:hover:not(:disabled) {
+  color: var(--text-2);
+}
+
+.modeBtnActive {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-1);
+  color: var(--text-3);
+  font-size: 12.5px;
+}

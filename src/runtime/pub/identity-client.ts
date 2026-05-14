@@ -25,7 +25,7 @@
  * messaging API land in PR D as a separate module.
  */
 import type { PubCredential } from './keypair.js'
-import { composeAuthMessage, signMessage } from './keypair.js'
+import { composeAuthMessage, credForPub, recordPubAgentId, signMessage } from './keypair.js'
 
 /**
  * Base URL of the pub-server. The client appends paths like
@@ -238,20 +238,33 @@ export async function ensureRegistered(
   client: IdentityClient,
   cred: PubCredential,
   adminSecret?: string,
+  pubName?: string,
 ): Promise<PubCredential> {
+  // Pub-server assigns a unique agent_id per (pub, keypair) tuple, so
+  // a single cred file holds an entry per pub it's a member of. When
+  // pubName is given (recommended; required for multi-pub installs),
+  // look up the cred's view of that pub before authenticating; when
+  // omitted, fall back to the legacy single-pub flow against the
+  // top-level agent_id.
+  const effective = pubName ? credForPub(cred, pubName) : cred
   // Conditional flow per Poe's contract: GET /agents/me first; if 404,
   // register. Avoids the 409 from re-registering a known keypair.
-  const existing = await client.getMe(cred)
+  const existing = await client.getMe(effective)
   if (existing) {
-    if (cred.agent_id !== existing.agent_id) {
-      // Should not happen if the cred was loaded from disk consistently.
+    if (effective.agent_id !== existing.agent_id) {
       throw new IdentityClientError(
-        `agent_id mismatch between credential file and pub-server (${cred.agent_id ?? '<null>'} vs ${existing.agent_id})`,
+        `agent_id mismatch between credential file and pub-server (${effective.agent_id ?? '<null>'} vs ${existing.agent_id})`,
       )
+    }
+    if (pubName !== undefined) {
+      return recordPubAgentId(cred, pubName, existing.agent_id)
     }
     return cred
   }
   const { agent_id } = await client.registerAgent(cred, adminSecret)
+  if (pubName !== undefined) {
+    return recordPubAgentId(cred, pubName, agent_id)
+  }
   return { ...cred, agent_id }
 }
 

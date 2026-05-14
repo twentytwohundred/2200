@@ -1,0 +1,139 @@
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.col {
+  max-width: 78%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.name {
+  font: 600 13.5px/1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition:
+    opacity 320ms var(--ds-ease),
+    transform 320ms var(--ds-ease),
+    max-height 320ms var(--ds-ease);
+  max-height: 1000px;
+}
+
+.chipsFading {
+  opacity: 0;
+  transform: translateY(-4px);
+  max-height: 0;
+  overflow: hidden;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ds-r-2);
+  width: fit-content;
+  color: var(--text-2);
+  animation: tsStepIn 360ms var(--ds-ease) forwards;
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.chipDone {
+  /* Same surface as active; the glyph carries the state change. */
+}
+
+.glyph {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.glyphDone {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font: 700 10px/1 var(--ds-font-sans);
+}
+
+.ring {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in oklch, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: tsSpin 900ms linear infinite;
+}
+
+.what {
+  font: 500 12.5px/1 var(--ds-font-mono);
+  color: var(--text);
+}
+
+.chipDone .what {
+  color: var(--text-2);
+}
+
+.arg {
+  font: 400 12px/1 var(--ds-font-mono);
+  color: var(--text-3);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble {
+  padding: 10px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-3);
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 16px;
+  background: var(--accent);
+  vertical-align: -3px;
+  margin-left: 2px;
+  border-radius: 1px;
+  animation: tsCaret 1.05s steps(2) infinite;
+}
+
+@keyframes tsStepIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tsSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tsCaret {
+  50% {
+    opacity: 0;
+  }
+}

@@ -27,11 +27,16 @@ import fastifyWebsocketImport from '@fastify/websocket'
 import { z, ZodError } from 'zod'
 import type { Supervisor } from '../supervisor/supervisor.js'
 import type { Logger } from '../util/logger.js'
+import { emitNotification } from '../notifications/writer.js'
 import {
   agentBrainIndexPath,
   agentPaths as agentPathsHelper,
   homePaths,
+  pubPaths,
 } from '../storage/layout.js'
+import { createIdentityClient, ensureRegistered } from '../pub/identity-client.js'
+import { readCredentialFile, writeCredentialFile } from '../pub/keypair.js'
+import { readPubSecrets } from '../pub/secrets.js'
 
 import {
   listNotifications,
@@ -77,6 +82,14 @@ import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
+import {
+  MultiChatStore,
+  type ChatMessageRecord as MultiChatMessage,
+  type ChatThread,
+} from '../agent/chat/multi-store.js'
+import { EndpointStore } from '../endpoints/store.js'
+import { EndpointDiscoveryError, discoverModels } from '../endpoints/discover.js'
+import type { CustomEndpoint } from '../endpoints/types.js'
 import { SupervisorPubBridge, PubBridgeError } from '../supervisor/pub-bridge.js'
 import { readRoster } from '../pub/roster.js'
 import { regenerateFleet, fleetPath } from '../supervisor/fleet.js'
@@ -299,7 +312,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
       { method: 'POST', path: '/api/v1/agents/:name/stop' },
+      { method: 'POST', path: '/api/v1/agents/:name/archive' },
+      { method: 'POST', path: '/api/v1/agents/:name/unarchive' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
+      { method: 'PUT', path: '/api/v1/agents/:name/budget' },
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
@@ -317,12 +333,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/agents/:name/identity' },
       { method: 'PUT', path: '/api/v1/agents/:name/identity' },
       { method: 'PUT', path: '/api/v1/agents/:name/model' },
+      { method: 'PUT', path: '/api/v1/agents/:name/avatar' },
+      { method: 'PUT', path: '/api/v1/agents/:name/avatar/image' },
+      { method: 'GET', path: '/api/v1/agents/:name/avatar/image' },
+      { method: 'DELETE', path: '/api/v1/agents/:name/avatar/image' },
       { method: 'GET', path: '/api/v1/settings/providers' },
       { method: 'PUT', path: '/api/v1/settings/providers/:id/key' },
       { method: 'DELETE', path: '/api/v1/settings/providers/:id/key' },
       { method: 'PUT', path: '/api/v1/settings/providers/local/url' },
+      { method: 'GET', path: '/api/v1/settings/endpoints' },
+      { method: 'POST', path: '/api/v1/settings/endpoints' },
+      { method: 'GET', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'PATCH', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'DELETE', path: '/api/v1/settings/endpoints/:id' },
+      { method: 'POST', path: '/api/v1/settings/endpoints/discover' },
       { method: 'GET', path: '/api/v1/agents/:name/chat' },
       { method: 'POST', path: '/api/v1/agents/:name/chat' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats/:chatId' },
+      { method: 'PATCH', path: '/api/v1/agents/:name/chats/:chatId' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/archive' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/read' },
+      { method: 'GET', path: '/api/v1/agents/:name/chats/:chatId/messages' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/messages' },
+      { method: 'POST', path: '/api/v1/agents/:name/chats/:chatId/attachments' },
+      {
+        method: 'GET',
+        path: '/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename',
+      },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
       { method: 'POST', path: '/api/v1/notifications/:id/respond' },
@@ -332,7 +371,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/pubs/:name' },
       { method: 'GET', path: '/api/v1/pubs/:name/messages' },
       { method: 'POST', path: '/api/v1/pubs/:name/messages' },
+      { method: 'POST', path: '/api/v1/pubs' },
+      { method: 'PATCH', path: '/api/v1/pubs/:name' },
+      { method: 'DELETE', path: '/api/v1/pubs/:name' },
       { method: 'POST', path: '/api/v1/pubs/:name/reactions' },
+      { method: 'GET', path: '/api/v1/pubs/attachments/:attId/:filename' },
       { method: 'POST', path: '/api/v1/onboarding' },
       { method: 'GET', path: '/api/v1/onboarding/:id' },
       { method: 'POST', path: '/api/v1/onboarding/:id/answer' },
@@ -473,6 +516,124 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { provider: 'local', base_url: body.base_url, restart_required: true }
   })
 
+  // -- settings/endpoints (custom OpenAI-compatible servers) -----------------
+  // Operators can register N homelab / appliance LLM endpoints. Each
+  // entry persists to <home>/config/endpoints.json (mode 0600) and the
+  // LLM registry resolves `endpoint:<slug>` provider strings against
+  // the matching record. See src/runtime/endpoints/.
+
+  const endpointStore = new EndpointStore(home)
+
+  fastify.get('/api/v1/settings/endpoints', async () => {
+    const items = await endpointStore.list()
+    return { items: items.map(toEndpointDto), cursor: { next: null, limit: items.length } }
+  })
+
+  const EndpointCreateBody = z.object({
+    id: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,49}$/)
+      .optional(),
+    name: z.string().min(1).max(80),
+    base_url: z.url().max(500),
+    api_key: z.string().max(2000).optional(),
+    models: z
+      .array(z.object({ id: z.string().min(1).max(200), label: z.string().max(200).optional() }))
+      .optional(),
+    /** When true, hit /models and return the discovered list inline. */
+    discover: z.boolean().default(true),
+  })
+
+  fastify.post('/api/v1/settings/endpoints', async (req, reply) => {
+    const body = EndpointCreateBody.parse(req.body)
+    let discovered: { id: string }[] = []
+    let discoverError: { kind: string; message: string } | null = null
+    if (body.discover) {
+      try {
+        const models = await discoverModels({
+          baseUrl: body.base_url,
+          ...(body.api_key !== undefined ? { apiKey: body.api_key } : {}),
+        })
+        discovered = models.map((m) => ({ id: m.id }))
+      } catch (err) {
+        if (err instanceof EndpointDiscoveryError) {
+          discoverError = { kind: err.kind, message: err.message }
+        } else {
+          throw err
+        }
+      }
+    }
+    const entry = await endpointStore.create({
+      ...(body.id !== undefined ? { id: body.id } : {}),
+      name: body.name,
+      base_url: body.base_url,
+      ...(body.api_key !== undefined ? { api_key: body.api_key } : {}),
+      ...(body.models !== undefined ? { models: body.models } : {}),
+    })
+    void reply.status(201)
+    return {
+      endpoint: toEndpointDto(entry),
+      discovered_models: discovered,
+      discover_error: discoverError,
+    }
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const entry = await endpointStore.get(req.params.id)
+    if (!entry) throw notFound('endpoint', req.params.id)
+    return { endpoint: toEndpointDto(entry) }
+  })
+
+  const EndpointPatchBody = z.object({
+    name: z.string().min(1).max(80).optional(),
+    base_url: z.url().max(500).optional(),
+    api_key: z.string().max(2000).optional(),
+    models: z
+      .array(z.object({ id: z.string().min(1).max(200), label: z.string().max(200).optional() }))
+      .optional(),
+  })
+
+  fastify.patch<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const body = EndpointPatchBody.parse(req.body)
+    const existing = await endpointStore.get(req.params.id)
+    if (!existing) throw notFound('endpoint', req.params.id)
+    const patch: Partial<Pick<typeof existing, 'name' | 'base_url' | 'api_key' | 'models'>> = {}
+    if (body.name !== undefined) patch.name = body.name
+    if (body.base_url !== undefined) patch.base_url = body.base_url
+    if (body.api_key !== undefined) patch.api_key = body.api_key
+    if (body.models !== undefined) patch.models = body.models
+    const updated = await endpointStore.update(req.params.id, patch)
+    return { endpoint: toEndpointDto(updated) }
+  })
+
+  fastify.delete<{ Params: { id: string } }>('/api/v1/settings/endpoints/:id', async (req) => {
+    const existing = await endpointStore.get(req.params.id)
+    if (!existing) throw notFound('endpoint', req.params.id)
+    await endpointStore.delete(req.params.id)
+    return { id: req.params.id, deleted: true as const }
+  })
+
+  const DiscoverProbeBody = z.object({
+    base_url: z.url().max(500),
+    api_key: z.string().max(2000).optional(),
+  })
+
+  fastify.post('/api/v1/settings/endpoints/discover', async (req) => {
+    const body = DiscoverProbeBody.parse(req.body)
+    try {
+      const models = await discoverModels({
+        baseUrl: body.base_url,
+        ...(body.api_key !== undefined ? { apiKey: body.api_key } : {}),
+      })
+      return { ok: true as const, models: models.map((m) => ({ id: m.id })) }
+    } catch (err) {
+      if (err instanceof EndpointDiscoveryError) {
+        return { ok: false as const, error: { kind: err.kind, message: err.message } }
+      }
+      throw err
+    }
+  })
+
   // -- agents --------------------------------------------------------------
   fastify.get('/api/v1/agents', async () => {
     const snap = supervisor.snapshot()
@@ -516,6 +677,84 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     },
   )
 
+  // -- archive / unarchive -------------------------------------------------
+  // Archive renames the per-Agent on-disk subtrees to
+  // `<name>-archived-<YYYY-MM-DD>` so the original name is freed for
+  // a future Agent of the same name. Brain, chats, identity, schedules
+  // (deleted) all move with the rename. Unarchive reverses it ... by
+  // default restores the pre-archive name; pass `rename_to` to land on
+  // a different name when the original is no longer free.
+  const ArchiveAgentBody = z
+    .object({
+      reason: z.string().min(1).max(500).optional(),
+    })
+    .optional()
+
+  fastify.post<{ Params: { name: string }; Body: { reason?: string } | undefined }>(
+    '/api/v1/agents/:name/archive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      if (rec.state === 'archived') {
+        throw new ApiError(409, 'already_archived', `agent ${req.params.name} is already archived`)
+      }
+      const parsed = ArchiveAgentBody.parse(req.body)
+      let archivedName: string
+      try {
+        archivedName = await supervisor.archiveAgent(req.params.name, {
+          ...(parsed?.reason !== undefined ? { reason: parsed.reason } : {}),
+        })
+      } catch (err) {
+        throw new ApiError(500, 'archive_failed', err instanceof Error ? err.message : String(err))
+      }
+      const after = supervisor.snapshot().agents[archivedName]
+      if (!after) throw notFound('agent', archivedName)
+      return await toAgentDto(home, after)
+    },
+  )
+
+  const UnarchiveAgentBody = z
+    .object({
+      rename_to: z
+        .string()
+        .min(1)
+        .regex(/^[a-z][a-z0-9_-]*$/, {
+          message:
+            'rename_to must start with a lowercase letter; lowercase letters, digits, _, - only',
+        })
+        .optional(),
+    })
+    .optional()
+
+  fastify.post<{ Params: { name: string }; Body: { rename_to?: string } | undefined }>(
+    '/api/v1/agents/:name/unarchive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      if (rec.state !== 'archived') {
+        throw new ApiError(409, 'not_archived', `agent ${req.params.name} is not archived`)
+      }
+      const parsed = UnarchiveAgentBody.parse(req.body)
+      let restored: string
+      try {
+        restored = await supervisor.unarchiveAgent(req.params.name, {
+          ...(parsed?.rename_to !== undefined ? { rename_to: parsed.rename_to } : {}),
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('already in use')) {
+          throw new ApiError(409, 'name_in_use', msg)
+        }
+        throw new ApiError(500, 'unarchive_failed', msg)
+      }
+      const after = supervisor.snapshot().agents[restored]
+      if (!after) throw notFound('agent', restored)
+      return await toAgentDto(home, after)
+    },
+  )
+
   // -- agent budget --------------------------------------------------------
   // Reads the per-day budget state file the AgentProcess's BudgetTracker
   // writes to disk (Epic 4.5). Cross-process boundary: reading from disk
@@ -523,14 +762,79 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // AgentProcess and is not directly reachable from the supervisor.
   fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/budget', async (req) => {
     const snap = supervisor.snapshot()
-    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
     const today = await readBudgetStateToday(home, req.params.name)
     const override = await readBudgetOverride(home, req.params.name)
     const history = await listBudgetHistory(home, req.params.name)
+
+    // Configured cap lives in identity.md (cost_caps.daily_usd).
+    // today.cap_usd in the state file is the *enforced* cap the live
+    // tracker is using, which only changes on Agent restart. Surface
+    // both so the UI can show the operator-set value immediately
+    // after a PUT while still flagging the runtime delta.
+    let configured: { daily_usd: number; warn_at_pct: number } | null = null
+    try {
+      const id = await loadIdentity(rec.identity_path)
+      configured = {
+        daily_usd: id.frontmatter.cost_caps.daily_usd,
+        warn_at_pct: id.frontmatter.cost_caps.warn_at_pct,
+      }
+    } catch {
+      /* leave null; client falls back to today's enforced cap */
+    }
+
     return {
       today: today ? toBudgetStateDto(today) : null,
       override: override ? toBudgetOverrideDto(override) : null,
       history: history.map(toBudgetStateDto),
+      configured,
+    }
+  })
+
+  // PUT updates the Agent's per-day budget knobs in identity.md
+  // frontmatter (cost_caps.daily_usd, cost_caps.warn_at_pct). The
+  // change takes effect on the Agent's next start ... the in-process
+  // BudgetTracker holds its loaded cap until restart.
+  const PutAgentBudgetBody = z.object({
+    daily_usd: z.number().positive().max(100_000).optional(),
+    warn_at_pct: z.number().int().min(1).max(99).optional(),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/budget', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutAgentBudgetBody.parse(req.body)
+    if (body.daily_usd === undefined && body.warn_at_pct === undefined) {
+      throw new ApiError(400, 'bad_request', 'provide at least one of daily_usd or warn_at_pct')
+    }
+    const raw = await readFile(rec.identity_path, 'utf8')
+    const updated = applyCostCapsEdit(raw, body)
+    const { writeFile, rm, rename } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    let parsed
+    try {
+      await writeFile(tmpPath, updated, 'utf8')
+      parsed = await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed budget edit produced an invalid Identity: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      daily_usd: parsed.frontmatter.cost_caps.daily_usd,
+      warn_at_pct: parsed.frontmatter.cost_caps.warn_at_pct,
+      applies_on_restart: rec.state === 'running' || rec.state === 'waiting',
     }
   })
 
@@ -1148,6 +1452,110 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- agent avatar --------------------------------------------------------
+  // Operators set a glyph (emoji or short text) that the AgentMark
+  // renders in place of the default initial letter. Empty string
+  // clears the avatar.
+
+  const PutAgentAvatarBody = z.object({
+    avatar: z.string().max(8),
+  })
+
+  fastify.put<{ Params: { name: string } }>('/api/v1/agents/:name/avatar', async (req) => {
+    const snap = supervisor.snapshot()
+    const rec = snap.agents[req.params.name]
+    if (!rec) throw notFound('agent', req.params.name)
+    const body = PutAgentAvatarBody.parse(req.body)
+    const raw = await readFile(rec.identity_path, 'utf8')
+    const updated = applyAvatarEdit(raw, body.avatar)
+    const { writeFile, rm, rename } = await import('node:fs/promises')
+    const tmpPath = rec.identity_path + '.tmp'
+    try {
+      await writeFile(tmpPath, updated, 'utf8')
+      await loadIdentity(tmpPath)
+    } catch (err) {
+      try {
+        await rm(tmpPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(
+        422,
+        'identity_invalid',
+        `proposed avatar edit produced an invalid Identity: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    await rename(tmpPath, rec.identity_path)
+    return {
+      path: rec.identity_path,
+      avatar: body.avatar.length > 0 ? body.avatar : null,
+    }
+  })
+
+  // -- agent avatar image (uploaded persona portrait) ----------------------
+  // Cropped + client-side-compressed webp posted as base64 lands here.
+  // Server decodes, writes to <home>/agents/<name>/avatar.webp.
+  // Subsequent loads of agent.avatar_image_url hit the GET handler.
+
+  const PutAgentAvatarImageBody = z.object({
+    /** webp/png/jpeg image, ≤256KB after client-side compression. */
+    data_base64: z.string().min(1).max(400_000),
+    /** "webp" (preferred) or "png" or "jpeg". */
+    mime: z.enum(['image/webp', 'image/png', 'image/jpeg']).default('image/webp'),
+  })
+
+  fastify.put<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/avatar/image',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[req.params.name]
+      if (!rec) throw notFound('agent', req.params.name)
+      const body = PutAgentAvatarImageBody.parse(req.body)
+      const buf = Buffer.from(body.data_base64, 'base64')
+      const { avatarImage } = agentPathsHelper(home, req.params.name)
+      const { writeFile, mkdir } = await import('node:fs/promises')
+      await mkdir(dirname(avatarImage), { recursive: true })
+      await writeFile(avatarImage, buf)
+      void reply.status(201)
+      return {
+        path: avatarImage,
+        bytes: buf.byteLength,
+        url: `/api/v1/agents/${encodeURIComponent(req.params.name)}/avatar/image?v=${encodeURIComponent(new Date().toISOString())}`,
+      }
+    },
+  )
+
+  fastify.delete<{ Params: { name: string } }>('/api/v1/agents/:name/avatar/image', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const { avatarImage } = agentPathsHelper(home, req.params.name)
+    try {
+      const { rm } = await import('node:fs/promises')
+      await rm(avatarImage, { force: true })
+    } catch {
+      /* idempotent; ignore */
+    }
+    return { ok: true as const }
+  })
+
+  fastify.get<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/avatar/image',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const { avatarImage } = agentPathsHelper(home, req.params.name)
+      try {
+        const { readFile } = await import('node:fs/promises')
+        const buf = await readFile(avatarImage)
+        void reply.header('cache-control', 'private, max-age=300')
+        void reply.header('content-type', 'image/webp')
+        return await reply.send(buf)
+      } catch {
+        throw notFound('avatar_image', req.params.name)
+      }
+    },
+  )
+
   // -- agent chat (Epic 15 Phase C interaction surface) -------------------
   // Persistent conversation thread with the Agent. Each user message
   // appends to the chat log + spawns a task that sees the full prior
@@ -1227,6 +1635,277 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- agent chats (design-system v1.1 multi-chat surface) -----------------
+  // Persistent multi-thread chat per Agent. Each Agent has N chats; each
+  // chat is a JSONL stream at <home>/agents/<name>/chats/<chat-id>.jsonl.
+  // The legacy single-thread `chat.jsonl` surfaces as a chat with id
+  // "default" via the MultiChatStore's legacy fallback.
+  //
+  // Wire format: see toMultiChatThreadDto / toMultiChatMessageDto below.
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/chats', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const store = new MultiChatStore(home, req.params.name)
+    const chats = await store.listChats()
+    return {
+      items: chats.map(toMultiChatThreadDto),
+      cursor: { next: null, limit: chats.length },
+    }
+  })
+
+  const ChatCreateBody = z.object({
+    title: z.string().min(1).max(200).optional(),
+  })
+
+  fastify.post<{ Params: { name: string } }>('/api/v1/agents/:name/chats', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const body = ChatCreateBody.parse(req.body ?? {})
+    const store = new MultiChatStore(home, req.params.name)
+    const created = await store.createChat({
+      ...(body.title !== undefined ? { title: body.title } : {}),
+    })
+    broadcastChatEvent('chat.created', req.params.name, created.id, {
+      title: created.title,
+    })
+    void reply.status(201)
+    return { chat: toMultiChatThreadDto(created) }
+  })
+
+  fastify.get<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+      return { chat: toMultiChatThreadDto(chat) }
+    },
+  )
+
+  const ChatRenameBody = z.object({
+    title: z.string().min(1).max(200),
+  })
+
+  fastify.patch<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatRenameBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const updated = await store.renameChat(req.params.chatId, body.title)
+      broadcastChatEvent('chat.renamed', req.params.name, updated.id, {
+        title: updated.title,
+      })
+      return { chat: toMultiChatThreadDto(updated) }
+    },
+  )
+
+  const ChatArchiveBody = z.object({
+    archived: z.boolean().default(true),
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/archive',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatArchiveBody.parse(req.body ?? {})
+      const store = new MultiChatStore(home, req.params.name)
+      const updated = await store.archiveChat(req.params.chatId, body.archived)
+      broadcastChatEvent('chat.archived', req.params.name, updated.id, {
+        archived: updated.archived,
+      })
+      return { chat: toMultiChatThreadDto(updated) }
+    },
+  )
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/read',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      await store.markRead(req.params.chatId)
+      broadcastChatEvent('chat.read', req.params.name, req.params.chatId, {})
+      return { ok: true }
+    },
+  )
+
+  fastify.get<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/messages',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new MultiChatStore(home, req.params.name)
+      const messages = await store.listMessages(req.params.chatId)
+      return {
+        items: messages.map(toMultiChatMessageDto),
+        cursor: { next: null, limit: messages.length },
+      }
+    },
+  )
+
+  const ChatMessagePostBody = z.object({
+    body: z.string().min(1),
+    mode: z.enum(['pure', 'checkpointed', 'destructive']).optional(),
+    attachments: z
+      .array(
+        z.object({
+          id: z.string(),
+          kind: z.enum(['file', 'image']),
+          name: z.string(),
+          size: z.number().int().nonnegative(),
+          mime: z.string(),
+        }),
+      )
+      .optional(),
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/messages',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = ChatMessagePostBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+
+      const userMsg = await store.appendMessage({
+        chatId: req.params.chatId,
+        role: 'user',
+        body: body.body,
+        ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+      })
+      broadcastChatEvent('chat.message', req.params.name, req.params.chatId, {
+        message: toMultiChatMessageDto(userMsg),
+      })
+
+      // Spawn an Agent task with the full chat history as context. The
+      // assistant reply is appended by watchAndAppendChatThreadReply
+      // when the task lands in a terminal state.
+      const history = await store.listMessages(req.params.chatId)
+      const recent = history
+        .slice(-21)
+        .filter((m) => m.id !== userMsg.id)
+        .map((m) => ({
+          id: m.id,
+          ts: m.ts,
+          role: m.role,
+          content: m.body,
+          task_id: m.task_id,
+        }))
+      const taskBody = buildChatTaskBody(recent as ChatMessage[], body.body, req.params.name)
+
+      const taskStore = new TaskStore(home, req.params.name)
+      const taskId = newTaskId()
+      const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
+      const idempotency = body.mode ?? 'destructive'
+      const task = newPendingTask({
+        id: taskId,
+        agent: req.params.name,
+        title,
+        body: taskBody,
+        priority: 0,
+        idempotency,
+      })
+      await taskStore.save(task)
+
+      void watchAndAppendChatThreadReply({
+        home,
+        agent: req.params.name,
+        chatId: req.params.chatId,
+        taskId,
+        store,
+        broadcast: broadcastChatEvent,
+        log: log?.child('chat-multi'),
+      })
+
+      void reply.status(201)
+      return {
+        message: toMultiChatMessageDto(userMsg),
+        task_id: taskId,
+      }
+    },
+  )
+
+  // Attachments: base64-inline upload. Stays simple at v1.1; we can
+  // swap in multipart later if needed for large payloads.
+  const AttachmentUploadBody = z.object({
+    name: z.string().min(1).max(200),
+    mime: z.string().min(1).max(100),
+    kind: z.enum(['file', 'image']),
+    data_base64: z.string().min(1).max(15_000_000), // ~11MB raw
+  })
+
+  fastify.post<{ Params: { name: string; chatId: string } }>(
+    '/api/v1/agents/:name/chats/:chatId/attachments',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = AttachmentUploadBody.parse(req.body)
+      const store = new MultiChatStore(home, req.params.name)
+      const chat = await store.getChat(req.params.chatId)
+      if (!chat) throw notFound('chat', req.params.chatId)
+
+      const data = Buffer.from(body.data_base64, 'base64')
+      const ref = await store.saveAttachment({
+        chatId: req.params.chatId,
+        kind: body.kind,
+        name: body.name,
+        mime: body.mime,
+        data,
+      })
+
+      void reply.status(201)
+      return {
+        attachment: {
+          ...ref,
+          url: `/api/v1/agents/${req.params.name}/chats/${req.params.chatId}/attachments/${ref.id}/${encodeURIComponent(ref.name)}`,
+        },
+      }
+    },
+  )
+
+  fastify.get<{
+    Params: { name: string; chatId: string; attId: string; filename: string }
+  }>('/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const store = new MultiChatStore(home, req.params.name)
+    const path = store.attachmentPath(req.params.chatId, req.params.attId, req.params.filename)
+    try {
+      const buf = await (await import('node:fs/promises')).readFile(path)
+      void reply.header('cache-control', 'private, max-age=300')
+      return await reply.send(buf)
+    } catch {
+      throw notFound('attachment', req.params.attId)
+    }
+  })
+
+  function broadcastChatEvent(
+    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    agentName: string,
+    chatId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const msg = JSON.stringify({
+      event,
+      occurred_at: new Date().toISOString(),
+      payload: {
+        agent: agentName,
+        chat_id: chatId,
+        ...payload,
+      },
+    })
+    for (const c of wsClients) c.send(msg)
+  }
+
   // -- fleet ---------------------------------------------------------------
   // The supervisor-maintained Fleet.md gives every consumer a
   // unified view of who's on this install. Auto-regenerated by the
@@ -1282,6 +1961,441 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { items, cursor: { next: null, limit: items.length } }
   })
 
+  // -- create a pub (Studio creation flow) ---------------------------------
+  // Creates a new pub-server, writes pubs.md for each chosen agent (the
+  // file AgentProcess reads at boot to attach wake sources), and
+  // restarts those agents so they re-attach against the new pub.
+  // Agents must already have pub.identity set in their Identity ...
+  // we don't auto-provision pub identities here.
+  const PubCreateBody = z.object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, {
+        message: 'pub name must be lowercase alphanumeric + dashes',
+      }),
+    members: z.array(z.string().min(1)).min(1).max(50),
+    description: z.string().max(280).optional(),
+  })
+
+  fastify.post('/api/v1/pubs', async (req, reply) => {
+    const body = PubCreateBody.parse(req.body)
+    const snap = supervisor.snapshot()
+    if (snap.pubs[body.name]) {
+      throw new ApiError(409, 'pub_exists', `pub "${body.name}" already exists`)
+    }
+
+    // Validate every named agent exists AND has pub.identity set so
+    // its wake-source attach loop will actually fire.
+    const unknown: string[] = []
+    const unprovisioned: string[] = []
+    for (const m of body.members) {
+      const rec = snap.agents[m]
+      if (!rec) {
+        unknown.push(m)
+        continue
+      }
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        if (!id.frontmatter.pub?.identity) unprovisioned.push(m)
+      } catch {
+        unprovisioned.push(m)
+      }
+    }
+    if (unknown.length > 0) {
+      throw new ApiError(404, 'agent_not_found', `unknown Agent(s): ${unknown.join(', ')}`)
+    }
+    if (unprovisioned.length > 0) {
+      throw new ApiError(
+        409,
+        'agent_pub_unprovisioned',
+        `Agent(s) missing pub.identity in Identity (run identity provisioning first): ${unprovisioned.join(', ')}`,
+      )
+    }
+
+    // Create + start the pub.
+    const created = await supervisor.createPub(body.name, {
+      ...(body.description !== undefined ? { description: body.description } : {}),
+    })
+    try {
+      await supervisor.startPub(body.name)
+    } catch (err) {
+      throw new ApiError(
+        500,
+        'pub_start_failed',
+        `pub record created but startup failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    // Settle: the pub-server is spawned but its HTTP listener may
+    // not yet be bound. The existing supervisor recoverState path
+    // waits 800ms after pub spawn for the same reason. Wait + ping
+    // /agents/me-style endpoint until it responds before we try to
+    // register anyone.
+    {
+      const baseUrl = `http://127.0.0.1:${String(created.port)}`
+      const deadline = Date.now() + 5_000
+      let ready = false
+      while (Date.now() < deadline) {
+        try {
+          // GET / on a pub-server returns 404 once bound; that is the
+          // proof we want. Any fetch resolution (any status) means the
+          // listener is up.
+          await fetch(baseUrl, { method: 'GET' })
+          ready = true
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 200))
+        }
+      }
+      if (!ready) {
+        throw new ApiError(
+          500,
+          'pub_not_ready',
+          `pub started but HTTP listener never bound on ${baseUrl} after 5s`,
+        )
+      }
+    }
+
+    // Register identities with the brand-new pub.
+    //
+    // The pub-server starts empty: no agents and no user are
+    // registered until we explicitly enroll them. Without this step
+    // (1) the supervisor's pub bridge cannot mintToken to fetch the
+    // room state, so the web client sees an empty members list +
+    // never-ending "no messages" empty state; (2) the member Agents
+    // cannot attach a wake source when they restart, so the room
+    // stays cold. Use the existing ensureRegistered helper that
+    // GETs /agents/me first and only registers on 404, so idempotent
+    // re-creates of a same-named pub do not blow up.
+    const newPubPaths = pubPaths(home, body.name)
+    const newPubSecrets = await readPubSecrets({
+      adminSecret: newPubPaths.adminSecret,
+      signingKey: newPubPaths.signingKey,
+    })
+    const newPubClient = createIdentityClient({
+      baseUrl: `http://127.0.0.1:${String(created.port)}`,
+    })
+    const userCredPath = homePaths(home).configUserPubSecret
+    try {
+      const userCred = await readCredentialFile(userCredPath)
+      const updated = await ensureRegistered(
+        newPubClient,
+        userCred,
+        newPubSecrets.adminSecret,
+        body.name,
+      )
+      await writeCredentialFile(userCredPath, updated)
+    } catch (err) {
+      throw new ApiError(
+        500,
+        'user_pub_register_failed',
+        `pub started but user registration failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    for (const m of body.members) {
+      const agentCredPath = agentPathsHelper(home, m).pubSecret
+      try {
+        const cred = await readCredentialFile(agentCredPath)
+        const updated = await ensureRegistered(
+          newPubClient,
+          cred,
+          newPubSecrets.adminSecret,
+          body.name,
+        )
+        await writeCredentialFile(agentCredPath, updated)
+      } catch (err) {
+        throw new ApiError(
+          500,
+          'agent_pub_register_failed',
+          `pub started but ${m} registration failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+
+    // Add the new pub to each member's pubs.md and restart so they
+    // attach a wake source. Restarts happen sequentially to avoid
+    // bunching SIGTERMs at the supervisor.
+    //
+    // `seedIfMissing` carries the Agent's *current effective*
+    // membership (resolved from identity.md fallback or
+    // "all running pubs" default) so first-time pubs.md creation
+    // does not drop pubs the Agent was already implicitly in.
+    const { addPubToAgentFile } = await import('../agent/pubs-file.js')
+    const postCreateSnap = supervisor.snapshot()
+    const runningPubsBeforeNew = Object.values(postCreateSnap.pubs)
+      .filter((p) => p.state === 'running' && p.name !== body.name)
+      .map((p) => p.name)
+    const restarted: { name: string; was_running: boolean }[] = []
+    for (const m of body.members) {
+      const rec = snap.agents[m]
+      if (!rec) continue
+      const paths = agentPathsHelper(home, m)
+      let seedIfMissing: string[] = runningPubsBeforeNew
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        const fromIdentity = id.frontmatter.pub?.member_of ?? []
+        if (fromIdentity.length > 0) seedIfMissing = fromIdentity
+      } catch {
+        /* fall back to running-pubs default */
+      }
+      try {
+        await addPubToAgentFile(paths.pubsFile, m, body.name, { seedIfMissing })
+      } catch (err) {
+        throw new ApiError(
+          500,
+          'pubs_file_write_failed',
+          `wrote pub record but failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+      if (wasRunning) {
+        try {
+          await supervisor.stopAgent(m, 'studio_membership_change')
+          await supervisor.startAgent(m)
+          restarted.push({ name: m, was_running: true })
+        } catch (err) {
+          // Membership is written; failed restart leaves operator to
+          // bring the agent back manually. Surface in the response so
+          // the UI can flag it.
+          restarted.push({ name: m, was_running: true })
+          log?.warn('agent restart failed after room membership change', {
+            agent: m,
+            pub: body.name,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      } else {
+        restarted.push({ name: m, was_running: false })
+      }
+    }
+
+    void reply.status(201)
+    return {
+      name: body.name,
+      port: created.port,
+      pub_md_path: created.pub_md_path,
+      members: body.members,
+      restarted,
+    }
+  })
+
+  // -- patch a pub (edit guests) -------------------------------------------
+  // Per Doug 2026-05-13: operators can add/remove "guests" from a Room
+  // after creation, same as a chat group. Remove just drops the pub
+  // from the agent's pubs.md and restarts them (the pub-server roster
+  // entry stays since OpenPub has no agent-deletion endpoint we can
+  // safely call; the agent simply stops attaching a wake source and
+  // no longer receives the room's traffic).
+  const PubPatchBody = z.object({
+    add_guests: z.array(z.string().min(1)).max(50).optional(),
+    remove_guests: z.array(z.string().min(1)).max(50).optional(),
+  })
+
+  fastify.patch<{ Params: { name: string } }>('/api/v1/pubs/:name', async (req) => {
+    const pubName = req.params.name
+    const snap = supervisor.snapshot()
+    const pubRec = snap.pubs[pubName]
+    if (!pubRec) throw notFound('pub', pubName)
+    const body = PubPatchBody.parse(req.body)
+    const adds = body.add_guests ?? []
+    const removes = body.remove_guests ?? []
+    if (adds.length === 0 && removes.length === 0) {
+      throw new ApiError(400, 'bad_request', 'provide at least one of add_guests or remove_guests')
+    }
+    const overlap = adds.filter((a) => removes.includes(a))
+    if (overlap.length > 0) {
+      throw new ApiError(
+        400,
+        'bad_request',
+        `agents listed in both add and remove: ${overlap.join(', ')}`,
+      )
+    }
+    for (const m of [...adds, ...removes]) {
+      if (!snap.agents[m]) throw notFound('agent', m)
+    }
+
+    const { addPubToAgentFile, removePubFromAgentFile } = await import('../agent/pubs-file.js')
+
+    const restarted: { name: string; was_running: boolean }[] = []
+
+    // Adds: register at the pub, then write pubs.md, then restart.
+    if (adds.length > 0) {
+      const newPubPaths = pubPaths(home, pubName)
+      const newPubSecrets = await readPubSecrets({
+        adminSecret: newPubPaths.adminSecret,
+        signingKey: newPubPaths.signingKey,
+      })
+      const client = createIdentityClient({
+        baseUrl: `http://127.0.0.1:${String(pubRec.port)}`,
+      })
+      const runningPubsExcludingTarget = Object.values(snap.pubs)
+        .filter((p) => p.state === 'running' && p.name !== pubName)
+        .map((p) => p.name)
+      for (const m of adds) {
+        const rec = snap.agents[m]
+        if (!rec) continue
+        const credPath = agentPathsHelper(home, m).pubSecret
+        try {
+          const cred = await readCredentialFile(credPath)
+          const updated = await ensureRegistered(client, cred, newPubSecrets.adminSecret, pubName)
+          await writeCredentialFile(credPath, updated)
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'agent_pub_register_failed',
+            `${m} could not be registered at ${pubName}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const seedIfMissing: string[] = runningPubsExcludingTarget
+        try {
+          await addPubToAgentFile(agentPathsHelper(home, m).pubsFile, m, pubName, {
+            seedIfMissing,
+          })
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'pubs_file_write_failed',
+            `wrote registration but failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+        if (wasRunning) {
+          try {
+            await supervisor.stopAgent(m, 'room_membership_change')
+            await supervisor.startAgent(m)
+          } catch (err) {
+            log?.warn('agent restart failed after room membership change', {
+              agent: m,
+              pub: pubName,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        restarted.push({ name: m, was_running: wasRunning })
+      }
+    }
+
+    // Removes: drop the pub from pubs.md, restart. No pub-server
+    // call ... OpenPub has no per-agent deletion endpoint.
+    if (removes.length > 0) {
+      for (const m of removes) {
+        const rec = snap.agents[m]
+        if (!rec) continue
+        try {
+          await removePubFromAgentFile(agentPathsHelper(home, m).pubsFile, m, pubName)
+        } catch (err) {
+          throw new ApiError(
+            500,
+            'pubs_file_write_failed',
+            `failed updating ${m}'s pubs.md: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+        if (wasRunning) {
+          try {
+            await supervisor.stopAgent(m, 'room_membership_change')
+            await supervisor.startAgent(m)
+          } catch (err) {
+            log?.warn('agent restart failed after room membership change', {
+              agent: m,
+              pub: pubName,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        restarted.push({ name: m, was_running: wasRunning })
+      }
+    }
+
+    return {
+      name: pubName,
+      added: adds,
+      removed: removes,
+      restarted,
+    }
+  })
+
+  // -- destroy a pub -------------------------------------------------------
+  // Requires a typed confirmation in the body so a stray fetch can't
+  // wipe a room. Refuses to destroy the canonical "studio" pub.
+  // Updates every affected agent's pubs.md and restarts them before
+  // tearing the pub-server down so they don't flap reconnecting to a
+  // vanished pub.
+  const PubDestroyBody = z.object({
+    confirm: z.literal('DESTROY'),
+  })
+
+  fastify.delete<{ Params: { name: string } }>('/api/v1/pubs/:name', async (req) => {
+    const pubName = req.params.name
+    if (pubName === 'studio') {
+      throw new ApiError(
+        409,
+        'cannot_destroy_studio',
+        'the canonical "studio" pub cannot be destroyed',
+      )
+    }
+    const snap = supervisor.snapshot()
+    if (!snap.pubs[pubName]) throw notFound('pub', pubName)
+    // Parse a confirmation token from EITHER the JSON body OR a
+    // query string `?confirm=DESTROY`. The query form is the
+    // ergonomic path for fetch() callers that don't want to set a
+    // body on DELETE.
+    const query = req.query as Record<string, string | undefined>
+    if (query['confirm'] !== 'DESTROY') {
+      try {
+        PubDestroyBody.parse(req.body)
+      } catch {
+        throw new ApiError(
+          400,
+          'confirm_required',
+          'destructive ... pass {"confirm":"DESTROY"} in the body or ?confirm=DESTROY',
+        )
+      }
+    }
+
+    const { removePubFromAgentFile } = await import('../agent/pubs-file.js')
+
+    // Walk every agent and drop pubName from their pubs.md if
+    // listed. Restart agents that lose a membership so their wake
+    // sources detach before the pub-server disappears.
+    const restarted: { name: string; was_running: boolean }[] = []
+    for (const [agentName, rec] of Object.entries(snap.agents)) {
+      try {
+        const after = await removePubFromAgentFile(
+          agentPathsHelper(home, agentName).pubsFile,
+          agentName,
+          pubName,
+        )
+        if (after === null) continue // pubs.md absent → fallthrough membership; nothing to update
+      } catch (err) {
+        log?.warn('failed clearing pub from pubs.md during destroy', {
+          agent: agentName,
+          pub: pubName,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        continue
+      }
+      const wasRunning = rec.state === 'running' || rec.state === 'waiting'
+      if (wasRunning) {
+        try {
+          await supervisor.stopAgent(agentName, 'pub_destroyed')
+          await supervisor.startAgent(agentName)
+        } catch (err) {
+          log?.warn('agent restart failed after pub destroy', {
+            agent: agentName,
+            pub: pubName,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      restarted.push({ name: agentName, was_running: wasRunning })
+    }
+
+    await supervisor.removePub(pubName)
+    return { name: pubName, destroyed: true, restarted }
+  })
+
   const PubMessagesQuery = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional(),
     since: z.string().optional(),
@@ -1328,11 +2442,19 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         atmosphere = room.atmosphere ?? null
       }
       const runningAgentIds = new Set<string>()
+      const knownLiveAgentNames = new Set<string>()
       for (const ag of Object.values(snap.agents)) {
+        if (ag.state === 'archived') continue
+        knownLiveAgentNames.add(ag.name)
         if (ag.state === 'running') runningAgentIds.add(ag.name)
       }
       for (const r of roster.agents) {
         if (merged.has(r.agent_id)) continue
+        // Drop roster entries whose agent_name no longer maps to a
+        // live (non-archived) Agent. Covers: deleted Agents, archived
+        // Agents (renamed in supervisor state), and orphaned roster
+        // rows from earlier broken create attempts.
+        if (!knownLiveAgentNames.has(r.agent_name)) continue
         merged.set(r.agent_id, {
           agent_id: r.agent_id,
           display_name: r.display_name,
@@ -1432,6 +2554,55 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     reply_to: z.string().nullable().optional(),
     attachments: z.array(PubAttachmentInput).max(ATTACHMENTS_MAX_PER_MESSAGE).optional(),
   })
+
+  // GET attachment files written by the POST /pubs/:name/messages
+  // handler above. The user's web app uses this to render image
+  // previews + offer downloads inline in the Studio timeline; agents
+  // read the same files through their /commons/scratch/... virtual
+  // prefix via fs.read.
+  fastify.get<{ Params: { attId: string; filename: string } }>(
+    '/api/v1/pubs/attachments/:attId/:filename',
+    async (req, reply) => {
+      // Path-component validation: attId must be hex-id-only (no /, no ..)
+      // and filename must not escape. The POST writer enforces these on
+      // ingest; we double-check here to keep this route safe even if a
+      // future writer regresses.
+      if (!/^[a-f0-9]{6,32}$/i.test(req.params.attId)) {
+        throw notFound('attachment', req.params.attId)
+      }
+      if (
+        req.params.filename.includes('/') ||
+        req.params.filename.includes('\\') ||
+        req.params.filename.includes('..')
+      ) {
+        throw notFound('attachment', req.params.filename)
+      }
+      const filePath = join(
+        home,
+        'commons',
+        'scratch',
+        'attachments',
+        req.params.attId,
+        req.params.filename,
+      )
+      const { stat, readFile } = await import('node:fs/promises')
+      let st
+      try {
+        st = await stat(filePath)
+      } catch {
+        throw notFound('attachment', req.params.filename)
+      }
+      if (!st.isFile()) {
+        throw notFound('attachment', req.params.filename)
+      }
+      const buf = await readFile(filePath)
+      const ext = req.params.filename.split('.').pop()?.toLowerCase() ?? ''
+      const mime = inferMimeFromExt(ext)
+      void reply.header('content-type', mime)
+      void reply.header('cache-control', 'private, max-age=3600')
+      void reply.send(buf)
+    },
+  )
 
   fastify.post<{ Params: { name: string } }>('/api/v1/pubs/:name/messages', async (req, reply) => {
     const snap = supervisor.snapshot()
@@ -1664,7 +2835,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     const script = await loadScriptFile(scriptPath)
     let provider
     try {
-      provider = await resolveProvider({ providerName })
+      provider = await resolveProvider({ providerName, home })
     } catch (err) {
       throw new ApiError(
         503,
@@ -1764,6 +2935,35 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     } catch {
       // Persistence failure is non-fatal ... the Agent is on disk.
     }
+    // Auto-start the new Agent. Without this, the Agent record is on disk
+    // in `state: 'stopped'` and the seeded orientation task sits in the
+    // queue waiting indefinitely. v1 scope's Capability 1 onboarding
+    // expects "Agent is spawned ... reports ready" to happen from a single
+    // operator action; the start has to fire here, not via a follow-up
+    // CLI call. Failure to start is logged via notification but does not
+    // fail the confirm ... the operator can `2200 agent start <name>`
+    // if anything went sideways.
+    let autoStarted = false
+    let autoStartError: string | null = null
+    try {
+      await supervisor.startAgent(result.agent_name)
+      autoStarted = true
+    } catch (err) {
+      autoStartError = err instanceof Error ? err.message : String(err)
+      try {
+        await emitNotification({
+          home,
+          agentName: result.agent_name,
+          tier: 'important',
+          kind: 'agent.auto_start_failed',
+          body:
+            `Agent **${result.agent_name}** was created from onboarding but auto-start failed: ${autoStartError}\n\n` +
+            `Run \`2200 agent start ${result.agent_name}\` once any underlying issue is addressed.`,
+        })
+      } catch {
+        // best-effort
+      }
+    }
     session.markConfirmed()
     sessions.delete(session.id)
     return {
@@ -1777,6 +2977,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         env_hint: t.env_hint,
       })),
       schedules: preview.schedules,
+      auto_started: autoStarted,
+      auto_start_error: autoStartError,
     }
   })
 
@@ -1972,6 +3174,32 @@ function newAttachmentId(): string {
   return randomBytes(6).toString('hex')
 }
 
+/**
+ * Minimal extension → MIME map. Just enough coverage for the
+ * attachment-serve route ... unknown types fall back to octet-stream
+ * so the browser offers a download instead of trying to render.
+ */
+function inferMimeFromExt(ext: string): string {
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain; charset=utf-8',
+    md: 'text/markdown; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    yaml: 'application/yaml; charset=utf-8',
+    yml: 'application/yaml; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    log: 'text/plain; charset=utf-8',
+    html: 'text/html; charset=utf-8',
+  }
+  return map[ext] ?? 'application/octet-stream'
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${String(n)} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -2045,6 +3273,8 @@ async function toAgentDto(
     // log on their own time.
   }
   let model: { provider: string; model_id: string; followup_model_id: string | null } | null = null
+  let avatar: string | null = null
+  let archived: { at: string; reason?: string } | null = null
   try {
     const id = await loadIdentity(rec.identity_path)
     model = {
@@ -2052,9 +3282,23 @@ async function toAgentDto(
       model_id: id.frontmatter.model.model_id,
       followup_model_id: id.frontmatter.model.followup_model_id ?? null,
     }
+    avatar = id.frontmatter.avatar ?? null
+    if (id.frontmatter.archived) {
+      archived = id.frontmatter.archived.reason
+        ? { at: id.frontmatter.archived.at, reason: id.frontmatter.archived.reason }
+        : { at: id.frontmatter.archived.at }
+    }
   } catch {
     // Same tolerance as pulse: a broken Identity should not break
     // the screen. The detail screen shows "?" for the model.
+  }
+  const { avatarImage } = agentPathsHelper(home, rec.name)
+  let avatarImageMtime: string | null = null
+  try {
+    const stat = await (await import('node:fs/promises')).stat(avatarImage)
+    avatarImageMtime = stat.mtime.toISOString()
+  } catch {
+    /* no image uploaded; falls back to glyph or initial */
   }
   return {
     name: rec.name,
@@ -2068,6 +3312,14 @@ async function toAgentDto(
     errored_reason: rec.errored_reason,
     pulse,
     model,
+    avatar,
+    avatar_image_url:
+      avatarImageMtime !== null
+        ? `/api/v1/agents/${encodeURIComponent(rec.name)}/avatar/image?v=${encodeURIComponent(
+            avatarImageMtime,
+          )}`
+        : null,
+    archived,
   }
 }
 
@@ -2348,6 +3600,114 @@ function applyModelEdit(
  * `applyModelEdit` detects a provider switch and needs to clear
  * provider-specific overrides.
  */
+/**
+ * Replace (or insert / remove) the top-level `avatar:` line in the
+ * Identity frontmatter. An empty `value` removes the line entirely so
+ * the agent falls back to the generated AgentMark.
+ */
+function applyAvatarEdit(raw: string, value: string): string {
+  const fmStart = raw.indexOf('---')
+  if (fmStart === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no frontmatter')
+  }
+  const fmEnd = raw.indexOf('\n---', fmStart + 3)
+  if (fmEnd === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity frontmatter is not closed')
+  }
+  const head = raw.slice(0, fmStart + 3)
+  const fm = raw.slice(fmStart + 3, fmEnd + 1)
+  const tail = raw.slice(fmEnd + 1)
+
+  const lines = fm.split('\n')
+  const filtered = lines.filter((l) => !/^avatar:\s*/.test(l))
+
+  if (value.length > 0) {
+    // Insert after agent_role: when present, otherwise at the top of
+    // frontmatter (after the empty leading line).
+    const idx = filtered.findIndex((l) => /^agent_role:\s*/.test(l))
+    const insertAt = idx === -1 ? 1 : idx + 1
+    // Quote with single quotes; the emoji is bytewise safe in YAML
+    // but quoting keeps the parser happy with unusual glyphs.
+    const escaped = value.replace(/'/g, "''")
+    filtered.splice(insertAt, 0, `avatar: '${escaped}'`)
+  }
+  return head + filtered.join('\n') + tail
+}
+
+/**
+ * Update sub-keys of the top-level `cost_caps:` block in Identity
+ * frontmatter. Only the fields present in `patch` are touched; sibling
+ * lines (reset_at, on_breach) are preserved. If the block is missing
+ * entirely the helper inserts a fresh one before any blank-line
+ * terminator so the Zod loader picks it up on re-parse.
+ */
+function applyCostCapsEdit(
+  raw: string,
+  patch: { daily_usd?: number | undefined; warn_at_pct?: number | undefined },
+): string {
+  const fmStart = raw.indexOf('---')
+  if (fmStart === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity has no frontmatter')
+  }
+  const fmEnd = raw.indexOf('\n---', fmStart + 3)
+  if (fmEnd === -1) {
+    throw new ApiError(422, 'identity_invalid', 'Identity frontmatter is not closed')
+  }
+  const head = raw.slice(0, fmStart + 3)
+  const fm = raw.slice(fmStart + 3, fmEnd + 1)
+  const tail = raw.slice(fmEnd + 1)
+
+  const lines = fm.split('\n')
+  const headerIdx = lines.findIndex((l) => /^cost_caps:\s*$/.test(l))
+
+  if (headerIdx === -1) {
+    // No block ... synthesize one and insert at the bottom of the
+    // frontmatter (before the final blank line, if any).
+    const block = [
+      'cost_caps:',
+      `  daily_usd: ${String(patch.daily_usd ?? 50)}`,
+      `  warn_at_pct: ${String(patch.warn_at_pct ?? 80)}`,
+      '  reset_at: 00:00 UTC',
+      '  on_breach: block_new_tasks',
+    ]
+    // Insert right before the trailing newline that precedes `---`.
+    const insertAt =
+      lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    lines.splice(insertAt, 0, ...block)
+    return head + lines.join('\n') + tail
+  }
+
+  // Walk the block's child lines and update matching keys in-place.
+  // Stop at the next non-indented, non-empty line.
+  let i = headerIdx + 1
+  let sawDaily = false
+  let sawWarn = false
+  while (i < lines.length) {
+    const line = lines[i] ?? ''
+    if (line !== '' && !/^\s/.test(line)) break
+    if (patch.daily_usd !== undefined && /^\s+daily_usd:\s*/.test(line)) {
+      lines[i] = `  daily_usd: ${String(patch.daily_usd)}`
+      sawDaily = true
+    } else if (patch.warn_at_pct !== undefined && /^\s+warn_at_pct:\s*/.test(line)) {
+      lines[i] = `  warn_at_pct: ${String(patch.warn_at_pct)}`
+      sawWarn = true
+    }
+    i++
+  }
+  // Insert any patch field that didn't already exist as a child line.
+  const inserts: string[] = []
+  if (patch.daily_usd !== undefined && !sawDaily) {
+    inserts.push(`  daily_usd: ${String(patch.daily_usd)}`)
+  }
+  if (patch.warn_at_pct !== undefined && !sawWarn) {
+    inserts.push(`  warn_at_pct: ${String(patch.warn_at_pct)}`)
+  }
+  if (inserts.length > 0) {
+    lines.splice(headerIdx + 1, 0, ...inserts)
+  }
+  return head + lines.join('\n') + tail
+}
+
 function stripTopLevelBlock(lines: string[], key: string): string[] {
   const headerRe = new RegExp(`^${key}:\\s*$`)
   const out: string[] = []
@@ -2436,6 +3796,38 @@ interface ChatMessageDto {
   task_id: string | null
 }
 
+// ── Endpoint DTO ──────────────────────────────────────────────────────────
+
+interface EndpointModelDto {
+  id: string
+  label?: string
+}
+
+interface EndpointDto {
+  id: string
+  name: string
+  base_url: string
+  api_key_set: boolean
+  models: EndpointModelDto[]
+  created_at: string
+  updated_at: string
+}
+
+function toEndpointDto(e: CustomEndpoint): EndpointDto {
+  return {
+    id: e.id,
+    name: e.name,
+    base_url: e.base_url,
+    api_key_set: e.api_key.length > 0,
+    models: e.models.map((m) => ({
+      id: m.id,
+      ...(m.label !== undefined ? { label: m.label } : {}),
+    })),
+    created_at: e.created_at,
+    updated_at: e.updated_at,
+  }
+}
+
 function toChatMessageDto(m: ChatMessage): ChatMessageDto {
   return {
     id: m.id,
@@ -2521,6 +3913,125 @@ async function watchAndAppendChatReply(args: WatchAndAppendArgs): Promise<void> 
     return
   }
   log?.warn('chat reply watcher timed out', { agent, taskId })
+}
+
+// ── Multi-chat helpers ─────────────────────────────────────────────────────
+
+interface MultiChatThreadDto {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  unread: boolean
+  archived: boolean
+  snippet: string
+  last_user_at: string | null
+}
+
+function toMultiChatThreadDto(t: ChatThread): MultiChatThreadDto {
+  return {
+    id: t.id,
+    title: t.title,
+    created_at: t.created_at,
+    updated_at: t.updated_at,
+    unread: t.unread,
+    archived: t.archived,
+    snippet: t.snippet,
+    last_user_at: t.last_user_at,
+  }
+}
+
+interface MultiChatMessageDto {
+  id: string
+  chat_id: string
+  ts: string
+  role: 'user' | 'assistant' | 'system'
+  body: string
+  mode: 'pure' | 'checkpointed' | 'destructive' | null
+  attachments: {
+    id: string
+    kind: 'file' | 'image'
+    name: string
+    size: number
+    mime: string
+  }[]
+  task_id: string | null
+}
+
+function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
+  return {
+    id: m.id,
+    chat_id: m.chat_id,
+    ts: m.ts,
+    role: m.role,
+    body: m.body,
+    mode: m.mode,
+    attachments: m.attachments,
+    task_id: m.task_id,
+  }
+}
+
+interface WatchAndAppendThreadArgs {
+  home: string
+  agent: string
+  chatId: string
+  taskId: string
+  store: MultiChatStore
+  broadcast: (
+    event: 'chat.message' | 'chat.created' | 'chat.renamed' | 'chat.archived' | 'chat.read',
+    agentName: string,
+    chatId: string,
+    payload: Record<string, unknown>,
+  ) => void
+  log: Logger | undefined
+}
+
+/**
+ * Multi-chat counterpart to watchAndAppendChatReply. Polls the task
+ * store for `taskId` and, when terminal, appends an assistant
+ * message into the multi-chat thread + broadcasts a chat.message WS
+ * event. Idempotent ... if a message with this taskId already exists
+ * in the thread, exits without appending.
+ */
+async function watchAndAppendChatThreadReply(args: WatchAndAppendThreadArgs): Promise<void> {
+  const { home, agent, chatId, taskId, store, broadcast, log } = args
+  const taskStore = new TaskStore(home, agent)
+  const deadline = Date.now() + 20 * 60_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5_000))
+    let task: TaskRecord | null
+    try {
+      task = await taskStore.get(taskId)
+    } catch {
+      task = null
+    }
+    if (!task) continue
+    const state = task.frontmatter.state
+    if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
+      continue
+    }
+    const messages = await store.listMessages(chatId)
+    const already = messages.some((m) => m.task_id === taskId)
+    if (already) return
+    let body: string
+    if (state === 'done' && task.frontmatter.outcome) {
+      body = task.frontmatter.outcome.summary
+    } else if (state === 'errored' && task.frontmatter.error) {
+      body = `(error · ${task.frontmatter.error.class}) ${task.frontmatter.error.message}`
+    } else {
+      body = `(task ended in state '${state}' with no outcome)`
+    }
+    const msg = await store.appendMessage({
+      chatId,
+      role: 'assistant',
+      body,
+      taskId,
+    })
+    broadcast('chat.message', agent, chatId, { message: toMultiChatMessageDto(msg) })
+    log?.info('multi-chat reply appended', { agent, chatId, taskId, state })
+    return
+  }
+  log?.warn('multi-chat reply watcher timed out', { agent, chatId, taskId })
 }
 
 function toTaskDetailDto(rec: TaskRecord): TaskDetailDto {

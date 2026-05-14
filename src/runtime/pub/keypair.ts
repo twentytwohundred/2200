@@ -36,8 +36,22 @@ import { atomicWriteFile } from '../util/atomic-write.js'
  * v0.3.x HUB mode uses the hub URL.
  */
 export interface PubCredential {
-  /** UUID v7 returned by the issuer on register. Null if not yet registered. */
+  /**
+   * Legacy single-pub agent_id. Kept as the fallback for callers that
+   * have not yet been threaded through `pub_agent_ids`, and for creds
+   * that predate the multi-pub schema. New registrations write into
+   * `pub_agent_ids[pubName]` and leave this field alone so the
+   * original pub's auth continues to work.
+   */
   agent_id: string | null
+  /**
+   * Per-pub agent_id map. Pub-server v0.3.x assigns a fresh UUID
+   * every time a keypair registers at a new pub, so a single keypair
+   * needs N agent_ids to participate in N pubs. Optional for back-
+   * compat; resolution helpers (`agentIdForPub`) fall through to
+   * `agent_id` when the map is absent or the key is missing.
+   */
+  pub_agent_ids?: Record<string, string>
   /** Ed25519 private key, base64url-encoded. */
   private_key: string
   /** Ed25519 public key, base64url-encoded. */
@@ -48,6 +62,47 @@ export interface PubCredential {
   display_name: string
   /** Issuer URL (`local://<pub-host>` or hub URL). Informational. */
   issuer_url: string
+}
+
+/**
+ * Resolve the agent_id for a specific pub. Prefers the per-pub map
+ * entry; falls back to the legacy `agent_id` when the map is empty
+ * (existing single-pub creds keep working unchanged). Returns null
+ * when no registration is known yet.
+ */
+export function agentIdForPub(cred: PubCredential, pubName: string): string | null {
+  return cred.pub_agent_ids?.[pubName] ?? cred.agent_id ?? null
+}
+
+/**
+ * Synthetic cred view for a specific pub. The returned object looks
+ * like a regular PubCredential with `agent_id` set to whatever the
+ * given pub knows about this keypair, so existing identity-client
+ * methods (which read `cred.agent_id` directly) talk to the right
+ * pub without their signature changing.
+ */
+export function credForPub(cred: PubCredential, pubName: string): PubCredential {
+  const resolved = agentIdForPub(cred, pubName)
+  return { ...cred, agent_id: resolved }
+}
+
+/**
+ * Record a fresh registration. Writes `agentId` into
+ * `pub_agent_ids[pubName]`. Also fills the legacy `agent_id` field
+ * iff it was empty, so a brand-new keypair's first registration
+ * still populates the back-compat slot.
+ */
+export function recordPubAgentId(
+  cred: PubCredential,
+  pubName: string,
+  agentId: string,
+): PubCredential {
+  const nextMap = { ...(cred.pub_agent_ids ?? {}), [pubName]: agentId }
+  return {
+    ...cred,
+    agent_id: cred.agent_id ?? agentId,
+    pub_agent_ids: nextMap,
+  }
 }
 
 /**
@@ -111,6 +166,17 @@ export async function readCredentialFile(path: string): Promise<PubCredential> {
   ) {
     throw new Error(`pub credential file at ${path} has wrong field types`)
   }
+  // Optional pub_agent_ids: parse if present and well-shaped, else
+  // drop. Cred files written before the multi-pub fix do not have it.
+  let pubAgentIds: Record<string, string> | undefined
+  const rawMap = c['pub_agent_ids']
+  if (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) {
+    const map: Record<string, string> = {}
+    for (const [k, v] of Object.entries(rawMap)) {
+      if (typeof v === 'string') map[k] = v
+    }
+    if (Object.keys(map).length > 0) pubAgentIds = map
+  }
   return {
     agent_id: c['agent_id'],
     private_key: c['private_key'],
@@ -118,6 +184,7 @@ export async function readCredentialFile(path: string): Promise<PubCredential> {
     key_version: c['key_version'],
     display_name: c['display_name'],
     issuer_url: c['issuer_url'],
+    ...(pubAgentIds !== undefined ? { pub_agent_ids: pubAgentIds } : {}),
   }
 }
 

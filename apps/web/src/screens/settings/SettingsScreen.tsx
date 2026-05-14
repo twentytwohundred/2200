@@ -19,8 +19,7 @@
  * in their shell to manage the things this screen does NOT have a
  * UI for yet.
  */
-import { useState, type ReactElement } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type ProviderSettingsItem } from '../../lib/api'
 import {
@@ -29,12 +28,15 @@ import {
   ErrorState,
   KV,
   LoadingState,
-  PageHeader,
+  Meta,
   Pill,
-  SectionHeader,
+  Screen,
+  ScreenNavLink,
+  Segmented,
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
+import { EndpointsSection } from './EndpointsSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
@@ -77,129 +79,111 @@ export function SettingsScreen(): ReactElement {
     staleTime: 30_000,
   })
 
-  const eyebrow = `2200 · SETTINGS · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title="Settings"
-        subtitle="Theme, runtime info, and a reference for management surfaces still on the CLI."
-        actions={
-          <Link
-            to="/"
-            style={{
-              fontFamily: 'var(--type-family-mono)',
-              fontSize: '11px',
-              letterSpacing: '0.08em',
-              color: 'var(--color-text-muted)',
-              textDecoration: 'none',
+    <Screen
+      crumbs={['2200', 'settings']}
+      title="Settings"
+      lede="Theme, runtime info, and a reference for management surfaces still on the CLI."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
+      <section className={styles.block}>
+        <Meta>theme</Meta>
+        <div className={styles.blockBody}>
+          <Segmented
+            value={theme === 'default-dark' ? 'dark' : 'light'}
+            options={[
+              { id: 'light', label: 'light' },
+              { id: 'dark', label: 'dark' },
+            ]}
+            onChange={(id) => {
+              setTheme(id === 'dark' ? 'default-dark' : 'default-light')
             }}
-          >
-            ← FLEET
-          </Link>
-        }
-      />
-
-      <section>
-        <SectionHeader title="THEME" />
-        <Card padding={20}>
-          <div className={styles.themeRow}>
-            <button
-              type="button"
-              className={styles.themeChip}
-              data-active={theme === 'default-dark'}
-              onClick={() => {
-                setTheme('default-dark')
-              }}
-            >
-              DARK
-            </button>
-            <button
-              type="button"
-              className={styles.themeChip}
-              data-active={theme === 'default-light'}
-              onClick={() => {
-                setTheme('default-light')
-              }}
-            >
-              LIGHT
-            </button>
-          </div>
-        </Card>
+          />
+        </div>
       </section>
 
-      <section>
-        <SectionHeader title="ABOUT" />
-        {meQuery.isLoading || versionQuery.isLoading || healthQuery.isLoading ? (
-          <Card padding={20}>
-            <LoadingState rows={3} />
-          </Card>
-        ) : meQuery.isError || versionQuery.isError ? (
-          <Card padding={0}>
-            <ErrorState
-              title="Could not load runtime info"
-              body={formatError(meQuery.error ?? versionQuery.error)}
-            />
-          </Card>
-        ) : (
-          <Card padding={20}>
-            <div className={styles.statusGrid}>
-              <KV
-                k="API"
-                v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
-                    {versionQuery.data?.api ?? '?'}
-                  </span>
-                }
+      <section className={styles.block}>
+        <Meta>about</Meta>
+        <div className={styles.blockBody}>
+          {meQuery.isLoading || versionQuery.isLoading || healthQuery.isLoading ? (
+            <Card padding={20}>
+              <LoadingState rows={3} />
+            </Card>
+          ) : meQuery.isError || versionQuery.isError ? (
+            <Card padding={0}>
+              <ErrorState
+                title="Could not load runtime info"
+                body={formatError(meQuery.error ?? versionQuery.error)}
               />
-              <KV
-                k="RUNTIME"
-                v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
-                    {versionQuery.data?.runtime ?? '?'}
-                  </span>
-                }
-              />
-              <KV
-                k="HEALTHY"
-                v={
-                  healthQuery.data?.healthy ? (
-                    <Pill variant="info">YES</Pill>
-                  ) : (
-                    <Pill variant="error">NO</Pill>
-                  )
-                }
-              />
-              <KV
-                k="PRINCIPAL"
-                v={
-                  <span style={{ fontFamily: 'var(--type-family-mono)' }}>
-                    {meQuery.data ? `${meQuery.data.kind}/${meQuery.data.name}` : '?'}
-                  </span>
-                }
-              />
-              <KV
-                k="WS"
-                v={
-                  <Pill variant={live.status === 'open' ? 'info' : 'idle'}>
-                    {live.status.toUpperCase()}
-                  </Pill>
-                }
-              />
-            </div>
-          </Card>
-        )}
+            </Card>
+          ) : (
+            <Card padding={20}>
+              <div className={styles.statusGrid}>
+                <KV
+                  k="API"
+                  v={
+                    <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
+                      {versionQuery.data?.api ?? '?'}
+                    </span>
+                  }
+                />
+                <KV
+                  k="RUNTIME"
+                  v={
+                    <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
+                      {versionQuery.data?.runtime ?? '?'}
+                    </span>
+                  }
+                />
+                <KV
+                  k="HEALTHY"
+                  v={
+                    healthQuery.data?.healthy ? (
+                      <Pill variant="info">YES</Pill>
+                    ) : (
+                      <Pill variant="error">NO</Pill>
+                    )
+                  }
+                />
+                <KV
+                  k="PRINCIPAL"
+                  v={
+                    <span style={{ fontFamily: 'var(--ds-font-mono)' }}>
+                      {meQuery.data ? `${meQuery.data.kind}/${meQuery.data.name}` : '?'}
+                    </span>
+                  }
+                />
+                <KV
+                  k="WS"
+                  v={
+                    <Pill variant={live.status === 'open' ? 'info' : 'idle'}>
+                      {live.status.toUpperCase()}
+                    </Pill>
+                  }
+                />
+              </div>
+            </Card>
+          )}
+        </div>
       </section>
 
-      <section>
-        <SectionHeader title="MODELS & API KEYS" />
-        <ProvidersSection />
+      <section className={styles.block}>
+        <Meta>models &amp; api keys</Meta>
+        <div className={styles.blockBody}>
+          <ProvidersSection />
+        </div>
       </section>
 
-      <section>
-        <SectionHeader title="WHAT YOU CAN DO IN THE CLI" />
-        <div className={styles.cliCallout}>
+      <section className={styles.block}>
+        <Meta>endpoints · custom llm servers</Meta>
+        <div className={styles.blockBody}>
+          <EndpointsSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>what you can do in the cli</Meta>
+        <div className={cx(styles.blockBody, styles.cliCallout)}>
           <div className={styles.cliLabel}>v1 management</div>
           <div className={styles.cliBody}>
             Token rotation, OAuth login, and Identity edits live in the CLI for now. A web surface
@@ -215,7 +199,7 @@ export function SettingsScreen(): ReactElement {
           </div>
         </div>
       </section>
-    </main>
+    </Screen>
   )
 }
 
@@ -256,6 +240,18 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
   const [open, setOpen] = useState(false)
   const [draftKey, setDraftKey] = useState('')
   const [draftUrl, setDraftUrl] = useState(provider.baseUrl)
+  // Two-step clear: first click flips to "click to confirm" with a
+  // danger tone; second click within 3s commits; mouseout or timeout
+  // reverts. Replaces the previous window.confirm popup
+  // ([[feedback_no_browser_popups]]).
+  const [clearArmed, setClearArmed] = useState(false)
+  const clearArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (clearArmTimer.current) clearTimeout(clearArmTimer.current)
+    },
+    [],
+  )
 
   const setKey = useMutation({
     mutationFn: (key: string) => api.settingsProviderKeySet(provider.name, key),
@@ -284,11 +280,17 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
       <div className={styles.providerHead}>
         <div className={styles.providerLabel}>{provider.label}</div>
         {provider.key_set ? (
-          <Pill variant="info">KEY SET</Pill>
+          <Pill variant="info" size="sm" dot>
+            key set
+          </Pill>
         ) : provider.keyOptional ? (
-          <Pill variant="idle">OPTIONAL</Pill>
+          <Pill variant="idle" size="sm" dot>
+            optional
+          </Pill>
         ) : (
-          <Pill variant="attention">NO KEY</Pill>
+          <Pill variant="attention" size="sm" dot>
+            no key
+          </Pill>
         )}
         <button
           type="button"
@@ -302,15 +304,38 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
         {provider.key_set ? (
           <button
             type="button"
-            className={styles.providerBtn}
+            className={cx(styles.providerBtn, clearArmed && styles.providerBtnDanger)}
             onClick={() => {
-              if (window.confirm(`Remove ${provider.defaultEnvKey} from runtime.env?`)) {
+              if (clearArmed) {
+                if (clearArmTimer.current) {
+                  clearTimeout(clearArmTimer.current)
+                  clearArmTimer.current = null
+                }
+                setClearArmed(false)
                 clearKey.mutate()
+              } else {
+                setClearArmed(true)
+                if (clearArmTimer.current) clearTimeout(clearArmTimer.current)
+                clearArmTimer.current = setTimeout(() => {
+                  setClearArmed(false)
+                }, 3000)
               }
             }}
+            onMouseLeave={
+              clearArmed
+                ? () => {
+                    setClearArmed(false)
+                    if (clearArmTimer.current) {
+                      clearTimeout(clearArmTimer.current)
+                      clearArmTimer.current = null
+                    }
+                  }
+                : undefined
+            }
             disabled={clearKey.isPending}
+            title={clearArmed ? 'Click again to remove the key' : 'Remove this provider key'}
           >
-            CLEAR
+            {clearKey.isPending ? 'CLEARING…' : clearArmed ? 'CLICK TO CONFIRM' : 'CLEAR'}
           </button>
         ) : null}
       </div>

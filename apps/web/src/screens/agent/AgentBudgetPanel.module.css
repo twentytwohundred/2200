@@ -1,0 +1,97 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-5);
+  padding: var(--ds-5) var(--ds-6);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+}
+
+.muted {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.todayRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-3);
+  flex-wrap: wrap;
+}
+
+.spend {
+  font: 600 36px/1 var(--ds-font-mono);
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.cap {
+  font: 500 14px/1 var(--ds-font-mono);
+  color: var(--text-3);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.bar {
+  margin: var(--ds-3) 0;
+}
+
+.kvRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ds-3);
+}
+
+@media (max-width: 740px) {
+  .kvRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.overrideBody {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.mono {
+  font-family: var(--ds-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.historyTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.historyTable thead th {
+  text-align: left;
+  font: 500 11px/1 var(--ds-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: var(--ds-1) 0 var(--ds-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.historyTable td {
+  padding: var(--ds-2) 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.historyTable tr:last-child td {
+  border-bottom: none;
+}

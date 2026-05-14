@@ -10,7 +10,6 @@
  * companion API endpoint.
  */
 import { useMemo, useState, type ReactElement } from 'react'
-import { Link } from 'react-router-dom'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { api, type BudgetState } from '../../lib/api'
 import {
@@ -19,14 +18,13 @@ import {
   EmptyState,
   KV,
   LoadingState,
-  PageHeader,
   Pill,
   ProgressBar,
+  Screen,
+  ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
-import { useLiveSignal } from '../../ws/useLiveSignal'
+import { BudgetCapEditor } from './BudgetCapEditor'
 import styles from './BudgetScreen.module.css'
 
 function fmtUsd(n: number): string {
@@ -45,8 +43,6 @@ function pillForState(state: BudgetState | null) {
 }
 
 export function BudgetScreen(): ReactElement {
-  const { theme } = useTheme()
-  const live = useLiveSignal()
   // Drill-in: when null, show the fleet-total + per-agent grid;
   // when set, show that agent's detail view (today + history).
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
@@ -72,9 +68,10 @@ export function BudgetScreen(): ReactElement {
   })
 
   // Fleet total: sum cumulative + cap across all agents that have
-  // a `today` row. Agents with no spend yet today contribute 0/0
-  // so the bar reflects the active fleet, not 0/<sum-of-caps> when
-  // nobody has called a model.
+  // a `today` row. Cap prefers `configured.daily_usd` (the live
+  // identity.md value) over `today.cap_usd` (the cap the running
+  // tracker is enforcing) so a cap edit shows up in the fleet total
+  // immediately instead of waiting for the next agent restart.
   const fleetTotal = useMemo(() => {
     let cumulative = 0
     let cap = 0
@@ -84,7 +81,7 @@ export function BudgetScreen(): ReactElement {
       const today = q.data?.today
       if (!today) continue
       cumulative += today.cumulative_usd
-      cap += today.cap_usd
+      cap += q.data?.configured?.daily_usd ?? today.cap_usd
       if (today.blocked) blocked = true
       if (today.warned_today) warned = true
     }
@@ -96,24 +93,13 @@ export function BudgetScreen(): ReactElement {
       ? (perAgentBudget[agents.findIndex((a) => a.name === selectedAgent)]?.data ?? null)
       : null
 
-  const eyebrow = `2200 · BUDGET · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title="Budget"
-        subtitle="Daily spend per Agent. Cap, cumulative, override, and per-day history."
-        actions={
-          <div className={styles.headerActions}>
-            <Link to="/" className={styles.back}>
-              ← FLEET
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'budget']}
+      title="Budget"
+      lede="Daily spend per Agent. Cap, cumulative, override, and per-day history."
+      actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
+    >
       {agentsQuery.isLoading ? (
         <Card padding={20}>
           <LoadingState rows={4} />
@@ -122,7 +108,7 @@ export function BudgetScreen(): ReactElement {
         <Card padding={0}>
           <EmptyState
             title="No Agents to budget"
-            body="Spawn an Agent first; their daily spend appears here once the loop runs."
+            body="Build an Agent first; their daily spend appears here once the loop runs."
           />
         </Card>
       ) : (
@@ -184,8 +170,9 @@ export function BudgetScreen(): ReactElement {
             <ul className={styles.agentGrid}>
               {agents.map((a, i) => {
                 const today = perAgentBudget[i]?.data?.today ?? null
+                const configured = perAgentBudget[i]?.data?.configured ?? null
                 const cum = today?.cumulative_usd ?? 0
-                const cap = today?.cap_usd ?? 0
+                const cap = configured?.daily_usd ?? today?.cap_usd ?? 0
                 const variant: 'auto' | 'error' | 'attention' = today?.blocked
                   ? 'error'
                   : today?.warned_today
@@ -203,7 +190,13 @@ export function BudgetScreen(): ReactElement {
                       aria-label={`Open ${a.name} budget detail`}
                     >
                       <div className={styles.agentCardHeader}>
-                        <AgentMark id={a.name} name={a.name} size="sm" />
+                        <AgentMark
+                          id={a.name}
+                          name={a.name}
+                          size="sm"
+                          glyph={a.avatar ?? undefined}
+                          imageUrl={api.authedUrl(a.avatar_image_url) ?? undefined}
+                        />
                         <span className={styles.agentCardName}>{a.name}</span>
                         {today ? (
                           today.blocked ? (
@@ -241,36 +234,40 @@ export function BudgetScreen(): ReactElement {
                 <Card padding={20}>
                   {selectedBudget.today ? (
                     <>
-                      <div className={styles.heroRow}>
-                        <div className={styles.heroPrimary}>
-                          <span className={styles.heroAmount}>
-                            {fmtUsd(selectedBudget.today.cumulative_usd)}
-                          </span>
-                          <span className={styles.heroOf}>
-                            of {fmtUsd(selectedBudget.today.cap_usd)}
-                          </span>
-                        </div>
-                        {pillForState(selectedBudget.today)}
-                      </div>
-                      <ProgressBar
-                        value={selectedBudget.today.cumulative_usd}
-                        max={selectedBudget.today.cap_usd}
-                        variant={
-                          selectedBudget.today.blocked
-                            ? 'error'
-                            : selectedBudget.today.warned_today
-                              ? 'attention'
-                              : 'auto'
-                        }
-                      />
-                      <KV
-                        k="WARN AT"
-                        v={
-                          <span className={styles.mono}>
-                            {String(selectedBudget.today.warn_at_pct)}%
-                          </span>
-                        }
-                      />
+                      {(() => {
+                        const detailCap =
+                          selectedBudget.configured?.daily_usd ?? selectedBudget.today.cap_usd
+                        const detailWarn =
+                          selectedBudget.configured?.warn_at_pct ?? selectedBudget.today.warn_at_pct
+                        return (
+                          <>
+                            <div className={styles.heroRow}>
+                              <div className={styles.heroPrimary}>
+                                <span className={styles.heroAmount}>
+                                  {fmtUsd(selectedBudget.today.cumulative_usd)}
+                                </span>
+                                <span className={styles.heroOf}>of {fmtUsd(detailCap)}</span>
+                              </div>
+                              {pillForState(selectedBudget.today)}
+                            </div>
+                            <ProgressBar
+                              value={selectedBudget.today.cumulative_usd}
+                              max={detailCap}
+                              variant={
+                                selectedBudget.today.blocked
+                                  ? 'error'
+                                  : selectedBudget.today.warned_today
+                                    ? 'attention'
+                                    : 'auto'
+                              }
+                            />
+                            <KV
+                              k="WARN AT"
+                              v={<span className={styles.mono}>{String(detailWarn)}%</span>}
+                            />
+                          </>
+                        )
+                      })()}
                       <KV
                         k="LAST RECORDED"
                         v={
@@ -292,11 +289,22 @@ export function BudgetScreen(): ReactElement {
                           }
                         />
                       ) : null}
+                      <BudgetCapEditor
+                        agent={selectedAgent}
+                        capUsd={
+                          selectedBudget.configured?.daily_usd ?? selectedBudget.today.cap_usd
+                        }
+                        warnAtPct={
+                          selectedBudget.configured?.warn_at_pct ?? selectedBudget.today.warn_at_pct
+                        }
+                      />
                     </>
                   ) : (
-                    <EmptyState
-                      title="No spend yet today"
-                      body={`${selectedAgent} has not made a model call today. The state file lands after the first record.`}
+                    <BudgetCapEditor
+                      agent={selectedAgent}
+                      capUsd={selectedBudget.configured?.daily_usd ?? null}
+                      warnAtPct={selectedBudget.configured?.warn_at_pct ?? null}
+                      emptyHint={`${selectedAgent} has not made a model call today. Set the daily cap below; it activates the next time ${selectedAgent} starts.`}
                     />
                   )}
                 </Card>
@@ -352,7 +360,7 @@ export function BudgetScreen(): ReactElement {
           ) : null}
         </>
       )}
-    </main>
+    </Screen>
   )
 }
 

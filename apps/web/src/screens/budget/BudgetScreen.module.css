@@ -1,7 +1,7 @@
 .shell {
   display: grid;
-  gap: var(--space-5);
-  padding: var(--space-5);
+  gap: var(--ds-5);
+  padding: var(--ds-5);
   max-width: 960px;
   margin: 0 auto;
 }
@@ -9,22 +9,22 @@
 .headerActions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .back {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-decoration: none;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
+  padding: var(--ds-1) var(--ds-3);
+  border-radius: var(--ds-r-2);
 }
 
 .back:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 /* Per-agent card grid below the fleet total. Each card is clickable
@@ -36,7 +36,7 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .agentCard {
@@ -46,72 +46,72 @@
 .agentCardLink {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  gap: var(--ds-3);
+  padding: var(--ds-4);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
   cursor: pointer;
   width: 100%;
   text-align: left;
   font-family: inherit;
   color: inherit;
   transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease);
 }
 
 .agentCardLink:hover {
-  border-color: var(--color-border-emphasis);
-  background: var(--color-bg-hover);
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
 }
 
 .agentCardLink[data-active='true'] {
-  border-color: var(--color-accent);
-  background: var(--color-accent-bg);
+  border-color: var(--line-strong);
+  background: var(--accent-soft);
 }
 
 .agentCardHeader {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  font-family: var(--type-family-mono);
+  gap: var(--ds-2);
+  font-family: var(--ds-font-mono);
   font-size: 13px;
 }
 
 .agentCardName {
   flex: 1;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .agentCardSpend {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   letter-spacing: 0.04em;
   display: flex;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--ds-2);
 }
 
 .agentCardSpendAmount {
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .totalSummary {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-5);
-  font-family: var(--type-family-mono);
+  gap: var(--ds-5);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   letter-spacing: 0.04em;
-  margin-top: var(--space-3);
+  margin-top: var(--ds-3);
 }
 
 .totalSummary strong {
-  color: var(--color-text-primary);
+  color: var(--text);
   font-weight: 500;
 }
 
@@ -119,50 +119,50 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
+  gap: var(--ds-4);
+  margin-bottom: var(--ds-3);
 }
 
 .heroPrimary {
   display: inline-flex;
   align-items: baseline;
-  gap: var(--space-2);
+  gap: var(--ds-2);
 }
 
 .heroAmount {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 32px;
   font-weight: 500;
   letter-spacing: -0.01em;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .heroOf {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 16px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .mono {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
 }
 
 .historyTable {
   width: 100%;
   border-collapse: collapse;
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
 }
 
 .historyTable thead {
-  background: var(--color-bg-elevated);
+  background: var(--bg-elev);
 }
 
 .historyTable th,
 .historyTable td {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--ds-3) var(--ds-4);
   text-align: left;
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--line-soft);
   letter-spacing: 0.05em;
 }
 
@@ -170,7 +170,7 @@
   font-weight: 500;
   font-size: 11px;
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .historyTable tbody tr:last-child td {

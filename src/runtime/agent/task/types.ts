@@ -128,6 +128,26 @@ export const TaskFrontmatterSchema = z.object({
   checkpoint: TaskCheckpointSchema,
   /** Currently-blocking detector context, if any. Mirrors `state == blocked_on_detector`. */
   detector_block: TaskDetectorBlockSchema,
+  /**
+   * Set by the resume RPC: a snapshot of the trip the task just unblocked
+   * from. The loop reads this when it picks up a resumed task and injects
+   * a forcing system-role message to discourage retrying the broken thing.
+   * Reuses the same shape as `detector_block`; cleared/overwritten on the
+   * next resume.
+   */
+  resumed_from_trip: TaskDetectorBlockSchema.optional().default(null),
+  /**
+   * Delegation provenance (Capability 3). All three fields co-vary:
+   *   - Operator-submitted tasks: delegated_by=null, delegating_task_id=null, delegation_depth=0
+   *   - Agent-delegated tasks:   all three populated (name, task id, parent_depth + 1)
+   *
+   * delegation_depth is capped at 5 inside task_create_for_agent; the tool
+   * refuses to create a depth-6 task. Cycles (A -> B -> A) are allowed up
+   * to the cap.
+   */
+  delegated_by: z.string().min(1).nullable().optional().default(null),
+  delegating_task_id: z.string().min(1).nullable().optional().default(null),
+  delegation_depth: z.number().int().min(0).max(5).optional().default(0),
   /** Outcome on terminal states. */
   outcome: TaskOutcomeSchema,
   /** Error on `errored`. */
@@ -159,6 +179,10 @@ export function newPendingTask(args: {
   body: string
   idempotency?: TaskFrontmatter['idempotency']
   priority?: number
+  /** Delegation provenance (Capability 3). All three fields co-vary. */
+  delegated_by?: string | null
+  delegating_task_id?: string | null
+  delegation_depth?: number
   now?: () => Date
 }): TaskRecord {
   const now = args.now ?? (() => new Date())
@@ -174,6 +198,10 @@ export function newPendingTask(args: {
       title: args.title,
       checkpoint: null,
       detector_block: null,
+      resumed_from_trip: null,
+      delegated_by: args.delegated_by ?? null,
+      delegating_task_id: args.delegating_task_id ?? null,
+      delegation_depth: args.delegation_depth ?? 0,
       outcome: null,
       error: null,
       agent_state_at_terminal: null,

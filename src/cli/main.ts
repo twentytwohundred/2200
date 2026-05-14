@@ -93,6 +93,33 @@ async function maybeReloadSchedulerIfDaemonRunning(home: string): Promise<void> 
 }
 
 /**
+ * Load runtime.env and oauth-apps.env from ~/.config/2200/ into
+ * process.env. The supervisor daemon already does this at start, but
+ * fresh CLI invocations like `2200 oauth login` run in the user's bare
+ * shell where those env vars aren't sourced. Without this helper, the
+ * cred check fails even when the values are correctly stored on disk.
+ * Values already present in process.env take precedence (so the
+ * operator can override per-invocation by exporting before running).
+ */
+async function loadOAuthEnvFiles(): Promise<void> {
+  const { loadRuntimeEnv, defaultRuntimeEnvPath } = await import('../runtime/config/runtime-env.js')
+  const pathMod = await import('node:path')
+  const runtimePath = defaultRuntimeEnvPath()
+  const oauthPath = pathMod.join(pathMod.dirname(runtimePath), 'oauth-apps.env')
+  for (const path of [runtimePath, oauthPath]) {
+    try {
+      const env = await loadRuntimeEnv(path)
+      for (const [k, v] of Object.entries(env)) {
+        process.env[k] ??= v
+      }
+    } catch {
+      // Missing files are non-fatal; the caller checks for the keys
+      // it needs and surfaces a clear error if they're absent.
+    }
+  }
+}
+
+/**
  * Yes/no prompt over stdin/stdout. Returns true only on a clear "y" /
  * "yes". Anything else (including a Ctrl-D close) resolves false.
  * Used by destructive verbs (extension install/uninstall/update) where
@@ -493,7 +520,7 @@ export function buildProgram(): Command {
 
           let provider
           try {
-            provider = await resolveProvider({ providerName })
+            provider = await resolveProvider({ providerName, home })
           } catch (err) {
             rl.close()
             console.error(
@@ -1621,6 +1648,42 @@ export function buildProgram(): Command {
     })
 
   sharedBrain
+    .command('reseed')
+    .description(
+      'write the starter-pack seed notes into the shared brain. ' +
+        'Default is additive (skip slugs that already exist); --force ' +
+        'overwrites them with the current canonical text.',
+    )
+    .option(
+      '--force',
+      'overwrite existing seed slugs with the current canonical text. ' +
+        'Operator-customized seeds will be lost.',
+    )
+    .action(async (opts: { force?: boolean }) => {
+      const home = await resolveHomeFromOpts(program)
+      const { seedStarterPack } = await import('../runtime/onboarding/starter-pack.js')
+      const result = await seedStarterPack(home, { force: opts.force ?? false })
+      const lines: string[] = []
+      if (result.added.length > 0) {
+        lines.push(`added ${String(result.added.length)} note(s):`)
+        for (const s of result.added) lines.push(`  + ${s}`)
+      }
+      if (result.overwritten.length > 0) {
+        lines.push(`overwrote ${String(result.overwritten.length)} note(s):`)
+        for (const s of result.overwritten) lines.push(`  ~ ${s}`)
+      }
+      if (result.skipped.length > 0) {
+        lines.push(
+          `skipped ${String(result.skipped.length)} existing note(s) ` +
+            `(re-run with --force to overwrite):`,
+        )
+        for (const s of result.skipped) lines.push(`  = ${s}`)
+      }
+      if (lines.length === 0) lines.push('no seed changes.')
+      console.log(lines.join('\n'))
+    })
+
+  sharedBrain
     .command('import <source-dir>')
     .description('bulk-import a directory of markdown files into the shared brain')
     .option('--dry-run', 'parse + map but do not write')
@@ -1871,11 +1934,11 @@ export function buildProgram(): Command {
           hubUrl?: string
         },
       ) => {
-        // Default to "studio" when no name is supplied. Studio is the
-        // install-level pub every Agent auto-joins ... see
-        // wiki/decisions for the canonical-default-pub call. Existing
-        // installs that already have an "ops" or other pub are
-        // unaffected; this only biases new installs.
+        // Default to "studio" when no name is supplied. v1 invariant: one
+        // Studio per home, every Agent auto-joins (per the 2026-05-12 v1
+        // scope lock). Multi-room support is v1.x. The Studio is the only
+        // pub a v1 install creates by default; the `pickTargetPub`
+        // single-pub-fast-path keeps Agent auto-join trivial.
         const pubName = pubNameArg ?? 'studio'
         const home = await resolveHomeFromOpts(program)
         const client = await connectToDaemon(home)
@@ -2925,7 +2988,10 @@ export function buildProgram(): Command {
     .description(
       'run the OAuth flow for <provider>, store the refresh token in <agent> vault as <name>',
     )
-    .option('--name <name>', 'credential name in the vault (default: <provider>-<scopes-tag>)')
+    .option(
+      '--name <name>',
+      'credential name in the vault (default: <provider>; tool integrations look this up by provider slug)',
+    )
     .option('--scopes <list>', 'comma-separated scopes (default: provider defaults)')
     .option('--port <p>', 'specific localhost port for the redirect server', (v) => parseInt(v, 10))
     .option('--timeout <s>', 'wait this many seconds for the user to complete the flow', (v) =>
@@ -2954,13 +3020,21 @@ export function buildProgram(): Command {
           )
           process.exit(1)
         }
+        // Load runtime.env and oauth-apps.env into process.env before
+        // checking creds. The supervisor daemon already loads these at
+        // start, but `2200 oauth login` is a fresh CLI invocation in
+        // the user's bare shell, which has neither sourced. Without
+        // this, the cred check fails even when the creds are correctly
+        // stored on disk (live regression 2026-05-13).
+        await loadOAuthEnvFiles()
         const creds = readClientCredentials(providerName)
         if (!creds.clientId || !creds.clientSecret) {
           console.error(
             `missing OAuth client credentials for ${providerName}.\n` +
+              `  Checked process.env, ~/.config/2200/runtime.env, and ~/.config/2200/oauth-apps.env.\n` +
               `  Register an OAuth app at the provider's console.\n` +
               `  Set the redirect URI to http://127.0.0.1:<port>/callback (the CLI prints the port).\n` +
-              `  Then export:\n` +
+              `  Then add to ~/.config/2200/runtime.env (or oauth-apps.env):\n` +
               `    ${creds.envVarHints.id}=...\n` +
               `    ${creds.envVarHints.secret}=...`,
           )
@@ -2972,7 +3046,18 @@ export function buildProgram(): Command {
               .map((s) => s.trim())
               .filter((s) => s.length > 0)
           : provider.defaultScopes
-        const credentialName = opts.name ?? `${providerName}-${scopesTag(Array.from(scopes))}`
+        // Default to the bare provider name. The legacy default
+        // (`${providerName}-${scopesTag}`) was a footgun: every tool
+        // that consumes this credential looks it up by provider slug,
+        // so the verbose default landed creds in the vault under a
+        // name no caller searched for. Operators who really do want
+        // multiple per-provider creds keep the `--name` knob.
+        const credentialName = opts.name ?? providerName
+        if (opts.name === undefined) {
+          console.log(
+            `# storing in vault as "${providerName}" (override with --name <name> for multiple per-provider creds)`,
+          )
+        }
 
         const { runOAuthFlow } = await import('../runtime/oauth/flow.js')
         const { CredentialVault } = await import('../runtime/credentials/vault.js')
@@ -3178,23 +3263,74 @@ export function buildProgram(): Command {
       )
     })
 
+  const platform = program
+    .command('platform')
+    .description('check status of platform-tool credentials (Discord, Slack, Spotify)')
+
+  platform
+    .command('status')
+    .description('show which platform credentials are configured in the supervisor environment')
+    .action(async () => {
+      const { DISCORD_BOT_TOKEN_ENV } = await import('../runtime/tools/platform/discord/index.js')
+      const { SLACK_BOT_TOKEN_ENV } = await import('../runtime/tools/platform/slack/index.js')
+      const { SPOTIFY_CLIENT_ID_ENV } = await import('../runtime/tools/platform/spotify/index.js')
+      interface Row {
+        platform: string
+        envVars: string[]
+        setupHint: string
+      }
+      const rows: Row[] = [
+        {
+          platform: 'discord',
+          envVars: [DISCORD_BOT_TOKEN_ENV],
+          setupHint:
+            'Create a Discord app at https://discord.com/developers/applications, ' +
+            'add a Bot, copy the bot token, then ' +
+            `\`export ${DISCORD_BOT_TOKEN_ENV}=...\` before \`2200 daemon start\`.`,
+        },
+        {
+          platform: 'slack',
+          envVars: [SLACK_BOT_TOKEN_ENV],
+          setupHint:
+            'Create a Slack app at https://api.slack.com/apps, install it to your workspace, ' +
+            'copy the Bot User OAuth Token (xoxb-...) from "OAuth & Permissions", ' +
+            `then \`export ${SLACK_BOT_TOKEN_ENV}=...\` before \`2200 daemon start\`.`,
+        },
+        {
+          platform: 'spotify',
+          envVars: [SPOTIFY_CLIENT_ID_ENV, '_2200_OAUTH_SPOTIFY_CLIENT_SECRET'],
+          setupHint:
+            'Create a Spotify app at https://developer.spotify.com/dashboard, add ' +
+            '`http://127.0.0.1:<any-port>/callback` to the Redirect URIs, then export ' +
+            `${SPOTIFY_CLIENT_ID_ENV} and _2200_OAUTH_SPOTIFY_CLIENT_SECRET, then run ` +
+            '`2200 oauth login spotify <agent>` (the credential lands in the vault as "spotify" by default, which is what the spotify_* tools look up).',
+        },
+      ]
+      console.log('# platform credentials')
+      for (const row of rows) {
+        const allSet = row.envVars.every((v) => {
+          const value = process.env[v]
+          return value !== undefined && value.trim().length > 0
+        })
+        const status = allSet ? 'SET' : 'MISSING'
+        console.log(`${row.platform.padEnd(10)}  ${status}`)
+        for (const envVar of row.envVars) {
+          const value = process.env[envVar]
+          const present = value !== undefined && value.trim().length > 0
+          console.log(`  ${envVar}: ${present ? 'set' : 'MISSING'}`)
+        }
+        if (!allSet) {
+          console.log(`  ${row.setupHint}`)
+        }
+      }
+      console.log('')
+      console.log('Tools become available to an Agent when the credential is set AND the')
+      console.log("Agent's identity grants the tool (e.g. `tools: [discord_*]`).")
+    })
+
   registerWebCommands(program)
 
   return program
-}
-
-function scopesTag(scopes: string[]): string {
-  if (scopes.length === 0) return 'default'
-  // Take the last path component of the first scope as a short tag.
-  const first = scopes[0] ?? 'default'
-  const idx = first.lastIndexOf('/')
-  const tail = idx >= 0 ? first.slice(idx + 1) : first
-  return (
-    tail
-      .replace(/[^a-z0-9-]/gi, '-')
-      .toLowerCase()
-      .slice(0, 24) || 'default'
-  )
 }
 
 /**

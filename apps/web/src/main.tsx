@@ -7,7 +7,6 @@ import { LiveSignalProvider } from './ws/useLiveSignal'
 import { bootstrapAuth } from './lib/auth'
 import './tokens/generated/tokens.css'
 import './tokens/generated/theme-default-dark.css'
-import './tokens/generated/theme-default-light.css'
 import './tokens/generated/agent-palette.css'
 import './main.css'
 

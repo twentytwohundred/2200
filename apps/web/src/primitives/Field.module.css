@@ -1,0 +1,50 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  width: 100%;
+}
+
+.label {
+  font: 500 12px/1 var(--ds-font-sans);
+  color: var(--text-2);
+}
+
+.control {
+  width: 100%;
+  appearance: none;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  padding: 10px 12px;
+  color: var(--text);
+  font: 400 14px/1.45 var(--ds-font-sans);
+  outline: none;
+  transition:
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    background var(--ds-dur-fast) var(--ds-ease);
+}
+
+.control:focus {
+  border-color: var(--line-strong);
+  background: var(--bg);
+}
+
+.control::placeholder {
+  color: var(--text-4);
+}
+
+.mono {
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 90px;
+}
+
+.hint {
+  font: 400 12px/1.4 var(--ds-font-sans);
+  color: var(--text-3);
+}

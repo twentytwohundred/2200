@@ -1,46 +1,83 @@
 /**
- * Agent detail screen ... Identity Card variant per
- * wiki/design-system/decision-log.md.
+ * Agent detail screen ... chat-first layout per design-system v1.1.
  *
- * Hero is the AgentMark + name + status pill (the "who"). Beneath
- * sits a KV stack with the operational fields (the "what"). Quick
- * actions (Pause / Resume) live in the page header. The status pill
- * updates live without a refresh via the WebSocket subscription.
+ *   ┌────────────────────────────────────────────────────────────┐
+ *   │ Breadcrumb · Title · Status pill · Actions (Stop, ← Fleet) │
+ *   ├──────────────┬─────────────────────────────────────────────┤
+ *   │ 260px rail   │ Active chat pane                            │
+ *   │              │                                             │
+ *   │ Identity     │ Title bar                                   │
+ *   │ + New chat   │ Messages                                    │
+ *   │              │                                             │
+ *   │ Chat list    │                                             │
+ *   │              │                                             │
+ *   │ More:        │ Composer (mode segmented + attach + send)   │
+ *   │  Brain →     │                                             │
+ *   │  Schedules → │                                             │
+ *   │  Tools →     │                                             │
+ *   └──────────────┴─────────────────────────────────────────────┘
+ *
+ * The chat panel reads from the multi-chat HTTP surface (see
+ * `api.chatsList`, `api.chatMessagesList`, `api.chatMessageSend`).
+ * Composer mode (pure | checkpointed | destructive) maps to the
+ * task's idempotency. Live updates land via WS `chat.message`
+ * events; we invalidate the messages query on receipt.
  */
-import { useEffect, useState, type FormEvent, type ReactElement } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  ApiError,
-  NetworkError,
   api,
   type Agent,
-  type AgentModel,
-  type BudgetResponse,
+  type ChatThread,
+  type ChatThreadMessage,
+  type ChatAttachmentRef,
   type ListEnvelope,
-  type Notification,
-  type ProviderSettingsItem,
-  type TaskListItem,
 } from '../../lib/api'
 import {
   AgentMark,
   Button,
-  Card,
-  EmptyState,
-  ErrorState,
-  KV,
-  LoadingState,
-  PageHeader,
+  Meta,
   Pill,
+  Screen,
+  ScreenNavLink,
   type PillVariant,
-  ProgressBar,
-  PulseDot,
-  SectionHeader,
 } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
-import { useLiveSignal } from '../../ws/useLiveSignal'
+import {
+  ChatComposer,
+  ChatListRow,
+  ChatMessage,
+  ChatTitleBar,
+  DayDivider,
+  ToolStream,
+  type ComposerAttachment,
+  type ComposerMode,
+} from '../../chat'
+import { useChatActivity, useToolStream } from '../../ws/useToolStream'
+import { toolStreamStore } from '../../ws/toolStreamStore'
+import { ModelPicker } from './ModelPicker'
+import { AgentStatusPanel } from './AgentStatusPanel'
+import { AgentIdentityPanel } from './AgentIdentityPanel'
+import { AgentBudgetPanel } from './AgentBudgetPanel'
+import { BrainBody } from '../brain/BrainScreen'
+import { SchedulesBody } from '../schedules/SchedulesScreen'
+import { ToolsBody } from '../tools/ToolsScreen'
+import { cx } from '../../primitives/cx'
 import styles from './AgentDetailScreen.module.css'
+
+type AgentTab = 'chat' | 'status' | 'identity' | 'budget' | 'brain' | 'schedules' | 'tools'
+const VALID_TABS: AgentTab[] = [
+  'chat',
+  'status',
+  'identity',
+  'budget',
+  'brain',
+  'schedules',
+  'tools',
+]
+function parseTab(raw: string | null): AgentTab {
+  return (VALID_TABS as string[]).includes(raw ?? '') ? (raw as AgentTab) : 'chat'
+}
 
 function pillVariant(status: string): PillVariant {
   if (status === 'running') return 'running'
@@ -51,1154 +88,837 @@ function pillVariant(status: string): PillVariant {
 }
 
 function pillLabel(status: string): string {
-  if (status === 'blocked_on_user') return 'NEEDS YOU'
-  if (status === 'blocked_on_agent') return 'BLOCKED'
-  if (status === 'blocked_on_detector') return 'PAUSED'
-  return status.toUpperCase().replace(/_/g, ' ')
-}
-
-function formatTimestamp(value: string | null): string {
-  if (!value) return '—'
-  try {
-    const d = new Date(value)
-    if (Number.isNaN(d.getTime())) return value
-    return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
-  } catch {
-    return value
-  }
+  if (status === 'blocked_on_user') return 'needs you'
+  if (status === 'blocked_on_agent') return 'blocked'
+  if (status === 'blocked_on_detector') return 'paused'
+  return status.replace(/_/g, ' ')
 }
 
 export function AgentDetailScreen(): ReactElement {
-  const { name } = useParams<{ name: string }>()
-  const { theme } = useTheme()
-  const live = useLiveSignal()
+  const { name, chatId: routeChatId } = useParams<{ name: string; chatId?: string }>()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const agentName = name ?? ''
 
-  const query = useQuery({
-    queryKey: ['agents', name],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.agent(name)
-    },
-    enabled: Boolean(name),
+  // Active tab. Forced to 'chat' when a chatId is in the URL; otherwise
+  // read from the ?tab= query param so deep-linking works. Switching to
+  // a non-chat tab navigates to the bare /agent/:name URL so routeChatId
+  // clears and the new tab actually takes effect (the routeChatId
+  // override would otherwise pin tab back to 'chat').
+  const tab: AgentTab = routeChatId !== undefined ? 'chat' : parseTab(searchParams.get('tab'))
+  const setTab = (next: AgentTab): void => {
+    const base = `/agent/${encodeURIComponent(agentName)}`
+    if (next === 'chat') {
+      void navigate(base)
+    } else {
+      void navigate(`${base}?tab=${next}`)
+    }
+  }
+
+  const agentQuery = useQuery({
+    queryKey: ['agents', agentName],
+    queryFn: () => api.agent(agentName),
+    enabled: agentName.length > 0,
     staleTime: 5_000,
   })
 
-  const startMutation = useMutation({
-    mutationFn: (agent: string) => api.agentStart(agent),
-    onSuccess: (data) => {
-      queryClient.setQueryData(['agents', name], data)
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+  const chatsQuery = useQuery<ListEnvelope<ChatThread>>({
+    queryKey: ['agentChats', agentName],
+    queryFn: () => api.chatsList(agentName),
+    enabled: agentName.length > 0,
+    staleTime: 2_000,
+  })
+
+  // Pick the active chat: route param wins; otherwise the most-recent
+  // non-archived chat; otherwise null (which triggers create-first UX).
+  const activeChatId = useMemo<string | null>(() => {
+    if (routeChatId !== undefined) return routeChatId
+    const chats = chatsQuery.data?.items ?? []
+    const liveChat = chats.find((c) => !c.archived)
+    return liveChat?.id ?? null
+  }, [routeChatId, chatsQuery.data])
+
+  const messagesQuery = useQuery<ListEnvelope<ChatThreadMessage>>({
+    queryKey: ['agentChatMessages', agentName, activeChatId],
+    queryFn: () => api.chatMessagesList(agentName, activeChatId ?? ''),
+    enabled: agentName.length > 0 && activeChatId !== null,
+    staleTime: 2_000,
+  })
+
+  // Mark active chat read on focus.
+  const lastReadRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (activeChatId === null || lastReadRef.current === activeChatId) return
+    lastReadRef.current = activeChatId
+    void api.chatThreadRead(agentName, activeChatId).then(() => {
+      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
+    })
+  }, [agentName, activeChatId, queryClient])
+
+  const createChat = useMutation({
+    mutationFn: () => api.chatThreadCreate(agentName),
+    onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
+      void navigate(
+        `/agent/${encodeURIComponent(agentName)}/chat/${encodeURIComponent(res.chat.id)}`,
+      )
     },
   })
 
-  const stopMutation = useMutation({
-    mutationFn: (agent: string) => api.agentStop(agent, 'web_request'),
-    onSuccess: (data) => {
-      queryClient.setQueryData(['agents', name], data)
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+  const archiveChat = useMutation({
+    mutationFn: (chatId: string) => api.chatThreadArchive(agentName, chatId, true),
+    onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
+      if (activeChatId === res.chat.id) {
+        void navigate(`/agent/${encodeURIComponent(agentName)}`)
+      }
     },
   })
 
-  // Recent notifications scoped to this Agent. v1 shows the most
-  // recent five regardless of state so the user can spot pending
-  // asks, recent answers, and dismissals at a glance.
-  const notificationsQuery = useQuery({
-    queryKey: ['notifications', { agent: name }],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.notifications({ agent: name })
+  const renameChat = useMutation({
+    mutationFn: ({ chatId, title }: { chatId: string; title: string }) =>
+      api.chatThreadRename(agentName, chatId, title),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
     },
-    enabled: Boolean(name),
-    staleTime: 10_000,
   })
 
-  // Today's budget snapshot. The dedicated /budget screen still owns
-  // the full per-day history + overrides UI; the inline view here is
-  // a "is this Agent close to its cap?" health check.
-  const budgetQuery = useQuery({
-    queryKey: ['budget', name],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.budget(name)
+  const stopAgent = useMutation({
+    mutationFn: () => api.agentStop(agentName, 'web_request'),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agents', agentName] })
     },
-    enabled: Boolean(name),
-    staleTime: 10_000,
   })
 
-  const agent = query.data
-  const eyebrow = `2200 · AGENT · ${(name ?? '').toUpperCase()} · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
+  // Track the task spawned by the most-recent send so we can show a
+  // "thinking…" placeholder until the assistant's reply lands, then
+  // animate the reply in word-by-word.
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
+  const [streamingId, setStreamingId] = useState<string | null>(null)
+  const [streamingChars, setStreamingChars] = useState(0)
 
-  const pendingMutation = startMutation.isPending || stopMutation.isPending
-  const mutationError =
-    startMutation.error instanceof Error
-      ? startMutation.error
-      : stopMutation.error instanceof Error
-        ? stopMutation.error
-        : null
+  const submitMessage = useCallback(
+    async (args: { body: string; mode: ComposerMode; attachments: ComposerAttachment[] }) => {
+      let chatId = activeChatId
+      if (chatId === null) {
+        const created = await api.chatThreadCreate(agentName)
+        chatId = created.chat.id
+      }
+      const res = await sendMessageWithAttachments(agentName, chatId, args)
+      // Tag the new task with its originating chat so the cross-chat
+      // avatar pulse can light up rows for chats the operator isn't
+      // currently viewing.
+      toolStreamStore.noteTaskChat(res.task_id, chatId)
+      setPendingTaskId(res.task_id)
+      void queryClient.invalidateQueries({
+        queryKey: ['agentChatMessages', agentName, chatId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
+      if (activeChatId === null) {
+        void navigate(`/agent/${encodeURIComponent(agentName)}/chat/${encodeURIComponent(chatId)}`)
+      }
+    },
+    [agentName, activeChatId, navigate, queryClient],
+  )
+
+  const agent: Agent | undefined = agentQuery.data
+  const chats = chatsQuery.data?.items ?? []
+  const liveChats = chats.filter((c) => !c.archived)
+  const activeChat = chats.find((c) => c.id === activeChatId) ?? null
+  const messages = messagesQuery.data?.items ?? []
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  const [unreadBelow, setUnreadBelow] = useState(0)
+
+  const SCROLL_BOTTOM_THRESHOLD = 80
+
+  const updateAtBottom = useCallback((): boolean => {
+    const el = messagesScrollRef.current
+    if (!el) return true
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    const next = distance <= SCROLL_BOTTOM_THRESHOLD
+    setAtBottom(next)
+    if (next) setUnreadBelow(0)
+    return next
+  }, [])
+
+  // Custom rAF-based smooth scroll. Native `behavior: 'smooth'` paces
+  // by distance on most browsers and crawls when the chat is long; this
+  // takes a fixed ~260ms regardless and uses an ease-out curve so the
+  // arrival feels soft. Cancels on user wheel/touch input so we never
+  // fight the operator.
+  const scrollAnimRef = useRef<number | null>(null)
+  const scrollToBottom = useCallback((smooth: boolean): void => {
+    const el = messagesScrollRef.current
+    if (!el) return
+    if (scrollAnimRef.current !== null) {
+      cancelAnimationFrame(scrollAnimRef.current)
+      scrollAnimRef.current = null
+    }
+    const target = el.scrollHeight - el.clientHeight
+    if (!smooth || Math.abs(target - el.scrollTop) < 8) {
+      el.scrollTop = target
+      setAtBottom(true)
+      setUnreadBelow(0)
+      return
+    }
+    const start = el.scrollTop
+    const distance = target - start
+    const duration = 260
+    const startTs = performance.now()
+    let cancelled = false
+    const onUserScroll = (): void => {
+      cancelled = true
+    }
+    el.addEventListener('wheel', onUserScroll, { passive: true, once: true })
+    el.addEventListener('touchmove', onUserScroll, { passive: true, once: true })
+    const tick = (now: number): void => {
+      if (cancelled) {
+        scrollAnimRef.current = null
+        return
+      }
+      const t = Math.min(1, (now - startTs) / duration)
+      const eased = 1 - Math.pow(1 - t, 3)
+      el.scrollTop = start + distance * eased
+      if (t < 1) {
+        scrollAnimRef.current = requestAnimationFrame(tick)
+      } else {
+        scrollAnimRef.current = null
+        setAtBottom(true)
+        setUnreadBelow(0)
+        el.removeEventListener('wheel', onUserScroll)
+        el.removeEventListener('touchmove', onUserScroll)
+      }
+    }
+    scrollAnimRef.current = requestAnimationFrame(tick)
+  }, [])
+
+  // When the assistant message that closes out `pendingTaskId` lands
+  // in the messages list, kick off the typewriter animation. We keep
+  // pendingTaskId set during the streaming phase so the ThinkingPlaceholder
+  // (which renders the live ToolStream) stays mounted and can swap from
+  // phase=tools to phase=streaming, fading the chips out as the reply
+  // types in.
+  useEffect(() => {
+    if (pendingTaskId === null) return
+    if (streamingId !== null) return
+    const reply = messages.find((m) => m.task_id === pendingTaskId && m.role === 'assistant')
+    if (!reply) return
+    setStreamingId(reply.id)
+    setStreamingChars(0)
+  }, [messages, pendingTaskId, streamingId])
+
+  // Advance the streaming cursor word-by-word, ~70ms per word, so
+  // the reveal reads as natural speech-pace prose rather than the
+  // character-stutter we had before. When the cursor catches up to
+  // the end of the reply we clear BOTH streamingId and pendingTaskId
+  // so the ThinkingPlaceholder unmounts and the regular ChatMessage
+  // takes over as the final, persisted record of the turn.
+  useEffect(() => {
+    if (streamingId === null) return
+    const reply = messages.find((m) => m.id === streamingId)
+    if (!reply) {
+      setStreamingId(null)
+      if (pendingTaskId !== null) toolStreamStore.evict(pendingTaskId)
+      setPendingTaskId(null)
+      return
+    }
+    if (streamingChars >= reply.body.length) {
+      setStreamingId(null)
+      if (pendingTaskId !== null) toolStreamStore.evict(pendingTaskId)
+      setPendingTaskId(null)
+      return
+    }
+    const t = setTimeout(() => {
+      setStreamingChars((c) => nextWordBoundary(reply.body, c))
+    }, 70)
+    return () => {
+      clearTimeout(t)
+    }
+  }, [streamingId, streamingChars, messages, pendingTaskId])
+
+  // If the chat changes mid-stream, drop the streaming animation and
+  // reset the scroll-position tracking so the new thread snaps to its
+  // own bottom without inheriting the prior chat's "scrolled up" state.
+  useEffect(() => {
+    setPendingTaskId(null)
+    setStreamingId(null)
+    setStreamingChars(0)
+    setAtBottom(true)
+    setUnreadBelow(0)
+  }, [activeChatId])
+
+  // Watch the live ToolStream so chip arrivals re-trigger the
+  // auto-scroll effect below. Without this, the placeholder + each
+  // new chip extend past the visible chat box while the operator
+  // sits at "the bottom" of the message list.
+  const pendingStream = useToolStream(pendingTaskId)
+  const pendingStepsCount = pendingStream?.steps.length ?? 0
+
+  // When new messages land, the streaming cursor advances, or new
+  // tool chips arrive, keep the viewport pinned to the bottom *only*
+  // if the operator was already there. If they scrolled up to read
+  // history, leave their position alone and surface an unread-below
+  // count on the floating button.
+  const prevMsgCountRef = useRef(messages.length)
+  useEffect(() => {
+    const el = messagesScrollRef.current
+    if (!el) return
+    const prev = prevMsgCountRef.current
+    const grew = messages.length > prev
+    prevMsgCountRef.current = messages.length
+    if (atBottom) {
+      el.scrollTop = el.scrollHeight
+      setUnreadBelow(0)
+    } else if (grew) {
+      setUnreadBelow((n) => n + (messages.length - prev))
+    }
+  }, [messages.length, pendingTaskId, streamingChars, atBottom, pendingStepsCount])
 
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={name ?? 'Agent'}
-        subtitle="Identity, status, and quick actions for this Agent."
-        actions={
-          <div className={styles.headerActions}>
-            <Link to="/" className={styles.back}>
-              ← Fleet
-            </Link>
-            <Link to={`/agent/${encodeURIComponent(name ?? '')}/chat`} className={styles.back}>
-              CHAT →
-            </Link>
-            <Link to={`/agent/${encodeURIComponent(name ?? '')}/brain`} className={styles.back}>
-              BRAIN →
-            </Link>
-            <Link to={`/agent/${encodeURIComponent(name ?? '')}/schedules`} className={styles.back}>
-              SCHEDULES →
-            </Link>
-            <Link to={`/agent/${encodeURIComponent(name ?? '')}/tools`} className={styles.back}>
-              TOOLS →
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
-      {query.isLoading ? (
-        <Card padding={20}>
-          <LoadingState rows={6} />
-        </Card>
-      ) : query.isError ? (
-        <Card padding={0}>
-          <ErrorState
-            title={errorTitle(query.error)}
-            body={errorBody(query.error)}
-            action={
-              <Button
-                size="sm"
-                onClick={() => {
-                  void query.refetch()
-                }}
-              >
-                Retry
-              </Button>
-            }
-          />
-        </Card>
-      ) : agent ? (
+    <Screen
+      className={styles.shell}
+      crumbs={['2200', 'agent', agentName]}
+      title={
+        <span className={styles.titleRow}>
+          <span>{agentName}</span>
+          {agent && <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>}
+        </span>
+      }
+      lede="Chat with this Agent. Each thread keeps its full history."
+      actions={
         <>
-          <Card padding={24} elevated>
-            <div className={styles.hero}>
-              <AgentMark id={agent.name} name={agent.name} size="xl" solid />
-              <div className={styles.heroText}>
-                <h2 className={styles.heroName}>{agent.name}</h2>
-                <div className={styles.heroStatusRow}>
-                  <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>
-                  {agent.pulse && (
-                    <PulseDot
-                      state={agent.pulse.state}
-                      intensity={agent.pulse.intensity}
-                      size="md"
-                    />
-                  )}
-                </div>
-                {agent.status === 'errored' && agent.errored_reason ? (
-                  <p className={styles.heroError}>
-                    <span className={styles.heroErrorLabel}>ERRORED:</span> {agent.errored_reason}
-                  </p>
-                ) : null}
-              </div>
-              <div className={styles.heroActions}>
-                {agent.status === 'running' || agent.status === 'waiting' ? (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={pendingMutation}
-                    onClick={() => {
-                      stopMutation.mutate(agent.name)
-                    }}
-                  >
-                    {stopMutation.isPending ? 'Stopping…' : 'Stop'}
-                  </Button>
+          <ScreenNavLink to="/">← Fleet</ScreenNavLink>
+          {agent?.status === 'running' && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                stopAgent.mutate()
+              }}
+            >
+              Stop
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className={styles.body}>
+        <aside className={styles.rail}>
+          <div className={styles.identity}>
+            <div className={styles.identityRow}>
+              <AgentMark
+                id={agentName}
+                name={agentName}
+                size="lg"
+                state={agent?.status === 'running' ? 'speaking' : null}
+                glyph={agent?.avatar ?? undefined}
+                imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
+              />
+              <div className={styles.identityText}>
+                <div className={styles.identityName}>{agentName}</div>
+                {agent?.model ? (
+                  <ModelPicker
+                    agentName={agentName}
+                    currentProvider={agent.model.provider}
+                    currentModelId={agent.model.model_id}
+                  />
                 ) : (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={pendingMutation}
-                    onClick={() => {
-                      startMutation.mutate(agent.name)
-                    }}
-                  >
-                    {startMutation.isPending ? 'Starting…' : 'Start'}
-                  </Button>
+                  <div className={styles.identityModel}>—</div>
                 )}
               </div>
             </div>
-          </Card>
-
-          {mutationError ? (
-            <Card padding={0}>
-              <ErrorState
-                title="Action failed"
-                body={
-                  mutationError instanceof ApiError
-                    ? `${mutationError.code}: ${mutationError.message}`
-                    : mutationError.message
-                }
-              />
-            </Card>
-          ) : null}
-
-          <SendTaskSection name={agent.name} />
-
-          <section>
-            <SectionHeader title="MORE FOR THIS AGENT" />
-            <Card padding={20}>
-              <div className={styles.moreLinks}>
-                <Link
-                  to={`/agent/${encodeURIComponent(agent.name)}/brain`}
-                  className={styles.moreLink}
-                >
-                  <span className={styles.moreLinkLabel}>BRAIN →</span>
-                  <span className={styles.moreLinkBody}>
-                    Search this Agent's notes by title, tags, or full text. Read individual notes
-                    inline.
-                  </span>
-                </Link>
-                <Link
-                  to={`/agent/${encodeURIComponent(agent.name)}/schedules`}
-                  className={styles.moreLink}
-                >
-                  <span className={styles.moreLinkLabel}>SCHEDULES →</span>
-                  <span className={styles.moreLinkBody}>
-                    View, add, enable, disable, or delete cron + interval timers for this Agent.
-                  </span>
-                </Link>
-                <Link
-                  to={`/agent/${encodeURIComponent(agent.name)}/tools`}
-                  className={styles.moreLink}
-                >
-                  <span className={styles.moreLinkLabel}>TOOLS →</span>
-                  <span className={styles.moreLinkBody}>
-                    MCP servers from the Identity + tool-health summary across this Agent's runs.
-                  </span>
-                </Link>
-              </div>
-            </Card>
-          </section>
-
-          <section>
-            <SectionHeader title="CHAT" />
-            <Link to={`/agent/${encodeURIComponent(agent.name)}/chat`} className={styles.chatCard}>
-              <div className={styles.chatCardLabel}>Open chat with {agent.name} →</div>
-              <div className={styles.chatCardBody}>
-                Persistent conversation thread. Each turn carries the prior 20 messages of context
-                to the agent. Brain, fs, and pub tools are available — no idempotency gating.
-              </div>
-            </Link>
-          </section>
-
-          <section>
-            <SectionHeader title="STATUS" />
-            <Card padding={20}>
-              <div className={styles.statusGrid}>
-                <KV k="STATE" v={<span className={styles.mono}>{agent.status}</span>} />
-                <KV
-                  k="PID"
-                  v={
-                    <span className={styles.mono}>
-                      {agent.pid !== null ? String(agent.pid) : '—'}
-                    </span>
-                  }
-                />
-                <KV
-                  k="PULSE"
-                  v={
-                    agent.pulse ? (
-                      <span
-                        className={styles.pulseRow}
-                        title={`activity intensity ${agent.pulse.intensity.toFixed(2)} of 1.00`}
-                      >
-                        <PulseDot
-                          state={agent.pulse.state}
-                          intensity={agent.pulse.intensity}
-                          size="sm"
-                        />
-                        <span className={styles.mono}>{agent.pulse.state.replace(/_/g, ' ')}</span>
-                      </span>
-                    ) : (
-                      <span className={styles.muted}>(no pulse data)</span>
-                    )
-                  }
-                />
-                <KV
-                  k="TASK"
-                  v={
-                    <span className={styles.mono}>
-                      {agent.current_task_id ?? <span className={styles.muted}>none</span>}
-                    </span>
-                  }
-                />
-                <KV
-                  k="HEARTBEAT"
-                  v={<span className={styles.mono}>{formatTimestamp(agent.last_heartbeat)}</span>}
-                />
-                <KV
-                  k="SPAWNED"
-                  v={<span className={styles.mono}>{formatTimestamp(agent.spawned_at)}</span>}
-                />
-                {agent.status === 'errored' && agent.errored_at ? (
-                  <KV
-                    k="ERR AT"
-                    v={<span className={styles.mono}>{formatTimestamp(agent.errored_at)}</span>}
-                  />
-                ) : null}
-              </div>
-            </Card>
-          </section>
-
-          <BudgetSection name={agent.name} query={budgetQuery} />
-
-          <TasksSection name={agent.name} />
-
-          <ActivitySection name={agent.name} query={notificationsQuery} />
-
-          <ModelSection name={agent.name} model={agent.model} status={agent.status} />
-
-          <IdentitySection name={agent.name} path={agent.identity_path} />
-        </>
-      ) : null}
-    </main>
-  )
-}
-
-interface SendTaskSectionProps {
-  name: string
-}
-
-type Idempotency = 'pure' | 'checkpointed' | 'destructive'
-
-const IDEMPOTENCY_HINTS: Record<Idempotency, string> = {
-  pure: 'read-only; mutating tools blocked',
-  checkpointed: 'mutations OK; resume from checkpoint on restart',
-  destructive: 'mutations OK; never auto-resume',
-}
-
-function SendTaskSection({ name }: SendTaskSectionProps): ReactElement {
-  const [body, setBody] = useState('')
-  const [idempotency, setIdempotency] = useState<Idempotency>('checkpointed')
-  const [lastSent, setLastSent] = useState<string | null>(null)
-
-  const mutation = useMutation({
-    mutationFn: (args: { body: string; idempotency: Idempotency }) =>
-      api.taskCreate(name, { body: args.body, idempotency: args.idempotency }),
-    onSuccess: (res) => {
-      setBody('')
-      setLastSent(res.id)
-    },
-  })
-
-  const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
-    e.preventDefault()
-    const trimmed = body.trim()
-    if (trimmed.length === 0) return
-    mutation.mutate({ body: trimmed, idempotency })
-  }
-
-  return (
-    <section>
-      <SectionHeader title="SEND TASK" />
-      <Card padding={20}>
-        <form onSubmit={handleSubmit} className={styles.sendForm}>
-          <textarea
-            className={styles.sendInput}
-            placeholder={`Tell ${name} what to do...`}
-            value={body}
-            onChange={(e) => {
-              setBody(e.target.value)
-            }}
-            disabled={mutation.isPending}
-          />
-          {mutation.error ? (
-            <div className={styles.sendError}>
-              {mutation.error instanceof ApiError
-                ? `${mutation.error.code}: ${mutation.error.message}`
-                : mutation.error instanceof Error
-                  ? mutation.error.message
-                  : String(mutation.error)}
-            </div>
-          ) : null}
-          {lastSent && !mutation.error ? (
-            <div className={styles.sendSuccess}>
-              Sent task <span className={styles.mono}>{lastSent}</span>. The Agent's loop will pick
-              it up on the next tick.
-            </div>
-          ) : null}
-          <div className={styles.sendActions}>
-            <span className={styles.idempotencyGroup} title={IDEMPOTENCY_HINTS[idempotency]}>
-              {(['pure', 'checkpointed', 'destructive'] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={styles.idempotencyChip}
-                  data-active={idempotency === v}
-                  onClick={() => {
-                    setIdempotency(v)
-                  }}
-                  disabled={mutation.isPending}
-                >
-                  {v}
-                </button>
-              ))}
-            </span>
             <Button
-              type="submit"
               variant="primary"
-              disabled={mutation.isPending || body.trim().length === 0}
-              kbd="↵"
+              size="sm"
+              className={styles.newChat}
+              onClick={() => {
+                createChat.mutate()
+              }}
+              disabled={createChat.isPending}
             >
-              {mutation.isPending ? 'Sending...' : 'Send'}
+              + New chat
             </Button>
           </div>
-        </form>
-      </Card>
-    </section>
-  )
-}
 
-interface BudgetSectionProps {
-  name: string
-  query: ReturnType<typeof useQuery<BudgetResponse>>
-}
-
-function BudgetSection({ name, query }: BudgetSectionProps): ReactElement {
-  const today = query.data?.today ?? null
-  const override = query.data?.override ?? null
-  return (
-    <section>
-      <SectionHeader
-        title="BUDGET · TODAY"
-        action={
-          <Link to={`/budget?agent=${encodeURIComponent(name)}`} className={styles.sectionLink}>
-            FULL LEDGER →
-          </Link>
-        }
-      />
-      <Card padding={20}>
-        {query.isLoading ? (
-          <LoadingState rows={2} />
-        ) : query.isError ? (
-          <ErrorState
-            title="Could not load budget"
-            body={query.error instanceof Error ? query.error.message : String(query.error)}
-          />
-        ) : today ? (
-          <>
-            <div className={styles.budgetHero}>
-              <span>
-                <span className={styles.budgetAmount}>{fmtUsd(today.cumulative_usd)}</span>
-                <span className={styles.budgetOf}>of {fmtUsd(today.cap_usd)}</span>
-              </span>
-              {today.blocked ? (
-                <Pill variant="error">BLOCKED</Pill>
-              ) : today.warned_today ? (
-                <Pill variant="attention">WARNED</Pill>
-              ) : (
-                <Pill variant="info">OK</Pill>
+          <div className={styles.chatList}>
+            <div className={styles.chatListHeader}>
+              <Meta>chats · {String(liveChats.length)}</Meta>
+            </div>
+            <div className={styles.chatListInner}>
+              {liveChats.length === 0 && (
+                <p className={styles.empty}>No chats yet. Click + New chat to start.</p>
               )}
-            </div>
-            <ProgressBar
-              value={today.cumulative_usd}
-              max={today.cap_usd}
-              variant={today.blocked ? 'error' : today.warned_today ? 'attention' : 'auto'}
-            />
-            {override ? (
-              <KV
-                k="OVERRIDE"
-                v={
-                  <span className={styles.mono}>
-                    until {override.until}
-                    {override.reason ? ` · ${override.reason}` : ''}
-                  </span>
-                }
-              />
-            ) : null}
-          </>
-        ) : (
-          <EmptyState
-            title="No spend yet today"
-            body="The Agent has not made a model call today."
-          />
-        )}
-      </Card>
-    </section>
-  )
-}
-
-interface ActivitySectionProps {
-  name: string
-  query: ReturnType<typeof useQuery<ListEnvelope<Notification>>>
-}
-
-function ActivitySection({ name, query }: ActivitySectionProps): ReactElement {
-  const items: Notification[] = (query.data?.items ?? []).slice(0, 5)
-  return (
-    <section>
-      <SectionHeader
-        title="RECENT NOTIFICATIONS"
-        action={
-          <Link to={`/inbox?agent=${encodeURIComponent(name)}`} className={styles.sectionLink}>
-            INBOX →
-          </Link>
-        }
-      />
-      <Card padding={20}>
-        {query.isLoading ? (
-          <LoadingState rows={3} />
-        ) : query.isError ? (
-          <ErrorState
-            title="Could not load notifications"
-            body={query.error instanceof Error ? query.error.message : String(query.error)}
-          />
-        ) : items.length === 0 ? (
-          <EmptyState
-            title="No notifications"
-            body="This Agent has not emitted any notifications yet."
-          />
-        ) : (
-          <div className={styles.activityList}>
-            {items.map((n) => (
-              <div key={n.id} className={styles.activityRow}>
-                <Pill variant={tierVariant(n.tier)} dot={false}>
-                  {n.tier.toUpperCase()}
-                </Pill>
-                <span className={styles.activityKind}>{n.kind}</span>
-                <span className={styles.activityBody} title={n.body}>
-                  {n.body || <span className={styles.muted}>(no body)</span>}
-                </span>
-                <span className={styles.activityTime}>{n.ts.slice(11, 19)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-    </section>
-  )
-}
-
-function fmtUsd(n: number): string {
-  return `$${n.toFixed(2)}`
-}
-
-interface IdentitySectionProps {
-  name: string
-  path: string
-}
-
-function IdentitySection({ name, path }: IdentitySectionProps): ReactElement {
-  const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-
-  const query = useQuery({
-    queryKey: ['identity', name],
-    queryFn: () => api.identityRead(name),
-    staleTime: 60_000,
-  })
-
-  const saveMutation = useMutation({
-    mutationFn: (content: string) => api.identityWrite(name, content),
-    onSuccess: () => {
-      setEditing(false)
-      void queryClient.invalidateQueries({ queryKey: ['identity', name] })
-    },
-  })
-
-  const beginEdit = (): void => {
-    setDraft(query.data?.content ?? '')
-    setEditing(true)
-  }
-
-  return (
-    <section>
-      <SectionHeader
-        title="IDENTITY"
-        action={
-          !editing && !query.isLoading && !query.isError ? (
-            <button
-              type="button"
-              onClick={beginEdit}
-              className={styles.identityPencil}
-              title="Edit identity"
-              aria-label="Edit identity"
-            >
-              ✎
-            </button>
-          ) : null
-        }
-      />
-      <Card padding={20}>
-        <KV
-          k="PATH"
-          v={
-            <span className={styles.monoPath} title={path}>
-              {path}
-            </span>
-          }
-          kw={64}
-        />
-        {query.isLoading ? (
-          <LoadingState rows={2} />
-        ) : query.isError ? (
-          <ErrorState
-            title="Could not load identity"
-            body={
-              query.error instanceof ApiError
-                ? `${query.error.code}: ${query.error.message}`
-                : query.error instanceof Error
-                  ? query.error.message
-                  : String(query.error)
-            }
-          />
-        ) : editing ? (
-          <>
-            <textarea
-              className={styles.identityEditor}
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value)
-              }}
-              disabled={saveMutation.isPending}
-              spellCheck={false}
-            />
-            {saveMutation.error ? (
-              <div className={styles.sendError}>
-                {saveMutation.error instanceof ApiError
-                  ? `${saveMutation.error.code}: ${saveMutation.error.message}`
-                  : saveMutation.error instanceof Error
-                    ? saveMutation.error.message
-                    : String(saveMutation.error)}
-              </div>
-            ) : null}
-            <div className={styles.sendActions}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setEditing(false)
-                }}
-                disabled={saveMutation.isPending}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={saveMutation.isPending || draft.trim().length === 0}
-                onClick={() => {
-                  saveMutation.mutate(draft)
-                }}
-              >
-                {saveMutation.isPending ? 'Saving…' : 'Save & restart required'}
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            {saveMutation.isSuccess ? (
-              <p className={styles.advisory}>
-                Saved. The Agent must be restarted for changes to take effect:{' '}
-                <code>
-                  2200 agent stop {name} && 2200 agent start {name}
-                </code>{' '}
-                — or click Stop then Start in the header.
-              </p>
-            ) : null}
-          </>
-        )}
-      </Card>
-    </section>
-  )
-}
-
-interface TasksSectionProps {
-  name: string
-}
-
-function TasksSection({ name }: TasksSectionProps): ReactElement {
-  const [openTaskId, setOpenTaskId] = useState<string | null>(null)
-  const query = useQuery({
-    queryKey: ['tasks', name],
-    queryFn: () => api.agentTasks(name, { limit: 8 }),
-    enabled: Boolean(name),
-    // Tight refetch during a session — Doug's just-sent tasks should
-    // surface within a couple seconds of state transitions.
-    staleTime: 2_000,
-    refetchInterval: 5_000,
-  })
-  const items = query.data?.items ?? []
-  return (
-    <section>
-      <SectionHeader title={`RECENT TASKS · ${String(items.length)}`} />
-      <Card padding={20}>
-        {query.isLoading ? (
-          <LoadingState rows={3} />
-        ) : query.isError ? (
-          <ErrorState
-            title="Could not load tasks"
-            body={
-              query.error instanceof ApiError
-                ? `${query.error.code}: ${query.error.message}`
-                : query.error instanceof Error
-                  ? query.error.message
-                  : String(query.error)
-            }
-          />
-        ) : items.length === 0 ? (
-          <EmptyState
-            title="No tasks yet"
-            body="Send a task above and it'll show up here. Tasks the Agent picks up via schedules and pub mentions also surface."
-          />
-        ) : (
-          <div className={styles.taskList}>
-            {items.map((t) => (
-              <TaskRow
-                key={t.id}
-                task={t}
-                onOpen={() => {
-                  setOpenTaskId(t.id)
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </Card>
-      {openTaskId ? (
-        <TaskDetailModal
-          agentName={name}
-          taskId={openTaskId}
-          onClose={() => {
-            setOpenTaskId(null)
-          }}
-        />
-      ) : null}
-    </section>
-  )
-}
-
-interface TaskRowProps {
-  task: TaskListItem
-  onOpen: () => void
-}
-
-function taskPillVariant(state: string): PillVariant {
-  if (state === 'running') return 'running'
-  if (state === 'pending' || state === 'blocked_on_agent') return 'info'
-  if (state === 'blocked_on_user' || state === 'blocked_on_detector') return 'attention'
-  if (state === 'errored') return 'error'
-  if (state === 'done') return 'idle'
-  return 'idle'
-}
-
-function TaskRow({ task, onOpen }: TaskRowProps): ReactElement {
-  return (
-    <div
-      className={styles.taskRow}
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen()
-        }
-      }}
-      style={{ cursor: 'pointer' }}
-    >
-      <div className={styles.taskHead}>
-        <Pill variant={taskPillVariant(task.state)}>
-          {task.state.toUpperCase().replace(/_/g, ' ')}
-        </Pill>
-        <span className={styles.taskTitle}>{task.title}</span>
-        <span className={styles.taskTime}>{formatTimestamp(task.last_at ?? task.created)}</span>
-      </div>
-      {task.outcome_preview ? (
-        <div className={styles.taskPreview}>{task.outcome_preview}</div>
-      ) : null}
-      {task.detector_kind ? (
-        <div className={styles.taskMeta}>detector · {task.detector_kind}</div>
-      ) : null}
-      {task.iterations !== null ? (
-        <div className={styles.taskMeta}>{String(task.iterations)} iterations</div>
-      ) : null}
-    </div>
-  )
-}
-
-interface TaskDetailModalProps {
-  agentName: string
-  taskId: string
-  onClose: () => void
-}
-
-function TaskDetailModal({ agentName, taskId, onClose }: TaskDetailModalProps): ReactElement {
-  const query = useQuery({
-    queryKey: ['tasks', agentName, taskId],
-    queryFn: () => api.agentTask(agentName, taskId),
-    refetchInterval: 5_000,
-  })
-
-  // Esc closes the modal.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [onClose])
-
-  return (
-    <div className={styles.modalBackdrop} onClick={onClose} role="presentation">
-      <div
-        className={styles.modalShell}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Task detail"
-        onClick={(e) => {
-          e.stopPropagation()
-        }}
-      >
-        {query.isLoading ? (
-          <LoadingState rows={5} />
-        ) : query.isError ? (
-          <ErrorState
-            title="Could not load task"
-            body={
-              query.error instanceof ApiError
-                ? `${query.error.code}: ${query.error.message}`
-                : query.error instanceof Error
-                  ? query.error.message
-                  : String(query.error)
-            }
-          />
-        ) : query.data ? (
-          <>
-            <div className={styles.modalHeader}>
-              <Pill variant={taskPillVariant(query.data.state)}>
-                {query.data.state.toUpperCase().replace(/_/g, ' ')}
-              </Pill>
-              <h3 className={styles.modalTitle}>{query.data.title}</h3>
-              <Button size="sm" variant="ghost" onClick={onClose} kbd="esc">
-                Close
-              </Button>
-            </div>
-            <div className={styles.modalMeta}>
-              <span>id · {query.data.id}</span>
-              <span>idempotency · {query.data.idempotency}</span>
-              <span>priority · {String(query.data.priority)}</span>
-              <span>created · {formatTimestamp(query.data.created)}</span>
-              {query.data.last_at ? (
-                <span>last · {formatTimestamp(query.data.last_at)}</span>
-              ) : null}
-              {query.data.iterations !== null ? (
-                <span>iterations · {String(query.data.iterations)}</span>
-              ) : null}
-            </div>
-            <SectionHeader title="PROMPT" />
-            <pre className={styles.modalBody}>{query.data.body}</pre>
-            {query.data.outcome_summary ? (
-              <>
-                <SectionHeader title="OUTCOME" />
-                <pre className={styles.modalBody}>{query.data.outcome_summary}</pre>
-              </>
-            ) : null}
-            {query.data.error_message ? (
-              <>
-                <SectionHeader title={`ERROR · ${query.data.error_class ?? '?'}`} />
-                <pre className={styles.modalBody}>{query.data.error_message}</pre>
-              </>
-            ) : null}
-            {query.data.detector_detail ? (
-              <>
-                <SectionHeader title={`DETECTOR · ${query.data.detector_kind ?? '?'}`} />
-                <pre className={styles.modalBody}>{query.data.detector_detail}</pre>
-                {query.data.detector_trip_id ? (
-                  <KV
-                    k="TRIP ID"
-                    v={<span className={styles.mono}>{query.data.detector_trip_id}</span>}
-                  />
-                ) : null}
-              </>
-            ) : null}
-            {query.data.checkpoint_iteration !== null ? (
-              <>
-                <SectionHeader title="CHECKPOINT" />
-                <KV
-                  k="ITERATION"
-                  v={<span className={styles.mono}>{String(query.data.checkpoint_iteration)}</span>}
+              {liveChats.map((c) => (
+                <ChatListRowWithActivity
+                  key={c.id}
+                  agent={agentName}
+                  chatId={c.id}
+                  title={c.title}
+                  snippet={c.snippet}
+                  time={formatChatTime(c.updated_at)}
+                  active={c.id === activeChatId}
+                  unread={c.unread}
+                  onClick={() => {
+                    void navigate(
+                      `/agent/${encodeURIComponent(agentName)}/chat/${encodeURIComponent(c.id)}`,
+                    )
+                  }}
                 />
-                {query.data.checkpoint_taken_at ? (
-                  <KV
-                    k="TAKEN AT"
-                    v={
-                      <span className={styles.mono}>
-                        {formatTimestamp(query.data.checkpoint_taken_at)}
-                      </span>
-                    }
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.settings}>
+            <div className={styles.settingsHeader}>
+              <Meta>settings</Meta>
+            </div>
+            <RailSwitch
+              label="Chat"
+              hint="messages"
+              active={tab === 'chat'}
+              onClick={() => {
+                setTab('chat')
+              }}
+            />
+            <RailSwitch
+              label="Status"
+              hint="runtime · model"
+              active={tab === 'status'}
+              onClick={() => {
+                setTab('status')
+              }}
+            />
+            <RailSwitch
+              label="Identity"
+              hint="prompt · md"
+              active={tab === 'identity'}
+              onClick={() => {
+                setTab('identity')
+              }}
+            />
+            <RailSwitch
+              label="Budget"
+              hint="spend · cap"
+              active={tab === 'budget'}
+              onClick={() => {
+                setTab('budget')
+              }}
+            />
+            <RailSwitch
+              label="Brain"
+              hint="notes"
+              active={tab === 'brain'}
+              onClick={() => {
+                setTab('brain')
+              }}
+            />
+            <RailSwitch
+              label="Schedules"
+              hint="cron · timers"
+              active={tab === 'schedules'}
+              onClick={() => {
+                setTab('schedules')
+              }}
+            />
+            <RailSwitch
+              label="Tools"
+              hint="mcp servers"
+              active={tab === 'tools'}
+              onClick={() => {
+                setTab('tools')
+              }}
+            />
+          </div>
+        </aside>
+
+        <section className={styles.pane}>
+          {tab === 'chat' &&
+            (activeChat ? (
+              <>
+                <div className={styles.paneHead}>
+                  <ChatTitleBar
+                    title={activeChat.title}
+                    agent={agentName}
+                    agentGlyph={agent?.avatar ?? undefined}
+                    agentImageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
+                    count={messages.length}
+                    onRename={(next) => {
+                      renameChat.mutate({ chatId: activeChat.id, title: next })
+                    }}
+                    onArchive={() => {
+                      archiveChat.mutate(activeChat.id)
+                    }}
                   />
-                ) : null}
+                </div>
+                <div className={styles.messagesWrap}>
+                  <div
+                    className={styles.messages}
+                    ref={messagesScrollRef}
+                    onScroll={updateAtBottom}
+                  >
+                    {renderMessages(
+                      messages,
+                      agentName,
+                      agent?.avatar ?? null,
+                      api.authedUrl(agent?.avatar_image_url),
+                      pendingTaskId,
+                      streamingId,
+                      streamingChars,
+                    )}
+                  </div>
+                  {!atBottom && (
+                    <button
+                      type="button"
+                      className={styles.jumpToBottom}
+                      onClick={() => {
+                        scrollToBottom(true)
+                      }}
+                      aria-label="Jump to latest message"
+                    >
+                      {unreadBelow > 0 && (
+                        <span className={styles.jumpToBottomBadge}>{unreadBelow}</span>
+                      )}
+                      <span>Jump to latest</span>
+                      <span className={styles.jumpToBottomArrow} aria-hidden="true">
+                        ↓
+                      </span>
+                    </button>
+                  )}
+                </div>
+                <div className={styles.composer}>
+                  <ChatComposer
+                    agent={agentName}
+                    onSubmit={(args) => {
+                      void submitMessage(args)
+                    }}
+                  />
+                  <div className={styles.composerHint}>
+                    Brain, fs, and pub tools available. Mode applies to the next message only.
+                  </div>
+                </div>
               </>
-            ) : null}
-          </>
-        ) : null}
+            ) : (
+              <EmptyChat
+                agent={agentName}
+                onCreate={() => {
+                  createChat.mutate()
+                }}
+                disabled={createChat.isPending}
+              />
+            ))}
+
+          {tab === 'status' && agent && (
+            <div className={styles.tabBody}>
+              <AgentStatusPanel agent={agent} />
+            </div>
+          )}
+          {tab === 'identity' && (
+            <div className={styles.tabBody}>
+              <AgentIdentityPanel agentName={agentName} />
+            </div>
+          )}
+          {tab === 'budget' && (
+            <div className={styles.tabBody}>
+              <AgentBudgetPanel agentName={agentName} />
+            </div>
+          )}
+          {tab === 'brain' && (
+            <div className={styles.tabBody}>
+              <BrainBody agentName={agentName} />
+            </div>
+          )}
+          {tab === 'schedules' && (
+            <div className={styles.tabBody}>
+              <SchedulesBody agentName={agentName} />
+            </div>
+          )}
+          {tab === 'tools' && (
+            <div className={styles.tabBody}>
+              <ToolsBody agentName={agentName} />
+            </div>
+          )}
+        </section>
       </div>
+    </Screen>
+  )
+}
+
+interface ChatListRowWithActivityProps {
+  agent: string
+  chatId: string
+  title: string
+  snippet?: string
+  time?: string
+  active?: boolean
+  unread?: boolean
+  onClick?: () => void
+}
+
+/**
+ * ChatListRow wrapper that subscribes to cross-chat activity. When the
+ * agent is mid-task in a chat the operator isn't viewing, the row
+ * shows a soft pulse so the operator can see "this thread is moving."
+ */
+function ChatListRowWithActivity({
+  agent,
+  chatId,
+  active = false,
+  ...rest
+}: ChatListRowWithActivityProps): ReactElement {
+  const working = useChatActivity(agent, chatId)
+  // Suppress the pulse on the row the operator is currently looking
+  // at ... they already see the live ToolStream + thinking placeholder
+  // in the main pane.
+  const showPulse = working && !active
+  return <ChatListRow {...rest} active={active} working={showPulse} />
+}
+
+function RailSwitch({
+  label,
+  hint,
+  active,
+  onClick,
+}: {
+  label: string
+  hint: string
+  active: boolean
+  onClick: () => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(styles.railSwitch, active && styles.railSwitchActive)}
+      aria-current={active ? 'page' : undefined}
+    >
+      <span className={styles.railSwitchLabel}>{label}</span>
+      <span className={styles.railSwitchSpacer} />
+      <span className={styles.railSwitchHint}>{hint}</span>
+    </button>
+  )
+}
+
+function EmptyChat({
+  agent,
+  onCreate,
+  disabled,
+}: {
+  agent: string
+  onCreate: () => void
+  disabled: boolean
+}): ReactElement {
+  return (
+    <div className={styles.emptyChat}>
+      <p className={styles.emptyChatLede}>Start your first chat with {agent}.</p>
+      <Button variant="primary" size="md" onClick={onCreate} disabled={disabled}>
+        + New chat
+      </Button>
     </div>
   )
 }
 
-function tierVariant(tier: string): PillVariant {
-  if (tier === 'critical') return 'error'
-  if (tier === 'important') return 'attention'
-  if (tier === 'normal') return 'info'
-  return 'idle'
+function formatChatTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    const today = new Date()
+    const sameDay =
+      d.getUTCFullYear() === today.getUTCFullYear() &&
+      d.getUTCMonth() === today.getUTCMonth() &&
+      d.getUTCDate() === today.getUTCDate()
+    if (sameDay) {
+      return d.toISOString().slice(11, 16)
+    }
+    return d.toISOString().slice(5, 10)
+  } catch {
+    return iso
+  }
 }
 
-function errorTitle(error: unknown): string {
-  if (error instanceof ApiError && error.status === 401) return 'Not authorized'
-  if (error instanceof ApiError && error.status === 404) return 'Agent not found'
-  if (error instanceof NetworkError) return 'Cannot reach the runtime'
-  return 'Could not load this Agent'
-}
-
-function errorBody(error: unknown): string {
-  if (error instanceof ApiError && error.status === 401) {
-    return 'The bearer token is missing or invalid. Run `2200 web token rotate` and follow the URL it prints.'
+function renderMessages(
+  messages: ChatThreadMessage[],
+  agent: string,
+  agentGlyph: string | null,
+  agentImageUrl: string | null,
+  pendingTaskId: string | null,
+  streamingId: string | null,
+  streamingChars: number,
+): ReactElement[] {
+  const out: ReactElement[] = []
+  let lastDay = ''
+  for (const m of messages) {
+    // When ThinkingPlaceholder is in streaming-phase for THIS reply,
+    // it owns the visual; suppress the regular ChatMessage to avoid
+    // double-render. The ThinkingPlaceholder will unmount + this
+    // ChatMessage will appear once streamingChars catches up and the
+    // effect clears pendingTaskId.
+    if (pendingTaskId !== null && m.id === streamingId) continue
+    const day = m.ts.slice(0, 10)
+    if (day !== lastDay) {
+      lastDay = day
+      out.push(<DayDivider key={`d-${day}`} label={formatDayLabel(day)} />)
+    }
+    out.push(
+      <ChatMessage
+        key={m.id}
+        from={m.role === 'user' ? 'you' : 'agent'}
+        who={agent}
+        agentGlyph={agentGlyph}
+        agentImageUrl={agentImageUrl}
+        time={m.ts.slice(11, 16)}
+        body={m.body}
+        attachments={m.attachments.map((a) => ({
+          id: a.id,
+          kind: a.kind,
+          name: a.name,
+          size: a.size,
+        }))}
+      />,
+    )
   }
-  if (error instanceof ApiError && error.status === 404) {
-    return 'No Agent with that name lives on this instance. The fleet view has the active roster.'
-  }
-  if (error instanceof NetworkError) {
-    return 'The supervisor may not be running. Try `2200 daemon start` and refresh.'
-  }
-  if (error instanceof ApiError) {
-    return `${error.code}: ${error.message}`
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
-function ModelSection({
-  name,
-  model,
-  status,
-}: {
-  name: string
-  model: AgentModel | null
-  status: string
-}): ReactElement {
-  const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [draftProvider, setDraftProvider] = useState(model?.provider ?? '')
-  const [draftModelId, setDraftModelId] = useState(model?.model_id ?? '')
-  // Drives the chained save+restart status text. The save mutation
-  // does identity write -> stop (if running) -> start; the running
-  // step is reflected here so the operator sees what's happening.
-  const [savePhase, setSavePhase] = useState<'idle' | 'saving' | 'stopping' | 'starting'>('idle')
-
-  const providersQuery = useQuery({
-    queryKey: ['settings', 'providers'],
-    queryFn: () => api.settingsProvidersList(),
-    staleTime: 30_000,
-    enabled: editing,
-  })
-
-  // Chain identity save + agent restart so a model switch takes
-  // effect immediately. Order matters: write identity first (so the
-  // new process boots from the new frontmatter), then stop the
-  // running process (if any), then start a fresh one. Stop is
-  // skipped when the agent isn't already running so we don't error
-  // on an idempotent stop.
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      setSavePhase('saving')
-      await api.agentModelSet(name, { provider: draftProvider, model_id: draftModelId })
-      const wasRunning = status === 'running' || status === 'waiting'
-      if (wasRunning) {
-        setSavePhase('stopping')
-        await api.agentStop(name, 'model_switch')
-      }
-      setSavePhase('starting')
-      await api.agentStart(name)
-    },
-    onSuccess: () => {
-      setSavePhase('idle')
-      setEditing(false)
-      void queryClient.invalidateQueries({ queryKey: ['agent', name] })
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
-    },
-    onError: () => {
-      setSavePhase('idle')
-      // Leave the editor open so the operator can retry or cancel.
-      // The agent may be stopped at this point; the hero card's
-      // Start button can recover.
-      void queryClient.invalidateQueries({ queryKey: ['agent', name] })
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
-    },
-  })
-
-  const beginEdit = (): void => {
-    setDraftProvider(model?.provider ?? '')
-    setDraftModelId(model?.model_id ?? '')
-    setEditing(true)
-  }
-
-  const selectedProvider: ProviderSettingsItem | undefined = providersQuery.data?.items.find(
-    (p) => p.name === draftProvider,
-  )
-
-  return (
-    <section>
-      <SectionHeader
-        title="MODEL"
-        action={
-          !editing ? (
-            <button
-              type="button"
-              onClick={beginEdit}
-              className={styles.identityPencil}
-              title="Change model"
-              aria-label="Change model"
-            >
-              ✎
-            </button>
-          ) : null
+  if (pendingTaskId !== null) {
+    out.push(
+      <ThinkingPlaceholder
+        key="__thinking__"
+        agent={agent}
+        agentGlyph={agentGlyph}
+        agentImageUrl={agentImageUrl}
+        taskId={pendingTaskId}
+        streamingReply={
+          streamingId !== null
+            ? (messages.find((m) => m.id === streamingId)?.body.slice(0, streamingChars) ?? '')
+            : null
         }
-      />
-      <Card padding={20}>
-        {editing ? (
-          <div className={styles.modelEditor}>
-            <label className={styles.modelLabel}>
-              <span className={styles.modelLabelText}>PROVIDER</span>
-              <select
-                className={styles.modelSelect}
-                value={draftProvider}
-                onChange={(e) => {
-                  setDraftProvider(e.target.value)
-                }}
-              >
-                <option value="">— pick provider —</option>
-                {providersQuery.data?.items.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.label}
-                    {!p.key_set && !p.keyOptional ? ' (no key)' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.modelLabel}>
-              <span className={styles.modelLabelText}>MODEL ID</span>
-              <input
-                className={styles.modelInput}
-                value={draftModelId}
-                onChange={(e) => {
-                  setDraftModelId(e.target.value)
-                }}
-                placeholder="e.g. claude-opus-4-7"
-                spellCheck={false}
-              />
-            </label>
-            {selectedProvider && selectedProvider.suggested_models.length > 0 ? (
-              <div className={styles.modelSuggestions}>
-                {selectedProvider.suggested_models.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    className={styles.modelSuggestionChip}
-                    onClick={() => {
-                      setDraftModelId(m)
-                    }}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {selectedProvider && !selectedProvider.key_set && !selectedProvider.keyOptional ? (
-              <div className={styles.modelWarning}>
-                {selectedProvider.label} has no API key set. Add it on the Settings page first.
-              </div>
-            ) : null}
-            {saveMutation.error ? (
-              <div className={styles.sendError}>
-                {saveMutation.error instanceof ApiError
-                  ? `${saveMutation.error.code}: ${saveMutation.error.message}`
-                  : saveMutation.error instanceof Error
-                    ? saveMutation.error.message
-                    : String(saveMutation.error)}
-              </div>
-            ) : null}
-            <div className={styles.sendActions}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setEditing(false)
-                }}
-                disabled={saveMutation.isPending}
-              >
-                CANCEL
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  saveMutation.mutate()
-                }}
-                disabled={
-                  saveMutation.isPending ||
-                  draftProvider === '' ||
-                  draftModelId === '' ||
-                  (model !== null &&
-                    draftProvider === model.provider &&
-                    draftModelId === model.model_id)
-                }
-              >
-                {savePhase === 'saving'
-                  ? 'SAVING…'
-                  : savePhase === 'stopping'
-                    ? 'STOPPING…'
-                    : savePhase === 'starting'
-                      ? 'STARTING…'
-                      : 'SAVE & RESTART'}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <KV
-              k="PROVIDER"
-              v={<span className={styles.monoPath}>{model?.provider ?? '—'}</span>}
-              kw={64}
-            />
-            <KV
-              k="MODEL ID"
-              v={<span className={styles.monoPath}>{model?.model_id ?? '—'}</span>}
-              kw={64}
-            />
-            {model?.followup_model_id ? (
-              <KV
-                k="FOLLOW-UP"
-                v={<span className={styles.monoPath}>{model.followup_model_id}</span>}
-                kw={64}
-              />
-            ) : null}
-          </>
-        )}
-      </Card>
-    </section>
+      />,
+    )
+  }
+  return out
+}
+
+/**
+ * Live "agent is working" surface. Subscribes to the per-task tool
+ * event store; renders a ToolStream with chips while tool calls are
+ * in flight, falls back to the simple thinking-dots ChatMessage when
+ * there are no tool events yet (provider didn't surface them, or the
+ * agent just hasn't called anything yet).
+ *
+ * When the assistant reply lands (`streamingReply` is non-null), we
+ * transition phase from `tools` to `streaming` so the chip stack
+ * fades out and the reply types in below.
+ */
+function ThinkingPlaceholder({
+  agent,
+  agentGlyph,
+  agentImageUrl,
+  taskId,
+  streamingReply,
+}: {
+  agent: string
+  agentGlyph: string | null
+  agentImageUrl: string | null
+  taskId: string
+  streamingReply: string | null
+}): ReactElement {
+  const stream = useToolStream(taskId)
+  const steps =
+    stream?.steps.map((s) => ({
+      what: s.tool,
+      ...(s.arg_summary !== null ? { arg: s.arg_summary } : {}),
+      state: s.state === 'errored' ? ('done' as const) : s.state,
+    })) ?? []
+  // Always render ToolStream while a task is pending. When no tool
+  // events have arrived yet ToolStream renders a single generic
+  // "thinking" chip with the spinner ... that's the canonical
+  // working state per HANDOFF.md §6. The bare ChatMessage(thinking)
+  // dots are only the fallback for environments where the WS isn't
+  // wired at all.
+  return (
+    <ToolStream
+      who={agent}
+      steps={steps}
+      phase={streamingReply !== null ? 'streaming' : 'tools'}
+      reply={streamingReply ?? ''}
+      agentGlyph={agentGlyph}
+      agentImageUrl={agentImageUrl}
+    />
   )
 }
 
-export type { Agent }
+/**
+ * Walk forward to the next "end-of-word" index after `pos`. Skips any
+ * leading whitespace, then non-whitespace, returning the index AT the
+ * first whitespace that follows ... so successive calls reveal one
+ * word's worth of prose at a time. Caller clamps to body.length.
+ */
+function nextWordBoundary(body: string, pos: number): number {
+  let i = pos
+  // Skip any whitespace at the cursor.
+  while (i < body.length && /\s/.test(body[i] ?? '')) i++
+  // Skip the next run of non-whitespace (the word itself).
+  while (i < body.length && !/\s/.test(body[i] ?? '')) i++
+  // Stop on the trailing whitespace so the rendered chunk ends with
+  // the word and one space (helps readability).
+  if (i < body.length) i++
+  if (i <= pos) return pos + 1 // safety: never stall
+  return i
+}
+
+function formatDayLabel(day: string): string {
+  const today = new Date().toISOString().slice(0, 10)
+  if (day === today) return 'Today'
+  const y = new Date()
+  y.setUTCDate(y.getUTCDate() - 1)
+  if (day === y.toISOString().slice(0, 10)) return 'Yesterday'
+  return day
+}
+
+async function sendMessageWithAttachments(
+  agent: string,
+  chatId: string,
+  args: { body: string; mode: ComposerMode; attachments: ComposerAttachment[] },
+): Promise<{ task_id: string }> {
+  const uploaded: ChatAttachmentRef[] = []
+  for (const a of args.attachments) {
+    const data = await composerAttachmentToBase64(a)
+    const res = await api.chatAttachmentUpload(agent, chatId, {
+      name: a.name,
+      mime: a.mime,
+      kind: a.kind,
+      data_base64: data,
+    })
+    uploaded.push({
+      id: res.attachment.id,
+      kind: res.attachment.kind,
+      name: res.attachment.name,
+      size: res.attachment.size,
+      mime: res.attachment.mime,
+    })
+  }
+  const res = await api.chatMessageSend(agent, chatId, {
+    body: args.body,
+    mode: args.mode,
+    attachments: uploaded,
+  })
+  return { task_id: res.task_id }
+}
+
+async function composerAttachmentToBase64(a: ComposerAttachment): Promise<string> {
+  if (a.src !== undefined) {
+    const res = await fetch(a.src)
+    const buf = await res.arrayBuffer()
+    return arrayBufferToBase64(buf)
+  }
+  throw new Error(`attachment ${a.name} has no source data`)
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)))
+  }
+  return btoa(binary)
+}

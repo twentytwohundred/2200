@@ -13,9 +13,37 @@ body,
 }
 
 body {
-  font-family: var(--type-family-sans);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
+  font-family: var(--ds-font-sans);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--ds-text-md);
+  line-height: var(--ds-lh-prose);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Switzer ss01 = alternate `a`/`g` for the "two voices" feel; */
+  /* ss02 = tighter punctuation. Set globally so headings, body, */
+  /* buttons, and Pill all pick them up. */
+  font-feature-settings: 'ss01', 'ss02';
+}
+
+/* Mono helper class. Any inline span that needs JetBrains Mono can
+   use it; the runtime/path/timestamp surfaces grab this. zero = */
+/* slashed zero, ss02 = the matched punctuation set. */
+.mono {
+  font-family: var(--ds-font-mono);
+  font-feature-settings: 'zero', 'ss02';
+}
+
+::selection {
+  background: color-mix(in oklch, var(--accent) 35%, transparent);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
 }

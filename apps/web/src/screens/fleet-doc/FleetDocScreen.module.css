@@ -1,12 +1,12 @@
 .shell {
   min-height: 100vh;
-  padding: var(--space-7) var(--space-6) var(--space-9);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: var(--type-family-sans);
+  padding: var(--ds-8) var(--ds-6) var(--ds-16);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ds-font-sans);
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--ds-5);
   max-width: 1000px;
   margin: 0 auto;
   box-sizing: border-box;
@@ -15,36 +15,36 @@
 .headerActions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .back {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-decoration: none;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
+  padding: var(--ds-1) var(--ds-3);
+  border-radius: var(--ds-r-2);
 }
 
 .back:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .meta {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.05em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .markdown {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-wrap: break-word;
-  color: var(--color-text-primary);
+  color: var(--text);
 }

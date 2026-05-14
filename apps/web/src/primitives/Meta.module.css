@@ -1,0 +1,6 @@
+.meta {
+  font: 500 11px/1 var(--ds-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}

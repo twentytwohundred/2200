@@ -1,0 +1,136 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+}
+
+.empty {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 64ch;
+}
+
+.addRow {
+  display: flex;
+}
+
+/* ── Row ───────────────────────────────────────────────────────────── */
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  margin-bottom: var(--ds-3);
+}
+
+.rowName {
+  font: 600 16px/1 var(--ds-font-sans);
+  color: var(--text);
+}
+
+.rowId {
+  font: 500 11px/1 var(--ds-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.rowSpacer {
+  flex: 1;
+}
+
+.rowMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+}
+
+.rowMutedValue {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.modelChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-1);
+}
+
+.modelChip {
+  font: 500 12px/1 var(--ds-font-mono);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-1);
+  padding: 3px 6px;
+  color: var(--text-2);
+}
+
+/* ── Form ──────────────────────────────────────────────────────────── */
+.formHead {
+  margin-bottom: var(--ds-3);
+}
+
+.formGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+  margin-bottom: var(--ds-3);
+}
+
+.discoverRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--ds-2);
+}
+
+.discoverNote {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.modelList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  margin: var(--ds-2) 0 var(--ds-3);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+}
+
+.modelLine {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.modelLineId {
+  font: 500 13px/1 var(--ds-font-mono);
+  color: var(--text);
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-2);
+  margin-top: var(--ds-3);
+}

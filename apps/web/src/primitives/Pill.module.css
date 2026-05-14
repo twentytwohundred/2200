@@ -1,27 +1,48 @@
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-pill);
-  font-family: var(--type-family-mono);
-  font-size: 11px;
+  border-radius: var(--ds-r-pill);
+  font-family: var(--ds-font-mono);
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
   width: fit-content;
+  white-space: nowrap;
+}
+
+/* Size modifiers per design-system-v1.1 §primitives.Pill:
+   xs = 18px tall, sm = 20px, md = 24px. */
+.s-xs {
+  height: 18px;
+  padding: 0 6px;
+  gap: 5px;
+  font-size: 10.5px;
+}
+
+.s-sm {
+  height: 20px;
+  padding: 0 8px;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.s-md {
+  height: 24px;
+  padding: 0 9px;
+  gap: 6px;
+  font-size: 12px;
 }
 
 .dot {
   width: 6px;
   height: 6px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--ds-r-pill);
   background: currentColor;
   flex-shrink: 0;
 }
 
 .pulse {
-  animation: pillPulse 1800ms var(--ease-in-out) infinite;
+  animation: pillPulse 1800ms var(--ds-ease) infinite;
 }
 
 @keyframes pillPulse {
@@ -39,33 +60,33 @@
 }
 
 .v-running {
-  background: var(--color-status-running-bg);
-  color: var(--color-status-running);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .v-attention {
-  background: var(--color-status-attention-bg);
-  color: var(--color-status-attention);
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .v-error {
-  background: var(--color-status-error-bg);
-  color: var(--color-status-error);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .v-info {
-  background: var(--color-status-info-bg);
-  color: var(--color-status-info);
+  background: var(--info-soft);
+  color: var(--info);
 }
 
 .v-idle {
-  background: var(--color-bg-elevated);
-  color: var(--color-text-muted);
+  background: var(--bg-elev);
+  color: var(--text-3);
 }
 
 .v-draft {
   background: transparent;
-  color: var(--color-text-muted);
-  border: 1px dashed var(--color-border-emphasis);
-  padding: calc(var(--space-1) - 1px) calc(var(--space-3) - 1px);
+  color: var(--text-3);
+  border: 1px dashed var(--line-strong);
+  padding: calc(var(--ds-1) - 1px) calc(var(--ds-3) - 1px);
 }

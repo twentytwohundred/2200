@@ -1,16 +1,11 @@
 /**
  * Schedule editor ... per-Agent CRUD over the schedule store.
  *
- * List on top, create-form below. Each row shows the timing block
- * (cron + tz OR every-N-seconds), the prompt, last/next-fire
- * timestamps, an enabled/disabled toggle, and a delete button.
- *
- * Mutating endpoints (POST / PATCH / DELETE) all trigger a live
- * scheduler reload on the daemon side, so timer changes take effect
- * immediately without a daemon bounce.
+ * Body extracted to <SchedulesBody> so the same surface can render
+ * either standalone here OR inside the Agent screen's Schedules tab.
  */
 import { useCallback, useState, type FormEvent, type ReactElement } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApiError,
@@ -28,12 +23,11 @@ import {
   Input,
   KV,
   LoadingState,
-  PageHeader,
   Pill,
+  Screen,
+  ScreenNavLink,
   SectionHeader,
 } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
 import styles from './SchedulesScreen.module.css'
 
 function formatTime(value: string | null): string {
@@ -58,76 +52,58 @@ function formatError(err: unknown): string {
 
 export function SchedulesScreen(): ReactElement {
   const { name } = useParams<{ name: string }>()
-  const { theme } = useTheme()
+  return (
+    <Screen
+      crumbs={['2200', 'agent', name ?? '', 'schedules']}
+      title={`Schedules · ${name ?? ''}`}
+      lede="Cron + interval timers for this Agent. Mutations reload the live scheduler immediately."
+      actions={
+        <ScreenNavLink to={`/agent/${encodeURIComponent(name ?? '')}`}>← Agent</ScreenNavLink>
+      }
+    >
+      <SchedulesBody agentName={name ?? ''} />
+    </Screen>
+  )
+}
+
+export interface SchedulesBodyProps {
+  agentName: string
+}
+
+export function SchedulesBody({ agentName }: SchedulesBodyProps): ReactElement {
   const queryClient = useQueryClient()
 
   const listQuery = useQuery({
-    queryKey: ['schedules', name],
-    queryFn: () => {
-      if (!name) throw new Error('agent name missing from route')
-      return api.schedulesList(name)
-    },
-    enabled: Boolean(name),
+    queryKey: ['schedules', agentName],
+    queryFn: () => api.schedulesList(agentName),
+    enabled: agentName.length > 0,
     staleTime: 5_000,
   })
 
   const items: ScheduleEntry[] = listQuery.data?.items ?? []
 
   const refetch = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ['schedules', name] })
-  }, [queryClient, name])
+    void queryClient.invalidateQueries({ queryKey: ['schedules', agentName] })
+  }, [queryClient, agentName])
 
   const createMutation = useMutation({
-    mutationFn: (body: ScheduleCreateBody) => {
-      if (!name) throw new Error('agent name missing')
-      return api.scheduleCreate(name, body)
-    },
+    mutationFn: (body: ScheduleCreateBody) => api.scheduleCreate(agentName, body),
     onSuccess: refetch,
   })
 
   const enabledMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => {
-      if (!name) throw new Error('agent name missing')
-      return api.scheduleSetEnabled(name, id, enabled)
-    },
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.scheduleSetEnabled(agentName, id, enabled),
     onSuccess: refetch,
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => {
-      if (!name) throw new Error('agent name missing')
-      return api.scheduleDelete(name, id)
-    },
+    mutationFn: (id: string) => api.scheduleDelete(agentName, id),
     onSuccess: refetch,
   })
 
-  const eyebrow = `2200 · SCHEDULES · ${(name ?? '').toUpperCase()} · ${theme.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={`Schedules · ${name ?? ''}`}
-        subtitle="Cron + interval timers for this Agent. Mutations reload the live scheduler immediately."
-        actions={
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Link
-              to={`/agent/${encodeURIComponent(name ?? '')}`}
-              style={{
-                fontFamily: 'var(--type-family-mono)',
-                fontSize: '11px',
-                letterSpacing: '0.08em',
-                color: 'var(--color-text-muted)',
-                textDecoration: 'none',
-              }}
-            >
-              ← AGENT
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
+    <>
       <section>
         <SectionHeader title={`SCHEDULES · ${String(items.length)}`} />
         {listQuery.isLoading ? (
@@ -182,7 +158,7 @@ export function SchedulesScreen(): ReactElement {
           />
         </Card>
       </section>
-    </main>
+    </>
   )
 }
 
@@ -378,7 +354,7 @@ function CreateForm({ disabled, error, success, onSubmit }: CreateFormProps): Re
 
       {error ? <div className={styles.errorMessage}>{formatError(error)}</div> : null}
       {success && !error ? (
-        <KV k="LATEST" v={<span style={{ color: 'var(--color-text-muted)' }}>added</span>} />
+        <KV k="LATEST" v={<span style={{ color: 'var(--text-3)' }}>added</span>} />
       ) : null}
 
       <div className={styles.formActions}>

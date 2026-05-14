@@ -27,6 +27,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { getToken } from '../lib/auth'
 import type { Agent, ListEnvelope, Pulse } from '../lib/api'
+import { toolStreamStore } from './toolStreamStore'
 
 export interface WsEvent {
   event: string
@@ -74,7 +75,9 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'agent.status_changed':
         case 'agent.task_started':
         case 'agent.task_finished':
-        case 'agent.task_errored': {
+        case 'agent.task_errored':
+        case 'agent.archived':
+        case 'agent.unarchived': {
           void queryClient.invalidateQueries({ queryKey: ['agents'] })
           // Also invalidate the per-Agent tasks list when the runtime
           // signals a task state change. The task list is keyed on
@@ -119,6 +122,78 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
         case 'budget.threshold_crossed':
           void queryClient.invalidateQueries({ queryKey: ['budget'] })
           break
+        case 'chat.message':
+        case 'chat.created':
+        case 'chat.renamed':
+        case 'chat.archived':
+        case 'chat.read': {
+          const agent = typeof ev.payload.agent === 'string' ? ev.payload.agent : null
+          const chatId = typeof ev.payload.chat_id === 'string' ? ev.payload.chat_id : null
+          if (agent !== null) {
+            void queryClient.invalidateQueries({ queryKey: ['agentChats', agent] })
+            if (chatId !== null) {
+              void queryClient.invalidateQueries({
+                queryKey: ['agentChatMessages', agent, chatId],
+              })
+            }
+          }
+          break
+        }
+        case 'agent.tool_event': {
+          // Live ToolStream surface for the chat UI. Same event also
+          // pokes the agents-list cache so the Fleet pulse-dot
+          // animates in lockstep with the agent doing actual work,
+          // instead of waiting for the next 2s poll cycle.
+          const p = ev.payload as {
+            agent?: unknown
+            kind?: unknown
+            task_id?: unknown
+            call_id?: unknown
+            tool?: unknown
+            arg_summary?: unknown
+            ok?: unknown
+            error_class?: unknown
+            duration_ms?: unknown
+            at?: unknown
+          }
+          const agent = typeof p.agent === 'string' ? p.agent : null
+          const taskId = typeof p.task_id === 'string' ? p.task_id : null
+          const callId = typeof p.call_id === 'string' ? p.call_id : null
+          const tool = typeof p.tool === 'string' ? p.tool : null
+          const kind = p.kind === 'start' || p.kind === 'end' ? p.kind : null
+          if (agent && taskId && callId && tool && kind) {
+            const at = Date.now()
+            if (kind === 'start') {
+              toolStreamStore.ingestStart({
+                agent,
+                task_id: taskId,
+                call_id: callId,
+                tool,
+                arg_summary:
+                  typeof p.arg_summary === 'string' && p.arg_summary.length > 0
+                    ? p.arg_summary
+                    : null,
+                at,
+              })
+            } else {
+              toolStreamStore.ingestEnd({
+                agent,
+                task_id: taskId,
+                call_id: callId,
+                tool,
+                ok: typeof p.ok === 'boolean' ? p.ok : null,
+                error_class: typeof p.error_class === 'string' ? p.error_class : null,
+                duration_ms: typeof p.duration_ms === 'number' ? p.duration_ms : null,
+                at,
+              })
+            }
+            void queryClient.invalidateQueries({
+              queryKey: ['agents'],
+              refetchType: 'active',
+            })
+          }
+          break
+        }
         case 'hello':
         case 'heartbeat':
         case 'goodbye':

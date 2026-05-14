@@ -1,40 +1,40 @@
 .shell {
   display: grid;
-  gap: var(--space-5);
-  padding: var(--space-5);
+  gap: var(--ds-5);
+  padding: var(--ds-5);
   max-width: 720px;
   margin: 0 auto;
 }
 
 .intro {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--ds-4);
 }
 
 .introBody {
-  color: var(--color-text-muted);
+  color: var(--text-3);
   line-height: 1.5;
 }
 
 .introActions {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .pickerBlock {
   display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-secondary);
+  gap: var(--ds-2);
+  padding: var(--ds-3);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  background: var(--bg-elev);
 }
 
 .pickerLabel {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-transform: uppercase;
 }
 
@@ -42,69 +42,69 @@
   margin: 0;
   font-size: 13px;
   line-height: 1.4;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .pickerMeta {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .pickerRow {
   display: grid;
   grid-template-columns: 1fr 2fr;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
+  gap: var(--ds-3);
+  margin-top: var(--ds-2);
 }
 
 .pickerField {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--ds-1);
 }
 
 .pickerFieldLabel {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 10px;
   letter-spacing: 0.1em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-transform: uppercase;
 }
 
 .pickerSelect,
 .pickerInput {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 13px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-sm);
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-1);
   cursor: pointer;
 }
 
 .pickerSelect:focus-visible,
 .pickerInput:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .cardStack {
   position: relative;
   display: grid;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .questionMeta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  font-family: var(--type-family-mono);
+  gap: var(--ds-3);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-transform: uppercase;
 }
 
@@ -112,157 +112,157 @@
   font-size: 18px;
   font-weight: 500;
   line-height: 1.4;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .tag {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
 }
 
 .answerForm {
   display: grid;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
+  gap: var(--ds-3);
+  margin-top: var(--ds-4);
 }
 
 .answerInput {
   width: 100%;
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 14px;
-  padding: var(--space-3);
+  padding: var(--ds-3);
   min-height: 96px;
   resize: vertical;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-primary);
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ds-r-1);
+  color: var(--text);
 }
 
 .answerInput:focus {
   outline: none;
-  border-color: var(--color-border-emphasis);
+  border-color: var(--line-strong);
 }
 
 .answerActions {
   display: flex;
-  gap: var(--space-2);
+  gap: var(--ds-2);
   justify-content: flex-end;
 }
 
 .transcript {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .transcriptEntry {
   display: grid;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-left: 2px solid var(--color-border-subtle);
+  gap: var(--ds-1);
+  padding: var(--ds-3);
+  border-left: 2px solid var(--line-soft);
 }
 
 .transcriptQ {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   text-transform: uppercase;
 }
 
 .transcriptA {
   font-size: 14px;
-  color: var(--color-text-primary);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
 .summary {
   font-size: 14px;
   line-height: 1.55;
-  color: var(--color-text-primary);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
 .previewName {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 24px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .previewMeta {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   letter-spacing: 0.06em;
 }
 
 .suggestionList {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--ds-3);
 }
 
 .suggestion {
   display: grid;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-sm);
+  gap: var(--ds-1);
+  padding: var(--ds-3);
+  background: var(--bg-elev);
+  border-radius: var(--ds-r-1);
 }
 
 .suggestionTitle {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 13px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .suggestionMeta {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   letter-spacing: 0.04em;
 }
 
 .suggestionRationale {
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   line-height: 1.5;
 }
 
 .confirmActions {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--ds-3);
   justify-content: flex-end;
-  margin-top: var(--space-4);
+  margin-top: var(--ds-4);
 }
 
 .confirmedHero {
   display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  gap: var(--ds-3);
+  padding: var(--ds-4);
 }
 
 .confirmedTitle {
   font-size: 20px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text);
 }
 
 .confirmedMeta {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-3);
   letter-spacing: 0.04em;
 }
 
 .errorMessage {
-  font-family: var(--type-family-mono);
+  font-family: var(--ds-font-mono);
   font-size: 12px;
-  color: var(--color-status-error, #c0392b);
-  background: var(--color-bg-elevated);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  color: var(--danger);
+  background: var(--bg-elev);
+  padding: var(--ds-2) var(--ds-3);
+  border-radius: var(--ds-r-1);
 }

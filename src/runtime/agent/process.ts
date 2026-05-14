@@ -25,21 +25,25 @@ import { composeModelId, type IdentityRecord } from '../identity/types.js'
 import { resolveProvider } from '../llm/registry.js'
 import type { LLMProvider } from '../llm/provider.js'
 import { agentPaths } from '../storage/layout.js'
+import { readAgentPubsFile } from './pubs-file.js'
 import { TelemetryWriter } from '../telemetry/writer.js'
 import { PulseEmitter } from './pulse/emitter.js'
 import { BudgetTracker } from './budget-tracker.js'
 import { ToolRegistry } from '../mcp/registry.js'
 import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
+import { platformServers } from '../tools/platform/index.js'
 import { McpServerManager } from '../mcp/restart-manager.js'
 import { spawnHttpMcpServer, type HttpMcpServerHandle } from '../mcp/http-transport.js'
 import { expandToolGrants } from '../mcp/tool-grants.js'
 import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
+import type { TaskRecord } from './task/types.js'
 import { AgentLoop, type LoopResult } from './loop.js'
+import type { AuditFlag } from './audit/narrated-completion.js'
 import { loadState } from '../supervisor/state.js'
-import { readCredentialFile } from '../pub/keypair.js'
+import { credForPub, readCredentialFile } from '../pub/keypair.js'
 import { getOrCreatePubClient } from '../pub/registry.js'
 import { PubWakeSource } from '../pub/wake-source.js'
 import type { PubClient } from '../pub/client.js'
@@ -121,6 +125,7 @@ export class AgentProcess {
       this.options.provider ??
       (await resolveProvider({
         providerName: this.identity.frontmatter.model.provider,
+        home: this.options.home,
         ...(this.identity.frontmatter.provider_secret
           ? { secret: this.identity.frontmatter.provider_secret }
           : {}),
@@ -151,6 +156,18 @@ export class AgentProcess {
       // fires, this.client is non-undefined.
       getSupervisorRpc: () => this.client,
     })) {
+      registry.register(server)
+    }
+
+    // Platform tools (Discord, Slack, Spotify). Always registered;
+    // each tool resolves its credential lazily and throws a clean
+    // "credential missing" error if absent. Per-Agent access is gated
+    // by the Identity's `tools:` array, which already supports
+    // namespace wildcards (`discord_*`, `slack_*`, `spotify_*`) via
+    // `expandToolGrants`. Agents that do not declare a platform
+    // wildcard or the exact tool name simply do not see them in
+    // `availableToolNames`.
+    for (const server of platformServers()) {
       registry.register(server)
     }
 
@@ -302,6 +319,9 @@ export class AgentProcess {
     const { toNativeToolSpecs } = await import('../llm/tool-spec.js')
     const nativeToolSpecs = toNativeToolSpecs(registry, allowedToolNames)
 
+    const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
+    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
+
     this.loop = new AgentLoop({
       identity: this.identity,
       provider: this.provider,
@@ -317,10 +337,25 @@ export class AgentProcess {
       pulseEmitter: this.pulseEmitter,
       skillProvider: new FilesystemSkillProvider(this.options.home),
       runtimeMode,
+      // Live tool-event firehose for the web app's ToolStream UI.
+      // Fire-and-forget; loop swallows our errors so a dropped
+      // supervisor connection cannot stall the task pipeline.
+      toolEventEmitter: (event) => {
+        const payload = {
+          kind: event.kind,
+          task_id: event.task_id,
+          call_id: event.call_id,
+          tool: event.tool,
+          ...(event.arg_summary !== undefined ? { arg_summary: event.arg_summary } : {}),
+          ...(event.ok !== undefined ? { ok: event.ok } : {}),
+          ...(event.error_class !== undefined ? { error_class: event.error_class } : {}),
+          ...(event.duration_ms !== undefined ? { duration_ms: event.duration_ms } : {}),
+        }
+        void this.client?.call('agent.toolEvent', payload).catch(() => {
+          /* best-effort */
+        })
+      },
     })
-
-    const conn = this.options.connection ?? (await connectUds(this.options.socketPath))
-    this.client = new JsonRpcClient(conn, this.log.child('rpc'))
 
     const result = await this.client.call('agent.register', {
       name: this.options.name,
@@ -393,10 +428,32 @@ export class AgentProcess {
 
     const supervisorState = await loadState(this.options.home)
     const allRunning = Object.values(supervisorState.pubs).filter((p) => p.state === 'running')
+
+    // Membership resolution order:
+    //   1. <home>/agents/<name>/pubs.md (the operational source of
+    //      truth, edited by the supervisor's "create studio" flow)
+    //   2. identity.md's pub.member_of (back-compat for the seed team)
+    //   3. all running pubs (fall-through default)
+    let memberOf: string[] | null = null
+    try {
+      const file = await readAgentPubsFile(
+        agentPaths(this.options.home, this.options.name).pubsFile,
+      )
+      if (file !== null) {
+        memberOf = file.pubs
+        this.log.info('pub membership sourced from pubs.md', {
+          count: memberOf.length,
+        })
+      }
+    } catch (err) {
+      this.log.warn('pubs.md unreadable; falling back to identity.pub.member_of', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    memberOf ??= pubBlock.member_of
+
     const targetPubs =
-      pubBlock.member_of.length > 0
-        ? allRunning.filter((p) => pubBlock.member_of.includes(p.name))
-        : allRunning
+      memberOf.length > 0 ? allRunning.filter((p) => memberOf.includes(p.name)) : allRunning
 
     if (targetPubs.length === 0) {
       this.log.info('no running pubs to attach wake sources to', {
@@ -421,6 +478,7 @@ export class AgentProcess {
       try {
         const provider = await resolveProvider({
           providerName: routerProvider,
+          home: this.options.home,
           ...(this.identity.frontmatter.provider_secret &&
           routerProvider === this.identity.frontmatter.model.provider
             ? { secret: this.identity.frontmatter.provider_secret }
@@ -452,7 +510,20 @@ export class AgentProcess {
 
     for (const pub of targetPubs) {
       const baseUrl = `http://127.0.0.1:${String(pub.port)}`
-      const client = getOrCreatePubClient(this.options.name, pub.name, { baseUrl, cred })
+      // Pick the per-pub agent_id from the cred map (or fall through
+      // to the legacy single agent_id field for pre-multi-pub creds).
+      const perPubCred = credForPub(cred, pub.name)
+      if (!perPubCred.agent_id) {
+        this.log.info('Agent has no agent_id registered for this pub; skipping wake source', {
+          pub: pub.name,
+        })
+        continue
+      }
+      const perPubAgentId = perPubCred.agent_id
+      const client = getOrCreatePubClient(this.options.name, pub.name, {
+        baseUrl,
+        cred: perPubCred,
+      })
       try {
         await client.connect()
       } catch (err) {
@@ -475,7 +546,7 @@ export class AgentProcess {
       // candidate to peers, but the human can still @-mention us.
       try {
         await upsertRosterEntry(this.options.home, pub.name, {
-          agent_id: cred.agent_id,
+          agent_id: perPubAgentId,
           agent_name: this.options.name,
           display_name: pubBlock.display_name,
           role_blurb: this.identity.frontmatter.agent_role,
@@ -492,7 +563,7 @@ export class AgentProcess {
         agentName: this.options.name,
         pubName: pub.name,
         agent: {
-          agent_id: cred.agent_id,
+          agent_id: perPubAgentId,
           handle: pubBlock.handle,
           ...(pubBlock.domains.length > 0 ? { domains: [...pubBlock.domains] } : {}),
         },
@@ -502,7 +573,10 @@ export class AgentProcess {
       })
       wakeSource.start()
       this.pubWakeSources.push(wakeSource)
-      this.log.info('pub wake source attached', { pub: pub.name, agent_id: cred.agent_id })
+      this.log.info('pub wake source attached', {
+        pub: pub.name,
+        agent_id: perPubAgentId,
+      })
     }
   }
 
@@ -576,7 +650,7 @@ export class AgentProcess {
   private async recordResult(taskId: string, result: LoopResult): Promise<void> {
     if (!this.taskStore) return
     if (result.kind === 'done') {
-      await this.taskStore.update(taskId, (fm) => ({
+      const updated = await this.taskStore.update(taskId, (fm) => ({
         ...fm,
         state: 'done',
         outcome: {
@@ -586,6 +660,44 @@ export class AgentProcess {
         },
         agent_state_at_terminal: this.machine.state,
       }))
+      // Post-task audit notification. Currently only narrated_completion fires
+      // here (destructive task ended with no successful tool calls). Tier is
+      // `important` ... shows in the operator inbox prominently, does not page.
+      if (updated && result.audit_flags.length > 0) {
+        for (const flag of result.audit_flags) {
+          try {
+            await emitNotification({
+              home: this.options.home,
+              agentName: this.options.name,
+              tier: 'important',
+              kind: `audit_${flag.kind}`,
+              body: this.composeAuditBody(taskId, updated.frontmatter.title, result, flag),
+              extras: {
+                task_id: taskId,
+                audit_flag: flag.kind,
+                tool_calls_attempted: flag.attempted,
+                tool_calls_succeeded: flag.succeeded,
+                iterations: result.iterations,
+              },
+            })
+            this.log.warn('post-task audit flag emitted', {
+              task_id: taskId,
+              flag: flag.kind,
+              attempted: flag.attempted,
+              succeeded: flag.succeeded,
+            })
+          } catch (err) {
+            this.log.warn('failed to emit audit notification', {
+              task_id: taskId,
+              flag: flag.kind,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+      }
+      if (updated) {
+        await this.maybeEmitDelegationCompletion(taskId, updated, 'done', result.summary)
+      }
       return
     }
     if (result.kind === 'tripped') {
@@ -597,10 +709,19 @@ export class AgentProcess {
       } catch {
         // already transitioned
       }
+      const current = await this.taskStore.get(taskId)
+      if (current) {
+        await this.maybeEmitDelegationCompletion(
+          taskId,
+          current,
+          'blocked_on_detector',
+          `paused on detector ${result.verdict.kind}: ${result.verdict.detail}`,
+        )
+      }
       return
     }
     // errored
-    await this.taskStore.update(taskId, (fm) => ({
+    const erroredTask = await this.taskStore.update(taskId, (fm) => ({
       ...fm,
       state: 'errored',
       error: {
@@ -610,6 +731,100 @@ export class AgentProcess {
       },
       agent_state_at_terminal: this.machine.state,
     }))
+    if (erroredTask) {
+      await this.maybeEmitDelegationCompletion(
+        taskId,
+        erroredTask,
+        'errored',
+        `${result.error.class}: ${result.error.message}`,
+      )
+    }
+  }
+
+  /**
+   * When a delegated task hits a terminal/paused state, emit a passive-tier
+   * completion notification to the originating Agent's inbox so they can
+   * pick up the outcome on their next iteration (via notification_*).
+   *
+   * No-op when the task has no `delegated_by` (it wasn't a delegation).
+   * Best-effort: errors are logged but do not block the task transition.
+   */
+  private async maybeEmitDelegationCompletion(
+    taskId: string,
+    task: TaskRecord,
+    outcomeState: 'done' | 'errored' | 'blocked_on_detector',
+    summary: string,
+  ): Promise<void> {
+    const fm = task.frontmatter
+    if (!fm.delegated_by || !fm.delegating_task_id) return
+    try {
+      const truncated = summary.length > 500 ? `${summary.slice(0, 500)}...` : summary
+      await emitNotification({
+        home: this.options.home,
+        agentName: fm.delegated_by,
+        tier: 'passive',
+        kind: 'delegation_complete',
+        body:
+          `Delegated task **${fm.title}** on **${this.options.name}** ` +
+          `reached state \`${outcomeState}\`.\n\n` +
+          `Originating task: ${fm.delegating_task_id}\n` +
+          `Receiving task: ${taskId}\n` +
+          `Depth: ${String(fm.delegation_depth)}\n\n` +
+          `Outcome:\n\n\`\`\`\n${truncated}\n\`\`\``,
+        extras: {
+          originator: fm.delegated_by,
+          originator_task_id: fm.delegating_task_id,
+          target_agent: this.options.name,
+          target_task_id: taskId,
+          delegation_depth: fm.delegation_depth,
+          outcome_state: outcomeState,
+        },
+      })
+      this.log.info('delegation completion notification emitted', {
+        target_task_id: taskId,
+        originator: fm.delegated_by,
+        outcome_state: outcomeState,
+      })
+    } catch (err) {
+      this.log.warn('failed to emit delegation completion notification', {
+        target_task_id: taskId,
+        originator: fm.delegated_by,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  private composeAuditBody(
+    taskId: string,
+    taskTitle: string,
+    result: Extract<LoopResult, { kind: 'done' }>,
+    flag: AuditFlag,
+  ): string {
+    const lines: string[] = [
+      `Agent: ${this.options.name}`,
+      `Task: ${taskId}`,
+      `Title: ${taskTitle}`,
+      ``,
+      `**Audit flag: ${flag.kind}**`,
+      flag.detail,
+      ``,
+      `Iterations: ${String(result.iterations)}`,
+      `Tool calls attempted: ${String(flag.attempted)}`,
+      `Tool calls succeeded: ${String(flag.succeeded)}`,
+      ``,
+      `The task transitioned to \`done\` with an idempotency of \`destructive\`,`,
+      `but no tool call returned ok. The agent's final response was:`,
+      ``,
+      '```',
+      result.summary.length > 600 ? `${result.summary.slice(0, 600)}...` : result.summary,
+      '```',
+      ``,
+      `Inspect the task's run records and plan records under the agent's brain`,
+      `to confirm whether anything actually changed. If the agent narrated`,
+      `completion of work that did not happen, address at the brain-note or`,
+      `system-prompt layer.`,
+    ]
+    return lines.join('\n')
   }
 
   /**

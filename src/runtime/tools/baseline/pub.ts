@@ -26,7 +26,7 @@ import { defineTool, type ToolDefinition, type ToolContext } from '../../mcp/too
 import { agentPaths } from '../../storage/layout.js'
 import { loadState } from '../../supervisor/state.js'
 import type { PubRecord } from '../../supervisor/types.js'
-import { readCredentialFile } from '../../pub/keypair.js'
+import { credForPub, readCredentialFile } from '../../pub/keypair.js'
 import { getOrCreatePubClient } from '../../pub/registry.js'
 import { getWatermark, setWatermark } from '../../pub/watermark.js'
 import type { PubClient, PubMessage } from '../../pub/client.js'
@@ -84,13 +84,17 @@ async function resolveDefaultPub(home: string): Promise<PubRecord> {
 async function clientFor(ctx: ToolContext, pub: PubRecord): Promise<PubClient> {
   const credPath = agentPaths(ctx.home, ctx.callingAgent).pubSecret
   const cred = await readCredentialFile(credPath)
-  if (!cred.agent_id) {
+  const perPubCred = credForPub(cred, pub.name)
+  if (!perPubCred.agent_id) {
     throw new Error(
-      `Agent "${ctx.callingAgent}" has no registered pub identity (agent_id is null); run "2200 agent create" with a pub:-declared Identity while a pub is running, or re-run agent create after the pub is up`,
+      `Agent "${ctx.callingAgent}" has no registered pub identity for "${pub.name}" (agent_id is null); register the Agent against this pub first`,
     )
   }
   const baseUrl = `http://127.0.0.1:${String(pub.port)}`
-  const client = getOrCreatePubClient(ctx.callingAgent, pub.name, { baseUrl, cred })
+  const client = getOrCreatePubClient(ctx.callingAgent, pub.name, {
+    baseUrl,
+    cred: perPubCred,
+  })
   await client.connect()
   return client
 }

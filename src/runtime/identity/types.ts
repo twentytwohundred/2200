@@ -26,8 +26,18 @@ export type ModelTier = z.infer<typeof ModelTierSchema>
  * hyphens or other separators; matches the regex used by `ModelIdSchema`
  * in `src/runtime/control-plane/protocol.ts`.
  */
-export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+$/, {
-  message: 'model.provider must be lowercase alphanumeric (no separators)',
+/**
+ * Built-in providers are lowercase alphanumeric (`anthropic`,
+ * `deepseek`, `xai`). Custom endpoints registered by the operator use
+ * the `endpoint:<slug>` form (`endpoint:dgx-spark`, `endpoint:lab-vm`)
+ * so the LLM registry can dispatch to the matching `<home>/config/
+ * endpoints.json` entry. The slug after the colon follows the
+ * `EndpointIdSchema` rule: lowercase alphanumeric + dashes, starting
+ * with a letter or digit.
+ */
+export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+(:[a-z0-9][a-z0-9-]{0,49})?$/, {
+  message:
+    'model.provider must be lowercase alphanumeric (e.g. "anthropic") or "endpoint:<slug>" for a custom endpoint',
 })
 
 /**
@@ -92,11 +102,16 @@ export const ToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]*[._]([a-z][a-z0-
 
 /**
  * Default cost cap applied to Identity files that lack a `cost_caps`
- * block. Conservative by design... at current Hobby cadence
- * (single-digit dollars per working day) this gives a real ceiling
- * without being trivially blown through. Users adjust per-Agent.
+ * block. Sized for the 2026-05-12 "production Agents always run on
+ * frontier models" rule: a normal working day on grok-4.3 or
+ * deepseek-reasoner stays well under this, but a runaway loop (model
+ * spinning on a broken tool, ambient-router cascade, etc.) gets caught
+ * before it does real damage. Operators adjust per-Agent as needed.
+ *
+ * History: was $10 when defaults assumed cheap-tier; bumped to $50
+ * after the frontier-model directive landed.
  */
-export const DEFAULT_DAILY_USD_CAP = 10
+export const DEFAULT_DAILY_USD_CAP = 50
 
 /**
  * Default for every cost_caps field. Single source of truth so the
@@ -400,6 +415,13 @@ export const IdentityFrontmatterSchema = z.object({
         'agent_name must start with a lowercase letter; lowercase letters, digits, underscores, and dashes only',
     }),
   agent_role: z.string().min(1),
+  /**
+   * Optional avatar glyph rendered inside the AgentMark circle (a short
+   * emoji or 1-2 character string). When unset, the AgentMark falls back
+   * to the first letter of the agent's display name. Editable via
+   * `PUT /api/v1/agents/:name/avatar` from the global Settings page.
+   */
+  avatar: z.string().max(8).optional(),
   model: ModelBindingSchema,
   tools: z.array(ToolNameSchema).default([]),
   project_dir: z.string().min(1),
@@ -444,6 +466,19 @@ export const IdentityFrontmatterSchema = z.object({
    * preserving v4 semantics ... an Agent with no entry uses only
    * the baseline tools.
    */
+  /**
+   * Archive marker (Epic 17). Present when an operator has archived
+   * the Agent. The directory has been renamed to `<name>-archived-<date>`
+   * and the `agent_name` field updated to match. Listing this block in
+   * frontmatter lets the UI render the date + reason without re-parsing
+   * the directory name. Absence means a live (non-archived) Agent.
+   */
+  archived: z
+    .object({
+      at: z.string().min(1),
+      reason: z.string().optional(),
+    })
+    .optional(),
   mcp_servers: z
     .array(McpServerSpecSchema)
     .default([])

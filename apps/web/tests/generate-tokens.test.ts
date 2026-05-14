@@ -3,31 +3,49 @@ import {
   generateAgentPalette,
   generateAll,
   generateBaseTokens,
-  generateThemeColor,
+  generateDarkTheme,
   type Tokens,
 } from '../scripts/generate-tokens'
 
 const minimalFixture: Tokens = {
-  version: '0.3.0',
+  version: '1.1.0',
   type: {
-    fontFamily: {
+    family: {
       sans: 'Inter, sans-serif',
       mono: 'JetBrains Mono, monospace',
     },
     scale: {
-      body: { size: '13px', track: '-0.005em', weight: 400, lh: 1.45 },
-      label: { size: '11px', track: '0.10em', weight: 500, lh: 1.4 },
+      '2xs': '11px',
+      xs: '12px',
+      sm: '13px',
+      md: '15px',
+      lg: '17px',
+      xl: '22px',
+      '2xl': '30px',
+      '3xl': '44px',
     },
+    lh: { tight: 1.18, snug: 1.35, prose: 1.55 },
   },
-  space: { '1': '4px', '4': '16px' },
-  radius: { sm: '3px', lg: '8px' },
-  border: { default: '1px', emphasis: '2px' },
-  duration: { fast: '120ms', slow: '280ms' },
-  ease: { out: 'cubic-bezier(0.2, 0.7, 0.2, 1)' },
+  space: { '1': '4px', '4': '16px', '20': '80px' },
+  radius: { '1': '4px', '2': '6px', '3': '10px', '4': '14px', pill: '999px' },
+  radiusPresets: {
+    sharp: { '1': '0px', '2': '2px', '3': '4px', '4': '6px' },
+    soft: { '1': '6px', '2': '10px', '3': '14px', '4': '18px' },
+  },
+  motion: {
+    ease: 'cubic-bezier(.2,.7,.2,1)',
+    duration: { fast: '120ms', normal: '200ms', slow: '360ms' },
+  },
+  density: {
+    default: { 'row-h': '36px', 'pad-x': '14px', 'pad-y': '10px' },
+    compact: { 'row-h': '30px', 'pad-x': '10px', 'pad-y': '7px' },
+  },
   z: { base: 0, modal: 500 },
-  agentPalette: {
-    description: '12-color deterministic palette.',
-    colors: ['oklch(0.66 0.13 25)', 'oklch(0.70 0.13 55)', 'oklch(0.78 0.13 85)'],
+  accent: { h: 150 },
+  agentHues: {
+    description: 'Test palette of 3.',
+    light: ['oklch(62% 0.14 145)', 'oklch(62% 0.12 275)', 'oklch(64% 0.14 35)'],
+    dark: ['oklch(72% 0.14 145)', 'oklch(72% 0.13 275)', 'oklch(74% 0.14 35)'],
   },
   userMark: {
     from: 'oklch(0.65 0.10 280)',
@@ -35,13 +53,71 @@ const minimalFixture: Tokens = {
     rule: 'Never reuse an agent color.',
   },
   themes: {
-    dark: {
-      color: { 'bg-primary': 'oklch(0.16 0.005 250)', 'text-primary': 'oklch(0.97 0.003 250)' },
-      shadow: { 'elevation-1': '0 1px 2px black' },
-    },
     light: {
-      color: { 'bg-primary': 'oklch(0.985 0.002 90)', 'text-primary': 'oklch(0.18 0.005 250)' },
-      shadow: { 'elevation-1': '0 1px 2px gray' },
+      colorScheme: 'light',
+      neutral: {
+        bg: 'oklch(99% 0.003 240)',
+        'bg-elev': 'oklch(98% 0.004 240)',
+        'bg-sunk': 'oklch(96% 0.005 240)',
+        'bg-hover': 'oklch(94% 0.006 240)',
+        line: 'oklch(91% 0.005 240)',
+        'line-soft': 'oklch(94% 0.005 240)',
+        'line-strong': 'oklch(82% 0.008 240)',
+        text: 'oklch(22% 0.008 240)',
+        'text-2': 'oklch(40% 0.008 240)',
+        'text-3': 'oklch(55% 0.008 240)',
+        'text-4': 'oklch(68% 0.008 240)',
+      },
+      accent: {
+        base: 'oklch(58% 0.16 var(--accent-h))',
+        strong: 'oklch(48% 0.18 var(--accent-h))',
+        soft: 'oklch(94% 0.06 var(--accent-h))',
+        ink: 'oklch(28% 0.10 var(--accent-h))',
+        on: '#ffffff',
+      },
+      semantic: {
+        danger: 'oklch(56% 0.18 25)',
+        'danger-soft': 'oklch(94% 0.05 25)',
+        warn: 'oklch(70% 0.13 75)',
+        'warn-soft': 'oklch(95% 0.06 75)',
+        info: 'oklch(60% 0.10 240)',
+        'info-soft': 'oklch(95% 0.03 240)',
+      },
+      shadow: { '1': '0 1px 2px gray', '2': '0 8px 24px gray', pop: '0 12px 48px gray' },
+      focus: '0 0 0 2px var(--bg), 0 0 0 4px var(--accent)',
+    },
+    dark: {
+      colorScheme: 'dark',
+      neutral: {
+        bg: 'oklch(15% 0.008 240)',
+        'bg-elev': 'oklch(18% 0.009 240)',
+        'bg-sunk': 'oklch(13% 0.008 240)',
+        'bg-hover': 'oklch(22% 0.010 240)',
+        line: 'oklch(26% 0.008 240)',
+        'line-soft': 'oklch(22% 0.008 240)',
+        'line-strong': 'oklch(36% 0.010 240)',
+        text: 'oklch(96% 0.005 240)',
+        'text-2': 'oklch(78% 0.006 240)',
+        'text-3': 'oklch(62% 0.007 240)',
+        'text-4': 'oklch(48% 0.007 240)',
+      },
+      accent: {
+        base: 'oklch(72% 0.16 var(--accent-h))',
+        strong: 'oklch(80% 0.17 var(--accent-h))',
+        soft: 'oklch(28% 0.08 var(--accent-h))',
+        ink: 'oklch(86% 0.13 var(--accent-h))',
+        on: 'oklch(15% 0.04 var(--accent-h))',
+      },
+      semantic: {
+        danger: 'oklch(72% 0.16 25)',
+        'danger-soft': 'oklch(28% 0.08 25)',
+        warn: 'oklch(78% 0.13 75)',
+        'warn-soft': 'oklch(28% 0.07 75)',
+        info: 'oklch(72% 0.10 240)',
+        'info-soft': 'oklch(26% 0.04 240)',
+      },
+      shadow: { '1': '0 1px 2px black', '2': '0 8px 28px black', pop: '0 12px 56px black' },
+      focus: '0 0 0 2px var(--bg), 0 0 0 4px var(--accent)',
     },
   },
 }
@@ -49,100 +125,144 @@ const minimalFixture: Tokens = {
 describe('generateBaseTokens', () => {
   const css = generateBaseTokens(minimalFixture)
 
-  it('opens with the auto-generated header', () => {
+  it('opens with the auto-generated header and version tag', () => {
     expect(css).toMatch(/Auto-generated by apps\/web\/scripts\/generate-tokens\.ts/)
-    expect(css).toMatch(/v0\.3\.0/)
+    expect(css).toMatch(/v1\.1\.0/)
   })
 
-  it('emits a :root block', () => {
+  it('emits a :root block as the default (light) theme', () => {
     expect(css).toContain(':root {')
-    expect(css).toContain('}')
+    expect(css).toContain('color-scheme: light;')
   })
 
-  it('includes type families', () => {
-    expect(css).toContain('--type-family-sans: Inter, sans-serif;')
-    expect(css).toContain('--type-family-mono: JetBrains Mono, monospace;')
+  it('emits --ds-* type tokens (family, scale, line-height)', () => {
+    expect(css).toContain('--ds-font-sans: Inter, sans-serif;')
+    expect(css).toContain('--ds-font-mono: JetBrains Mono, monospace;')
+    expect(css).toContain('--ds-text-sm: 13px;')
+    expect(css).toContain('--ds-text-md: 15px;')
+    expect(css).toContain('--ds-lh-prose: 1.55;')
   })
 
-  it('flattens type-scale fields', () => {
-    expect(css).toContain('--type-body-size: 13px;')
-    expect(css).toContain('--type-body-track: -0.005em;')
-    expect(css).toContain('--type-body-weight: 400;')
-    expect(css).toContain('--type-body-lh: 1.45;')
-    expect(css).toContain('--type-label-size: 11px;')
+  it('emits --ds-* space tokens (numbered by pixel value)', () => {
+    expect(css).toContain('--ds-1: 4px;')
+    expect(css).toContain('--ds-4: 16px;')
+    expect(css).toContain('--ds-20: 80px;')
   })
 
-  it('emits space, radius, border, duration, ease, z tokens', () => {
-    expect(css).toContain('--space-1: 4px;')
-    expect(css).toContain('--space-4: 16px;')
-    expect(css).toContain('--radius-sm: 3px;')
-    expect(css).toContain('--border-default: 1px;')
-    expect(css).toContain('--duration-fast: 120ms;')
-    expect(css).toContain('--ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);')
-    expect(css).toContain('--z-base: 0;')
-    expect(css).toContain('--z-modal: 500;')
+  it('emits --ds-r-* radius tokens including pill', () => {
+    expect(css).toContain('--ds-r-1: 4px;')
+    expect(css).toContain('--ds-r-2: 6px;')
+    expect(css).toContain('--ds-r-pill: 999px;')
   })
 
-  it('emits user-mark gradient endpoints', () => {
+  it('emits motion tokens with a default --ds-dur (no -normal suffix)', () => {
+    expect(css).toContain('--ds-ease: cubic-bezier(.2,.7,.2,1);')
+    expect(css).toContain('--ds-dur-fast: 120ms;')
+    expect(css).toContain('--ds-dur: 200ms;')
+    expect(css).toContain('--ds-dur-slow: 360ms;')
+  })
+
+  it('emits default density tokens', () => {
+    expect(css).toContain('--ds-row-h: 36px;')
+    expect(css).toContain('--ds-pad-x: 14px;')
+    expect(css).toContain('--ds-pad-y: 10px;')
+  })
+
+  it('emits the single --accent-h integer', () => {
+    expect(css).toContain('--accent-h: 150;')
+  })
+
+  it('emits light-theme neutral, accent, semantic, shadow, and focus tokens', () => {
+    expect(css).toContain('--bg: oklch(99% 0.003 240);')
+    expect(css).toContain('--bg-elev: oklch(98% 0.004 240);')
+    expect(css).toContain('--text: oklch(22% 0.008 240);')
+    expect(css).toContain('--accent: oklch(58% 0.16 var(--accent-h));')
+    expect(css).toContain('--accent-soft: oklch(94% 0.06 var(--accent-h));')
+    expect(css).toContain('--danger: oklch(56% 0.18 25);')
+    expect(css).toContain('--shadow-1: 0 1px 2px gray;')
+    expect(css).toContain('--focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);')
+  })
+
+  it('emits the user-mark gradient endpoints', () => {
     expect(css).toContain('--user-c-from: oklch(0.65 0.10 280);')
     expect(css).toContain('--user-c-to: oklch(0.55 0.12 200);')
   })
+
+  it('emits the density compact modifier block', () => {
+    expect(css).toContain('html[data-density="compact"] {')
+    expect(css).toContain('--ds-row-h: 30px;')
+    expect(css).toContain('--ds-pad-x: 10px;')
+  })
+
+  it('emits the sharp and soft radius preset modifier blocks', () => {
+    expect(css).toContain('html[data-radius="sharp"] {')
+    expect(css).toContain('--ds-r-1: 0px;')
+    expect(css).toContain('html[data-radius="soft"] {')
+    expect(css).toContain('--ds-r-1: 6px;')
+  })
 })
 
-describe('generateThemeColor', () => {
-  it('emits a .theme-dark selector with color + shadow tokens', () => {
-    const css = generateThemeColor('dark', minimalFixture)
-    expect(css).toContain('.theme-dark {')
-    expect(css).toContain('--color-bg-primary: oklch(0.16 0.005 250);')
-    expect(css).toContain('--color-text-primary: oklch(0.97 0.003 250);')
-    expect(css).toContain('--shadow-elevation-1: 0 1px 2px black;')
+describe('generateDarkTheme', () => {
+  const css = generateDarkTheme(minimalFixture)
+
+  it('emits an html.dark selector with neutral, accent, semantic, shadow, focus, and color-scheme', () => {
+    expect(css).toContain('html.dark {')
+    expect(css).toContain('--bg: oklch(15% 0.008 240);')
+    expect(css).toContain('--text: oklch(96% 0.005 240);')
+    expect(css).toContain('--accent: oklch(72% 0.16 var(--accent-h));')
+    expect(css).toContain('--danger: oklch(72% 0.16 25);')
+    expect(css).toContain('--shadow-1: 0 1px 2px black;')
+    expect(css).toContain('color-scheme: dark;')
   })
 
-  it('emits a .theme-light selector with the light values', () => {
-    const css = generateThemeColor('light', minimalFixture)
-    expect(css).toContain('.theme-light {')
-    expect(css).toContain('--color-bg-primary: oklch(0.985 0.002 90);')
-    expect(css).toContain('--shadow-elevation-1: 0 1px 2px gray;')
-    expect(css).not.toContain('.theme-dark')
+  it('records themes.dark in the header note', () => {
+    expect(css).toContain('themes.dark')
   })
 
-  it('records the source theme block in the header', () => {
-    const dark = generateThemeColor('dark', minimalFixture)
-    const light = generateThemeColor('light', minimalFixture)
-    expect(dark).toContain('themes.dark')
-    expect(light).toContain('themes.light')
+  it('does not emit any light-theme tokens', () => {
+    expect(css).not.toContain('color-scheme: light;')
+    expect(css).not.toContain(':root {')
   })
 })
 
 describe('generateAgentPalette', () => {
   const css = generateAgentPalette(minimalFixture)
 
-  it('emits one selector per palette entry, indexed from 0', () => {
-    expect(css).toContain('.agent-c0 {')
-    expect(css).toContain('--agent-color: oklch(0.66 0.13 25);')
-    expect(css).toContain('.agent-c1 {')
-    expect(css).toContain('--agent-color: oklch(0.70 0.13 55);')
-    expect(css).toContain('.agent-c2 {')
-    expect(css).toContain('--agent-color: oklch(0.78 0.13 85);')
+  it('emits :root with --agent-N (1-indexed) for light values', () => {
+    expect(css).toContain(':root {')
+    expect(css).toContain('--agent-1: oklch(62% 0.14 145);')
+    expect(css).toContain('--agent-2: oklch(62% 0.12 275);')
+    expect(css).toContain('--agent-3: oklch(64% 0.14 35);')
   })
 
-  it('does not emit a slot for a non-existent palette index', () => {
+  it('emits html.dark with the dark-variant agent hues', () => {
+    expect(css).toContain('html.dark {')
+    expect(css).toContain('--agent-1: oklch(72% 0.14 145);')
+    expect(css).toContain('--agent-3: oklch(74% 0.14 35);')
+  })
+
+  it('emits .agent-c0..N-1 class mappings to --agent-color', () => {
+    expect(css).toContain('.agent-c0 { --agent-color: var(--agent-1); }')
+    expect(css).toContain('.agent-c1 { --agent-color: var(--agent-2); }')
+    expect(css).toContain('.agent-c2 { --agent-color: var(--agent-3); }')
+  })
+
+  it('does not emit a slot for an out-of-range index', () => {
     expect(css).not.toContain('.agent-c3 ')
-    expect(css).not.toContain('.agent-c11')
+    expect(css).not.toContain('--agent-4:')
   })
 
   it('preserves the palette description as a comment', () => {
-    expect(css).toContain('/* 12-color deterministic palette. */')
+    expect(css).toContain('/* Test palette of 3. */')
   })
 })
 
 describe('generateAll', () => {
-  it('returns all four expected files', () => {
+  it('returns the three expected files (no separate light theme file)', () => {
     const all = generateAll(minimalFixture)
     expect(Object.keys(all).sort()).toEqual([
       'agent-palette.css',
       'theme-default-dark.css',
-      'theme-default-light.css',
       'tokens.css',
     ])
   })

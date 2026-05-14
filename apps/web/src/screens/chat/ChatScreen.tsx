@@ -11,13 +11,19 @@
  * so live transitions surface fast.
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type ChatMessage } from '../../lib/api'
-import { Button, Card, cx, ErrorState, LoadingState, PageHeader, PulseDot } from '../../primitives'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useTheme } from '../../theme/ThemeProvider'
-import { useLiveSignal } from '../../ws/useLiveSignal'
+import {
+  Button,
+  Card,
+  cx,
+  ErrorState,
+  LoadingState,
+  PulseDot,
+  Screen,
+  ScreenNavLink,
+} from '../../primitives'
 import styles from './ChatScreen.module.css'
 
 function formatTime(value: string): string {
@@ -36,8 +42,6 @@ function formatError(err: unknown): string {
 
 export function ChatScreen(): ReactElement {
   const { name } = useParams<{ name: string }>()
-  const { theme } = useTheme()
-  const live = useLiveSignal()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
@@ -108,51 +112,23 @@ export function ChatScreen(): ReactElement {
     send.mutate(content)
   }
 
-  const eyebrow = `2200 · CHAT · ${(name ?? '').toUpperCase()} · ${theme.toUpperCase()} · WS ${live.status.toUpperCase()}`
-
   return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={eyebrow}
-        title={`Chat · ${name ?? ''}`}
-        subtitle={`Persistent conversation with ${name ?? 'the agent'}. Each turn is a checkpointed task.`}
-        actions={
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            {pulse ? (
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontFamily: 'var(--type-family-mono)',
-                  fontSize: '11px',
-                  letterSpacing: '0.08em',
-                  color: 'var(--color-text-muted)',
-                  textTransform: 'uppercase',
-                }}
-                title={`${name ?? 'agent'} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
-              >
-                <PulseDot state={pulse.state} intensity={pulse.intensity} size="md" />
-                <span>{isWorking ? 'thinking…' : pulse.state.replace('_', ' ')}</span>
-              </span>
-            ) : null}
-            <Link
-              to={`/agent/${encodeURIComponent(name ?? '')}`}
-              style={{
-                fontFamily: 'var(--type-family-mono)',
-                fontSize: '11px',
-                letterSpacing: '0.08em',
-                color: 'var(--color-text-muted)',
-                textDecoration: 'none',
-              }}
-            >
-              ← AGENT
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
-
+    <Screen
+      crumbs={['2200', 'agent', name ?? '', 'chat']}
+      title={`Chat · ${name ?? ''}`}
+      lede={`Persistent conversation with ${name ?? 'the agent'}. Each turn is a checkpointed task.`}
+      actions={
+        <>
+          {pulse ? (
+            <span className={styles.pulseChip}>
+              <PulseDot state={pulse.state} intensity={pulse.intensity} size="md" />
+              <span>{isWorking ? 'thinking…' : pulse.state.replace('_', ' ')}</span>
+            </span>
+          ) : null}
+          <ScreenNavLink to={`/agent/${encodeURIComponent(name ?? '')}`}>← Agent</ScreenNavLink>
+        </>
+      }
+    >
       <div ref={transcriptRef} className={styles.transcript}>
         {query.isLoading ? (
           <LoadingState rows={4} />
@@ -209,7 +185,7 @@ export function ChatScreen(): ReactElement {
           <ErrorState title="Could not send" body={formatError(send.error)} />
         </Card>
       ) : null}
-    </main>
+    </Screen>
   )
 }
 

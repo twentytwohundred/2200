@@ -76,6 +76,11 @@ import {
   writeDetectorTrip,
   type TripRecordPersisted,
 } from './detectors/trip-record.js'
+import { auditNarratedCompletion, type AuditFlag } from './audit/narrated-completion.js'
+import {
+  DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
+  resolvePlanningOnlyRetry,
+} from './incomplete-turn.js'
 import { createLogger, type Logger } from '../util/logger.js'
 
 // Match a fenced ```tool block. The leading `\s*` after `tool` admits
@@ -488,10 +493,38 @@ export interface AgentLoopOptions {
    * limits, all of which gate on the hosted tiers.
    */
   runtimeMode?: RuntimeMode
+  /**
+   * Fire-and-forget hook the loop calls at the start + end of every
+   * tool call. Wires the chat surface's live ToolStream UI ... each
+   * call surfaces as a chip the moment it starts, resolves to a
+   * check when it ends. Failures here are caller-swallowed so a
+   * disconnected bridge never breaks the loop.
+   */
+  toolEventEmitter?: (event: {
+    kind: 'start' | 'end'
+    task_id: string
+    call_id: string
+    tool: string
+    arg_summary?: string | null
+    ok?: boolean
+    error_class?: string | null
+    duration_ms?: number
+  }) => void
 }
 
 export type LoopResult =
-  | { kind: 'done'; summary: string; iterations: number }
+  | {
+      kind: 'done'
+      summary: string
+      iterations: number
+      /**
+       * Post-task audit flags. Currently only narrated_completion (destructive
+       * task that ended with no successful tool calls). Empty array on a
+       * clean done; never null. The owning AgentProcess decides whether to
+       * surface flags as notifications.
+       */
+      audit_flags: AuditFlag[]
+    }
   | {
       kind: 'tripped'
       verdict: TripVerdict
@@ -508,8 +541,22 @@ export class AgentLoop {
   private readonly events: LoopEvent[] = []
   private readonly history: Message[] = []
   private iteration = 0
-  /** Number of empty-response nudges issued for the current task. Caps at 1. */
+  /** Number of empty-response nudges issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private emptyResponseNudges = 0
+  /**
+   * Number of successful tool dispatches in this task across all
+   * iterations. Drives the planning-only retry guard: once the agent
+   * has done real work, treat a subsequent text-only turn as a
+   * legitimate stopping point rather than a planning-only stall. This
+   * is the conservative version of OC's `replayMetadata.hadPotentialSideEffects`
+   * gate: simpler than classifying mutating-vs-read tools, and the
+   * tradeoff is that some partial-hallucination cases (work-done +
+   * extra-narrated) won't trigger retry. Those are out of scope here
+   * per the decision record.
+   */
+  private priorSuccessfulToolCallsThisTask = 0
+  /** Number of planning-only retries issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
+  private planningOnlyRetries = 0
   /**
    * True once a `pub_send` or `pub_react` tool call has been dispatched
    * during the current task. Used by the wake-task enforcement path:
@@ -530,7 +577,7 @@ export class AgentLoop {
    * imagined paths).
    */
   private writtenPathsThisTask = new Set<string>()
-  /** Number of "you must call pub.* before terminating" nudges. Caps at 1. */
+  /** Number of "you must call pub.* before terminating" nudges. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private pubWakeNudges = 0
   private readonly nowFn: () => Date
 
@@ -595,8 +642,20 @@ export class AgentLoop {
     this.emptyResponseNudges = 0
     this.pubToolCallsThisTask = 0
     this.pubWakeNudges = 0
+    this.priorSuccessfulToolCallsThisTask = 0
+    this.planningOnlyRetries = 0
     this.writtenPathsThisTask.clear()
     this.history.push({ role: 'user', content: task.body })
+    // If this task is being resumed after a detector trip, inject a forcing
+    // tool-role message before the model's first call. The model otherwise
+    // sees only the original task body and tends to retry the same broken
+    // thing that tripped the detector (observed on 2026-05-11).
+    if (task.frontmatter.resumed_from_trip) {
+      this.history.push({
+        role: 'tool',
+        content: composeResumeGuidance(task.frontmatter.resumed_from_trip),
+      })
+    }
 
     while (this.iteration < this.maxIterations) {
       this.iteration += 1
@@ -730,7 +789,11 @@ export class AgentLoop {
           // a directive prompt that says exactly which tool to call;
           // if the next iteration still doesn't comply, the loop
           // terminates as before so the operator can see the gap.
-          if (isPubWakeTask(task) && this.pubToolCallsThisTask === 0 && this.pubWakeNudges < 1) {
+          if (
+            isPubWakeTask(task) &&
+            this.pubToolCallsThisTask === 0 &&
+            this.pubWakeNudges < DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET
+          ) {
             this.pubWakeNudges += 1
             this.history.push({ role: 'assistant', content: response.text })
             this.history.push({
@@ -739,15 +802,46 @@ export class AgentLoop {
             })
             continue
           }
+          // Planning-only retry: the model produced visible text that
+          // promises action without performing it (e.g. "I'll check
+          // the logs and report back" with zero tool calls). Decision
+          // record: wiki/decisions/2026-05-12-incomplete-turn-detector.md
+          const planningInstruction = resolvePlanningOnlyRetry({
+            assistantText: response.text,
+            lastUserMessage: task.body,
+            priorToolCallsSucceeded: this.priorSuccessfulToolCallsThisTask > 0,
+          })
+          if (
+            planningInstruction !== null &&
+            this.planningOnlyRetries < DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET
+          ) {
+            this.planningOnlyRetries += 1
+            this.log.info('planning-only turn detected; injecting act-now directive', {
+              attempt: this.planningOnlyRetries,
+              budget: DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
+              task_id: task.frontmatter.id,
+            })
+            this.history.push({ role: 'assistant', content: response.text })
+            this.history.push({
+              role: 'tool',
+              content: planningInstruction,
+            })
+            continue
+          }
           this.history.push({ role: 'assistant', content: response.text })
+          const flag = auditNarratedCompletion({
+            events: this.events,
+            idempotency: task.frontmatter.idempotency,
+          })
           return {
             kind: 'done',
             summary: response.text,
             iterations: this.iteration,
+            audit_flags: flag ? [flag] : [],
           }
         }
-        if (this.emptyResponseNudges >= 1) {
-          // Already nudged once; this is a real refusal to respond.
+        if (this.emptyResponseNudges >= DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET) {
+          // Already nudged the maximum number of times; this is a real refusal to respond.
           throw new Error(
             'agent terminated with empty response after nudge; no final answer produced',
           )
@@ -816,6 +910,19 @@ export class AgentLoop {
       iteration: this.iteration,
     }
     this.pushEvent(startEvent)
+    // Live ToolStream surface for the web app (Epic 15.x). Fire-and-
+    // forget; failures inside the emitter never break the loop.
+    try {
+      this.opts.toolEventEmitter?.({
+        kind: 'start',
+        task_id: task.frontmatter.id,
+        call_id: 'pending',
+        tool: call.tool,
+        arg_summary: summarizeToolArgs(call.tool, call.args),
+      })
+    } catch {
+      /* observability is best-effort */
+    }
 
     const dispatchInput: DispatchInput = {
       tool: call.tool,
@@ -846,6 +953,13 @@ export class AgentLoop {
     if ((call.tool === 'pub_send' || call.tool === 'pub_react') && dispatchError === null) {
       this.pubToolCallsThisTask += 1
     }
+    // Cumulative successful-tool-call count drives the planning-only
+    // retry guard: once the agent has done real work in this task,
+    // a subsequent text-only "I'll do X next" turn is treated as a
+    // legitimate stopping point rather than a planning-only stall.
+    if (dispatchError === null) {
+      this.priorSuccessfulToolCallsThisTask += 1
+    }
     const tEnd = this.nowFn().getTime()
     const durationMs = result?.durationMs ?? tEnd - tStart
     const callId = result?.callId ?? 'denied'
@@ -863,6 +977,19 @@ export class AgentLoop {
       ...(dispatchError ? { error_class: dispatchError.class } : {}),
     }
     this.pushEvent(endEvent)
+    try {
+      this.opts.toolEventEmitter?.({
+        kind: 'end',
+        task_id: task.frontmatter.id,
+        call_id: callId,
+        tool: call.tool,
+        ok: dispatchError === null,
+        ...(dispatchError ? { error_class: dispatchError.class } : {}),
+        duration_ms: durationMs,
+      })
+    } catch {
+      /* observability is best-effort */
+    }
 
     // Track brain writes for the no_progress detector.
     if (dispatchError === null && (call.tool === 'brain_write' || call.tool === 'fs_write')) {
@@ -1189,6 +1316,18 @@ export class AgentLoop {
       '',
       'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat_send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat_send` explicitly.',
       '',
+      '## Load-bearing rules',
+      '',
+      '1. **Verify before asserting.** Before stating state ("file X exists", "credential Y is missing", "service Z is ticking"), confirm it via the right tool (`fs_list`, `shell_run`, `brain_read`, supervisor log grep, etc.). Asserting from inference is the most common way a session goes off the rails. If you cannot verify, say "I have not checked but I expect ..." ... never assert. This applies to peer claims too: if another Agent says "X is missing", do not relay that as fact without checking yourself.',
+      '',
+      "2. **Read the tool's reference note before its first call.** Every platform tool (Spotify, Discord, Slack, future integrations) ships with a paired reference note in the shared brain, named by convention `<tool-family>-reference` (e.g. `spotify-api-reference`, `discord-api-reference`). Before your first call to a platform tool in a given task, `brain_read` that reference for the endpoint catalog and the **gotchas** section ... external services return misleading error messages, and the gotchas section names the failure modes other Agents have already worked through. Skipping the doc and learning from errors live wastes tokens and time.",
+      '',
+      "3. **Delegate to a peer before escalating to the operator.** When a problem requires capabilities outside your declared role (devops, infrastructure, code changes, secret rotation, CLI bugs, runtime configuration), find a peer on the fleet roster (see the Fleet section above, or `brain_read('fleet')` / `fs_read <home>/state/fleet.md`) and delegate via `task_create_for_agent`. Reserve operator escalation for: product decisions, actions that require a human at an external service (OAuth consent screens, dashboard sign-ups, payment authorization), and problems no Agent on the roster can resolve. Asking the operator to do work a peer Agent can handle turns the operator into your help desk; that is the bug.",
+      '',
+      "4. **Chat the operator when they need to act.** Once you have established (per rule 3) that the operator's unique action is required, call `chat_send` to their inbox with the specific ask. `@<operator-handle>` in a pub message does NOT page them ... they only see pub messages when they manually check. The team agreeing in the room and waiting is silent failure. Whoever names the action sends the chat ... two pings is harmless, zero is the bug.",
+      '',
+      '5. **Tools are TypeScript inside the supervisor.** You call them via the JSON-tool-block protocol below. Files in `/project/` are your own notes and data ... NOT a Python or JavaScript application layer that integrates with the tool surface. You cannot write a Python module that imports `spotify_api` because no such Python symbol exists. If a primitive is missing, raise it via chat rather than working around it with file-system tricks.',
+      '',
     ]
     const lines: string[] = [
       id.body,
@@ -1406,6 +1545,118 @@ function isPubWakeTask(task: TaskRecord): boolean {
  * to terminate without calling `pub_send` or `pub_react`. Include the
  * trigger message_id so the model can react to the right message.
  */
+/**
+ * Forcing message injected at the start of a task that was resumed after
+ * a detector trip. Goal: stop the model from retrying the exact thing
+ * that tripped the detector. The shape is short on purpose; the model
+ * needs the rule, not a lecture.
+ */
+function composeResumeGuidance(trip: { kind: string; detail: string; at: string }): string {
+  const prelude = `[Resume after detector trip at ${trip.at}: ${trip.kind}]\n${trip.detail}\n\n`
+  switch (trip.kind) {
+    case 'tool_repetition':
+      return (
+        prelude +
+        'You called the same tool with the same arguments multiple times. ' +
+        'Do not retry that exact call. Either change the arguments, use a different tool, ' +
+        'or surface the situation to the operator with notification_ask or chat_send.'
+      )
+    case 'error_storm':
+      return (
+        prelude +
+        'Five consecutive tool calls failed. Read the most recent error messages above before retrying. ' +
+        'The fix is usually in the error text. If you cannot determine what to change, ' +
+        'do not try again ... surface the situation to the operator with notification_ask or chat_send.'
+      )
+    case 'tool_timeout':
+      return (
+        prelude +
+        'A tool call hit its time ceiling. Do not call the same tool again with the same arguments. ' +
+        'Consider whether the work needs to be broken into smaller steps.'
+      )
+    case 'cost_burst':
+      return (
+        prelude +
+        'You burned through the cost-burst budget for this window. Pause and ask the operator ' +
+        'whether to continue before doing any more model or expensive tool calls.'
+      )
+    case 'no_progress':
+      return (
+        prelude +
+        'You ran many iterations without state change. Step back: what are you actually trying to ' +
+        'accomplish, what is blocking you, and is there an easier path? If you are stuck, surface ' +
+        'it to the operator.'
+      )
+    default:
+      return prelude + 'Read the trip detail above. Do not repeat what you were doing.'
+  }
+}
+
+/**
+ * One-line human-readable label for the ToolStream chip. The chip
+ * displays `<tool> <summary>`; this picks the most operator-readable
+ * argument (path, name, id, query) and truncates to ~40 chars.
+ *
+ * Heuristic: walk a handful of well-known key names in priority
+ * order, fall back to the first string value, then to the args hash.
+ * Never includes secrets ... env, token, auth, key, secret are
+ * dropped.
+ */
+function summarizeToolArgs(_tool: string, args: Record<string, unknown>): string | null {
+  const PRIORITY_KEYS = [
+    'path',
+    'file',
+    'filename',
+    'name',
+    'slug',
+    'id',
+    'message_id',
+    'agent_name',
+    'pub',
+    'channel',
+    'room',
+    'url',
+    'endpoint',
+    'query',
+    'q',
+    'search',
+    'prompt',
+    'title',
+    'task',
+    'note',
+    'method',
+    'verb',
+  ]
+  const REDACTED_KEYS = new Set([
+    'token',
+    'env',
+    'key',
+    'api_key',
+    'access_token',
+    'secret',
+    'password',
+    'authorization',
+    'auth',
+  ])
+  for (const k of PRIORITY_KEYS) {
+    const v = args[k]
+    if (typeof v === 'string' && v.length > 0) return clamp(v, 40)
+    if (typeof v === 'number') return String(v)
+  }
+  for (const [k, v] of Object.entries(args)) {
+    if (REDACTED_KEYS.has(k.toLowerCase())) continue
+    if (typeof v === 'string' && v.length > 0) return clamp(v, 40)
+    if (typeof v === 'number') return String(v)
+  }
+  // Fall back: omit the chip arg entirely so the chip is just "<tool>".
+  return null
+}
+
+function clamp(s: string, n: number): string {
+  if (s.length <= n) return s
+  return s.slice(0, n - 1) + '…'
+}
+
 function composeWakeNudge(task: TaskRecord): string {
   const idMatch = /Message id:\s*(\S+)/.exec(task.body)
   const messageId = idMatch?.[1] ?? '<message_id from the task body>'

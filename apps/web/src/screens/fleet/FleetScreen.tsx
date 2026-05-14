@@ -1,35 +1,25 @@
 /**
- * Fleet screen ... Mission Control variant per
- * wiki/design-system/decision-log.md.
+ * Fleet screen ... mission control, design-system v1.1.
  *
- * Layout: a "needs you" band (errored / blocked agents) on top, a
- * "running" band in the middle, and a compressed "idle" band at the
- * bottom. The status pill on each row updates without a page refresh
- * via the WebSocket subscription in src/ws/useLiveSignal.tsx.
+ * All chrome (breadcrumb, title, lede, action row, padding, max-width)
+ * comes from the canonical <Screen> primitive. Anything page-specific
+ * lives below the header.
  */
 import type { ReactElement } from 'react'
-import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, type Agent, ApiError, NetworkError } from '../../lib/api'
+import { ApiError, NetworkError, api, type Agent } from '../../lib/api'
 import {
   AgentMark,
   Button,
-  Card,
-  EmptyState,
-  ErrorState,
-  KV,
-  LoadingState,
-  PageHeader,
+  Meta,
   Pill,
+  Screen,
+  ScreenNavLink,
   type PillVariant,
-  PulseDot,
-  SectionHeader,
 } from '../../primitives'
-import { useNavigate } from 'react-router-dom'
-import { useTheme } from '../../theme/ThemeProvider'
-import { ThemeSwitcher } from '../../theme/ThemeSwitcher'
-import { useLiveSignal } from '../../ws/useLiveSignal'
+import { cx } from '../../primitives/cx'
 import styles from './FleetScreen.module.css'
 
 interface BandGroups {
@@ -61,21 +51,21 @@ function pillVariant(status: string): PillVariant {
   if (status === 'waiting') return 'info'
   if (status === 'errored') return 'error'
   if (status.startsWith('blocked_')) return 'attention'
-  if (status === 'stopped') return 'idle'
   return 'idle'
 }
 
 function pillLabel(status: string): string {
-  if (status === 'blocked_on_user') return 'NEEDS YOU'
-  if (status === 'blocked_on_agent') return 'BLOCKED'
-  if (status === 'blocked_on_detector') return 'PAUSED'
-  return status.toUpperCase().replace(/_/g, ' ')
+  if (status === 'blocked_on_user') return 'needs you'
+  if (status === 'blocked_on_agent') return 'warn'
+  if (status === 'blocked_on_detector') return 'paused'
+  if (status === 'archived') return 'archived'
+  if (status === 'errored') return 'error'
+  return status.replace(/_/g, ' ')
 }
 
 export function FleetScreen(): ReactElement {
-  const { theme } = useTheme()
-  const live = useLiveSignal()
   const navigate = useNavigate()
+  const [showArchived, setShowArchived] = useState(false)
 
   const query = useQuery({
     queryKey: ['agents'],
@@ -90,175 +80,236 @@ export function FleetScreen(): ReactElement {
     staleTime: 5_000,
   })
 
-  const groups = useMemo(() => group(query.data?.items ?? []), [query.data])
-  const aggregateStatus = `${theme} · WS ${live.status}`
+  const allItems = query.data?.items ?? []
+  const archivedItems = useMemo(() => allItems.filter((a) => a.status === 'archived'), [allItems])
+  const liveItems = useMemo(() => allItems.filter((a) => a.status !== 'archived'), [allItems])
+  const groups = useMemo(() => group(liveItems), [liveItems])
   const pendingCount = inboxQuery.data?.items.length ?? 0
 
-  return (
-    <main className={styles.shell}>
-      <PageHeader
-        eyebrow={`2200 · FLEET · ${aggregateStatus.toUpperCase()}`}
-        title="Fleet"
-        subtitle="Mission control for the Agents on this instance. Status pills are live."
-        actions={
-          <div className={styles.headerActions}>
-            <Link to="/studio" className={styles.inboxLink}>
-              STUDIO
-            </Link>
-            <Link to="/fleet" className={styles.inboxLink}>
-              ROSTER
-            </Link>
-            <Link to="/inbox" className={styles.inboxLink}>
-              INBOX{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
-            </Link>
-            <Link to="/budget" className={styles.inboxLink}>
-              BUDGET
-            </Link>
-            <Link to="/onboarding" className={styles.inboxLink}>
-              SPAWN
-            </Link>
-            <Link to="/settings" className={styles.inboxLink}>
-              SETTINGS
-            </Link>
-            <ThemeSwitcher />
-          </div>
-        }
-      />
+  const isLoading = query.isLoading
+  const isError = query.isError
+  const isEmpty = !isLoading && !isError && liveItems.length === 0 && archivedItems.length === 0
 
-      {query.isLoading ? (
-        <Card padding={20}>
-          <LoadingState rows={5} />
-        </Card>
-      ) : query.isError ? (
-        <Card padding={0}>
-          <ErrorState
-            title={errorTitle(query.error)}
-            body={errorBody(query.error)}
-            action={
-              <button
-                type="button"
-                className={styles.retry}
-                onClick={() => {
-                  void query.refetch()
-                }}
-              >
-                Retry
-              </button>
-            }
-          />
-        </Card>
-      ) : query.data?.items.length === 0 ? (
-        <Card padding={0}>
-          <EmptyState
-            title="No Agents yet"
-            body={
-              <>
-                Spawn one through the conversational onboarding flow, or run{' '}
-                <span className={styles.mono}>2200 agent spawn</span> in your shell. Either way the
-                Agent lands here once it's on disk.
-              </>
-            }
-            action={
-              <Button
-                variant="primary"
-                onClick={() => {
-                  void navigate('/onboarding')
-                }}
-              >
-                Spawn an Agent
-              </Button>
-            }
-          />
-        </Card>
-      ) : (
+  return (
+    <Screen
+      crumbs={['2200', 'fleet']}
+      title="Fleet"
+      lede="Mission control for the agents on this instance."
+      actions={
+        <>
+          <ScreenNavLink to="/studio">Studio</ScreenNavLink>
+          <ScreenNavLink to="/rooms">Rooms</ScreenNavLink>
+          <ScreenNavLink to="/inbox">
+            Inbox{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
+          </ScreenNavLink>
+          <ScreenNavLink to="/budget">Budget</ScreenNavLink>
+          <ScreenNavLink to="/settings">Settings</ScreenNavLink>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => {
+              void navigate('/onboarding')
+            }}
+          >
+            Build Agent
+          </Button>
+        </>
+      }
+    >
+      {isLoading && <Banner kind="info" meta="loading" body="Fetching the fleet…" />}
+
+      {isError && (
+        <Banner
+          kind="error"
+          meta="error"
+          title={errorTitle(query.error)}
+          body={errorBody(query.error)}
+          action={
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => {
+                void query.refetch()
+              }}
+            >
+              Retry
+            </Button>
+          }
+        />
+      )}
+
+      {isEmpty && (
+        <Banner
+          kind="info"
+          meta="empty"
+          title="No Agents yet"
+          body={
+            <>
+              Spawn one through the conversational onboarding flow, or run{' '}
+              <code className={styles.bannerCode}>2200 agent spawn</code> in your shell. Either way
+              the Agent lands here once it's on disk.
+            </>
+          }
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                void navigate('/onboarding')
+              }}
+            >
+              Build an Agent
+            </Button>
+          }
+        />
+      )}
+
+      {!isLoading && !isError && !isEmpty && (
         <div className={styles.bands}>
           <Band
-            title={`NEEDS YOU · ${String(groups.needsYou.length)}`}
+            label="needs you"
+            count={groups.needsYou.length}
             agents={groups.needsYou}
             empty="Nothing waiting on you. Quiet is the goal."
-            density="comfortable"
           />
           <Band
-            title={`RUNNING · ${String(groups.running.length)}`}
+            label="running"
+            count={groups.running.length}
             agents={groups.running}
-            empty="No Agents running right now."
-            density="comfortable"
+            empty="No agents running right now."
           />
           <Band
-            title={`IDLE · ${String(groups.idle.length)}`}
+            label="idle"
+            count={groups.idle.length}
             agents={groups.idle}
-            empty="No idle Agents."
-            density="compact"
+            empty="No idle agents."
           />
+          {archivedItems.length > 0 && (
+            <section className={styles.band}>
+              <div className={styles.bandHead}>
+                <button
+                  type="button"
+                  className={styles.archivedToggle}
+                  onClick={() => {
+                    setShowArchived((v) => !v)
+                  }}
+                  aria-expanded={showArchived}
+                >
+                  <Meta>
+                    {showArchived ? '▾' : '▸'} archived · {String(archivedItems.length)}
+                  </Meta>
+                </button>
+                <span className={styles.bandRule} />
+              </div>
+              {showArchived && (
+                <ul className={styles.grid}>
+                  {archivedItems.map((a) => (
+                    <li key={a.name} className={styles.cell}>
+                      <AgentCard agent={a} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
         </div>
       )}
-    </main>
+    </Screen>
   )
 }
 
+// ── Band ──────────────────────────────────────────────────────────────────
+
 interface BandProps {
-  title: string
+  label: string
+  count: number
   agents: Agent[]
   empty: string
-  density: 'comfortable' | 'compact'
 }
 
-function Band({ title, agents, empty, density }: BandProps): ReactElement {
-  const listClass = [styles.list, density === 'compact' ? styles.listCompact : '']
-    .filter(Boolean)
-    .join(' ')
+function Band({ label, count, agents, empty }: BandProps): ReactElement {
   return (
     <section className={styles.band}>
-      <SectionHeader title={title} />
+      <div className={styles.bandHead}>
+        <Meta>
+          {label} · {String(count)}
+        </Meta>
+        <span className={styles.bandRule} />
+      </div>
       {agents.length === 0 ? (
         <p className={styles.bandEmpty}>{empty}</p>
       ) : (
-        <ul className={listClass}>
+        <ul className={styles.grid}>
           {agents.map((a) => (
-            <li key={a.name} className={styles.row}>
-              <Link
-                to={`/agent/${encodeURIComponent(a.name)}`}
-                className={styles.rowLink}
-                aria-label={`Open ${a.name}`}
-              >
-                <div className={styles.cardHeader}>
-                  <AgentMark id={a.name} name={a.name} size={density === 'compact' ? 'sm' : 'md'} />
-                  <span className={styles.rowName}>
-                    {a.name}
-                    {a.pid !== null ? (
-                      <span className={styles.namePid}>pid {String(a.pid)}</span>
-                    ) : null}
-                  </span>
-                  {a.pulse && (
-                    <PulseDot
-                      state={a.pulse.state}
-                      intensity={a.pulse.intensity}
-                      size={density === 'compact' ? 'sm' : 'md'}
-                    />
-                  )}
-                </div>
-                <div className={styles.cardMeta}>
-                  <Pill variant={pillVariant(a.status)}>{pillLabel(a.status)}</Pill>
-                  <span className={styles.rowActivity}>
-                    {a.current_task_id ? (
-                      <KV
-                        k="TASK"
-                        v={<span className={styles.mono}>{a.current_task_id.slice(0, 12)}</span>}
-                        kw={48}
-                      />
-                    ) : (
-                      <span className={styles.rowMuted}>
-                        {density === 'compact' ? '—' : 'no current task'}
-                      </span>
-                    )}
-                  </span>
-                </div>
-              </Link>
+            <li key={a.name} className={styles.cell}>
+              <AgentCard agent={a} />
             </li>
           ))}
         </ul>
       )}
     </section>
+  )
+}
+
+// ── AgentCard ──────────────────────────────────────────────────────────────
+
+function AgentCard({ agent }: { agent: Agent }): ReactElement {
+  const isArchived = agent.status === 'archived'
+  const archivedAt = agent.archived?.at ?? null
+  const taskValue = isArchived
+    ? archivedAt
+      ? `archived ${new Date(archivedAt).toLocaleDateString()}`
+      : 'archived'
+    : agent.current_task_id
+      ? agent.current_task_id.slice(0, 24)
+      : 'no current task'
+  return (
+    <Link
+      to={`/agent/${encodeURIComponent(agent.name)}?tab=identity`}
+      className={cx(styles.card, isArchived && styles.cardArchived)}
+      aria-label={`Open ${agent.name}`}
+    >
+      <div className={styles.cardRow}>
+        <AgentMark
+          id={agent.name}
+          name={agent.name}
+          size="md"
+          glyph={agent.avatar ?? undefined}
+          imageUrl={api.authedUrl(agent.avatar_image_url) ?? undefined}
+        />
+        <span className={styles.cardName}>{agent.name}</span>
+        {agent.pid !== null && <span className={styles.cardPid}>pid {String(agent.pid)}</span>}
+        <span className={styles.cardSpacer} />
+        <Pill variant={pillVariant(agent.status)}>{pillLabel(agent.status)}</Pill>
+      </div>
+      <div className={styles.cardTask}>
+        <Meta>{isArchived ? 'state' : 'task'}</Meta>
+        <span className={styles.cardTaskValue}>{taskValue}</span>
+      </div>
+    </Link>
+  )
+}
+
+// ── Banner ─────────────────────────────────────────────────────────────────
+
+interface BannerProps {
+  kind: 'info' | 'error'
+  meta: string
+  title?: string
+  body: ReactElement | string
+  action?: ReactElement
+}
+
+function Banner({ kind, meta, title, body, action }: BannerProps): ReactElement {
+  return (
+    <div className={cx(styles.banner, kind === 'error' && styles.bannerError)}>
+      <Meta>{meta}</Meta>
+      <div className={styles.bannerBody}>
+        {title !== undefined && <strong className={styles.bannerTitle}>{title}</strong>}
+        <div className={styles.bannerLine}>{body}</div>
+        {action !== undefined && <div className={styles.bannerAction}>{action}</div>}
+      </div>
+    </div>
   )
 }
 

@@ -1,0 +1,112 @@
+/* Inline cap editor (BudgetCapEditor.tsx). Used by the Budget screen
+   and the per-Agent budget panel. Edit trigger sits next to the
+   "DAILY CAP" label; on click the value swaps in for a number input
+   with Save / Cancel. */
+
+.editRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  margin-top: var(--ds-3);
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.editRowLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+.editRowValue {
+  font-family: var(--ds-font-mono);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.editTrigger {
+  margin-left: auto;
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 2px var(--ds-3);
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+}
+
+.editTrigger:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.editForm {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  margin-left: auto;
+}
+
+.editPrefix {
+  font-family: var(--ds-font-mono);
+  color: var(--text-3);
+}
+
+.editInput {
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  width: 84px;
+  padding: 4px var(--ds-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--ds-r-2);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.editInput:focus {
+  outline: none;
+  border-color: var(--line-strong);
+}
+
+.editSave {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--text);
+  color: var(--bg);
+  border: 1px solid var(--text);
+  padding: 3px var(--ds-3);
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+}
+
+.editSave:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.editCancel {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  padding: 3px var(--ds-3);
+  border-radius: var(--ds-r-2);
+  cursor: pointer;
+}
+
+.editHint {
+  margin-top: var(--ds-2);
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
