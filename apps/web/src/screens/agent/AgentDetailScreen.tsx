@@ -776,6 +776,14 @@ function renderMessages(
       out.push(<CredentialRequestCard key={m.id} body={m.body} ts={m.ts} agent={agent} />)
       continue
     }
+    // System messages with no `kind` are runtime scaffolding (post-fulfill
+    // guidance, post-credential_has nudges, etc.) ... they exist to steer
+    // the model in-context, not to be read by the operator. Hide them
+    // from the chat render. If a future system message needs to be
+    // user-visible, give it a `kind` and a matching renderer above.
+    if (m.role === 'system' && m.kind === null) {
+      continue
+    }
     out.push(
       <ChatMessage
         key={m.id}

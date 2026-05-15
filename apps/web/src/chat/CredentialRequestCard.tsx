@@ -115,7 +115,7 @@ export function CredentialRequestCard({
         fulfilledAt: result.fulfilled_at ?? undefined,
       })
       setValue('')
-      setCardStage('provided')  // Move to "Provided – sealed, awaiting Agent verification" state
+      setCardStage('provided') // Move to "Provided – sealed, awaiting Agent verification" state
     } catch (err) {
       setError(err instanceof Error ? err.message : 'fulfill failed')
     } finally {
@@ -156,7 +156,8 @@ export function CredentialRequestCard({
         </div>
         <div className={styles.label}>{parsed.label}</div>
         <div className={styles.resolvedBody}>
-          Provided and sealed to the Agent’s private vault. The Agent has been instructed to verify receipt.
+          Provided and sealed to the Agent’s private vault. The Agent has been instructed to verify
+          receipt.
         </div>
         <div className={styles.expiredHint}>
           The Agent will confirm in chat once it has verified the credential.
@@ -316,12 +317,6 @@ function parseEnvelope(body: string): CredentialRequestEnvelopeV1 | null {
   } catch {
     return null
   }
-}
-
-function inputType(kind: CredentialRequestEnvelopeV1['kind']): string {
-  if (kind === 'secret') return 'password'
-  if (kind === 'file') return 'text' // visually a single-line summary; textarea below for contents
-  return 'text'
 }
 
 function inputPlaceholder(kind: CredentialRequestEnvelopeV1['kind']): string {
