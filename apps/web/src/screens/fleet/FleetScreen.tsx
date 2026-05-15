@@ -263,9 +263,15 @@ function AgentCard({ agent }: { agent: Agent }): ReactElement {
     : agent.current_task_id
       ? agent.current_task_id.slice(0, 24)
       : 'no current task'
+  // Live cards route to the bare /agent/:name (which defaults to the
+  // chat tab). Archived cards land on identity ... chat is moot for an
+  // archived Agent and the identity tab is where restore + rename live.
+  const cardHref = isArchived
+    ? `/agent/${encodeURIComponent(agent.name)}?tab=identity`
+    : `/agent/${encodeURIComponent(agent.name)}`
   return (
     <Link
-      to={`/agent/${encodeURIComponent(agent.name)}?tab=identity`}
+      to={cardHref}
       className={cx(styles.card, isArchived && styles.cardArchived)}
       aria-label={`Open ${agent.name}`}
     >
