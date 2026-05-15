@@ -54,20 +54,22 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 37 tools (36 prior + credential_request)', () => {
-    // 2026-05-15 v1 scope: bumped to 37 with `credential_request`
-    // (request_credential substrate; see decision
-    // 2026-05-14-request-credential-substrate).
-    expect(BASELINE_TOOL_NAMES).toHaveLength(37)
+  it('exports exactly 39 tools (38 prior + http_request)', () => {
+    // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
+    // 38 with `credential_has`, and 39 with `http_request` ... the
+    // runtime-mediated USE path for vault credentials (decision
+    // 2026-05-14-request-credential-substrate §"using credentials").
+    expect(BASELINE_TOOL_NAMES).toHaveLength(39)
   })
 
-  it('baselineServers() builds thirteen servers (adds credential)', () => {
+  it('baselineServers() builds fourteen servers (adds http)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
       'chat',
       'credential',
       'fs',
+      'http',
       'image',
       'notification',
       'pub',

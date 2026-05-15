@@ -200,6 +200,47 @@ describe('credential_request — rate cap', () => {
   })
 })
 
+describe('credential_request — in-process dedup', () => {
+  it(
+    'parallel calls for the same agent+credential_name share a single in-flight promise',
+    { timeout: 15_000 },
+    async () => {
+      const tool = findTool()
+      const args = tool.argsSchema.parse(sampleArgs)
+      const chats = new MultiChatStore(home, 'hobby')
+      const chat = await chats.createChat({ title: 'dedup test' })
+      const source: ToolContext['taskSource'] = { kind: 'chat', chat_id: chat.id }
+
+      // Fulfill whichever pending request appears (there should be
+      // only one).
+      void pollAndTransition({ home, agent: 'hobby', nextState: 'fulfilled' })
+
+      // Three parallel invocations.
+      const [r1, r2, r3] = await Promise.all([
+        tool.execute(args, ctx({ source })),
+        tool.execute(args, ctx({ source })),
+        tool.execute(args, ctx({ source })),
+      ])
+
+      // All three got the same fulfilled outcome.
+      expect((r1 as { status: string }).status).toBe('fulfilled')
+      expect((r2 as { status: string }).status).toBe('fulfilled')
+      expect((r3 as { status: string }).status).toBe('fulfilled')
+
+      // Only ONE request record was written. The dedup gate kept the
+      // other two parallel calls from creating duplicate cards.
+      const store = new CredentialRequestStore(home)
+      const list = await store.list({ agent: 'hobby' })
+      expect(list).toHaveLength(1)
+
+      // Only ONE chat-thread system message was inserted.
+      const messages = await chats.listMessages(chat.id)
+      const cards = messages.filter((m) => m.role === 'system' && m.kind === 'credential_request')
+      expect(cards).toHaveLength(1)
+    },
+  )
+})
+
 describe('credential_request — persisted shape', () => {
   it('returns fulfilled when the operator fulfills mid-wait', async () => {
     const tool = findTool()

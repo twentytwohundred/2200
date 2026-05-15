@@ -56,6 +56,7 @@ const SEND_CLASS_TOOLS = new Set([
   'slack_api',
   'discord_api',
   'task_create_for_agent',
+  'http_request',
 ])
 
 function isInClass(

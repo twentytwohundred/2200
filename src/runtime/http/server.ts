@@ -1780,6 +1780,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // user wouldn't be asking via chat if they didn't want the
       // Agent to act on their behalf.
       idempotency: 'destructive',
+      // The legacy `/chat` endpoint targets the implicit default
+      // thread. credential_request reads `task.source.kind === 'chat'`
+      // to gate dispatch; without this, every chat-spawned task would
+      // present as null-source and the surface check would reject.
+      source: { kind: 'chat', chat_id: 'default', message_id: userMsg.id },
     })
     await taskStore.save(task)
 
@@ -1980,6 +1985,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         body: taskBody,
         priority: 0,
         idempotency,
+        // Multi-chat endpoint: the chat_id is the path param. Sets
+        // task.source so surface-aware tools (credential_request) can
+        // verify this task originated from a 1:1 chat.
+        source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
       })
       await taskStore.save(task)
 
@@ -2191,6 +2200,31 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       } catch (err) {
         credentialErrorOrThrow(err, rec.id)
       }
+
+      // Automatic post-fulfillment guidance (lifecycle hardening 2026-05-15).
+      // Appends a second system message immediately after the card so the
+      // agent sees the exact required next steps without having to
+      // remember prompt rule #8 across turns. This directly addresses the
+      // fuzzy-bannana failure where the agent re-asked, slept, complained,
+      // and shell-thrashed instead of doing credential_has + final reply.
+      try {
+        const chats = new MultiChatStore(home, rec.agent)
+        const guidance = `credential_request ${rec.id} for "${rec.credential_name}" has been fulfilled by the operator and sealed to your vault. Your *required* next actions in this task are: (1) call credential_has for "${rec.credential_name}" to verify the value is present, (2) produce a final assistant reply to the original user request confirming you now have the credential and it is verified on disk. Do not emit another credential_request for this name. Use http_request with bearer_credential (or the appropriate MCP skill) for any consumption. The vault is opaque — do not shell_run or fs_* to locate it.`
+        await chats.appendMessage({
+          chatId: rec.chat_id,
+          role: 'system',
+          body: guidance,
+          kind: null,
+          taskId: null,
+        })
+        // The append + the broadcastChatEvent below is sufficient for
+        // the web UI to eventually see the guidance. The agent will pick
+        // it up on its next chat read in the loop.
+      } catch {
+        // Guidance is best-effort; the core fulfillment (vault seal +
+        // state transition + card) has already succeeded.
+      }
+
       broadcastChatEvent('credential_request.fulfilled', rec.agent, rec.chat_id, {
         request_id: rec.id,
         credential_name: rec.credential_name,
@@ -4305,9 +4339,12 @@ async function watchAndAppendChatReply(args: WatchAndAppendArgs): Promise<void> 
     if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
       continue
     }
-    // Terminal. Append once.
+    // Terminal. Append once. Same caveat as the multi-chat watcher:
+    // only count assistant-role messages, since tool envelopes
+    // (credential_request, future notification_ask) inserted during the
+    // task carry the same taskId and would otherwise block the reply.
     const messages = await chat.list()
-    const already = messages.some((m) => m.task_id === taskId)
+    const already = messages.some((m) => m.role === 'assistant' && m.task_id === taskId)
     if (already) return
     let content: string
     if (state === 'done' && task.frontmatter.outcome) {
@@ -4432,8 +4469,13 @@ async function watchAndAppendChatThreadReply(args: WatchAndAppendThreadArgs): Pr
     if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
       continue
     }
+    // Idempotency check: only count prior ASSISTANT-role messages. Tools
+    // like `credential_request` insert system-role envelope messages with
+    // the same taskId; counting those would make the watcher bail and the
+    // assistant's final reply would never appear in the thread (the
+    // operator only sees the tool-strip and never the "got it" message).
     const messages = await store.listMessages(chatId)
-    const already = messages.some((m) => m.task_id === taskId)
+    const already = messages.some((m) => m.role === 'assistant' && m.task_id === taskId)
     if (already) return
     let body: string
     if (state === 'done' && task.frontmatter.outcome) {

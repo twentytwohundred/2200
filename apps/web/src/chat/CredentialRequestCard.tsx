@@ -68,6 +68,9 @@ export function CredentialRequestCard({
   const [showDecline, setShowDecline] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 
+  // Local stage for the Hybrid UX: 'input' → 'provided' (operator just sealed) → 'verified' (Agent confirmed)
+  const [cardStage, setCardStage] = useState<'input' | 'provided' | 'verified'>('input')
+
   // Adopt a live update from the WS layer when it arrives.
   useEffect(() => {
     if (liveEnvelope === undefined) return
@@ -112,6 +115,7 @@ export function CredentialRequestCard({
         fulfilledAt: result.fulfilled_at ?? undefined,
       })
       setValue('')
+      setCardStage('provided')  // Move to "Provided – sealed, awaiting Agent verification" state
     } catch (err) {
       setError(err instanceof Error ? err.message : 'fulfill failed')
     } finally {
@@ -140,6 +144,27 @@ export function CredentialRequestCard({
     }
   }
 
+  // Hybrid UX: Show a clean "Provided" state right after the operator clicks Provide.
+  // The Agent is still forced (via TaskBlocker) to produce a final confirmation in chat.
+  if (cardStage === 'provided') {
+    return (
+      <div className={styles.card}>
+        <div className={styles.head}>
+          <span className={styles.flag}>✓ credential request</span>
+          <span className={styles.spacer} />
+          <span className={styles.time}>{formatTime(ts)}</span>
+        </div>
+        <div className={styles.label}>{parsed.label}</div>
+        <div className={styles.resolvedBody}>
+          Provided and sealed to the Agent’s private vault. The Agent has been instructed to verify receipt.
+        </div>
+        <div className={styles.expiredHint}>
+          The Agent will confirm in chat once it has verified the credential.
+        </div>
+      </div>
+    )
+  }
+
   // Resolved (terminal) state ... render a compact summary, no input
   // surface. The card stays in the chat history forever; this is what
   // the operator sees later when scrolling back.
@@ -156,6 +181,11 @@ export function CredentialRequestCard({
         </div>
         <div className={styles.label}>{parsed.label}</div>
         <div className={styles.resolvedBody}>{resolvedDescription(parsed, resolved)}</div>
+        {resolved.state === 'expired' && (
+          <div className={styles.expiredHint}>
+            ask {agent} to issue a new request when you're ready
+          </div>
+        )}
       </div>
     )
   }
@@ -180,10 +210,16 @@ export function CredentialRequestCard({
         destination · <code>{parsed.destination_credential_name}</code> in <code>{agent}</code>
         {"'s"} vault
       </div>
+
+      {/* Security reassurance — first-class, not an afterthought */}
+      <div className={styles.securityNote}>
+        This value is sealed directly into the Agent’s encrypted vault. The Agent will never see it.
+      </div>
+
       <div className={styles.countdown}>{formatRemaining(remainingMs)}</div>
       <div className={styles.inputRow}>
         <input
-          type={inputType(parsed.kind)}
+          type="password"
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"

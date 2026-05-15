@@ -981,6 +981,228 @@ describe('AgentLoop runtimeMode plumbing', () => {
   })
 })
 
+describe('AgentLoop awaiting_completion blocker', () => {
+  it('lets the model be called and resolves the blocker when the model produces a text reply', async () => {
+    // Reproduces the post-credential_has stall: an `awaiting_completion`
+    // blocker is registered (as credential_has would do after a fulfilled
+    // request). The loop must still call the model so the model can
+    // produce the final reply ... the previous design returned
+    // `blocked_on_user` here and the model never got a chance to speak.
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+
+    const { TaskBlockerRegistry } = await import('../../../src/runtime/agent/blockers.js')
+    const blockerRegistry = new TaskBlockerRegistry()
+    blockerRegistry.register({
+      id: 'credreq_final_test',
+      kind: 'awaiting_completion',
+      description: 'awaiting final reply after credential_has',
+      metadata: { credential_name: 'test-cred' },
+    })
+
+    const provider = new FakeProvider([
+      fakeResponse('Got the test-cred credential; verified in vault at 2026-05-15T18:00:00Z.'),
+    ])
+
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      blockerRegistry,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'set up the test-cred credential',
+      idempotency: 'checkpointed',
+    })
+    await taskStore.save(task)
+
+    const result = await loop.run(task)
+    expect(result.kind).toBe('done')
+    // Blocker was resolved by the done branch.
+    expect(blockerRegistry.hasActive()).toBe(false)
+  })
+
+  it('does NOT gate the model call when only an awaiting_completion blocker is active', async () => {
+    // Direct regression for the stall: an `awaiting_completion`
+    // blocker must not return `blocked_on_user` from the
+    // top-of-iteration check. If it did, the model would never run and
+    // could never produce the final reply.
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+
+    const { TaskBlockerRegistry } = await import('../../../src/runtime/agent/blockers.js')
+    const blockerRegistry = new TaskBlockerRegistry()
+    blockerRegistry.register({
+      id: 'awaiting_only',
+      kind: 'awaiting_completion',
+      description: 'speak now',
+    })
+
+    let modelCalls = 0
+    const provider: LLMProvider = {
+      name: 'count',
+      baseUrl: 'http://x',
+      complete: () => {
+        modelCalls += 1
+        return Promise.resolve({
+          text: 'Final reply, no tools.',
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 1, outputTokens: 1, estDollars: 0 },
+        })
+      },
+    }
+
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      blockerRegistry,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'wrap up',
+      idempotency: 'checkpointed',
+    })
+    await taskStore.save(task)
+
+    const result = await loop.run(task)
+    expect(modelCalls).toBeGreaterThan(0)
+    expect(result.kind).toBe('done')
+  })
+
+  it('returns blocked_on_user when a human_gate blocker is active at top of loop', async () => {
+    // The other direction: a `human_gate` blocker must short-circuit
+    // the model call and surface `blocked_on_user`. We are genuinely
+    // waiting on an external party; emitting another model turn just
+    // burns tokens.
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+
+    const { TaskBlockerRegistry } = await import('../../../src/runtime/agent/blockers.js')
+    const blockerRegistry = new TaskBlockerRegistry()
+    blockerRegistry.register({
+      id: 'human_only',
+      kind: 'human_gate',
+      description: 'waiting for paste',
+    })
+
+    let modelCalls = 0
+    const provider: LLMProvider = {
+      name: 'count',
+      baseUrl: 'http://x',
+      complete: () => {
+        modelCalls += 1
+        return Promise.resolve({
+          text: 'should not be called',
+          finishReason: 'stop',
+          costMetrics: { inputTokens: 1, outputTokens: 1, estDollars: 0 },
+        })
+      },
+    }
+
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      blockerRegistry,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'wrap up',
+      idempotency: 'checkpointed',
+    })
+    await taskStore.save(task)
+
+    const result = await loop.run(task)
+    expect(modelCalls).toBe(0)
+    expect(result.kind).toBe('blocked_on_user')
+    if (result.kind === 'blocked_on_user') {
+      expect(result.blockers.map((b) => b.id)).toContain('human_only')
+    }
+  })
+
+  it('nudges + throws after budget when the model keeps emitting tools instead of speaking', async () => {
+    // The model is in "speak now" mode but stubbornly emits tool calls
+    // on every turn. We push a forcing nudge into history each time
+    // (capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET), and on
+    // exhaustion the loop throws so the operator sees a structured
+    // failure instead of a silent stall.
+    const { dispatcher } = makeDispatcher()
+    const taskStore = new TaskStore(home, 'hobby')
+    const ap = agentPaths(home, 'hobby')
+    await mkdir(ap.project, { recursive: true })
+
+    const { TaskBlockerRegistry } = await import('../../../src/runtime/agent/blockers.js')
+    const blockerRegistry = new TaskBlockerRegistry()
+    blockerRegistry.register({
+      id: 'speak_now',
+      kind: 'awaiting_completion',
+      description: 'speak after credential_has',
+    })
+
+    // Every response calls fs_write again. The mid-batch break clears
+    // the for-loop after each, the outer while keeps cycling, and the
+    // budget eventually fires.
+    const toolBlock =
+      '```tool\n{"tool":"fs_write","args":{"path":"/project/x.md","content":"y"},"predicted_outcome":"ok","reason":"x"}\n```'
+    const provider = new FakeProvider([
+      fakeResponse(toolBlock),
+      fakeResponse(toolBlock),
+      fakeResponse(toolBlock),
+      fakeResponse(toolBlock),
+      fakeResponse(toolBlock),
+      fakeResponse(toolBlock),
+    ])
+
+    const loop = new AgentLoop({
+      identity: fakeIdentity(),
+      provider,
+      dispatcher,
+      taskStore,
+      home,
+      brainDir: ap.brain,
+      availableToolNames: BASELINE_TOOL_NAMES,
+      blockerRegistry,
+    })
+
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: 'hobby',
+      title: 't',
+      body: 'finish up',
+      idempotency: 'checkpointed',
+    })
+    await taskStore.save(task)
+
+    await expect(loop.run(task)).rejects.toThrow(/awaiting_completion budget exhausted/)
+  })
+})
+
 interface FakeSkillData {
   body: string
   tools: string[]

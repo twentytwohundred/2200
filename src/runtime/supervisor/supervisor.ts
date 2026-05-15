@@ -1722,6 +1722,31 @@ export class Supervisor {
         })
         return { ack: true as const }
       },
+      'agent.chatMessage': (params, ctx: HandlerContext) => {
+        // Agent-side appends (e.g. credential_request tool inserting a
+        // credential_request_v1 system-role message into the chat
+        // thread) bypass the HTTP route's broadcast path. Fanout here
+        // mirrors the broadcastChatEvent('chat.message', ...) call
+        // that HTTP handlers make on operator-driven appends so the
+        // web's useLiveSignal hook invalidates the messages query and
+        // re-fetches.
+        const name = this.agentByConnection.get(ctx.connection)
+        if (!name) return { ack: true as const }
+        if (this.webHandle) {
+          this.webHandle.broadcast({
+            event: 'chat.message',
+            payload: {
+              agent: name,
+              chat_id: params.chat_id,
+              message_id: params.message_id,
+              role: params.role,
+              kind: params.kind ?? null,
+              at: new Date().toISOString(),
+            },
+          })
+        }
+        return { ack: true as const }
+      },
       'agent.toolEvent': (params, ctx: HandlerContext) => {
         // Pass-through fanout: each tool call start/end becomes a
         // WebSocket event the web app's ToolStream subscribes to.
