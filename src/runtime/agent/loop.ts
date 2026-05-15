@@ -1107,6 +1107,7 @@ export class AgentLoop {
       args: call.args,
       taskId: task.frontmatter.id,
       taskIdempotency: task.frontmatter.idempotency,
+      taskSource: task.frontmatter.source,
       model,
       predictedOutcome: call.predicted_outcome,
       reason: call.reason,

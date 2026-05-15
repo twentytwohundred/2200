@@ -46,6 +46,23 @@ export interface ToolContext {
   taskId: string | null
   /** Per-call ID assigned by the dispatcher. */
   callId: string
+  /**
+   * Spawn source of the originating task. Surface-aware tools
+   * (request_credential) read this to enforce origin restrictions
+   * (e.g., "chat only"). Null when the task has no recorded source
+   * (legacy records or ad-hoc calls outside a task). Optional so
+   * pre-substrate test fixtures that build a ToolContext by hand
+   * still compile; the dispatcher always sets it from
+   * task.frontmatter.source.
+   */
+  taskSource?:
+    | { kind: 'chat'; chat_id: string; message_id?: string | undefined }
+    | { kind: 'pub'; pub: string }
+    | { kind: 'schedule'; schedule_id: string }
+    | { kind: 'delegation'; parent_task_id: string }
+    | { kind: 'cli' }
+    | { kind: 'self_spawn' }
+    | null
 }
 
 export interface ToolDefinition<S extends ZodType = ZodType, Result = unknown> {

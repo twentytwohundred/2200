@@ -53,6 +53,8 @@ export interface HomePaths {
   readonly stateSupervisorPid: string
   readonly stateSupervisorLog: string
   readonly stateNotifications: string
+  /** Per-Agent credential-request records (decision: 2026-05-14-request-credential-substrate). Flat dir; one JSON file per request keyed by request_id. */
+  readonly stateCredentialRequests: string
   readonly stateOpenpub: string
   /** Per-Agent JSONL telemetry root (Epic 4.5). One subdir per Agent name. */
   readonly stateTelemetry: string
@@ -84,6 +86,7 @@ export function homePaths(home: string): HomePaths {
     stateSupervisorPid: join(state, 'supervisor.pid'),
     stateSupervisorLog: join(state, 'supervisor.log'),
     stateNotifications: join(state, 'notifications'),
+    stateCredentialRequests: join(state, 'credential-requests'),
     stateOpenpub: join(state, 'openpub'),
     stateTelemetry: join(state, 'telemetry'),
     stateWebTokens: join(state, 'web-tokens'),
@@ -203,6 +206,27 @@ export function agentCredentialFilePath(
   credentialName: string,
 ): string {
   return join(agentCredentialsDir(home, agentName), `${credentialName}.json`)
+}
+
+/**
+ * Per-Agent credential-request records (decision:
+ * 2026-05-14-request-credential-substrate). Flat directory; one JSON
+ * file per request keyed by the request_id. The `agent` is encoded in
+ * the request body, not the path, so the substrate matches the
+ * notification storage pattern.
+ *
+ *   <home>/state/credential-requests/<request-id>.json
+ *
+ * The rolling rate-cap state is at the same root under
+ * `.rate-<agent>.json` (leading dot keeps it sorted away from request
+ * records when an operator inspects the directory).
+ */
+export function credentialRequestPath(home: string, requestId: string): string {
+  return join(home, 'state', 'credential-requests', `${requestId}.json`)
+}
+
+export function credentialRequestRatePath(home: string, agentName: string): string {
+  return join(home, 'state', 'credential-requests', `.rate-${agentName}.json`)
 }
 
 /**

@@ -24,6 +24,7 @@ import { chatTools } from './chat.js'
 import { scheduleTools, type SupervisorRpcGetter } from './schedule.js'
 import { imageTools } from './image.js'
 import { makeTaskDelegateTools } from './task-delegate.js'
+import { credentialTools } from './credential.js'
 
 /**
  * All baseline tool names. Used by tool-in-set perm checks and
@@ -84,6 +85,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'schedule_run_once',
   'image_generate',
   'task_create_for_agent',
+  'credential_request',
 ]
 
 export interface BaselineServersOptions {
@@ -126,5 +128,6 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('schedule', scheduleTools(getSupervisorRpc)),
     createInProcessServer('image', imageTools),
     createInProcessServer('task', makeTaskDelegateTools()),
+    createInProcessServer('credential', credentialTools(getIdentity)),
   ]
 }

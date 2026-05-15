@@ -138,6 +138,12 @@ export interface DispatchInput {
   taskId: string | null
   /** Task idempotency category, or null when no task. */
   taskIdempotency: Idempotency | null
+  /**
+   * Spawn source of the originating task. Threaded through to
+   * ToolContext.taskSource so surface-aware tools (request_credential)
+   * can enforce origin restrictions. Null when unknown / ad-hoc.
+   */
+  taskSource?: ToolContext['taskSource']
   /** Model that produced this call: `<provider>/<model_id>`. */
   model: string
   /** Free-form: what the Agent expects to happen. */
@@ -297,6 +303,7 @@ export class ToolDispatcher {
       projectDir: this.options.projectDir,
       taskId: input.taskId,
       callId,
+      taskSource: input.taskSource ?? null,
     }
 
     const tsStart = Date.now()

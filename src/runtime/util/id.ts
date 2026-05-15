@@ -22,6 +22,7 @@ export type PermId = `perm_${string}` & { readonly __brand: 'PermId' }
 export type NotificationId = `notif_${string}` & { readonly __brand: 'NotificationId' }
 export type DetectorTripId = `trip_${string}` & { readonly __brand: 'DetectorTripId' }
 export type ScheduleId = `sched_${string}` & { readonly __brand: 'ScheduleId' }
+export type CredentialRequestId = `credreq_${string}` & { readonly __brand: 'CredentialRequestId' }
 
 function makeId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`
@@ -36,3 +37,5 @@ export const newPermId = (): PermId => makeId('perm') as PermId
 export const newNotificationId = (): NotificationId => makeId('notif') as NotificationId
 export const newDetectorTripId = (): DetectorTripId => makeId('trip') as DetectorTripId
 export const newScheduleId = (): ScheduleId => makeId('sched') as ScheduleId
+export const newCredentialRequestId = (): CredentialRequestId =>
+  makeId('credreq') as CredentialRequestId

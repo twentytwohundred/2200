@@ -54,17 +54,19 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 36 tools (35 prior + task_create_for_agent)', () => {
-    // 2026-05-12 v1 scope: bumped to 36 with `task_create_for_agent`
-    // (Capability 3: Agent-to-Agent task delegation).
-    expect(BASELINE_TOOL_NAMES).toHaveLength(36)
+  it('exports exactly 37 tools (36 prior + credential_request)', () => {
+    // 2026-05-15 v1 scope: bumped to 37 with `credential_request`
+    // (request_credential substrate; see decision
+    // 2026-05-14-request-credential-substrate).
+    expect(BASELINE_TOOL_NAMES).toHaveLength(37)
   })
 
-  it('baselineServers() builds twelve servers (adds task)', () => {
+  it('baselineServers() builds thirteen servers (adds credential)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
       'chat',
+      'credential',
       'fs',
       'image',
       'notification',

@@ -438,6 +438,15 @@ export const IdentityFrontmatterSchema = z.object({
    */
   notification_policy: NotificationPolicySchema.default(NOTIFICATION_POLICY_DEFAULT),
   /**
+   * Per-Agent override for the `request_credential` rate cap (decision:
+   * 2026-05-14-request-credential-substrate). Default is the global
+   * 15 / hour cap; an operator can raise or lower it per-Agent here.
+   * Clamped to at least 1 by the runtime.
+   *
+   * Optional: absent / null falls through to the global default.
+   */
+  request_credential_rate_per_hour: z.number().int().min(1).optional(),
+  /**
    * SCUT identity block (Epic 4 Phase A). Optional: filled in after
    * the supervisor's provisioning pipeline mints + updates the
    * on-chain tokenId. Identity files created before Phase A land

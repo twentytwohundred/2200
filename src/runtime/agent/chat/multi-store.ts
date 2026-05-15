@@ -54,12 +54,19 @@ export type AttachmentRef = z.infer<typeof AttachmentRefSchema>
 
 /**
  * Discriminator for system-role messages emitted by the runtime
- * itself rather than the agent or operator. v1 has just one kind:
- * `audit` for claim-vs-evidence audit cards. Future system-authored
- * messages pick their own enum value here so the renderer can route
- * them. Null for normal user / assistant / system messages.
+ * itself rather than the agent or operator. Used by the renderer to
+ * route to specialized cards.
+ *
+ *   - 'audit'              ... claim-vs-evidence audit cards (session 24-25)
+ *   - 'credential_request' ... operator-paste credential prompts (session 27)
+ *
+ * Future system-authored messages pick their own enum value here.
+ * Null for normal user / assistant / system messages.
  */
-export const ChatMessageKindSchema = z.enum(['audit']).nullable().default(null)
+export const ChatMessageKindSchema = z
+  .enum(['audit', 'credential_request'])
+  .nullable()
+  .default(null)
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>
 
 export const ChatMessageRecordSchema = z.object({

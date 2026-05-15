@@ -4144,7 +4144,7 @@ interface MultiChatMessageDto {
    * just `audit` (claim-vs-evidence audit card); future system kinds
    * pick their own enum value.
    */
-  kind: 'audit' | null
+  kind: 'audit' | 'credential_request' | null
 }
 
 function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
