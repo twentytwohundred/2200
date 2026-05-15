@@ -111,6 +111,13 @@ import {
   unauthorized,
 } from './errors.js'
 import { WebTokenStore } from './tokens.js'
+import { CredentialVault } from '../credentials/vault.js'
+import { CredentialRequestStore } from '../credentials/requests.js'
+import {
+  CredentialRequestError,
+  toEnvelopeV1,
+  type CredentialRequest,
+} from '../credentials/request-types.js'
 
 /**
  * @fastify/websocket@11 ships a typed default export that is correct at
@@ -370,6 +377,15 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       {
         method: 'GET',
         path: '/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename',
+      },
+      { method: 'GET', path: '/api/v1/agents/:name/credential-requests' },
+      {
+        method: 'POST',
+        path: '/api/v1/agents/:name/credential-requests/:id/fulfill',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/agents/:name/credential-requests/:id/decline',
       },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
@@ -2039,6 +2055,212 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- credential requests (decision: request_credential substrate) --------
+  // Operator-driven resolution of pending credential_request records.
+  // Fulfill seals the pasted value directly into the per-Agent vault
+  // without the value ever entering the Agent's loop or transit the
+  // LLM provider. Decline records the operator's reason. The Agent's
+  // running tool dispatch unblocks via the polling waitForResolution
+  // helper as soon as the record's state flips.
+
+  function toCredentialRequestDto(rec: CredentialRequest): {
+    id: string
+    agent: string
+    chat_id: string
+    state: CredentialRequest['state']
+    label: string
+    help: string
+    kind: CredentialRequest['kind']
+    reason: string
+    credential_name: string
+    created_at: string
+    expires_at: string
+    fulfilled_at: string | null
+    declined_at: string | null
+    decline_reason: string | null
+    expired_at: string | null
+    expired_reason: CredentialRequest['expired_reason']
+  } {
+    return {
+      id: rec.id,
+      agent: rec.agent,
+      chat_id: rec.chat_id,
+      state: rec.state,
+      label: rec.label,
+      help: rec.help,
+      kind: rec.kind,
+      reason: rec.reason,
+      credential_name: rec.credential_name,
+      created_at: rec.created_at,
+      expires_at: rec.expires_at,
+      fulfilled_at: rec.fulfilled_at,
+      declined_at: rec.declined_at,
+      decline_reason: rec.decline_reason,
+      expired_at: rec.expired_at,
+      expired_reason: rec.expired_reason,
+    }
+  }
+
+  function credentialErrorOrThrow(err: unknown, id: string): never {
+    if (err instanceof CredentialRequestError) {
+      if (err.code === 'NOT_FOUND') throw notFound('credential_request', id)
+      if (err.code === 'INVALID_TRANSITION') {
+        throw new ApiError(409, 'credential_request_not_pending', err.message, { id })
+      }
+    }
+    throw err as Error
+  }
+
+  fastify.get<{ Params: { name: string }; Querystring: { state?: string; chat_id?: string } }>(
+    '/api/v1/agents/:name/credential-requests',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new CredentialRequestStore(home)
+      const filter: { agent: string; state?: CredentialRequest['state']; chat_id?: string } = {
+        agent: req.params.name,
+      }
+      if (
+        req.query.state === 'pending' ||
+        req.query.state === 'fulfilled' ||
+        req.query.state === 'declined' ||
+        req.query.state === 'expired'
+      ) {
+        filter.state = req.query.state
+      }
+      if (typeof req.query.chat_id === 'string' && req.query.chat_id.length > 0) {
+        filter.chat_id = req.query.chat_id
+      }
+      const items = await store.list(filter)
+      return { items: items.map(toCredentialRequestDto) }
+    },
+  )
+
+  const FulfillBodySchema = z.object({
+    value: z.string().min(1).max(64_000),
+  })
+
+  fastify.post<{ Params: { name: string; id: string }; Body: { value: string } }>(
+    '/api/v1/agents/:name/credential-requests/:id/fulfill',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const parsed = FulfillBodySchema.parse(req.body)
+      const store = new CredentialRequestStore(home)
+      let rec: CredentialRequest
+      try {
+        rec = await store.get(req.params.id)
+      } catch (err) {
+        credentialErrorOrThrow(err, req.params.id)
+      }
+      if (rec.agent !== req.params.name) {
+        throw new ApiError(
+          403,
+          'credential_request_wrong_agent',
+          'credential request does not belong to this agent',
+          { id: rec.id, agent: rec.agent },
+        )
+      }
+      if (rec.state !== 'pending') {
+        throw new ApiError(
+          409,
+          'credential_request_not_pending',
+          `credential request is in state ${rec.state}; cannot fulfill`,
+          { id: rec.id, state: rec.state },
+        )
+      }
+
+      // Seal the value DIRECTLY to vault. This is the load-bearing
+      // privacy property: the value never enters the Agent's loop or
+      // LLM provider context. It moves: browser → here → vault.
+      const vault = new CredentialVault(home, req.params.name)
+      const sealedAt = new Date().toISOString()
+      await vault.set(rec.credential_name, {
+        value: parsed.value,
+        metadata: {
+          created_at: sealedAt,
+          provider: 'operator',
+          notes: `via credential_request ${rec.id}`,
+        },
+      })
+
+      // Transition the request and broadcast.
+      let updated: CredentialRequest
+      try {
+        updated = await store.transition(rec.id, 'fulfilled', { now: sealedAt })
+      } catch (err) {
+        credentialErrorOrThrow(err, rec.id)
+      }
+      broadcastChatEvent('credential_request.fulfilled', rec.agent, rec.chat_id, {
+        request_id: rec.id,
+        credential_name: rec.credential_name,
+        fulfilled_at: sealedAt,
+        envelope: toEnvelopeV1(updated),
+      })
+      void reply.status(200)
+      return toCredentialRequestDto(updated)
+    },
+  )
+
+  const DeclineBodySchema = z
+    .object({
+      reason: z.string().max(2000).optional(),
+    })
+    .strict()
+    .partial()
+
+  fastify.post<{
+    Params: { name: string; id: string }
+    Body: { reason?: string }
+  }>('/api/v1/agents/:name/credential-requests/:id/decline', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const parsed = DeclineBodySchema.parse(req.body)
+    const store = new CredentialRequestStore(home)
+    let rec: CredentialRequest
+    try {
+      rec = await store.get(req.params.id)
+    } catch (err) {
+      credentialErrorOrThrow(err, req.params.id)
+    }
+    if (rec.agent !== req.params.name) {
+      throw new ApiError(
+        403,
+        'credential_request_wrong_agent',
+        'credential request does not belong to this agent',
+        { id: rec.id, agent: rec.agent },
+      )
+    }
+    if (rec.state !== 'pending') {
+      throw new ApiError(
+        409,
+        'credential_request_not_pending',
+        `credential request is in state ${rec.state}; cannot decline`,
+        { id: rec.id, state: rec.state },
+      )
+    }
+    const declinedAt = new Date().toISOString()
+    let updated: CredentialRequest
+    try {
+      const transitionFields: { now: string; decline_reason?: string } = { now: declinedAt }
+      if (parsed.reason !== undefined && parsed.reason.length > 0) {
+        transitionFields.decline_reason = parsed.reason
+      }
+      updated = await store.transition(rec.id, 'declined', transitionFields)
+    } catch (err) {
+      credentialErrorOrThrow(err, rec.id)
+    }
+    broadcastChatEvent('credential_request.declined', rec.agent, rec.chat_id, {
+      request_id: rec.id,
+      credential_name: rec.credential_name,
+      declined_at: declinedAt,
+      decline_reason: updated.decline_reason,
+      envelope: toEnvelopeV1(updated),
+    })
+    void reply.status(200)
+    return toCredentialRequestDto(updated)
+  })
+
   function broadcastChatEvent(
     event:
       | 'chat.message'
@@ -2046,7 +2268,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       | 'chat.renamed'
       | 'chat.archived'
       | 'chat.read'
-      | 'chat.audit_flag',
+      | 'chat.audit_flag'
+      | 'credential_request.created'
+      | 'credential_request.fulfilled'
+      | 'credential_request.declined'
+      | 'credential_request.expired',
     agentName: string,
     chatId: string,
     payload: Record<string, unknown>,

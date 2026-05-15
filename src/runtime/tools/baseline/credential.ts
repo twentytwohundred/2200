@@ -82,7 +82,7 @@ export function credentialTools(getIdentity: IdentityGetter): ToolDefinition[] {
     execute: async (args, ctx) => {
       // 1. Surface check: only chat-spawned tasks may dispatch.
       const source = ctx.taskSource ?? null
-      if (source === null || source.kind !== 'chat') {
+      if (source?.kind !== 'chat') {
         return {
           status: 'declined' as const,
           credential_name: args.credential_name,

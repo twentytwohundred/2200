@@ -340,3 +340,110 @@ describe('verifyClaim · toolClassOverlay extends class predicates', () => {
     expect(out.status).toBe('unverified')
   })
 })
+
+describe('verifyCredentialRequest', () => {
+  it('verifies a claim when a matching request record exists', async () => {
+    const { CredentialRequestStore } =
+      await import('../../../../src/runtime/credentials/requests.js')
+    const { CredentialRequestSchema } =
+      await import('../../../../src/runtime/credentials/request-types.js')
+    const { newCredentialRequestId } = await import('../../../../src/runtime/util/id.js')
+    const store = new CredentialRequestStore(home)
+    const id = newCredentialRequestId()
+    await store.create(
+      CredentialRequestSchema.parse({
+        schema_version: 1,
+        id,
+        agent: 'hobby',
+        chat_id: 'chat_x',
+        credential_name: 'openpub--private-key',
+        label: 'OpenPub Private Key',
+        help: '',
+        kind: 'secret',
+        reason: 'needed to authenticate',
+        created_at: '2026-05-15T12:00:00.000Z',
+        expires_at: '2026-05-15T12:05:00.000Z',
+        state: 'pending',
+        fulfilled_at: null,
+        declined_at: null,
+        decline_reason: null,
+        expired_at: null,
+        expired_reason: null,
+      }),
+    )
+    const claim: ExtractedClaim = {
+      category: 'credential_request',
+      verb: 'asked',
+      object: 'the operator for the OpenPub key',
+      credential_name: 'openpub--private-key',
+    }
+    const out = await verifyClaim(claim, {
+      home,
+      agentName: 'hobby',
+      events: [],
+    })
+    expect(out.status).toBe('verified')
+    if (out.status === 'verified') {
+      expect(out.evidence).toMatch(/openpub--private-key/)
+    }
+  })
+
+  it('marks unverified when the named credential has no matching record', async () => {
+    const claim: ExtractedClaim = {
+      category: 'credential_request',
+      verb: 'asked',
+      object: 'for a github token',
+      credential_name: 'github-pat',
+    }
+    const out = await verifyClaim(claim, { home, agentName: 'hobby', events: [] })
+    expect(out.status).toBe('unverified')
+  })
+
+  it('marks unverified when no records exist at all for this agent', async () => {
+    const claim: ExtractedClaim = {
+      category: 'credential_request',
+      verb: 'asked',
+      object: 'for something',
+    }
+    const out = await verifyClaim(claim, { home, agentName: 'hobby', events: [] })
+    expect(out.status).toBe('unverified')
+  })
+
+  it('does not match records belonging to a different agent', async () => {
+    const { CredentialRequestStore } =
+      await import('../../../../src/runtime/credentials/requests.js')
+    const { CredentialRequestSchema } =
+      await import('../../../../src/runtime/credentials/request-types.js')
+    const { newCredentialRequestId } = await import('../../../../src/runtime/util/id.js')
+    const store = new CredentialRequestStore(home)
+    await store.create(
+      CredentialRequestSchema.parse({
+        schema_version: 1,
+        id: newCredentialRequestId(),
+        agent: 'simon',
+        chat_id: 'chat_x',
+        credential_name: 'github-pat',
+        label: 'GitHub PAT',
+        help: '',
+        kind: 'secret',
+        reason: 'needed for ci',
+        created_at: '2026-05-15T12:00:00.000Z',
+        expires_at: '2026-05-15T12:05:00.000Z',
+        state: 'pending',
+        fulfilled_at: null,
+        declined_at: null,
+        decline_reason: null,
+        expired_at: null,
+        expired_reason: null,
+      }),
+    )
+    const claim: ExtractedClaim = {
+      category: 'credential_request',
+      verb: 'asked',
+      object: 'for a github token',
+      credential_name: 'github-pat',
+    }
+    const out = await verifyClaim(claim, { home, agentName: 'hobby', events: [] })
+    expect(out.status).toBe('unverified')
+  })
+})

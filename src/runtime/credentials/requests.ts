@@ -14,11 +14,7 @@
  * writes value-to-vault; this store only flips state and timestamps.
  */
 import { mkdir, readFile, readdir, unlink } from 'node:fs/promises'
-import {
-  credentialRequestPath,
-  credentialRequestRatePath,
-  homePaths,
-} from '../storage/layout.js'
+import { credentialRequestPath, credentialRequestRatePath, homePaths } from '../storage/layout.js'
 import { atomicWriteJson } from '../util/atomic-write.js'
 import {
   CredentialRequestError,
@@ -147,9 +143,11 @@ export class CredentialRequestStore {
       state: next,
       fulfilled_at: next === 'fulfilled' ? fields.now : current.fulfilled_at,
       declined_at: next === 'declined' ? fields.now : current.declined_at,
-      decline_reason: next === 'declined' ? (fields.decline_reason ?? null) : current.decline_reason,
+      decline_reason:
+        next === 'declined' ? (fields.decline_reason ?? null) : current.decline_reason,
       expired_at: next === 'expired' ? fields.now : current.expired_at,
-      expired_reason: next === 'expired' ? (fields.expired_reason ?? 'timeout') : current.expired_reason,
+      expired_reason:
+        next === 'expired' ? (fields.expired_reason ?? 'timeout') : current.expired_reason,
     }
     await atomicWriteJson(credentialRequestPath(this.home, id), updated)
     return updated

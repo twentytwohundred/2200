@@ -7,6 +7,9 @@ export type { ChatMessageProps, ChatMessageAttachment } from './ChatMessage'
 export { AuditCard } from './AuditCard'
 export type { AuditCardProps } from './AuditCard'
 
+export { CredentialRequestCard } from './CredentialRequestCard'
+export type { CredentialRequestCardProps } from './CredentialRequestCard'
+
 export { ChatComposer } from './ChatComposer'
 export type { ChatComposerProps, ComposerMode, ComposerAttachment } from './ChatComposer'
 

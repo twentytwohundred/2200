@@ -45,6 +45,7 @@ import {
 } from '../../primitives'
 import {
   AuditCard,
+  CredentialRequestCard,
   ChatComposer,
   ChatListRow,
   ChatMessage,
@@ -765,6 +766,14 @@ function renderMessages(
     // structured AuditCard, not a regular chat bubble.
     if (m.role === 'system' && m.kind === 'audit') {
       out.push(<AuditCard key={m.id} body={m.body} ts={m.ts} />)
+      continue
+    }
+    // kind='credential_request' renders the operator-paste card. The
+    // card owns its own state machine (pending → fulfilled / declined
+    // / expired) and POSTs directly to the runtime; the value never
+    // enters this surface.
+    if (m.role === 'system' && m.kind === 'credential_request') {
+      out.push(<CredentialRequestCard key={m.id} body={m.body} ts={m.ts} agent={agent} />)
       continue
     }
     out.push(

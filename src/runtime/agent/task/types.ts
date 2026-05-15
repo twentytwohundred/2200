@@ -113,6 +113,7 @@ export const TaskAuditClaimSchema = z.object({
     'tool_invoke',
     'process_count',
     'refusal',
+    'credential_request',
   ]),
   verb: z.string(),
   object: z.string(),

@@ -108,15 +108,16 @@ function stubIdentity(override?: Partial<IdentityRecord['frontmatter']>): Identi
 
 function ctx(opts: { source?: ToolContext['taskSource'] } = {}): ToolContext {
   const ap = agentPaths(home, 'hobby')
-  return {
+  const base: ToolContext = {
     callingAgent: 'hobby',
     home,
     brainDir: ap.brain,
     projectDir: ap.project,
     taskId: 'task_test',
     callId: 'call_test',
-    taskSource: opts.source,
   }
+  if (opts.source !== undefined) base.taskSource = opts.source
+  return base
 }
 
 const sampleArgs = {
@@ -172,9 +173,7 @@ describe('credential_request — surface gating', () => {
 describe('credential_request — rate cap', () => {
   it('declines with rate_capped + emits operator notification on cap hit', async () => {
     // Override identity to cap=2 for a fast test.
-    const tools = credentialTools(
-      () => stubIdentity({ request_credential_rate_per_hour: 2 } as never),
-    )
+    const tools = credentialTools(() => stubIdentity({ request_credential_rate_per_hour: 2 }))
     const tool = tools.find((t) => t.name === 'credential_request')!
     const args = tool.argsSchema.parse(sampleArgs)
     const source: ToolContext['taskSource'] = { kind: 'chat', chat_id: 'chat_a' }
@@ -194,9 +193,10 @@ describe('credential_request — rate cap', () => {
     expect(out.decline_reason).toBe('rate_capped')
 
     // Operator notification surfaced at important tier.
-    const notifs = await listNotifications(home, { kind: 'credential_request_rate_capped' })
-    expect(notifs.length).toBeGreaterThan(0)
-    expect(notifs[0]?.frontmatter.tier).toBe('important')
+    const notifs = await listNotifications(home, {})
+    const rateCapped = notifs.filter((n) => n.frontmatter.kind === 'credential_request_rate_capped')
+    expect(rateCapped.length).toBeGreaterThan(0)
+    expect(rateCapped[0]?.frontmatter.tier).toBe('important')
   })
 })
 
@@ -219,42 +219,46 @@ describe('credential_request — persisted shape', () => {
     expect(typeof out.set_at).toBe('string')
   })
 
-  it('persists a record with no value field and a frozen envelope shape', { timeout: 15_000 }, async () => {
-    const tool = findTool()
-    const args = tool.argsSchema.parse(sampleArgs)
+  it(
+    'persists a record with no value field and a frozen envelope shape',
+    { timeout: 15_000 },
+    async () => {
+      const tool = findTool()
+      const args = tool.argsSchema.parse(sampleArgs)
 
-    // Real chat threads are created by the web HTTP handlers before
-    // a task spawns; for the tool test we pre-create the thread so
-    // the system-role insertion path is exercised.
-    const chats = new MultiChatStore(home, 'hobby')
-    const chat = await chats.createChat({ title: 'auth setup' })
-    const source: ToolContext['taskSource'] = { kind: 'chat', chat_id: chat.id }
+      // Real chat threads are created by the web HTTP handlers before
+      // a task spawns; for the tool test we pre-create the thread so
+      // the system-role insertion path is exercised.
+      const chats = new MultiChatStore(home, 'hobby')
+      const chat = await chats.createChat({ title: 'auth setup' })
+      const source: ToolContext['taskSource'] = { kind: 'chat', chat_id: chat.id }
 
-    void pollAndTransition({
-      home,
-      agent: 'hobby',
-      nextState: 'declined',
-      declineReason: 'operator hit decline',
-    })
+      void pollAndTransition({
+        home,
+        agent: 'hobby',
+        nextState: 'declined',
+        declineReason: 'operator hit decline',
+      })
 
-    await tool.execute(args, ctx({ source }))
-    const store = new CredentialRequestStore(home)
-    const list = await store.list({ agent: 'hobby' })
-    expect(list).toHaveLength(1)
-    const rec = list[0]!
-    expect(rec.state).toBe('declined')
-    expect(rec.decline_reason).toBe('operator hit decline')
+      await tool.execute(args, ctx({ source }))
+      const store = new CredentialRequestStore(home)
+      const list = await store.list({ agent: 'hobby' })
+      expect(list).toHaveLength(1)
+      const rec = list[0]!
+      expect(rec.state).toBe('declined')
+      expect(rec.decline_reason).toBe('operator hit decline')
 
-    // Chat-thread system-role message landed with the right kind +
-    // envelope shape; the body JSON must NOT carry a value field.
-    const messages = await chats.listMessages(chat.id)
-    const sysMsgs = messages.filter((m) => m.role === 'system' && m.kind === 'credential_request')
-    expect(sysMsgs).toHaveLength(1)
-    const body = JSON.parse(sysMsgs[0]!.body) as Record<string, unknown>
-    expect(body['envelope']).toBe('credential_request_v1')
-    expect(body['destination_credential_name']).toBe('openpub--private-key')
-    expect('value' in body).toBe(false)
-  })
+      // Chat-thread system-role message landed with the right kind +
+      // envelope shape; the body JSON must NOT carry a value field.
+      const messages = await chats.listMessages(chat.id)
+      const sysMsgs = messages.filter((m) => m.role === 'system' && m.kind === 'credential_request')
+      expect(sysMsgs).toHaveLength(1)
+      const body = JSON.parse(sysMsgs[0]!.body) as Record<string, unknown>
+      expect(body['envelope']).toBe('credential_request_v1')
+      expect(body['destination_credential_name']).toBe('openpub--private-key')
+      expect('value' in body).toBe(false)
+    },
+  )
 
   it('flips to expired locally if no resolution arrives in time', { timeout: 15_000 }, async () => {
     // Force a tight timeout so the local sweep kicks in.

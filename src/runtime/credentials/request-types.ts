@@ -29,12 +29,7 @@ export type CredentialKind = z.infer<typeof CredentialKindSchema>
  * the same credential_name after expiration creates a NEW request
  * (subject to the rate cap).
  */
-export const CredentialRequestStateSchema = z.enum([
-  'pending',
-  'fulfilled',
-  'declined',
-  'expired',
-])
+export const CredentialRequestStateSchema = z.enum(['pending', 'fulfilled', 'declined', 'expired'])
 export type CredentialRequestState = z.infer<typeof CredentialRequestStateSchema>
 
 /**
