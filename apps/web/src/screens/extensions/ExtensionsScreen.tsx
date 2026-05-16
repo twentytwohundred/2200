@@ -25,6 +25,7 @@ import {
   apiExtensions,
   type Catalog,
   type CatalogEntry,
+  type ExtensionPairState,
 } from '../../lib/api'
 import { Button, Card, Screen, ScreenNavLink } from '../../primitives'
 import styles from './ExtensionsScreen.module.css'
@@ -215,32 +216,7 @@ function ExtensionCard({ entry, recentInstall, onInstall }: ExtensionCardProps):
             </span>
           ))}
         </div>
-        {installedInThisSession && entry.auth_model === 'qr_pair' && (
-          <div className={styles.pairCallout}>
-            <strong style={{ color: 'var(--text)' }}>Installed ✓</strong>. Next: pair your device.
-            The QR-in-browser flow lands in the next session. For now, start the gateway manually
-            from a terminal:
-            <pre
-              style={{
-                margin: '10px 0 0',
-                padding: '10px 12px',
-                background: 'rgba(0,0,0,0.4)',
-                borderRadius: 6,
-                fontSize: 12,
-                overflow: 'auto',
-              }}
-            >
-              {`cd ~/.local/share/2200/extensions/${entry.id}
-AUTH_DIR=$HOME/.local/share/2200/state/extensions/${entry.id}/auth/default \\
-GATEWAY_PORT=23200 \\
-SUPERVISOR_URL=http://127.0.0.1:2200 \\
-GATEWAY_INFO_PATH=$HOME/.local/share/2200/state/extensions/${entry.id}/gateway.json \\
-pnpm tsx src/gateway.ts`}
-            </pre>
-            Scan the QR with your phone (WhatsApp → Settings → Linked Devices), then add an Agent
-            binding via the Identity file.
-          </div>
-        )}
+        {installedInThisSession && entry.auth_model === 'qr_pair' && <PairFlow entry={entry} />}
       </div>
       <div className={styles.actions}>
         <span className={styles.status} data-tone={installedInThisSession ? 'ok' : undefined}>
@@ -400,5 +376,169 @@ function InstallModal({ entry, onClose, onComplete }: InstallModalProps): ReactE
         </div>
       </div>
     </div>
+  )
+}
+
+interface PairFlowProps {
+  entry: CatalogEntry
+}
+
+function pairStatusLabel(state: ExtensionPairState): string {
+  switch (state) {
+    case 'idle':
+      return 'starting…'
+    case 'connecting':
+      return 'connecting…'
+    case 'awaiting_qr_scan':
+      return 'waiting for scan'
+    case 'paired':
+      return 'paired ✓'
+    case 'disconnected':
+      return 'disconnected'
+    case 'errored':
+      return 'error'
+  }
+}
+
+function PairFlow({ entry }: PairFlowProps): ReactElement {
+  const [started, setStarted] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
+
+  const startMutation = useMutation({
+    mutationFn: () => apiExtensions.pairStart(entry.id),
+    onSuccess: () => {
+      setStarted(true)
+      setStartError(null)
+    },
+    onError: (err) => {
+      setStartError(formatError(err))
+    },
+  })
+
+  const stateQuery = useQuery({
+    queryKey: ['extensionPairState', entry.id],
+    queryFn: () => apiExtensions.pairState(entry.id),
+    enabled: started,
+    refetchInterval: (q) => {
+      const data = q.state.data
+      if (!data) return 600
+      // Stop polling once paired; keep polling while waiting.
+      if (data.state === 'paired') return false
+      return 600
+    },
+  })
+
+  if (!started) {
+    return (
+      <div className={styles.pairCallout}>
+        <div className={styles.pairHeader}>
+          <span className={styles.pairTitle}>Installed ✓ ... now pair your device</span>
+          <span className={styles.pairStatus}>ready</span>
+        </div>
+        <p style={{ margin: 0, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.55 }}>
+          Click "Finish install" and we'll spawn the WhatsApp gateway, then surface a QR for you to
+          scan with your phone. Setup is fully automatic from here.
+        </p>
+        {startError && <div className={styles.pairError}>Start failed: {startError}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => {
+              startMutation.mutate()
+            }}
+            disabled={startMutation.isPending}
+          >
+            {startMutation.isPending ? 'Starting gateway…' : 'Finish install'}
+          </Button>
+        </div>
+        <AdvancedTerminalHandoff entry={entry} />
+      </div>
+    )
+  }
+
+  const data = stateQuery.data
+  const state = data?.state ?? 'idle'
+
+  if (state === 'paired') {
+    return (
+      <div className={styles.pairCallout}>
+        <div className={styles.pairHeader}>
+          <span className={styles.pairTitle}>Paired ✓</span>
+          <span className={styles.pairStatus}>{pairStatusLabel(state)}</span>
+        </div>
+        <div className={styles.pairSuccess}>
+          <div className={styles.pairSuccessIcon}>✓</div>
+          <div>
+            Connected as <strong>{data?.self_jid ?? '<unknown>'}</strong>. WhatsApp messages from
+            allowlisted contacts will now wake bound Agents. Configure which Agent listens on
+            WhatsApp next.
+          </div>
+        </div>
+        <AdvancedTerminalHandoff entry={entry} />
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.pairCallout}>
+      <div className={styles.pairHeader}>
+        <span className={styles.pairTitle}>Pair WhatsApp</span>
+        <span className={styles.pairStatus}>{pairStatusLabel(state)}</span>
+      </div>
+      <div className={styles.pairBody}>
+        <div className={styles.qrFrame}>
+          {data?.qr_data_url ? (
+            <img src={data.qr_data_url} alt="WhatsApp pairing QR code" />
+          ) : (
+            <span style={{ color: 'var(--text-3)', fontSize: 12 }}>generating QR…</span>
+          )}
+        </div>
+        <div className={styles.pairInstructions}>
+          <strong style={{ color: 'var(--text)' }}>Scan this QR with your phone:</strong>
+          <ol>
+            <li>Open WhatsApp on your phone.</li>
+            <li>Tap Settings → Linked Devices.</li>
+            <li>Tap "Link a Device".</li>
+            <li>Point your phone's camera at this QR code.</li>
+          </ol>
+          <p style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 12 }}>
+            Once paired, the gateway runs in the background until uninstalled. You can pair more
+            devices later from the same Linked-Devices screen.
+          </p>
+        </div>
+      </div>
+      {state === 'disconnected' && (
+        <div className={styles.pairError}>
+          Disconnected: {data?.detail ?? 'gateway closed the socket'}. Try reinstalling or restart
+          the gateway.
+        </div>
+      )}
+      {state === 'errored' && (
+        <div className={styles.pairError}>{data?.detail ?? 'unknown gateway error'}</div>
+      )}
+      <AdvancedTerminalHandoff entry={entry} />
+    </div>
+  )
+}
+
+function AdvancedTerminalHandoff({ entry }: { entry: CatalogEntry }): ReactElement {
+  return (
+    <details className={styles.advanced}>
+      <summary>Advanced ▸ start the gateway from a terminal</summary>
+      <div className={styles.advancedBody}>
+        For developers running the gateway manually (skipping the supervisor-spawn path), the
+        canonical command is:
+        <pre>
+          {`cd ~/.local/share/2200/extensions/${entry.id}
+AUTH_DIR=$HOME/.local/share/2200/state/extensions/${entry.id}/auth/default \\
+GATEWAY_PORT=23200 \\
+SUPERVISOR_URL=http://127.0.0.1:2200 \\
+GATEWAY_INFO_PATH=$HOME/.local/share/2200/state/extensions/${entry.id}/gateway.json \\
+pnpm tsx src/gateway.ts`}
+        </pre>
+        The supervisor's "Finish install" button does this for you automatically.
+      </div>
+    </details>
   )
 }

@@ -38,6 +38,7 @@ import makeWASocket, {
   type WAMessageKey,
 } from '@whiskeysockets/baileys'
 import qrcodeTerminal from 'qrcode-terminal'
+import QRCode from 'qrcode'
 
 interface GatewayEnv {
   supervisorUrl: string
@@ -119,6 +120,36 @@ interface BaileysSock {
     on: (event: string, handler: (...args: unknown[]) => void) => void
   }
   end: (err?: Error | undefined) => void
+}
+
+async function postPairState(
+  env: GatewayEnv,
+  state: {
+    state: 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored'
+    qr_data_url?: string
+    self_jid?: string | null
+    detail?: string
+  },
+): Promise<void> {
+  const url = `${env.supervisorUrl.replace(/\/$/, '')}/api/v1/extensions/${CONNECTOR_ID}/pair/state`
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (env.supervisorBearer) headers['authorization'] = `Bearer ${env.supervisorBearer}`
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ account: env.account, ...state, at: new Date().toISOString() }),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.error(`[whatsapp-gateway] pair-state POST failed: ${String(res.status)} ${text}`)
+    }
+  } catch (err) {
+    console.error(
+      '[whatsapp-gateway] pair-state POST threw:',
+      err instanceof Error ? err.message : err,
+    )
+  }
 }
 
 async function postInbound(env: GatewayEnv, body: unknown): Promise<void> {
@@ -296,14 +327,31 @@ async function run(): Promise<void> {
         lastDisconnect?: { error?: { output?: { statusCode?: number } } }
       }
       if (u.qr) {
-        console.error('\n[whatsapp-gateway] scan this QR with your phone (WhatsApp > Linked Devices):\n')
+        // Terminal QR for dev / advanced mode; the data URL push below
+        // is the canonical channel the web Store renders.
+        console.error(
+          '\n[whatsapp-gateway] scan this QR (also surfaced in the Extensions Store UI):\n',
+        )
         qrcodeTerminal.generate(u.qr, { small: true })
+        // Push to the supervisor for the web Store's QR display.
+        void QRCode.toDataURL(u.qr, { width: 320, margin: 1 })
+          .then((dataUrl) => postPairState(env, { state: 'awaiting_qr_scan', qr_data_url: dataUrl }))
+          .catch((err: unknown) => {
+            console.error(
+              '[whatsapp-gateway] qrcode encode failed:',
+              err instanceof Error ? err.message : err,
+            )
+          })
+      }
+      if (u.connection === 'connecting') {
+        void postPairState(env, { state: 'connecting' })
       }
       if (u.connection === 'open') {
         // @ts-expect-error Baileys exposes the user on the socket
         const me = next.user as { id?: string } | undefined
         selfJid = me?.id ?? null
         console.error(`[whatsapp-gateway] connected as ${selfJid ?? '<unknown>'}`)
+        void postPairState(env, { state: 'paired', self_jid: selfJid ?? null })
       }
       if (u.connection === 'close') {
         const code = u.lastDisconnect?.error?.output?.statusCode ?? 0
@@ -311,6 +359,10 @@ async function run(): Promise<void> {
         console.error(
           `[whatsapp-gateway] connection closed (status ${String(code)}); reconnect=${String(shouldReconnect)}`,
         )
+        void postPairState(env, {
+          state: 'disconnected',
+          detail: `closed (status ${String(code)})`,
+        })
         if (shouldReconnect) {
           setTimeout(connect, 1500)
         } else {

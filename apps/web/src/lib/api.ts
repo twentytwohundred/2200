@@ -1395,6 +1395,25 @@ export interface ExtensionInstallProgressPayload {
   error_code?: string
 }
 
+export type ExtensionPairState =
+  | 'idle'
+  | 'awaiting_qr_scan'
+  | 'connecting'
+  | 'paired'
+  | 'disconnected'
+  | 'errored'
+
+export interface ExtensionPairStateResponse {
+  extension_id: string
+  gateway_running: boolean
+  state: ExtensionPairState
+  qr_data_url?: string
+  self_jid?: string | null
+  detail?: string
+  account: string
+  updated_at: string
+}
+
 export const apiExtensions = {
   catalog: () => request<Catalog>('/api/v1/extensions/catalog'),
   install: (body: {
@@ -1409,4 +1428,11 @@ export const apiExtensions = {
       method: 'POST',
       body,
     }),
+  pairStart: (id: string) =>
+    request<{
+      extension_id: string
+      gateway: { pid: number; port: number; started_at: string }
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/start`, { method: 'POST' }),
+  pairState: (id: string) =>
+    request<ExtensionPairStateResponse>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/state`),
 }

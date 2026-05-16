@@ -77,6 +77,7 @@ import {
   installFromCatalogEntry,
   type InstallProgressEvent,
 } from '../extensions/install-pipeline.js'
+import { GatewayManager } from '../connectors/gateway-manager.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -312,6 +313,24 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     // send Authorization headers, and icons are branding assets, not
     // sensitive data. Match the supervisor's static-frontend posture.
     if (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/icon$/.test(req.url)) {
+      return
+    }
+    // Gateway → supervisor pair-state push is loopback-only (the
+    // gateway child process runs on the same host as the supervisor).
+    // The GET counterpart stays authenticated.
+    if (
+      req.method === 'POST' &&
+      /^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url)
+    ) {
+      return
+    }
+    // Connector gateways post their inbound events here. Same
+    // loopback-only rationale as pair/state; the substrate-side
+    // endpoint validates the Extension manifest carefully.
+    if (
+      req.method === 'POST' &&
+      /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url)
+    ) {
       return
     }
     const principal = await authenticate(req)
@@ -3588,6 +3607,26 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // ------------------------------------------------------------------------
   const catalogPath = resolveCatalogPath(options.catalogPath)
 
+  // Connector gateway processes are managed by the supervisor when
+  // the operator clicks "Finish install" in the Store UI. Gateway
+  // child processes POST their pair state (qr image, paired,
+  // disconnected) to /pair/state below; the web UI polls /pair/state
+  // for live updates.
+  const gatewayManager = new GatewayManager({
+    home,
+    supervisorUrl: `http://127.0.0.1:${String(port)}`,
+  })
+
+  interface PairState {
+    state: 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored' | 'idle'
+    qr_data_url?: string
+    self_jid?: string | null
+    detail?: string
+    account: string
+    updated_at: string
+  }
+  const pairStates = new Map<string, PairState>()
+
   // Serve per-Extension icon files. Prefers the installed copy at
   // <home>/extensions/<id>/icon.svg; falls back to the workspace
   // source directory listed in the catalog (so the icon is available
@@ -3638,6 +3677,103 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         message: err instanceof Error ? err.message : String(err),
       })
     }
+  })
+
+  // -- pair flow (connector Extensions) ----------------------------------
+  // The Store UI's "Finish install" CTA hits POST /pair/start, which
+  // spawns the gateway child process. The gateway then POSTs its pair
+  // state (qr | connecting | paired | disconnected) to /pair/state as
+  // events fire. The Store polls GET /pair/state every ~500ms during
+  // active pairing.
+  //
+  // POST /pair/state is the gateway → supervisor channel. Marked public
+  // in the auth pre-handler regex (loopback-only in practice; gateway
+  // runs on the same host).
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/extensions/:id/pair/start',
+    async (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      try {
+        const handle = await gatewayManager.start(id)
+        // Seed an idle state so the GET /pair/state returns something
+        // before the gateway's first connection.update event.
+        if (!pairStates.has(id)) {
+          pairStates.set(id, {
+            state: 'connecting',
+            account: 'default',
+            updated_at: new Date().toISOString(),
+          })
+        }
+        return await reply.status(200).send({
+          extension_id: handle.extension_id,
+          gateway: { pid: handle.pid, port: handle.port, started_at: handle.started_at },
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'gateway_start_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    },
+  )
+
+  const PairStateBodySchema = z.object({
+    state: z.enum(['awaiting_qr_scan', 'connecting', 'paired', 'disconnected', 'errored']),
+    qr_data_url: z.string().optional(),
+    self_jid: z.string().nullable().optional(),
+    detail: z.string().optional(),
+    account: z.string().default('default'),
+    at: z.string().optional(),
+  })
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/extensions/:id/pair/state',
+    async (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      const parsed = PairStateBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_pair_state', errors: parsed.error.issues })
+      }
+      const next: PairState = {
+        state: parsed.data.state,
+        account: parsed.data.account,
+        updated_at: new Date().toISOString(),
+      }
+      if (parsed.data.qr_data_url) next.qr_data_url = parsed.data.qr_data_url
+      if (parsed.data.self_jid !== undefined) next.self_jid = parsed.data.self_jid
+      if (parsed.data.detail) next.detail = parsed.data.detail
+      pairStates.set(id, next)
+      log?.info('pair state updated', {
+        extension_id: id,
+        state: next.state,
+        account: next.account,
+      })
+      return reply.status(200).send({ ok: true })
+    },
+  )
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/extensions/:id/pair/state', (req, reply) => {
+    const id = req.params.id
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+      return reply.status(400).send({ code: 'invalid_id' })
+    }
+    const state = pairStates.get(id) ?? {
+      state: 'idle' as const,
+      account: 'default',
+      updated_at: new Date(0).toISOString(),
+    }
+    return reply.send({
+      extension_id: id,
+      gateway_running: gatewayManager.isRunning(id),
+      ...state,
+    })
   })
 
   const InstallBodySchema = z.object({
@@ -3809,6 +3945,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
       wsClients.clear()
       await pubBridge.close()
+      await gatewayManager.stopAll()
       await fastify.close()
     },
     broadcast: (event) => {
