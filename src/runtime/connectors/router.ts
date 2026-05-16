@@ -41,7 +41,7 @@ export type RouteDecision =
 export interface RouteArgs {
   event: ConnectorInboundEvent
   /** Agent name + frontmatter pairs the supervisor knows about. */
-  identities: Array<{ agent: string; frontmatter: IdentityFrontmatter }>
+  identities: { agent: string; frontmatter: IdentityFrontmatter }[]
   /**
    * Optional mention detector for group messages. Receives the
    * binding's agent name + the event text; returns true if the
@@ -94,7 +94,8 @@ function evaluateBinding(
     if (policy === 'open') return { kind: 'pass', agent, binding }
     // allowlist + pairing both require the sender to be on the list
     // before passing; pairing diverges only when missing.
-    const allowed = binding.allowlist.dm.includes('*') || binding.allowlist.dm.includes(event.sender.id)
+    const allowed =
+      binding.allowlist.dm.includes('*') || binding.allowlist.dm.includes(event.sender.id)
     if (allowed) return { kind: 'pass', agent, binding }
     if (policy === 'pairing') {
       return { kind: 'pair', agent, binding, reason: 'unknown_dm_sender' }

@@ -26,6 +26,7 @@ import { imageTools } from './image.js'
 import { makeTaskDelegateTools } from './task-delegate.js'
 import { credentialTools } from './credential.js'
 import { httpTools } from './http.js'
+import { whatsappTools } from './whatsapp.js'
 import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 /**
@@ -90,6 +91,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'credential_request',
   'credential_has',
   'http_request',
+  'whatsapp_send',
 ]
 
 export interface BaselineServersOptions {
@@ -146,5 +148,6 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
       credentialTools(getIdentity, getSupervisorRpc, opts.getBlockerRegistry),
     ),
     createInProcessServer('http', httpTools),
+    createInProcessServer('whatsapp', whatsappTools),
   ]
 }

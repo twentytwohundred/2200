@@ -71,6 +71,7 @@ import {
 import { loadIdentity } from '../identity/loader.js'
 import { ConnectorInboundEventSchema } from '../connectors/inbound-types.js'
 import { routeInbound } from '../connectors/router.js'
+import type { IdentityFrontmatter } from '../identity/types.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -3465,7 +3466,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         })
       }
       const snap = supervisor.snapshot()
-      const identities: Array<{ agent: string; frontmatter: import('../identity/types.js').IdentityFrontmatter }> = []
+      const identities: { agent: string; frontmatter: IdentityFrontmatter }[] = []
       for (const [name, rec] of Object.entries(snap.agents)) {
         try {
           const id = await loadIdentity(rec.identity_path)
@@ -3478,20 +3479,19 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       const passed = decisions.filter((d) => d.kind === 'pass')
       const paired = decisions.filter((d) => d.kind === 'pair')
       const blocked = decisions.filter((d) => d.kind === 'block')
-      const createdTasks: Array<{ agent: string; task_id: string }> = []
+      const createdTasks: { agent: string; task_id: string }[] = []
       for (const decision of passed) {
         try {
           const taskStore = new TaskStore(home, decision.agent)
           const taskId = newTaskId()
           const senderLabel = event.sender.display_name ?? event.sender.id
-          const conversationLabel =
-            event.conversation.display_name ?? event.conversation.id
+          const conversationLabel = event.conversation.display_name ?? event.conversation.id
           const titleBody = event.text ?? '(media-only message)'
           const title = titleBody.slice(0, 60).replace(/\s+/g, ' ').trim() || 'connector message'
           const taskBody = [
             `Incoming ${event.connector_id} ${event.conversation.kind} from **${senderLabel}** in conversation \`${conversationLabel}\`.`,
             '',
-            event.text ? event.text : '_(media or non-text content; see attachments below)_',
+            event.text ?? '_(media or non-text content; see attachments below)_',
             event.attachments.length > 0
               ? `\n\nAttachments:\n${event.attachments
                   .map((a) => `- ${a.kind}: ${a.url}${a.caption ? ` (${a.caption})` : ''}`)
