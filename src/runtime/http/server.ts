@@ -3902,7 +3902,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       const vault = new CredentialVault(home, agent)
       const credentialMap: Record<string, string> = {}
       for (const [bindingKey, secret] of Object.entries(parsed.data.credentials)) {
-        const credentialName = `${id}-${bindingKey}`
+        // Credential names use the slug regex (lowercase + digits + dashes
+        // only) so the binding key's underscores are normalized to dashes.
+        // The Identity binding's `credentials` map still uses the original
+        // (snake_case) key as the lookup, but the underlying credential
+        // name on disk is the slug form.
+        const credentialName = `${id}-${bindingKey.replace(/_/g, '-')}`
         try {
           await vault.set(credentialName, {
             value: secret,
