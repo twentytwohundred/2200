@@ -44,6 +44,7 @@ import type { IdentityRecord } from '../identity/types.js'
 import type { TelemetryWriter } from '../telemetry/writer.js'
 import type { BudgetTracker } from './budget-tracker.js'
 import type { PulseEmitter } from './pulse/emitter.js'
+import { TaskBlockerRegistry, type TaskBlocker } from './blockers.js'
 import {
   ToolDeniedError,
   type DispatchInput,
@@ -447,6 +448,15 @@ export interface AgentLoopOptions {
    * behavior.
    */
   telemetryWriter?: TelemetryWriter
+
+  /**
+   * Shared TaskBlockerRegistry for the current task. Tools (credential_request etc.)
+   * and the loop itself use the same instance so blockers registered by tools
+   * are visible to the loop's "hasActive" check.
+   *
+   * If omitted, the loop creates its own (fine for tests or legacy paths).
+   */
+  blockerRegistry?: TaskBlockerRegistry
   /**
    * Pricing table used to populate `cost_usd` on telemetry records and
    * on the in-memory `model_call_end` event. Defaults to the bundled
@@ -583,6 +593,17 @@ export type LoopResult =
       iterations: number
     }
   | { kind: 'errored'; error: { class: string; message: string }; iterations: number }
+  | {
+      /**
+       * The loop returned early because a `human_gate` TaskBlocker is active
+       * (operator hasn't pasted the credential yet, voice call awaiting
+       * confirmation, etc.). The AgentProcess records the snapshot but does
+       * not error or finalize the task; the next iteration picks back up
+       * when the gate resolves.
+       */
+      kind: 'blocked_on_user'
+      blockers: TaskBlocker[]
+    }
 
 export class AgentLoop {
   private readonly log: Logger
@@ -592,6 +613,16 @@ export class AgentLoop {
   private readonly events: LoopEvent[] = []
   private readonly history: Message[] = []
   private iteration = 0
+
+  /** Active human/external gates for the current task. While any blocker is registered,
+   * the loop must not start a new model completion or dispatch new tool calls.
+   * This is the primary mechanism chosen in the 2026-05-15 TaskBlocker decision.
+   *
+   * Made public (readonly) for the current task so tools like credential_request
+   * can register blockers. Will be cleaned up during loop decomposition.
+   */
+  readonly blockers: TaskBlockerRegistry
+
   /** Number of empty-response nudges issued for the current task. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private emptyResponseNudges = 0
   /**
@@ -657,6 +688,14 @@ export class AgentLoop {
   private writtenPathsThisTask = new Set<string>()
   /** Number of "you must call pub.* before terminating" nudges. Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET. */
   private pubWakeNudges = 0
+  /**
+   * Number of times the loop has nudged the model to stop calling tools and
+   * produce a final assistant reply while an `awaiting_completion` blocker
+   * was active (e.g. after credential_has has succeeded post-fulfill).
+   * Capped by DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET; on exhaustion the loop
+   * throws so the operator sees a structured failure instead of a silent stall.
+   */
+  private awaitingCompletionNudges = 0
   private readonly nowFn: () => Date
 
   private readonly pricingTable: PricingTable
@@ -670,6 +709,8 @@ export class AgentLoop {
     this.nowFn = opts.now ?? (() => new Date())
     this.pricingTable = opts.pricingTable ?? defaultPricingTable()
     this.runtimeMode = opts.runtimeMode ?? DEFAULT_RUNTIME_MODE
+
+    this.blockers = opts.blockerRegistry ?? new TaskBlockerRegistry()
   }
 
   /**
@@ -761,6 +802,43 @@ export class AgentLoop {
         model: modelLabel,
         iteration: this.iteration,
       }
+      // Structural pause for active human/external gates (TaskBlocker decision 2026-05-15).
+      // `human_gate` blockers mean we're waiting on the operator or an external
+      // event ... no new model call until they resolve. `awaiting_completion`
+      // blockers do NOT gate the model call (we want the model to speak); they
+      // gate tool dispatch and are handled inside the response-handling block
+      // below via the incomplete-turn nudge pattern.
+      if (this.blockers.hasActive('human_gate')) {
+        return {
+          kind: 'blocked_on_user' as const,
+          blockers: this.blockers.getActive('human_gate'),
+        }
+      }
+
+      // Additional robust check for pending credential_request (while the operator
+      // is still pasting). This stops the "while pasting" tool spam even if the
+      // TaskBlocker registry has a wiring/timing issue for the initial pending state.
+      // Any pending credential_request for this Agent means the loop must stay blocked
+      // until the operator fulfills or declines.
+      const { CredentialRequestStore } = await import('../credentials/requests.js')
+      const credStore = new CredentialRequestStore(this.opts.home)
+      const pendingCred = await credStore.list({
+        agent: this.opts.identity.frontmatter.agent_name,
+        state: 'pending',
+      })
+      if (pendingCred.length > 0) {
+        return {
+          kind: 'blocked_on_user' as const,
+          blockers: pendingCred.map((r) => ({
+            id: r.id,
+            kind: 'human_gate' as const,
+            description: `Waiting for operator to provide ${r.credential_name}`,
+            metadata: { credential_name: r.credential_name, request_id: r.id },
+            createdAt: r.created_at,
+          })),
+        }
+      }
+
       this.pushEvent(callStart)
       try {
         response = await this.opts.provider.complete({
@@ -1009,6 +1087,14 @@ export class AgentLoop {
             events: this.events,
             idempotency: task.frontmatter.idempotency,
           })
+
+          // Model produced a real assistant message ... resolve any
+          // awaiting_completion blockers. This is the final step of the
+          // credential lifecycle: the operator pasted, the Agent verified
+          // with credential_has, and now the Agent has spoken. The loop is
+          // fully unblocked for this task.
+          this.blockers.getActive('awaiting_completion').forEach((b) => this.blockers.resolve(b.id))
+
           return {
             kind: 'done',
             summary: response.text,
@@ -1048,9 +1134,54 @@ export class AgentLoop {
         })
       }
 
+      // awaiting_completion guardrail: model emitted tool calls while we're
+      // waiting for it to produce the final assistant reply (post-credential_has
+      // is the canonical case). Push a forcing nudge into history; the tools
+      // still dispatch for this turn but the model is steered to speak next.
+      // Budgeted like the other incomplete-turn paths ... on exhaustion we
+      // throw so the failure is operator-visible.
+      if (this.blockers.hasActive('awaiting_completion')) {
+        if (this.awaitingCompletionNudges >= DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET) {
+          throw new Error(
+            'agent kept calling tools after awaiting_completion budget exhausted; no final reply produced',
+          )
+        }
+        this.awaitingCompletionNudges += 1
+        this.log.info('awaiting_completion active: model emitted tools; nudging for final reply', {
+          attempt: this.awaitingCompletionNudges,
+          budget: DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
+          tools: parsed.calls.map((c) => c.tool).join(','),
+          task_id: task.frontmatter.id,
+        })
+        this.history.push({
+          role: 'tool',
+          content:
+            'You are at the final step of the credential protocol. Your next output MUST be a final assistant reply to the operator (text only, no tool calls). Confirm the credential is in your vault with the set_at timestamp and that you are ready, or continue the downstream work the operator originally asked for. Do not call any more tools.',
+        })
+      }
+
       for (const call of parsed.calls) {
         const dispatchTrip = await this.runOneCall(task, call, modelLabel)
         if (dispatchTrip) return await this.tripped(task, dispatchTrip)
+
+        // Mid-batch human_gate: the tool just dispatched (credential_request,
+        // future notification_ask, etc.) is now waiting on an external party.
+        // The remaining tool calls in this response are structurally invalid
+        // ... the Agent has admitted it can't proceed without input. Block.
+        if (this.blockers.hasActive('human_gate')) {
+          return {
+            kind: 'blocked_on_user' as const,
+            blockers: this.blockers.getActive('human_gate'),
+          }
+        }
+
+        // Mid-batch awaiting_completion: a tool just dispatched (credential_has
+        // is the canonical case) flipped us into "agent must speak now" mode.
+        // Drop the remaining tool calls in this batch but stay in the loop so
+        // the next iteration can call the model to produce the final reply.
+        if (this.blockers.hasActive('awaiting_completion')) {
+          break
+        }
       }
     }
 
@@ -1107,6 +1238,7 @@ export class AgentLoop {
       args: call.args,
       taskId: task.frontmatter.id,
       taskIdempotency: task.frontmatter.idempotency,
+      taskSource: task.frontmatter.source,
       model,
       predictedOutcome: call.predicted_outcome,
       reason: call.reason,
@@ -1510,6 +1642,9 @@ export class AgentLoop {
       '',
       '7. **Ask for a restart when a tool you expect is missing.** If a task implies you should have a capability (e.g. an operator says "check us into a pub" and implies you have openpub tools, or "post to slack" implies a slack server) and the tool is not in your tool list, the most likely cause is an operator just installed the skill and your process has not picked up the new identity. Do NOT improvise around the absence with raw HTTP, shell scripts, or hand-rolled crypto ... say so via `chat_send`: "the <tool-family> tool is not in my current tool list; if you just installed the skill, I need a restart (`2200 agent stop <me> && 2200 agent start <me>`) to pick it up." An improvised substitute wastes tokens, often hallucinates a working flow that does not match the real API, and hides the real cause from the operator. The substrate is built so installed capabilities show up in your tool list ... trust the absence.',
       '',
+      "8. **Ask the operator for a credential rather than improvising one ... and ALWAYS produce a final reply after the tool returns.** When a task needs a credential you do not have in vault, call `credential_request` from a 1:1 chat with the operator. The pasted value goes directly into your vault under the supplied `credential_name`; you never see it. Do NOT: paste a placeholder string, ask the operator to send the credential in a chat message (operator-typed values in chat content end up in your transcript and your model provider context, which is exactly the leak surface this tool exists to avoid), or hand-roll an OAuth flow that requires the operator to copy-paste a token elsewhere. The tool blocks while the operator decides, returns one of `fulfilled` / `declined` / `expired`, and the audit substrate can verify \"I asked for X\" against the request ledger and \"I have X\" against the vault.\n\nAfter `credential_request` returns, you MUST emit a final assistant message ... silent termination is a bug. The flow:\n  - On `fulfilled`: immediately call `credential_has` for the same credential_name to verify the value actually landed in your vault. Then DO ONE OF:\n      (a) If the operator's original message implied a downstream task that needed this credential (e.g. \"call the X API and tell me what came back\", \"post to Y using this key\"), CONTINUE that work now with the credential in hand. The credential_request was a sub-step, not the whole task.\n      (b) If the operator's original message was JUST \"ask me for a credential\" (substrate testing with no downstream work), send a final reply confirming: e.g. \"Got the `<name>` credential, in vault since <set_at>. No further work tied to it ... ready for whatever's next.\"\n    Either way, the reply must explicitly state vault confirmation (the set_at timestamp from credential_has). If `credential_has` returns exists=false, surface the discrepancy ... do NOT claim success.\n  - On `declined`: state the operator's `decline_reason` if any, acknowledge the decision, and ask what they want next. Do not retry without their consent.\n  - On `expired`: note the timeout and ask whether to reissue.\n\nHOW to USE a vault credential (load-bearing ... the value is NOT readable directly):\nThe credential value lives in a sealed envelope on disk; you cannot fetch it via fs_read, shell_run, env lookup, or any other read-class tool. The substrate guarantees the value never enters your loop context. The PATHS for actually using a credential are:\n  - **HTTP**: call `http_request` with `bearer_credential: '<name>'` (for Authorization: Bearer schemes) or `credential_header: { header: 'X-API-Key', credential_name: '<name>' }` (for custom-header schemes). The runtime reads from vault, injects into the outgoing request, and redacts any echoed value from the response before returning it to you. Use this for every API call that needs a token.\n  - **MCP server env-injection**: a skill's `mcp_servers[].env[VAR_NAME]` mapped to a vault credential is read by the supervisor at MCP-spawn time and passed to the server as an env var; the server's tools (e.g. `openpub_send_message`) then USE the credential without you ever seeing it. If the credential was provided for a specific skill (e.g. you asked for `openpub-private-key`), restart the relevant Agent (request it via chat_send) so the new spawn picks the env up.\n\nDo NOT try to read the vault value into shell, env, brain notes, files, or LLM prompts. That is a dead end by construction and a token-burn loop. If you find yourself running shell_run / fs_list / env-grep looking for the credential, STOP and use `http_request` (or ask the operator to add the credential to the relevant skill's mcp_servers block).\n\n`credential_request` only works from 1:1 chat tasks (`task.source.kind === 'chat'`); from a pub message or scheduled task the tool returns `surface_invalid` and you must `chat_send` to bring the conversation to chat first.",
+      '',
+      '9. **After credential verification, your next output must be the final reply to the user (no more tools).** Once you have received the guidance message after a credential_request fulfillment and have called credential_has to confirm the value is present, your very next action must be to produce a final assistant message to the human. Do not call any more tools. Do not wait for another human prompt. Speak directly to the operator confirming the credential is verified in vault (with the set_at timestamp) and that you are ready. This is the only way to close the credential_request loop cleanly.',
     ]
     const lines: string[] = [
       id.body,

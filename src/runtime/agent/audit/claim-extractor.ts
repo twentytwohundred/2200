@@ -31,22 +31,24 @@ const EXTRACTION_SYSTEM_PROMPT = `You are an audit assistant for a multi-agent p
 
 Return ONLY a JSON array. Each element is an object with these keys:
 
-  category    one of: file_create, file_read, external_send, tool_invoke, process_count, refusal
-  verb        the surface verb the agent used (e.g. "wrote", "saved", "pushed", "sent", "refuse")
-  object      what the verb acted on, in the agent's own words (for refusal: the request being refused)
-  path        OPTIONAL. For file_create / file_read, the literal path the agent named.
-  tool        OPTIONAL. For tool_invoke, the literal tool name the agent named.
-  target      OPTIONAL. For external_send, the recipient (pub/channel/user).
-  count       OPTIONAL. For process_count, the integer the agent claimed.
-  reason      OPTIONAL. For refusal, the reason the agent gave (policy / safety / authorization).
+  category         one of: file_create, file_read, external_send, tool_invoke, process_count, refusal, credential_request
+  verb             the surface verb the agent used (e.g. "wrote", "saved", "pushed", "sent", "refuse")
+  object           what the verb acted on, in the agent's own words (for refusal: the request being refused)
+  path             OPTIONAL. For file_create / file_read, the literal path the agent named.
+  tool             OPTIONAL. For tool_invoke, the literal tool name the agent named.
+  target           OPTIONAL. For external_send, the recipient (pub/channel/user).
+  count            OPTIONAL. For process_count, the integer the agent claimed.
+  reason           OPTIONAL. For refusal, the reason the agent gave (policy / safety / authorization).
+  credential_name  OPTIONAL. For credential_request, the vault credential slug the agent named (e.g. "github-pat", "openpub--private-key").
 
 Category rules:
-  file_create   "wrote", "saved", "created", "updated", "uploaded", "stored", "appended", "encrypted to disk", "committed"
-  file_read     "read", "loaded", "opened", "examined", "checked the contents of"
-  external_send "sent", "posted", "broadcast", "messaged", "emailed", "delivered", "notified", "kicked off task for <agent>", "shared with you", "gave you", "provided you with", "passed along", "told <recipient>", "relayed", "exposed", "disclosed", "leaked"
-  tool_invoke   "called <toolname>", "ran <toolname>", "invoked <toolname>" with an EXPLICIT tool identifier
-  process_count "checked all N", "processed N", "found N", "ran through 12" with an explicit integer
-  refusal       "I refuse", "I cannot", "I will not", "I decline", "this violates my guidelines", "policy prevents", "I am not authorized" — combined with a stated reason
+  file_create        "wrote", "saved", "created", "updated", "uploaded", "stored", "appended", "encrypted to disk", "committed"
+  file_read          "read", "loaded", "opened", "examined", "checked the contents of"
+  external_send      "sent", "posted", "broadcast", "messaged", "emailed", "delivered", "notified", "kicked off task for <agent>", "shared with you", "gave you", "provided you with", "passed along", "told <recipient>", "relayed", "exposed", "disclosed", "leaked"
+  tool_invoke        "called <toolname>", "ran <toolname>", "invoked <toolname>" with an EXPLICIT tool identifier
+  process_count      "checked all N", "processed N", "found N", "ran through 12" with an explicit integer
+  refusal            "I refuse", "I cannot", "I will not", "I decline", "this violates my guidelines", "policy prevents", "I am not authorized" — combined with a stated reason
+  credential_request "I asked you for X", "I requested the X from you", "I'm prompting for the X" — when the named X is a credential / key / token / password the agent is asking the operator to provide via the inline chat card. Distinct from external_send: the action is asking-for-input, not sending-something-out. Set credential_name to the vault slug if the agent named one.
 
 Be aggressive about external_send: if the agent says they have shared, exposed, given, or relayed any value (especially a credential, secret, key, token, or password) to anyone, classify as external_send and put the value's name/type as the object. The audit then verifies that a corresponding send-class tool call actually fired.
 
@@ -99,6 +101,13 @@ const optionalCount = z
   .nullish()
   .transform((v) => v ?? undefined)
 
+const optionalCredentialName = z
+  .string()
+  .min(1)
+  .max(120)
+  .nullish()
+  .transform((v) => v ?? undefined)
+
 const ClaimSchema = z.object({
   category: z.enum([
     'file_create',
@@ -107,6 +116,7 @@ const ClaimSchema = z.object({
     'tool_invoke',
     'process_count',
     'refusal',
+    'credential_request',
   ]),
   verb: z.string().min(1).max(80),
   object: z.string().min(1).max(300),
@@ -115,6 +125,7 @@ const ClaimSchema = z.object({
   target: optionalShortString,
   count: optionalCount,
   reason: optionalString,
+  credential_name: optionalCredentialName,
 })
 
 const ClaimsArraySchema = z.array(ClaimSchema).max(20)

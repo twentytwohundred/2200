@@ -113,6 +113,7 @@ export const TaskAuditClaimSchema = z.object({
     'tool_invoke',
     'process_count',
     'refusal',
+    'credential_request',
   ]),
   verb: z.string(),
   object: z.string(),
@@ -148,6 +149,50 @@ export const TaskErrorSchema = z
   })
   .nullable()
 export type TaskError = z.infer<typeof TaskErrorSchema>
+
+/**
+ * Where the task originated. Used by surface-aware tools
+ * (request_credential, future audit cross-references) to enforce that
+ * certain operations may only run from certain surfaces. Optional /
+ * nullable so legacy task records pre-dating this field load cleanly.
+ *
+ * Set by the task creator at spawn time:
+ *   - chat HTTP handler  → { kind: 'chat', chat_id, message_id? }
+ *   - pub wake-source    → { kind: 'pub', pub: <name> }
+ *   - scheduler          → { kind: 'schedule', schedule_id }
+ *   - task_create_for_agent → { kind: 'delegation', parent_task_id }
+ *   - cli / generic POST → { kind: 'cli' } or null
+ *
+ * Other task-frontmatter fields capture delegation provenance
+ * already (delegated_by, delegating_task_id). This `source` field is
+ * the broader generalization across all spawn surfaces.
+ */
+export const TaskSourceSchema = z
+  .discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('chat'),
+      /** The chat thread the message landed in. Required for chat sources. */
+      chat_id: z.string().min(1),
+      /** The user message that triggered the spawn, if known. */
+      message_id: z.string().optional(),
+    }),
+    z.object({
+      kind: z.literal('pub'),
+      pub: z.string().min(1),
+    }),
+    z.object({
+      kind: z.literal('schedule'),
+      schedule_id: z.string().min(1),
+    }),
+    z.object({
+      kind: z.literal('delegation'),
+      parent_task_id: z.string().min(1),
+    }),
+    z.object({ kind: z.literal('cli') }),
+    z.object({ kind: z.literal('self_spawn') }),
+  ])
+  .nullable()
+export type TaskSource = z.infer<typeof TaskSourceSchema>
 
 /**
  * Task frontmatter, locked v1 schema.
@@ -208,6 +253,14 @@ export const TaskFrontmatterSchema = z.object({
    * agent was blocked_on_detector?").
    */
   agent_state_at_terminal: AgentStateSchema.nullable(),
+  /**
+   * Where the task originated (decision:
+   * 2026-05-14-request-credential-substrate). Optional so legacy
+   * records load; new code sets it at spawn time. Surface-aware tools
+   * use this to enforce origin restrictions (e.g., request_credential
+   * is allowed only from chat).
+   */
+  source: TaskSourceSchema.optional().default(null),
 })
 export type TaskFrontmatter = z.infer<typeof TaskFrontmatterSchema>
 
@@ -233,6 +286,8 @@ export function newPendingTask(args: {
   delegated_by?: string | null
   delegating_task_id?: string | null
   delegation_depth?: number
+  /** Spawn surface; defaults to null (treated as "unknown / non-chat" by surface-aware tools). */
+  source?: TaskSource
   now?: () => Date
 }): TaskRecord {
   const now = args.now ?? (() => new Date())
@@ -256,6 +311,7 @@ export function newPendingTask(args: {
       error: null,
       audit: null,
       agent_state_at_terminal: null,
+      source: args.source ?? null,
     },
     body: args.body,
   }

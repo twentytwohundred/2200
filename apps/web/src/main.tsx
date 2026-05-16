@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Router } from './router'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { LiveSignalProvider } from './ws/useLiveSignal'
+import { LiveFavicon } from './favicon/LiveFavicon'
 import { bootstrapAuth } from './lib/auth'
 import './tokens/generated/tokens.css'
 import './tokens/generated/theme-default-dark.css'
@@ -31,6 +32,7 @@ createRoot(rootElement).render(
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
         <LiveSignalProvider>
+          <LiveFavicon />
           <Router />
         </LiveSignalProvider>
       </QueryClientProvider>

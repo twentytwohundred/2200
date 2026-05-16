@@ -107,6 +107,31 @@ export const AgentToolEventResultSchema = z.object({
 })
 export type AgentToolEventResult = z.infer<typeof AgentToolEventResultSchema>
 
+/**
+ * Agent->Supervisor: notify that the agent appended a system-role
+ * message to a chat thread on its own (e.g. via the credential_request
+ * tool). The supervisor fans out a `chat.message` WebSocket event so
+ * connected operator UIs invalidate their messages query and pick up
+ * the new row. Without this, tool-driven appends sit on disk until the
+ * next operator-driven refetch.
+ *
+ * Kept distinct from agent.toolEvent so the chat-WS invalidation path
+ * stays focused on actual chat-thread mutations.
+ */
+export const AgentChatMessageParamsSchema = z.object({
+  chat_id: z.string().min(1),
+  message_id: z.string().min(1),
+  role: z.enum(['user', 'assistant', 'system']),
+  /** Runtime-side discriminator; aligns with ChatMessageKindSchema on the agent side. */
+  kind: z.enum(['audit', 'credential_request']).nullable().optional(),
+})
+export type AgentChatMessageParams = z.infer<typeof AgentChatMessageParamsSchema>
+
+export const AgentChatMessageResultSchema = z.object({
+  ack: z.literal(true),
+})
+export type AgentChatMessageResult = z.infer<typeof AgentChatMessageResultSchema>
+
 /** S→A: supervisor asks Agent to stop gracefully. */
 export const AgentStopParamsSchema = z.object({
   reason: z.string(),
@@ -630,6 +655,10 @@ export const METHODS = {
   'agent.toolEvent': {
     params: AgentToolEventParamsSchema,
     result: AgentToolEventResultSchema,
+  },
+  'agent.chatMessage': {
+    params: AgentChatMessageParamsSchema,
+    result: AgentChatMessageResultSchema,
   },
   'agent.stop': {
     params: AgentStopParamsSchema,

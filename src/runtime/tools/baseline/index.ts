@@ -24,6 +24,9 @@ import { chatTools } from './chat.js'
 import { scheduleTools, type SupervisorRpcGetter } from './schedule.js'
 import { imageTools } from './image.js'
 import { makeTaskDelegateTools } from './task-delegate.js'
+import { credentialTools } from './credential.js'
+import { httpTools } from './http.js'
+import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 /**
  * All baseline tool names. Used by tool-in-set perm checks and
@@ -84,6 +87,9 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'schedule_run_once',
   'image_generate',
   'task_create_for_agent',
+  'credential_request',
+  'credential_has',
+  'http_request',
 ]
 
 export interface BaselineServersOptions {
@@ -107,6 +113,15 @@ export interface BaselineServersOptions {
    * Optional: tests that don't exercise schedule tools can omit it.
    */
   getSupervisorRpc?: SupervisorRpcGetter
+
+  /**
+   * Returns the TaskBlockerRegistry for the current task.
+   * Used by human-gated tools (credential_request, future notification_ask, etc.)
+   * so they can register blockers that pause the AgentLoop.
+   *
+   * Optional during the initial TaskBlocker rollout.
+   */
+  getBlockerRegistry?: () => TaskBlockerRegistry
 }
 
 /** Build the ten baseline MCP servers. */
@@ -126,5 +141,10 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('schedule', scheduleTools(getSupervisorRpc)),
     createInProcessServer('image', imageTools),
     createInProcessServer('task', makeTaskDelegateTools()),
+    createInProcessServer(
+      'credential',
+      credentialTools(getIdentity, getSupervisorRpc, opts.getBlockerRegistry),
+    ),
+    createInProcessServer('http', httpTools),
   ]
 }

@@ -68,6 +68,8 @@ import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/se
 import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
+import { CredentialRequestStore } from '../credentials/requests.js'
+import { toEnvelopeV1 as toCredentialRequestEnvelopeV1 } from '../credentials/request-types.js'
 
 /**
  * Strip the `-archived-<YYYY-MM-DD>[-N]` suffix from an archived
@@ -186,6 +188,7 @@ export class Supervisor {
    * forever (the OpenClaw-tier brittleness Doug called out).
    */
   private livenessTimer: NodeJS.Timeout | undefined
+  private credentialRequestSweeperTimer: NodeJS.Timeout | undefined
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
   private readonly onboardingSessions: OnboardingSessionStore
@@ -314,6 +317,14 @@ export class Supervisor {
     // OpenClaw-tier "supervisor reports running while the agent
     // process is gone" failure mode.
     this.startLivenessWatcher()
+    // Credential-request sweeper: every 30s, expire pending requests
+    // whose expires_at has passed. Decoupled from the running Agent's
+    // own timeout fallback so requests left behind by a crashed Agent
+    // still transition to expired and surface in the operator UI.
+    this.startCredentialRequestSweeper()
+    // One-shot sweep at boot: cover any requests that expired while
+    // the supervisor was down. Async; intentional fire-and-forget.
+    this.startupTasks.push(this.sweepCredentialRequestsOnce())
   }
 
   /**
@@ -371,7 +382,121 @@ export class Supervisor {
           payload: { agent: name, state: 'errored' },
         })
       }
+      // Sweep any credential requests this Agent left pending so the
+      // operator UI doesn't keep showing live paste cards for a dead
+      // recipient. expired_reason 'agent_crashed' surfaces a distinct
+      // operator-facing state from a vanilla timeout.
+      void this.sweepCredentialRequestsForAgent(name, 'agent_crashed').catch((err: unknown) => {
+        this.log.warn('credential-request sweep on crash failed', {
+          agent: name,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
       void this.regenerateFleetSafe()
+    }
+  }
+
+  /**
+   * Start the credential-request sweeper. Mirrors the liveness watcher:
+   * 30-second tick, off-loop, errors are logged but never throw. The
+   * supervisor restart path is handled by a one-shot sweep call at
+   * startup; this interval covers the steady-state case where an Agent
+   * dispatches a request and the 5-min timeout elapses before any
+   * operator resolution arrives.
+   */
+  private startCredentialRequestSweeper(): void {
+    if (this.credentialRequestSweeperTimer) return
+    const tick = (): void => {
+      void this.sweepCredentialRequestsOnce().catch((err: unknown) => {
+        this.log.warn('credential-request sweep failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
+    this.credentialRequestSweeperTimer = setInterval(tick, 30_000)
+    if (
+      typeof this.credentialRequestSweeperTimer === 'object' &&
+      'unref' in this.credentialRequestSweeperTimer
+    ) {
+      this.credentialRequestSweeperTimer.unref()
+    }
+  }
+
+  /**
+   * Scan every pending credential request and transition the ones whose
+   * `expires_at` has passed to `expired` with reason `timeout`. Broadcast
+   * an expire event so connected operator UIs update.
+   */
+  private async sweepCredentialRequestsOnce(): Promise<void> {
+    if (this.isShuttingDown) return
+    const store = new CredentialRequestStore(this.state.home)
+    const pending = await store.list({ state: 'pending' })
+    const nowMs = Date.now()
+    for (const rec of pending) {
+      if (Date.parse(rec.expires_at) > nowMs) continue
+      const now = new Date().toISOString()
+      try {
+        const updated = await store.transition(rec.id, 'expired', {
+          now,
+          expired_reason: 'timeout',
+        })
+        if (this.webHandle) {
+          this.webHandle.broadcast({
+            event: 'credential_request.expired',
+            payload: {
+              agent: updated.agent,
+              chat_id: updated.chat_id,
+              request_id: updated.id,
+              expired_at: updated.expired_at ?? now,
+              expired_reason: updated.expired_reason ?? 'timeout',
+              envelope: toCredentialRequestEnvelopeV1(updated),
+            },
+          })
+        }
+      } catch (err) {
+        // Lost race to the in-process tool or another sweep; safe to
+        // skip. The record's terminal state stands.
+        this.log.debug('credential-request sweep transition skipped', {
+          request_id: rec.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+  }
+
+  /**
+   * Sweep an Agent's pending requests with a specific expired_reason
+   * (used by the crash- and archive-detection paths).
+   */
+  private async sweepCredentialRequestsForAgent(
+    agentName: string,
+    reason: 'agent_crashed' | 'agent_archived',
+  ): Promise<void> {
+    const store = new CredentialRequestStore(this.state.home)
+    const pending = await store.list({ agent: agentName, state: 'pending' })
+    for (const rec of pending) {
+      const now = new Date().toISOString()
+      try {
+        const updated = await store.transition(rec.id, 'expired', {
+          now,
+          expired_reason: reason,
+        })
+        if (this.webHandle) {
+          this.webHandle.broadcast({
+            event: 'credential_request.expired',
+            payload: {
+              agent: updated.agent,
+              chat_id: updated.chat_id,
+              request_id: updated.id,
+              expired_at: updated.expired_at ?? now,
+              expired_reason: updated.expired_reason ?? reason,
+              envelope: toCredentialRequestEnvelopeV1(updated),
+            },
+          })
+        }
+      } catch {
+        // Lost a race; ignore.
+      }
     }
   }
 
@@ -567,6 +692,10 @@ export class Supervisor {
     if (this.livenessTimer) {
       clearInterval(this.livenessTimer)
       this.livenessTimer = undefined
+    }
+    if (this.credentialRequestSweeperTimer) {
+      clearInterval(this.credentialRequestSweeperTimer)
+      this.credentialRequestSweeperTimer = undefined
     }
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()
@@ -1129,6 +1258,19 @@ export class Supervisor {
         payload: { from: name, to: archivedName, archived_at: archivedAt },
       })
     }
+    // Sweep any pending credential requests owned by the now-archived
+    // Agent. The credential-requests directory lives at
+    // <home>/state/credential-requests/ (flat, request-id-keyed) and
+    // is NOT moved by renameAgentTrees, so the records' `agent` field
+    // still references the original (pre-archive) name. Sweep under
+    // that name. Reason=agent_archived so the operator UI distinguishes
+    // from a plain timeout.
+    void this.sweepCredentialRequestsForAgent(name, 'agent_archived').catch((err: unknown) => {
+      this.log.warn('credential-request sweep on archive failed', {
+        agent: name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
     void this.regenerateFleetSafe()
     return archivedName
   }
@@ -1578,6 +1720,31 @@ export class Supervisor {
           state: params.state,
           last_heartbeat: new Date().toISOString(),
         })
+        return { ack: true as const }
+      },
+      'agent.chatMessage': (params, ctx: HandlerContext) => {
+        // Agent-side appends (e.g. credential_request tool inserting a
+        // credential_request_v1 system-role message into the chat
+        // thread) bypass the HTTP route's broadcast path. Fanout here
+        // mirrors the broadcastChatEvent('chat.message', ...) call
+        // that HTTP handlers make on operator-driven appends so the
+        // web's useLiveSignal hook invalidates the messages query and
+        // re-fetches.
+        const name = this.agentByConnection.get(ctx.connection)
+        if (!name) return { ack: true as const }
+        if (this.webHandle) {
+          this.webHandle.broadcast({
+            event: 'chat.message',
+            payload: {
+              agent: name,
+              chat_id: params.chat_id,
+              message_id: params.message_id,
+              role: params.role,
+              kind: params.kind ?? null,
+              at: new Date().toISOString(),
+            },
+          })
+        }
         return { ack: true as const }
       },
       'agent.toolEvent': (params, ctx: HandlerContext) => {

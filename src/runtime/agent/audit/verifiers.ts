@@ -17,6 +17,7 @@
 import { stat } from 'node:fs/promises'
 import type { LoopEvent } from '../detectors/types.js'
 import { resolveVirtualPath, PathResolutionError } from '../../storage/path-resolver.js'
+import { CredentialRequestStore } from '../../credentials/requests.js'
 import type { ClaimOutcome, ExtractedClaim, VerifierContext } from './types.js'
 
 /**
@@ -55,6 +56,7 @@ const SEND_CLASS_TOOLS = new Set([
   'slack_api',
   'discord_api',
   'task_create_for_agent',
+  'http_request',
 ])
 
 function isInClass(
@@ -86,6 +88,8 @@ export async function verifyClaim(
       return verifyProcessCount(claim, ctx)
     case 'refusal':
       return verifyRefusal(claim)
+    case 'credential_request':
+      return await verifyCredentialRequest(claim, ctx)
   }
 }
 
@@ -306,6 +310,65 @@ function verifyRefusal(claim: ExtractedClaim): ClaimOutcome {
   return {
     status: 'verified',
     evidence: `policy refusal recognized: "${claim.verb} ${reason.slice(0, 120)}"`,
+  }
+}
+
+/**
+ * credential_request: the agent claims to have asked the operator for a
+ * credential via `credential_request` (decision:
+ * 2026-05-14-request-credential-substrate). The audit consults the
+ * request ledger ... the substrate's source-of-truth for who-asked-for-
+ * what. Verified when at least one record exists from this agent
+ * matching the claimed credential_name (in ANY state ... the request
+ * was made; outcome is the operator's choice and surfaces separately).
+ *
+ * Without a credential_name in the claim, we can only verify "some
+ * request was issued" by counting records from this agent in the
+ * current task's window. That weaker form is unverified unless the
+ * count is non-zero.
+ *
+ * Cross-Agent forgery is structurally impossible: the request record's
+ * `agent` field is set from the calling loop's identity, not tool
+ * args, so an agent can't fabricate a record that appears to come from
+ * a different agent. The audit only matches records where
+ * `rec.agent === ctx.agentName`.
+ */
+async function verifyCredentialRequest(
+  claim: ExtractedClaim,
+  ctx: VerifierContext,
+): Promise<ClaimOutcome> {
+  const store = new CredentialRequestStore(ctx.home)
+  let records
+  try {
+    records = await store.list({ agent: ctx.agentName })
+  } catch (err) {
+    return {
+      status: 'unverified',
+      reason: `could not read credential-request ledger: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (claim.credential_name) {
+    const match = records.find((r) => r.credential_name === claim.credential_name)
+    if (match) {
+      return {
+        status: 'verified',
+        evidence: `credential request ${match.id} (state=${match.state}) found for ${claim.credential_name}`,
+      }
+    }
+    return {
+      status: 'unverified',
+      reason: `no credential_request record from ${ctx.agentName} for "${claim.credential_name}"`,
+    }
+  }
+  if (records.length === 0) {
+    return {
+      status: 'unverified',
+      reason: `claim "${claim.verb} ${claim.object}" has no credential_request record from ${ctx.agentName}`,
+    }
+  }
+  return {
+    status: 'verified',
+    evidence: `${String(records.length)} credential request record${records.length === 1 ? '' : 's'} from ${ctx.agentName} (most recent: ${records.at(-1)?.id ?? '?'})`,
   }
 }
 

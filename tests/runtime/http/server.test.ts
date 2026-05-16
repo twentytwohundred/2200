@@ -204,6 +204,53 @@ describe('HTTP server', () => {
     expect(r.body).toMatchObject({ error: { code: 'agent_not_found' } })
   })
 
+  it('GET /api/v1/agents/:name/credential-requests returns 404 for an unknown agent', async () => {
+    const r = await get('/api/v1/agents/missing/credential-requests')
+    expect(r.status).toBe(404)
+    expect(r.body).toMatchObject({ error: { code: 'agent_not_found' } })
+  })
+
+  it('POST .../credential-requests/:id/fulfill is 404 for an unknown agent', async () => {
+    const res = await fetch(
+      `${handle.url}/api/v1/agents/missing/credential-requests/credreq_unknown/fulfill`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ value: 'x' }),
+      },
+    )
+    expect(res.status).toBe(404)
+  })
+
+  it('POST .../credential-requests/:id/decline is 404 for an unknown agent', async () => {
+    const res = await fetch(
+      `${handle.url}/api/v1/agents/missing/credential-requests/credreq_unknown/decline`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    )
+    expect(res.status).toBe(404)
+  })
+
+  it('schema lists the credential-request endpoints', async () => {
+    const r = await get('/api/v1/schema')
+    const body = r.body as { endpoints: { method: string; path: string }[] }
+    expect(body.endpoints).toContainEqual({
+      method: 'GET',
+      path: '/api/v1/agents/:name/credential-requests',
+    })
+    expect(body.endpoints).toContainEqual({
+      method: 'POST',
+      path: '/api/v1/agents/:name/credential-requests/:id/fulfill',
+    })
+    expect(body.endpoints).toContainEqual({
+      method: 'POST',
+      path: '/api/v1/agents/:name/credential-requests/:id/decline',
+    })
+  })
+
   it('GET /api/v1/notifications returns an empty list', async () => {
     const r = await get('/api/v1/notifications')
     expect(r.status).toBe(200)

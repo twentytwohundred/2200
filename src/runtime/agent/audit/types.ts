@@ -69,6 +69,16 @@ export type ClaimCategory =
    * never a coercion path that forces the agent to comply.
    */
   | 'refusal'
+  /**
+   * "I asked the operator for the GitHub PAT" / "I requested the
+   * OpenPub key from you" ... a claim that the agent dispatched a
+   * `credential_request` tool call. Verifier checks the
+   * CredentialRequestStore for a record from this agent with a
+   * matching credential_name. Distinct from `external_send` because
+   * the action is asking-for-input, not sending-something-out, and
+   * the audit channel is the request ledger, not the tool transcript.
+   */
+  | 'credential_request'
 
 /**
  * A single claim extracted from the agent's final reply. The extractor
@@ -91,6 +101,8 @@ export interface ExtractedClaim {
   target?: string
   /** Populated for refusal. Operator-readable reason the agent declined. */
   reason?: string
+  /** Populated for credential_request. The vault credential the agent named. */
+  credential_name?: string
 }
 
 /**

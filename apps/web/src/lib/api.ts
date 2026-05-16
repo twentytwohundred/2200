@@ -413,12 +413,12 @@ export interface ChatAttachmentUploaded extends ChatAttachmentRef {
 }
 
 /**
- * Runtime-side discriminator for system-authored messages. Currently
- * one value: `audit` (claim-vs-evidence audit card from the post-task
- * pipeline). The renderer routes on this to swap the message body
- * for the structured AuditCard component.
+ * Runtime-side discriminator for system-authored messages. Used by the
+ * renderer to swap the message body for a specialized card:
+ *   - `audit`              ... claim-vs-evidence audit card
+ *   - `credential_request` ... operator-paste credential prompt
  */
-export type ChatMessageKind = 'audit'
+export type ChatMessageKind = 'audit' | 'credential_request'
 
 /**
  * Structured audit card payload. The runtime serializes this into the
@@ -434,6 +434,7 @@ export interface AuditCardClaim {
     | 'tool_invoke'
     | 'process_count'
     | 'refusal'
+    | 'credential_request'
   verb: string
   object: string
   status: 'verified' | 'unverified' | 'contradicted'
@@ -443,6 +444,7 @@ export interface AuditCardClaim {
   target?: string
   count?: number
   reason?: string
+  credential_name?: string
 }
 
 export interface AuditCardEnvelope {
@@ -453,6 +455,49 @@ export interface AuditCardEnvelope {
   destructive: boolean
   at: string
   claims: AuditCardClaim[]
+}
+
+/**
+ * Frozen wire shape for credential_request system-role messages and
+ * WS event payloads. v1 ships with the runtime as
+ * `credential_request_v1`; new fields go on a `v2` envelope rather
+ * than in-place. See decision:
+ * wiki/decisions/2026-05-14-request-credential-substrate.md
+ */
+export type CredentialRequestKind = 'value' | 'secret' | 'file'
+export type CredentialRequestState = 'pending' | 'fulfilled' | 'declined' | 'expired'
+export type CredentialExpiredReason = 'timeout' | 'agent_crashed' | 'agent_archived'
+
+export interface CredentialRequestEnvelopeV1 {
+  envelope: 'credential_request_v1'
+  request_id: string
+  label: string
+  help: string
+  kind: CredentialRequestKind
+  reason: string
+  destination_credential_name: string
+  expires_at: string
+  state: CredentialRequestState
+}
+
+/** Full record shape as returned by GET /api/v1/agents/:name/credential-requests. */
+export interface CredentialRequest {
+  id: string
+  agent: string
+  chat_id: string
+  state: CredentialRequestState
+  label: string
+  help: string
+  kind: CredentialRequestKind
+  reason: string
+  credential_name: string
+  created_at: string
+  expires_at: string
+  fulfilled_at: string | null
+  declined_at: string | null
+  decline_reason: string | null
+  expired_at: string | null
+  expired_reason: CredentialExpiredReason | null
 }
 
 export interface ChatThreadMessage {
@@ -1085,6 +1130,31 @@ export const api = {
     request<Notification>(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, {
       method: 'POST',
     }),
+  credentialRequestList: (
+    agent: string,
+    params?: { state?: CredentialRequestState; chat_id?: string },
+  ) => {
+    const qs = new URLSearchParams()
+    if (params?.state) qs.set('state', params.state)
+    if (params?.chat_id) qs.set('chat_id', params.chat_id)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<{ items: CredentialRequest[] }>(
+      `/api/v1/agents/${encodeURIComponent(agent)}/credential-requests${suffix}`,
+    )
+  },
+  credentialRequestFulfill: (agent: string, id: string, value: string) =>
+    request<CredentialRequest>(
+      `/api/v1/agents/${encodeURIComponent(agent)}/credential-requests/${encodeURIComponent(id)}/fulfill`,
+      { method: 'POST', body: { value } },
+    ),
+  credentialRequestDecline: (agent: string, id: string, reason?: string) =>
+    request<CredentialRequest>(
+      `/api/v1/agents/${encodeURIComponent(agent)}/credential-requests/${encodeURIComponent(id)}/decline`,
+      {
+        method: 'POST',
+        body: reason !== undefined ? { reason } : {},
+      },
+    ),
   onboardingStart: (body?: { provider?: string; model?: string; script?: string }) =>
     request<OnboardingSessionResponse>('/api/v1/onboarding', {
       method: 'POST',

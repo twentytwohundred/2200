@@ -111,6 +111,13 @@ import {
   unauthorized,
 } from './errors.js'
 import { WebTokenStore } from './tokens.js'
+import { CredentialVault } from '../credentials/vault.js'
+import { CredentialRequestStore } from '../credentials/requests.js'
+import {
+  CredentialRequestError,
+  toEnvelopeV1,
+  type CredentialRequest,
+} from '../credentials/request-types.js'
 
 /**
  * @fastify/websocket@11 ships a typed default export that is correct at
@@ -370,6 +377,15 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       {
         method: 'GET',
         path: '/api/v1/agents/:name/chats/:chatId/attachments/:attId/:filename',
+      },
+      { method: 'GET', path: '/api/v1/agents/:name/credential-requests' },
+      {
+        method: 'POST',
+        path: '/api/v1/agents/:name/credential-requests/:id/fulfill',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/agents/:name/credential-requests/:id/decline',
       },
       { method: 'GET', path: '/api/v1/notifications' },
       { method: 'GET', path: '/api/v1/notifications/:id' },
@@ -1764,6 +1780,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // user wouldn't be asking via chat if they didn't want the
       // Agent to act on their behalf.
       idempotency: 'destructive',
+      // The legacy `/chat` endpoint targets the implicit default
+      // thread. credential_request reads `task.source.kind === 'chat'`
+      // to gate dispatch; without this, every chat-spawned task would
+      // present as null-source and the surface check would reject.
+      source: { kind: 'chat', chat_id: 'default', message_id: userMsg.id },
     })
     await taskStore.save(task)
 
@@ -1964,6 +1985,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         body: taskBody,
         priority: 0,
         idempotency,
+        // Multi-chat endpoint: the chat_id is the path param. Sets
+        // task.source so surface-aware tools (credential_request) can
+        // verify this task originated from a 1:1 chat.
+        source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
       })
       await taskStore.save(task)
 
@@ -2039,6 +2064,237 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // -- credential requests (decision: request_credential substrate) --------
+  // Operator-driven resolution of pending credential_request records.
+  // Fulfill seals the pasted value directly into the per-Agent vault
+  // without the value ever entering the Agent's loop or transit the
+  // LLM provider. Decline records the operator's reason. The Agent's
+  // running tool dispatch unblocks via the polling waitForResolution
+  // helper as soon as the record's state flips.
+
+  function toCredentialRequestDto(rec: CredentialRequest): {
+    id: string
+    agent: string
+    chat_id: string
+    state: CredentialRequest['state']
+    label: string
+    help: string
+    kind: CredentialRequest['kind']
+    reason: string
+    credential_name: string
+    created_at: string
+    expires_at: string
+    fulfilled_at: string | null
+    declined_at: string | null
+    decline_reason: string | null
+    expired_at: string | null
+    expired_reason: CredentialRequest['expired_reason']
+  } {
+    return {
+      id: rec.id,
+      agent: rec.agent,
+      chat_id: rec.chat_id,
+      state: rec.state,
+      label: rec.label,
+      help: rec.help,
+      kind: rec.kind,
+      reason: rec.reason,
+      credential_name: rec.credential_name,
+      created_at: rec.created_at,
+      expires_at: rec.expires_at,
+      fulfilled_at: rec.fulfilled_at,
+      declined_at: rec.declined_at,
+      decline_reason: rec.decline_reason,
+      expired_at: rec.expired_at,
+      expired_reason: rec.expired_reason,
+    }
+  }
+
+  function credentialErrorOrThrow(err: unknown, id: string): never {
+    if (err instanceof CredentialRequestError) {
+      if (err.code === 'NOT_FOUND') throw notFound('credential_request', id)
+      if (err.code === 'INVALID_TRANSITION') {
+        throw new ApiError(409, 'credential_request_not_pending', err.message, { id })
+      }
+    }
+    throw err as Error
+  }
+
+  fastify.get<{ Params: { name: string }; Querystring: { state?: string; chat_id?: string } }>(
+    '/api/v1/agents/:name/credential-requests',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const store = new CredentialRequestStore(home)
+      const filter: { agent: string; state?: CredentialRequest['state']; chat_id?: string } = {
+        agent: req.params.name,
+      }
+      if (
+        req.query.state === 'pending' ||
+        req.query.state === 'fulfilled' ||
+        req.query.state === 'declined' ||
+        req.query.state === 'expired'
+      ) {
+        filter.state = req.query.state
+      }
+      if (typeof req.query.chat_id === 'string' && req.query.chat_id.length > 0) {
+        filter.chat_id = req.query.chat_id
+      }
+      const items = await store.list(filter)
+      return { items: items.map(toCredentialRequestDto) }
+    },
+  )
+
+  const FulfillBodySchema = z.object({
+    value: z.string().min(1).max(64_000),
+  })
+
+  fastify.post<{ Params: { name: string; id: string }; Body: { value: string } }>(
+    '/api/v1/agents/:name/credential-requests/:id/fulfill',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const parsed = FulfillBodySchema.parse(req.body)
+      const store = new CredentialRequestStore(home)
+      let rec: CredentialRequest
+      try {
+        rec = await store.get(req.params.id)
+      } catch (err) {
+        credentialErrorOrThrow(err, req.params.id)
+      }
+      if (rec.agent !== req.params.name) {
+        throw new ApiError(
+          403,
+          'credential_request_wrong_agent',
+          'credential request does not belong to this agent',
+          { id: rec.id, agent: rec.agent },
+        )
+      }
+      if (rec.state !== 'pending') {
+        throw new ApiError(
+          409,
+          'credential_request_not_pending',
+          `credential request is in state ${rec.state}; cannot fulfill`,
+          { id: rec.id, state: rec.state },
+        )
+      }
+
+      // Seal the value DIRECTLY to vault. This is the load-bearing
+      // privacy property: the value never enters the Agent's loop or
+      // LLM provider context. It moves: browser → here → vault.
+      const vault = new CredentialVault(home, req.params.name)
+      const sealedAt = new Date().toISOString()
+      await vault.set(rec.credential_name, {
+        value: parsed.value,
+        metadata: {
+          created_at: sealedAt,
+          provider: 'operator',
+          notes: `via credential_request ${rec.id}`,
+        },
+      })
+
+      // Transition the request and broadcast.
+      let updated: CredentialRequest
+      try {
+        updated = await store.transition(rec.id, 'fulfilled', { now: sealedAt })
+      } catch (err) {
+        credentialErrorOrThrow(err, rec.id)
+      }
+
+      // Automatic post-fulfillment guidance (lifecycle hardening 2026-05-15).
+      // Appends a second system message immediately after the card so the
+      // agent sees the exact required next steps without having to
+      // remember prompt rule #8 across turns. This directly addresses the
+      // fuzzy-bannana failure where the agent re-asked, slept, complained,
+      // and shell-thrashed instead of doing credential_has + final reply.
+      try {
+        const chats = new MultiChatStore(home, rec.agent)
+        const guidance = `credential_request ${rec.id} for "${rec.credential_name}" has been fulfilled by the operator and sealed to your vault. Your *required* next actions in this task are: (1) call credential_has for "${rec.credential_name}" to verify the value is present, (2) produce a final assistant reply to the original user request confirming you now have the credential and it is verified on disk. Do not emit another credential_request for this name. Use http_request with bearer_credential (or the appropriate MCP skill) for any consumption. The vault is opaque — do not shell_run or fs_* to locate it.`
+        await chats.appendMessage({
+          chatId: rec.chat_id,
+          role: 'system',
+          body: guidance,
+          kind: null,
+          taskId: null,
+        })
+        // The append + the broadcastChatEvent below is sufficient for
+        // the web UI to eventually see the guidance. The agent will pick
+        // it up on its next chat read in the loop.
+      } catch {
+        // Guidance is best-effort; the core fulfillment (vault seal +
+        // state transition + card) has already succeeded.
+      }
+
+      broadcastChatEvent('credential_request.fulfilled', rec.agent, rec.chat_id, {
+        request_id: rec.id,
+        credential_name: rec.credential_name,
+        fulfilled_at: sealedAt,
+        envelope: toEnvelopeV1(updated),
+      })
+      void reply.status(200)
+      return toCredentialRequestDto(updated)
+    },
+  )
+
+  const DeclineBodySchema = z
+    .object({
+      reason: z.string().max(2000).optional(),
+    })
+    .strict()
+    .partial()
+
+  fastify.post<{
+    Params: { name: string; id: string }
+    Body: { reason?: string }
+  }>('/api/v1/agents/:name/credential-requests/:id/decline', async (req, reply) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const parsed = DeclineBodySchema.parse(req.body)
+    const store = new CredentialRequestStore(home)
+    let rec: CredentialRequest
+    try {
+      rec = await store.get(req.params.id)
+    } catch (err) {
+      credentialErrorOrThrow(err, req.params.id)
+    }
+    if (rec.agent !== req.params.name) {
+      throw new ApiError(
+        403,
+        'credential_request_wrong_agent',
+        'credential request does not belong to this agent',
+        { id: rec.id, agent: rec.agent },
+      )
+    }
+    if (rec.state !== 'pending') {
+      throw new ApiError(
+        409,
+        'credential_request_not_pending',
+        `credential request is in state ${rec.state}; cannot decline`,
+        { id: rec.id, state: rec.state },
+      )
+    }
+    const declinedAt = new Date().toISOString()
+    let updated: CredentialRequest
+    try {
+      const transitionFields: { now: string; decline_reason?: string } = { now: declinedAt }
+      if (parsed.reason !== undefined && parsed.reason.length > 0) {
+        transitionFields.decline_reason = parsed.reason
+      }
+      updated = await store.transition(rec.id, 'declined', transitionFields)
+    } catch (err) {
+      credentialErrorOrThrow(err, rec.id)
+    }
+    broadcastChatEvent('credential_request.declined', rec.agent, rec.chat_id, {
+      request_id: rec.id,
+      credential_name: rec.credential_name,
+      declined_at: declinedAt,
+      decline_reason: updated.decline_reason,
+      envelope: toEnvelopeV1(updated),
+    })
+    void reply.status(200)
+    return toCredentialRequestDto(updated)
+  })
+
   function broadcastChatEvent(
     event:
       | 'chat.message'
@@ -2046,7 +2302,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       | 'chat.renamed'
       | 'chat.archived'
       | 'chat.read'
-      | 'chat.audit_flag',
+      | 'chat.audit_flag'
+      | 'credential_request.created'
+      | 'credential_request.fulfilled'
+      | 'credential_request.declined'
+      | 'credential_request.expired',
     agentName: string,
     chatId: string,
     payload: Record<string, unknown>,
@@ -4079,9 +4339,12 @@ async function watchAndAppendChatReply(args: WatchAndAppendArgs): Promise<void> 
     if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
       continue
     }
-    // Terminal. Append once.
+    // Terminal. Append once. Same caveat as the multi-chat watcher:
+    // only count assistant-role messages, since tool envelopes
+    // (credential_request, future notification_ask) inserted during the
+    // task carry the same taskId and would otherwise block the reply.
     const messages = await chat.list()
-    const already = messages.some((m) => m.task_id === taskId)
+    const already = messages.some((m) => m.role === 'assistant' && m.task_id === taskId)
     if (already) return
     let content: string
     if (state === 'done' && task.frontmatter.outcome) {
@@ -4144,7 +4407,7 @@ interface MultiChatMessageDto {
    * just `audit` (claim-vs-evidence audit card); future system kinds
    * pick their own enum value.
    */
-  kind: 'audit' | null
+  kind: 'audit' | 'credential_request' | null
 }
 
 function toMultiChatMessageDto(m: MultiChatMessage): MultiChatMessageDto {
@@ -4206,8 +4469,13 @@ async function watchAndAppendChatThreadReply(args: WatchAndAppendThreadArgs): Pr
     if (state === 'pending' || state === 'running' || state.startsWith('blocked_')) {
       continue
     }
+    // Idempotency check: only count prior ASSISTANT-role messages. Tools
+    // like `credential_request` insert system-role envelope messages with
+    // the same taskId; counting those would make the watcher bail and the
+    // assistant's final reply would never appear in the thread (the
+    // operator only sees the tool-strip and never the "got it" message).
     const messages = await store.listMessages(chatId)
-    const already = messages.some((m) => m.task_id === taskId)
+    const already = messages.some((m) => m.role === 'assistant' && m.task_id === taskId)
     if (already) return
     let body: string
     if (state === 'done' && task.frontmatter.outcome) {

@@ -151,14 +151,15 @@ export class AgentProcess {
     // close over `this.identity` so a future hot-reload of identity
     // (not yet implemented) would propagate without re-registering
     // tools.
+    // Single shared TaskBlockerRegistry for this Agent (used by both the
+    // AgentLoop and human-gated tools like credential_request). This ensures
+    // blockers registered by tools are visible to the loop's hasActive() check.
+    const taskBlockerRegistry = new (await import('./blockers.js')).TaskBlockerRegistry()
+
     for (const server of baselineServers({
       getIdentity: () => this.identity,
-      // The schedule.* tools need the supervisor RPC client.
-      // process.start() opens this.client only after register-with-
-      // supervisor returns, which happens before any task loop spins
-      // up; tools execute in tasks, so by the time a schedule tool
-      // fires, this.client is non-undefined.
       getSupervisorRpc: () => this.client,
+      getBlockerRegistry: () => taskBlockerRegistry,
     })) {
       registry.register(server)
     }
@@ -341,6 +342,7 @@ export class AgentProcess {
       pulseEmitter: this.pulseEmitter,
       skillProvider: new FilesystemSkillProvider(this.options.home),
       runtimeMode,
+      blockerRegistry: taskBlockerRegistry,
       // Live tool-event firehose for the web app's ToolStream UI.
       // Fire-and-forget; loop swallows our errors so a dropped
       // supervisor connection cannot stall the task pipeline.
@@ -822,6 +824,29 @@ export class AgentProcess {
           `paused on detector ${result.verdict.kind}: ${result.verdict.detail}`,
         )
       }
+      return
+    }
+    if (result.kind === 'blocked_on_user') {
+      // The loop returned early because a human gate is active (e.g. an
+      // operator hasn't pasted a credential yet). Leave the task in
+      // `running` state ... the supervisor will tick the loop again on
+      // the next poll, and the gate-aware top-of-iteration check will
+      // either let the model run (gate resolved) or return blocked_on_user
+      // again (still waiting). Mirror the state up to the per-Agent
+      // state machine so the operator UI can show it.
+      try {
+        this.machine.transition(
+          'blocked_on_user',
+          `human gate active: ${result.blockers.map((b) => b.description).join('; ')}`,
+        )
+      } catch {
+        // already in some other state; the next heartbeat reconciles
+      }
+      this.log.info('loop returned blocked_on_user; awaiting external event', {
+        task_id: taskId,
+        blocker_ids: result.blockers.map((b) => b.id),
+        blocker_kinds: result.blockers.map((b) => b.kind),
+      })
       return
     }
     // errored
