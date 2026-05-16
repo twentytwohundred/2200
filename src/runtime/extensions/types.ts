@@ -94,6 +94,73 @@ export const ExtensionToolSchema = z.object({
 export type ExtensionTool = z.infer<typeof ExtensionToolSchema>
 
 /**
+ * Connector block (Extensions that integrate a messaging platform).
+ *
+ * Connectors are a specialization of Extensions: WhatsApp, Slack,
+ * Discord, Telegram, etc. They run a long-lived gateway process,
+ * receive inbound platform events, and route them to Agents whose
+ * Identity declares a binding to the connector. See
+ * [[../decisions/2026-05-16-connector-extensions]].
+ *
+ * Extensions that declare a `connector` block surface in the Connector
+ * Store and use the `hooks.gateway` lifecycle. Extensions without one
+ * are ordinary Extensions.
+ */
+export const ConnectorAuthModelSchema = z.enum(['qr_pair', 'oauth', 'bot_token', 'api_key'])
+export type ConnectorAuthModel = z.infer<typeof ConnectorAuthModelSchema>
+
+export const ConnectorManifestBlockSchema = z.object({
+  /** Stable id used by Agent Identity bindings (e.g. 'whatsapp', 'slack'). */
+  id: z
+    .string()
+    .min(1)
+    .regex(/^[a-z][a-z0-9_]*$/, {
+      message:
+        'connector id must be lowercase letter followed by lowercase letters / digits / underscores',
+    }),
+  /** Display label for the Connector Store + status UIs. */
+  label: z.string().min(1),
+  /** One-line description shown in the Store list view. */
+  blurb: z.string().min(1),
+  /** Docs path relative to the wiki, surfaced as a link in the Store + install flow. */
+  docs_path: z.string().optional(),
+  /** Auth model the operator will see at install time. */
+  auth_model: ConnectorAuthModelSchema,
+  /**
+   * ToS-acknowledgment string the user must explicitly agree to at install
+   * time. Surfaced verbatim by the install flow. The Baileys-backed
+   * WhatsApp connector uses this to surface the unofficial-client note.
+   */
+  tos_acknowledgment: z.string().optional(),
+})
+export type ConnectorManifestBlock = z.infer<typeof ConnectorManifestBlockSchema>
+
+/**
+ * Gateway lifecycle hook (Extension grows a long-lived child process).
+ *
+ * The supervisor spawns the gateway script when the Extension is
+ * installed AND at least one Agent declares a binding to the
+ * connector's `id`. Restart policy controls supervisor behavior when
+ * the gateway exits.
+ */
+export const GatewayRestartPolicySchema = z.enum(['always', 'on_demand'])
+export type GatewayRestartPolicy = z.infer<typeof GatewayRestartPolicySchema>
+
+export const GatewayHookSchema = z.object({
+  /** Relative path to the gateway entry script inside the Extension dir. */
+  script: z.string().min(1),
+  /**
+   * `always`: respawn whenever the process exits (with a small budget).
+   * `on_demand`: spawn only when an inbound or outbound request lands,
+   *  exit on idle. Use `always` for socket-based gateways (WhatsApp,
+   *  Discord); `on_demand` is reserved for poll-based gateways that
+   *  don't need a persistent connection.
+   */
+  restart_policy: GatewayRestartPolicySchema.default('always'),
+})
+export type GatewayHook = z.infer<typeof GatewayHookSchema>
+
+/**
  * Extension manifest (the JSON shape on disk).
  *
  * Naming rules:
