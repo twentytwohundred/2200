@@ -4427,6 +4427,226 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       .send(genericEnvelope(404, 'not_found', `No route for ${req.method} ${req.url}`, requestId))
   })
 
+  // ------------------------------------------------------------------------
+  // Doctor (Settings -> Doctor tab).
+  //
+  // Scans the substrate for known issue patterns and offers per-issue
+  // fixes. v1 surface: errored Agents (recoverable vs. unknown),
+  // missing connector gateways, stale pending credential requests.
+  // Each issue carries a stable id of `<kind>:<scope>` so the fix
+  // endpoint can dispatch without storing diagnostic state on the
+  // server.
+  // ------------------------------------------------------------------------
+  type DoctorSeverity = 'info' | 'warn' | 'error'
+  interface DoctorIssue {
+    id: string
+    severity: DoctorSeverity
+    kind: string
+    title: string
+    description: string
+    fix_available: boolean
+    fix_label?: string
+  }
+
+  async function diagnose(): Promise<DoctorIssue[]> {
+    const issues: DoctorIssue[] = []
+    const snap = supervisor.snapshot()
+
+    // Check 1: errored Agents. Distinguish "polite-shutdown wedge"
+    // (fixable by restart) from "real crash" (operator investigation).
+    for (const [name, rec] of Object.entries(snap.agents)) {
+      if (rec.state !== 'errored') continue
+      const reason = rec.errored_reason ?? ''
+      if (reason.startsWith('process exited during daemon shutdown')) {
+        issues.push({
+          id: `agent_errored_recoverable:${name}`,
+          severity: 'warn',
+          kind: 'agent_errored_recoverable',
+          title: `Agent "${name}" wedged in errored after daemon shutdown`,
+          description:
+            `${name} hit a known shutdown-race wedge (code=null signal=null treated as crash). ` +
+            `The upstream fix landed in 2026-05-16; this Agent was wedged before the fix.`,
+          fix_available: true,
+          fix_label: `Restart ${name}`,
+        })
+      } else {
+        issues.push({
+          id: `agent_errored_unknown:${name}`,
+          severity: 'error',
+          kind: 'agent_errored_unknown',
+          title: `Agent "${name}" in errored state`,
+          description: reason || '(no errored_reason recorded)',
+          fix_available: false,
+        })
+      }
+    }
+
+    // Check 2: connector gateways that should be running but are not.
+    // For each installed Extension with at least one Agent binding,
+    // verify the gateway is live. Per-Agent and extension-scope
+    // handled separately (mirror of the boot recovery logic).
+    try {
+      const catalog = await loadCatalog(catalogPath)
+      const { readdir } = await import('node:fs/promises')
+      let installedIds: string[] = []
+      try {
+        const entries = await readdir(join(home, 'extensions'), { withFileTypes: true })
+        installedIds = entries
+          .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+          .map((e) => e.name)
+      } catch {
+        // no extensions installed
+      }
+      for (const extId of installedIds) {
+        const entry = catalog.extensions.find((e) => e.id === extId)
+        if (entry?.category !== 'connector') continue
+        const scope = entry.account_scope ?? 'extension'
+        const boundAgents: string[] = []
+        for (const [name, rec] of Object.entries(snap.agents)) {
+          try {
+            const id = await loadIdentity(rec.identity_path)
+            if (id.frontmatter.connectors.some((c) => c.connector_id === extId)) {
+              boundAgents.push(name)
+            }
+          } catch {
+            // identity unreadable; skip
+          }
+        }
+        if (boundAgents.length === 0) continue
+        if (scope === 'extension') {
+          if (!gatewayManager.isRunning(extId, null)) {
+            issues.push({
+              id: `connector_gateway_missing:${extId}::`,
+              severity: 'warn',
+              kind: 'connector_gateway_missing',
+              title: `${entry.label} gateway is not running`,
+              description:
+                `${String(boundAgents.length)} Agent${boundAgents.length === 1 ? '' : 's'} ` +
+                `${boundAgents.length === 1 ? 'has' : 'have'} bindings to ${entry.label} ` +
+                `but the gateway process is not live. Inbound messages will not wake anyone ` +
+                `until the gateway is back up.`,
+              fix_available: true,
+              fix_label: 'Spawn gateway',
+            })
+          }
+        } else {
+          for (const agent of boundAgents) {
+            if (!gatewayManager.isRunning(extId, agent)) {
+              issues.push({
+                id: `connector_gateway_missing:${extId}::${agent}`,
+                severity: 'warn',
+                kind: 'connector_gateway_missing',
+                title: `${entry.label} gateway for ${agent} is not running`,
+                description:
+                  `${agent} has a ${entry.label} binding but the per-Agent gateway is not live. ` +
+                  `${entry.label} messages to ${agent} will not arrive until the gateway is back up.`,
+                fix_available: true,
+                fix_label: `Spawn gateway for ${agent}`,
+              })
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log?.warn('doctor: gateway check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // Check 3: stale pending credential requests owned by Agents
+    // that are no longer running. Operator paste cards for dead
+    // recipients should be expired so they don't clutter the inbox.
+    try {
+      const credStore = new CredentialRequestStore(home)
+      const pending = await credStore.list({ state: 'pending' })
+      for (const rec of pending) {
+        const agentRec = snap.agents[rec.agent]
+        const agentLive = agentRec?.state === 'running' || agentRec?.state === 'waiting'
+        if (agentLive) continue
+        issues.push({
+          id: `pending_credential_orphaned:${rec.id}`,
+          severity: 'warn',
+          kind: 'pending_credential_orphaned',
+          title: `Pending credential request for offline Agent "${rec.agent}"`,
+          description:
+            `Credential "${rec.credential_name}" requested by ${rec.agent} ` +
+            `(label: "${rec.label}"), but ${rec.agent} is currently ` +
+            `${agentRec?.state ?? 'missing'}. The request will sit forever unless expired.`,
+          fix_available: true,
+          fix_label: 'Expire request',
+        })
+      }
+    } catch (err) {
+      log?.warn('doctor: pending credential check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    return issues
+  }
+
+  fastify.get('/api/v1/doctor/diagnose', async (_req, reply) => {
+    const items = await diagnose()
+    return reply.send({ items, generated_at: new Date().toISOString() })
+  })
+
+  const DoctorFixBodySchema = z.object({ id: z.string().min(1) })
+  fastify.post('/api/v1/doctor/fix', async (req, reply) => {
+    const parsed = DoctorFixBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ code: 'invalid_body', errors: parsed.error.issues })
+    }
+    const id = parsed.data.id
+    // Dispatch by id prefix. Format: <kind>:<scope-string>.
+    if (id.startsWith('agent_errored_recoverable:')) {
+      const agent = id.slice('agent_errored_recoverable:'.length)
+      try {
+        await supervisor.startAgent(agent)
+        return await reply.send({ applied: true, message: `Started ${agent}.` })
+      } catch (err) {
+        return reply.status(500).send({
+          applied: false,
+          message: `Could not start ${agent}: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+    if (id.startsWith('connector_gateway_missing:')) {
+      const scope = id.slice('connector_gateway_missing:'.length)
+      const [extId, agentPart] = scope.split('::')
+      if (!extId) return reply.status(400).send({ applied: false, message: 'invalid scope' })
+      const agentName = agentPart && agentPart.length > 0 ? agentPart : null
+      try {
+        const handle = await gatewayManager.start(extId, agentName)
+        return await reply.send({
+          applied: true,
+          message: `Spawned ${extId} gateway${agentName ? ` for ${agentName}` : ''} (pid ${String(handle.pid)}).`,
+        })
+      } catch (err) {
+        return reply.status(500).send({
+          applied: false,
+          message: `Could not spawn gateway: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+    if (id.startsWith('pending_credential_orphaned:')) {
+      const requestId = id.slice('pending_credential_orphaned:'.length)
+      try {
+        const credStore = new CredentialRequestStore(home)
+        await credStore.transition(requestId, 'expired', {
+          now: new Date().toISOString(),
+          expired_reason: 'agent_crashed',
+        })
+        return await reply.send({ applied: true, message: 'Expired the request.' })
+      } catch (err) {
+        return reply.status(500).send({
+          applied: false,
+          message: `Could not expire request: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+    return reply.status(400).send({ applied: false, message: `unknown issue id: ${id}` })
+  })
+
   if (!staticDir) {
     fastify.get('/', (_req, reply) =>
       reply

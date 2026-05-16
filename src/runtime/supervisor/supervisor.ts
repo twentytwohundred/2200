@@ -2204,10 +2204,20 @@ export class Supervisor {
       // stop, they asked for the supervisor to stop. Preserve the Agent's
       // last live state (running / waiting / blocked_*) so the next boot's
       // state-recovery pass revives it. Only the pid is cleared.
-      const nextState: AgentRecord['state'] =
-        signal === null && code === 0
-          ? record.state // graceful exit, keep last live state for revive
-          : 'errored'
+      //
+      // The "is this a crash?" call: a non-zero exit code OR a fatal
+      // signal other than the SIGTERM we sent is a real crash; anything
+      // else (clean exit 0, SIGTERM, or the weird code=null signal=null
+      // case where Node child_process couldn't capture the exit info
+      // before the parent went down) is benign. The original "code===0
+      // && signal===null" condition was too strict ... it conflated
+      // "Agent gracefully exited" with "Agent's exit info was lost in
+      // the shutdown race" and wedged Agents like Jodin into errored
+      // state on what was really just a polite SIGTERM. Doctor tab
+      // catches the residual stuck-in-errored cases this fix doesn't
+      // get to retroactively.
+      const isCrash = (code !== null && code !== 0) || (signal !== null && signal !== 'SIGTERM')
+      const nextState: AgentRecord['state'] = isCrash ? 'errored' : record.state
       await this.updateAgent(name, {
         state: nextState,
         pid: null,

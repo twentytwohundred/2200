@@ -36,6 +36,7 @@ import {
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
+import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
 import { SkillsSection } from './SkillsSection'
 import styles from './SettingsScreen.module.css'
@@ -87,6 +88,13 @@ export function SettingsScreen(): ReactElement {
       lede="Theme, runtime info, and a reference for management surfaces still on the CLI."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
+      <section className={styles.block}>
+        <Meta>doctor</Meta>
+        <div className={styles.blockBody}>
+          <DoctorSection />
+        </div>
+      </section>
+
       <section className={styles.block}>
         <Meta>theme</Meta>
         <div className={styles.blockBody}>

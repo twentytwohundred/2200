@@ -1475,6 +1475,31 @@ export interface InstalledExtensionEntry {
   extension_gateway?: InstalledExtensionGatewaySummary
 }
 
+// ---------------------------------------------------------------------------
+// Doctor (Settings -> Doctor tab) ... diagnose + fix endpoints.
+// ---------------------------------------------------------------------------
+
+export interface DoctorIssue {
+  /** Stable id of form `<kind>:<scope>`; used by the fix endpoint. */
+  id: string
+  severity: 'info' | 'warn' | 'error'
+  kind: string
+  title: string
+  description: string
+  fix_available: boolean
+  fix_label?: string
+}
+
+export const apiDoctor = {
+  diagnose: () =>
+    request<{ items: DoctorIssue[]; generated_at: string }>('/api/v1/doctor/diagnose'),
+  fix: (id: string) =>
+    request<{ applied: boolean; message: string }>('/api/v1/doctor/fix', {
+      method: 'POST',
+      body: { id },
+    }),
+}
+
 export const apiExtensions = {
   catalog: () => request<Catalog>('/api/v1/extensions/catalog'),
   installed: () => request<{ items: InstalledExtensionEntry[] }>('/api/v1/extensions/installed'),
