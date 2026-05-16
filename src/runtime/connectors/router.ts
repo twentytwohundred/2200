@@ -115,7 +115,14 @@ function evaluateBinding(
     return { kind: 'block', agent, binding, reason: 'group_not_allowlisted' }
   }
   if (binding.policies.require_mention) {
-    if (!mentionDetector(agent, event.text)) {
+    // Connectors that resolve mentions natively (Discord puts a
+    // pre-checked `mentioned: true/false` on platform_extras) get the
+    // authoritative answer. Connectors that don't (WhatsApp Inbox)
+    // fall back to a substring-based detector against the text.
+    const explicit = event.platform_extras['mentioned']
+    const mentioned =
+      typeof explicit === 'boolean' ? explicit : mentionDetector(agent, event.text)
+    if (!mentioned) {
       return { kind: 'block', agent, binding, reason: 'mention_required' }
     }
   }

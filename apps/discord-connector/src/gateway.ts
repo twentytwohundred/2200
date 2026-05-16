@@ -156,10 +156,31 @@ async function clearGatewayInfo(env: GatewayEnv): Promise<void> {
 }
 
 async function handleInbound(env: GatewayEnv, msg: Message, selfUserId: string): Promise<void> {
-  // v1: DM-only. Skip channel messages, bots, and our own messages.
+  // Skip bots (other Discord bots) and our own outbound.
   if (msg.author.bot) return
   if (msg.author.id === selfUserId) return
-  if (msg.channel.type !== ChannelType.DM) return
+
+  // Accept DMs and guild text channels. Other channel types (voice,
+  // forum, news threads) are out-of-scope for v1.
+  const isDm = msg.channel.type === ChannelType.DM
+  const isGuildText =
+    msg.channel.type === ChannelType.GuildText ||
+    msg.channel.type === ChannelType.GuildAnnouncement ||
+    msg.channel.type === ChannelType.PublicThread ||
+    msg.channel.type === ChannelType.PrivateThread
+  if (!isDm && !isGuildText) return
+
+  // Resolve whether the bot was @-mentioned. The supervisor's router
+  // uses this for require_mention without needing to parse the raw
+  // <@id> mention syntax. discord.js gives us a normalized collection.
+  const mentioned = msg.mentions.users.has(selfUserId)
+
+  // Substitute the raw <@id> mention with @<username> so the agent's
+  // loop sees a readable text body. Idempotent ... <@!id> (the legacy
+  // nickname-mention form) gets the same treatment.
+  const botUsername = msg.client.user?.username ?? env.agentName
+  const text = msg.content
+    .replace(new RegExp(`<@!?${selfUserId}>`, 'g'), `@${botUsername}`)
 
   const event = {
     connector_id: env.connectorId,
@@ -167,15 +188,17 @@ async function handleInbound(env: GatewayEnv, msg: Message, selfUserId: string):
     kind: 'message' as const,
     conversation: {
       id: msg.channel.id,
-      kind: 'dm' as const,
-      display_name: msg.author.username,
+      kind: (isDm ? 'dm' : 'group') as 'dm' | 'group',
+      ...(isGuildText && msg.guild
+        ? { display_name: `${msg.guild.name} · #${'name' in msg.channel ? msg.channel.name : msg.channel.id}` }
+        : { display_name: msg.author.username }),
     },
     sender: {
       id: msg.author.id,
       display_name: msg.author.username,
       is_self: false,
     },
-    text: msg.content,
+    text,
     attachments: msg.attachments.map((a) => ({
       kind: (a.contentType?.startsWith('image/') ? 'image' : 'document') as 'image' | 'document',
       url: a.url,
@@ -184,6 +207,9 @@ async function handleInbound(env: GatewayEnv, msg: Message, selfUserId: string):
     received_at: msg.createdAt.toISOString(),
     platform_extras: {
       message_id: msg.id,
+      mentioned,
+      ...(isGuildText && msg.guild ? { guild_id: msg.guild.id } : {}),
+      ...(isGuildText ? { channel_id: msg.channel.id } : {}),
       ...(msg.reference?.messageId ? { reply_to: msg.reference.messageId } : {}),
     },
   }

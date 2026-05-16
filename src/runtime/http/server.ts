@@ -3927,6 +3927,23 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
 
       // 2. Add / update the binding in identity.md.
+      // Per-connector default policies: Discord bots are dedicated
+      // identities the operator invited to a server, so default-open
+      // DM + group makes sense (guarded by require_mention in groups
+      // to avoid chatter). WhatsApp Inbox-style connectors get
+      // tighter defaults at their own endpoints.
+      const defaultPolicies =
+        id === 'discord'
+          ? ({
+              dm_policy: 'open' as const,
+              group_policy: 'open' as const,
+              require_mention: true,
+            })
+          : ({
+              dm_policy: 'pairing' as const,
+              group_policy: 'allowlist' as const,
+              require_mention: true,
+            })
       try {
         await upsertConnectorBinding(rec.identity_path, {
           connector_id: id,
@@ -3936,11 +3953,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
             dm: parsed.data.allowlist_dm ?? [],
             group: [],
           },
-          policies: {
-            dm_policy: 'pairing',
-            group_policy: 'allowlist',
-            require_mention: true,
-          },
+          policies: defaultPolicies,
         })
       } catch (err) {
         return await reply.status(500).send({
