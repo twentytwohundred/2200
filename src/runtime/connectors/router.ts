@@ -120,8 +120,7 @@ function evaluateBinding(
     // authoritative answer. Connectors that don't (WhatsApp Inbox)
     // fall back to a substring-based detector against the text.
     const explicit = event.platform_extras['mentioned']
-    const mentioned =
-      typeof explicit === 'boolean' ? explicit : mentionDetector(agent, event.text)
+    const mentioned = typeof explicit === 'boolean' ? explicit : mentionDetector(agent, event.text)
     if (!mentioned) {
       return { kind: 'block', agent, binding, reason: 'mention_required' }
     }

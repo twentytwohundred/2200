@@ -184,7 +184,12 @@ async function handleInbound(env: GatewayEnv, msg: Message, selfUserId: string):
 
   const event = {
     connector_id: env.connectorId,
-    account: env.agentName,
+    // `account` is the binding's slot label inside the Agent's
+    // identity.md, not the Agent name. The per-Agent setup endpoint
+    // always writes 'default'; the gateway must match or the
+    // supervisor's router will silently drop every event as
+    // account_mismatch (302/202 with empty passed[]).
+    account: 'default',
     kind: 'message' as const,
     conversation: {
       id: msg.channel.id,
