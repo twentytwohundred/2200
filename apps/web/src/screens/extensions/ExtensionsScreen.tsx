@@ -737,7 +737,10 @@ function AgentSetupPanel({
     <div style={{ display: 'grid', gap: 14 }}>
       {/* Agent picker */}
       <div>
-        <div className={styles.modalLabel}>Pick which Agent gets this Discord bot</div>
+        <div className={styles.modalLabel}>
+          Step 1: Pick which Agent gets this Discord bot{' '}
+          <span style={{ color: 'var(--danger)' }}>(required)</span>
+        </div>
         <select
           value={selectedAgent}
           onChange={(e) => {
@@ -750,7 +753,7 @@ function AgentSetupPanel({
             padding: '10px 12px',
             background: 'var(--bg-sunk)',
             color: 'var(--text)',
-            border: '1px solid var(--line)',
+            border: `1px solid ${selectedAgent ? 'var(--line)' : 'var(--danger)'}`,
             borderRadius: 8,
             fontSize: 14,
             fontFamily: 'inherit',
@@ -774,7 +777,7 @@ function AgentSetupPanel({
       {/* Walkthrough */}
       <div className={styles.advancedBody}>
         <strong style={{ color: 'var(--text)' }}>
-          Get a Discord bot token for {selectedAgent || 'this Agent'}:
+          Step 2: Get a Discord bot token for {selectedAgent || 'this Agent'}:
         </strong>
         <ol style={{ marginTop: 10, paddingLeft: 20, lineHeight: 1.7 }}>
           <li>
@@ -822,7 +825,7 @@ function AgentSetupPanel({
 
       {/* Token input */}
       <div>
-        <div className={styles.modalLabel}>Bot token</div>
+        <div className={styles.modalLabel}>Step 3: Paste the bot token</div>
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
           <input
             type={showToken ? 'text' : 'password'}
@@ -878,7 +881,24 @@ function AgentSetupPanel({
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 12,
+        }}
+      >
+        {/* Inline "why is the button disabled" hint when something is missing. */}
+        {!setupMutation.isPending && !isPolling && (!selectedAgent || token.length === 0) && (
+          <span style={{ color: 'var(--text-3)', fontSize: 12, marginRight: 'auto' }}>
+            {!selectedAgent && token.length === 0
+              ? 'Pick an Agent + paste a bot token to continue'
+              : !selectedAgent
+                ? 'Pick an Agent above to continue'
+                : 'Paste a bot token to continue'}
+          </span>
+        )}
         {!isPolling && (
           <Button variant="ghost" size="md" onClick={onCancel}>
             Cancel
@@ -896,7 +916,11 @@ function AgentSetupPanel({
             ? 'Setting up…'
             : isPolling
               ? 'Connecting…'
-              : `Connect ${selectedAgent || 'bot'}`}
+              : !selectedAgent
+                ? 'Pick an Agent first'
+                : token.length === 0
+                  ? 'Paste token first'
+                  : `Connect ${selectedAgent}`}
         </Button>
       </div>
     </div>
