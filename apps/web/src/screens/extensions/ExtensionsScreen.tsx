@@ -99,9 +99,7 @@ export function ExtensionsScreen(): ReactElement {
       )}
       {catalogQuery.isError && (
         <Card padding={20}>
-          <p style={{ margin: 0, color: 'var(--err, #e35d4d)' }}>
-            {formatError(catalogQuery.error)}
-          </p>
+          <p style={{ margin: 0, color: 'var(--danger)' }}>{formatError(catalogQuery.error)}</p>
         </Card>
       )}
 
@@ -165,8 +163,8 @@ function TabButton({ active, onClick, children }: TabButtonProps): ReactElement 
       style={{
         appearance: 'none',
         border: '1px solid',
-        borderColor: active ? 'var(--text-2)' : 'var(--line, rgba(255,255,255,0.08))',
-        background: active ? 'var(--surface-2, #21262d)' : 'transparent',
+        borderColor: active ? 'var(--text-2)' : 'var(--line)',
+        background: active ? 'var(--bg-elev)' : 'transparent',
         color: active ? 'var(--text)' : 'var(--text-3)',
         padding: '7px 14px',
         borderRadius: 999,
@@ -358,10 +356,10 @@ function InstallModal({ entry, onClose, onComplete }: InstallModalProps): ReactE
           <div
             style={{
               padding: '12px 14px',
-              background: 'rgba(227,93,77,0.12)',
-              border: '1px solid rgba(227,93,77,0.4)',
+              background: 'var(--danger-soft)',
+              border: '1px solid var(--danger)',
               borderRadius: 8,
-              color: 'var(--err, #e35d4d)',
+              color: 'var(--text)',
               fontSize: 13,
               lineHeight: 1.5,
             }}
