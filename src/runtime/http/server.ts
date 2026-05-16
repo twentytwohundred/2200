@@ -3622,11 +3622,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     state: 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored' | 'idle'
     qr_data_url?: string
     self_jid?: string | null
+    self_user?: { id: string; username: string; discriminator?: string }
     detail?: string
     account: string
     updated_at: string
   }
+  // Keyed by `${extension_id}::${agent_or_extension}` so per-Agent
+  // (Discord) and per-Extension (WhatsApp Inbox) pair states don't
+  // collide. agent_or_extension is the agent name for per-Agent
+  // connectors, '_extension' for per-Extension scope.
   const pairStates = new Map<string, PairState>()
+  const pairKey = (id: string, agent: string | null): string => `${id}::${agent ?? '_extension'}`
 
   // Serve per-Extension icon files. Prefers the installed copy at
   // <home>/extensions/<id>/icon.svg; falls back to the workspace
@@ -3691,26 +3697,48 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // in the auth pre-handler regex (loopback-only in practice; gateway
   // runs on the same host).
 
-  fastify.post<{ Params: { id: string } }>(
+  // Extract the optional agent query param. Per-Agent connectors
+  // pass `?agent=simon`; per-Extension (WhatsApp Inbox) omits.
+  function readAgentParam(query: unknown): string | null {
+    if (typeof query !== 'object' || query === null) return null
+    const q = query as Record<string, unknown>
+    const a = q['agent']
+    if (typeof a !== 'string' || a.length === 0) return null
+    if (!/^[a-z][a-z0-9_-]*$/.test(a)) {
+      throw new Error('agent name must be lowercase letter + lowercase / digits / -_')
+    }
+    return a
+  }
+
+  fastify.post<{ Params: { id: string }; Querystring: { agent?: string } }>(
     '/api/v1/extensions/:id/pair/start',
     async (req, reply) => {
       const id = req.params.id
       if (!/^[a-z][a-z0-9-]*$/.test(id)) {
         return reply.status(400).send({ code: 'invalid_id' })
       }
+      let agent: string | null
       try {
-        const handle = await gatewayManager.start(id)
-        // Seed an idle state so the GET /pair/state returns something
-        // before the gateway's first connection.update event.
-        if (!pairStates.has(id)) {
-          pairStates.set(id, {
+        agent = readAgentParam(req.query)
+      } catch (err) {
+        return reply.status(400).send({
+          code: 'invalid_agent',
+          message: err instanceof Error ? err.message : 'invalid agent',
+        })
+      }
+      try {
+        const handle = await gatewayManager.start(id, agent)
+        const seedKey = pairKey(id, agent)
+        if (!pairStates.has(seedKey)) {
+          pairStates.set(seedKey, {
             state: 'connecting',
-            account: 'default',
+            account: agent ?? 'default',
             updated_at: new Date().toISOString(),
           })
         }
         return await reply.status(200).send({
           extension_id: handle.extension_id,
+          agent_name: handle.agent_name,
           gateway: { pid: handle.pid, port: handle.port, started_at: handle.started_at },
         })
       } catch (err) {
@@ -3726,7 +3754,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     state: z.enum(['awaiting_qr_scan', 'connecting', 'paired', 'disconnected', 'errored']),
     qr_data_url: z.string().optional(),
     self_jid: z.string().nullable().optional(),
+    self_user: z
+      .object({
+        id: z.string(),
+        username: z.string(),
+        discriminator: z.string().optional(),
+      })
+      .optional(),
     detail: z.string().optional(),
+    // For per-Extension connectors the gateway sends 'default'; for
+    // per-Agent connectors the gateway sends the Agent name. Treat as
+    // the pair-state key disambiguator either way.
     account: z.string().default('default'),
     at: z.string().optional(),
   })
@@ -3749,33 +3787,191 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
       if (parsed.data.qr_data_url) next.qr_data_url = parsed.data.qr_data_url
       if (parsed.data.self_jid !== undefined) next.self_jid = parsed.data.self_jid
+      if (parsed.data.self_user) {
+        next.self_user = {
+          id: parsed.data.self_user.id,
+          username: parsed.data.self_user.username,
+          ...(parsed.data.self_user.discriminator !== undefined
+            ? { discriminator: parsed.data.self_user.discriminator }
+            : {}),
+        }
+      }
       if (parsed.data.detail) next.detail = parsed.data.detail
-      pairStates.set(id, next)
+      // For per-Extension connectors, account = 'default' maps to
+      // the '_extension' bucket. For per-Agent connectors, account =
+      // <agent_name>.
+      const agentKey = parsed.data.account === 'default' ? null : parsed.data.account
+      const k = pairKey(id, agentKey)
+      pairStates.set(k, next)
       log?.info('pair state updated', {
         extension_id: id,
+        agent: agentKey ?? '_extension',
         state: next.state,
-        account: next.account,
       })
       return reply.status(200).send({ ok: true })
     },
   )
 
-  fastify.get<{ Params: { id: string } }>('/api/v1/extensions/:id/pair/state', (req, reply) => {
-    const id = req.params.id
-    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
-      return reply.status(400).send({ code: 'invalid_id' })
-    }
-    const state = pairStates.get(id) ?? {
-      state: 'idle' as const,
-      account: 'default',
-      updated_at: new Date(0).toISOString(),
-    }
-    return reply.send({
-      extension_id: id,
-      gateway_running: gatewayManager.isRunning(id),
-      ...state,
-    })
+  fastify.get<{ Params: { id: string }; Querystring: { agent?: string } }>(
+    '/api/v1/extensions/:id/pair/state',
+    (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      let agent: string | null
+      try {
+        agent = readAgentParam(req.query)
+      } catch (err) {
+        return reply.status(400).send({
+          code: 'invalid_agent',
+          message: err instanceof Error ? err.message : 'invalid agent',
+        })
+      }
+      const k = pairKey(id, agent)
+      const state = pairStates.get(k) ?? {
+        state: 'idle' as const,
+        account: agent ?? 'default',
+        updated_at: new Date(0).toISOString(),
+      }
+      return reply.send({
+        extension_id: id,
+        agent_name: agent,
+        gateway_running: gatewayManager.isRunning(id, agent),
+        ...state,
+      })
+    },
+  )
+
+  // -- per-Agent connector setup (for account_scope: 'agent') -----------
+  // The Store's per-Agent install flow POSTs here after the operator
+  // pastes the bot token. We:
+  //   1. Validate the Agent exists.
+  //   2. Seal credentials into the per-Agent vault (name: `${id}-${key}`).
+  //   3. Add/update the connector binding in the Agent's identity.md.
+  //   4. Restart the Agent so the loop picks up the new binding.
+  //   5. Spawn the gateway for (extension_id, agent_name).
+  // ----------------------------------------------------------------------
+
+  const SetupAgentBindingBodySchema = z.object({
+    /**
+     * Credentials map. Keys match the binding's `credentials` schema
+     * (e.g. `bot_token` for Discord). Values are the actual plaintext
+     * secrets the operator pasted; we seal them to vault here and
+     * record only the credential name in the binding.
+     */
+    credentials: z.record(z.string().min(1), z.string().min(1)).default({}),
+    /** Default allowlist tweaks (optional). */
+    allowlist_dm: z.array(z.string()).optional(),
   })
+
+  fastify.post<{ Params: { id: string; agent: string } }>(
+    '/api/v1/extensions/:id/agents/:agent/setup',
+    async (req, reply) => {
+      const id = req.params.id
+      const agent = req.params.agent
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      if (!/^[a-z][a-z0-9_-]*$/.test(agent)) {
+        return reply.status(400).send({ code: 'invalid_agent' })
+      }
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[agent]
+      if (!rec) return reply.status(404).send({ code: 'agent_not_found', agent })
+      const parsed = SetupAgentBindingBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_setup_body', errors: parsed.error.issues })
+      }
+
+      // Catalog lookup for the connector entry (auth_model + permissions).
+      const catalog = await loadCatalog(catalogPath)
+      const entry = catalog.extensions.find((e) => e.id === id)
+      if (!entry) {
+        return reply.status(404).send({ code: 'catalog_entry_not_found', id })
+      }
+      if (entry.account_scope !== 'agent') {
+        return reply.status(400).send({
+          code: 'wrong_account_scope',
+          message: `${id} is account_scope="${entry.account_scope ?? 'null'}"; use /pair/start for extension-scope connectors`,
+        })
+      }
+
+      // 1. Seal credentials to vault.
+      const vault = new CredentialVault(home, agent)
+      const credentialMap: Record<string, string> = {}
+      for (const [bindingKey, secret] of Object.entries(parsed.data.credentials)) {
+        const credentialName = `${id}-${bindingKey}`
+        try {
+          await vault.set(credentialName, {
+            value: secret,
+            metadata: {
+              created_at: new Date().toISOString(),
+              provider: id,
+              notes: `sealed by Store install flow for binding "${bindingKey}"`,
+            },
+          })
+          credentialMap[bindingKey] = credentialName
+        } catch (err) {
+          return await reply.status(500).send({
+            code: 'vault_write_failed',
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+
+      // 2. Add / update the binding in identity.md.
+      const { upsertConnectorBinding } = await import('../identity/binding-writer.js')
+      try {
+        await upsertConnectorBinding(rec.identity_path, {
+          connector_id: id,
+          account: 'default',
+          credentials: credentialMap,
+          allowlist: {
+            dm: parsed.data.allowlist_dm ?? [],
+            group: [],
+          },
+          policies: {
+            dm_policy: 'pairing',
+            group_policy: 'allowlist',
+            require_mention: true,
+          },
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'identity_write_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      // 3. Restart the Agent so the new binding loads.
+      try {
+        await supervisor.stopAgent(agent)
+        await supervisor.startAgent(agent)
+      } catch (err) {
+        log?.warn('agent restart after binding setup failed', {
+          agent,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      // 4. Spawn the gateway.
+      try {
+        const handle = await gatewayManager.start(id, agent)
+        return await reply.status(200).send({
+          extension_id: id,
+          agent_name: agent,
+          gateway: { pid: handle.pid, port: handle.port, started_at: handle.started_at },
+          credentials_sealed: Object.keys(credentialMap),
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'gateway_start_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    },
+  )
 
   const InstallBodySchema = z.object({
     source: z.discriminatedUnion('type', [

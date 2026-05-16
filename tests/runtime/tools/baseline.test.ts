@@ -54,21 +54,22 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 40 tools (39 prior + whatsapp_send)', () => {
+  it('exports exactly 41 tools (40 prior + discord_send)', () => {
     // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
-    // 38 with `credential_has`, and 39 with `http_request` ... the
-    // runtime-mediated USE path for vault credentials. 2026-05-16
-    // bumped to 40 with `whatsapp_send` ... outbound to the WhatsApp
-    // connector gateway (decision 2026-05-16-connector-extensions).
-    expect(BASELINE_TOOL_NAMES).toHaveLength(40)
+    // 38 with `credential_has`, 39 with `http_request`. 2026-05-16
+    // bumped to 40 with `whatsapp_send` and 41 with `discord_send`
+    // ... outbound tools for the WhatsApp Inbox + Discord connectors
+    // respectively (decision 2026-05-16-connector-per-agent-identity).
+    expect(BASELINE_TOOL_NAMES).toHaveLength(41)
   })
 
-  it('baselineServers() builds fifteen servers (adds whatsapp)', () => {
+  it('baselineServers() builds sixteen servers (adds whatsapp + discord)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
       'chat',
       'credential',
+      'discord',
       'fs',
       'http',
       'image',
