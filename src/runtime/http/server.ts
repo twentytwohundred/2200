@@ -308,6 +308,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // does not see the upgraded socket.
       return
     }
+    // Extension icon endpoint is public ... `<img src>` tags can't
+    // send Authorization headers, and icons are branding assets, not
+    // sensitive data. Match the supervisor's static-frontend posture.
+    if (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/icon$/.test(req.url)) {
+      return
+    }
     const principal = await authenticate(req)
     ;(req as AuthedRequest).principal = principal
   })
