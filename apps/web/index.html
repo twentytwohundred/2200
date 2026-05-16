@@ -7,6 +7,15 @@
     <title>2200</title>
 
     <!--
+      Live favicon: data-URL placeholder. LiveFavicon (apps/web/src/favicon)
+      mounts on boot, draws a 32×32 canvas every animation frame, and
+      writes the canvas back to this link as a PNG data URL. The color
+      reflects fleet state (ok / warn / err / off). See
+      wiki/design/live-favicon.md for the brief.
+    -->
+    <link rel="icon" id="dyn-favicon" href="data:," />
+
+    <!--
       Sans = Switzer (Fontshare CDN); mono = JetBrains Mono (Google Fonts).
       Token files reference these family names. Loading both before main.css
       so the FOUT lasts a single paint instead of cascading through every
