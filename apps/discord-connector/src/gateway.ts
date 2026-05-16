@@ -324,6 +324,11 @@ async function run(): Promise<void> {
   })
 
   next.on('messageCreate', (msg) => {
+    // Temporary debug: log every inbound message so we can see what
+    // Discord is actually delivering vs. what our filter accepts.
+    console.error(
+      `[discord-gateway] messageCreate ch_type=${String(msg.channel.type)} guild=${msg.guild?.id ?? 'dm'} from=${msg.author.username}(${msg.author.id}) bot=${String(msg.author.bot)} mentioned=${String(msg.mentions.users.has(next.user?.id ?? ''))} content=${JSON.stringify(msg.content.slice(0, 80))}`,
+    )
     void handleInbound(env, msg, next.user?.id ?? '')
   })
 

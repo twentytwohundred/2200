@@ -625,7 +625,15 @@ function ConnectedAgentRow({
   // Discord, the application id is the same as the bot user id). The
   // bot needs to be in a server with the user before DMs work, so
   // this link is load-bearing for first-message UX.
-  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(botInfo.botUserId)}&scope=bot&permissions=2048`
+  // Discord permission integer:
+  //   1024  View Channel       (without this, the bot can't see the channel at all)
+  //   2048  Send Messages      (so the bot can reply via discord_send)
+  //   16384 Embed Links        (so bot replies that include URLs render rich)
+  //   65536 Read Message History (so the bot can read existing context on resume)
+  //   64    Add Reactions      (so the bot can ack with an emoji before replying)
+  // Sum: 85056. Excludes Administrator and channel-management; only what a
+  // chat-style bot needs.
+  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(botInfo.botUserId)}&scope=bot&permissions=85056`
   return (
     <div className={styles.pairSuccess}>
       <div className={styles.pairSuccessIcon}>✓</div>
