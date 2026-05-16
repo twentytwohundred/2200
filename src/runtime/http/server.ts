@@ -78,6 +78,7 @@ import {
   type InstallProgressEvent,
 } from '../extensions/install-pipeline.js'
 import { GatewayManager } from '../connectors/gateway-manager.js'
+import { upsertConnectorBinding } from '../identity/binding-writer.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -3921,7 +3922,6 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
 
       // 2. Add / update the binding in identity.md.
-      const { upsertConnectorBinding } = await import('../identity/binding-writer.js')
       try {
         await upsertConnectorBinding(rec.identity_path, {
           connector_id: id,
