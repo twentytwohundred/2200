@@ -190,6 +190,19 @@ export const TaskSourceSchema = z
     }),
     z.object({ kind: z.literal('cli') }),
     z.object({ kind: z.literal('self_spawn') }),
+    z.object({
+      kind: z.literal('connector'),
+      /** Connector Extension's id (e.g. 'whatsapp', 'slack'). */
+      connector_id: z.string().min(1),
+      /** Conversation identifier the inbound message arrived in (e.g. WhatsApp JID). */
+      conversation_id: z.string().min(1),
+      /** Sender identifier (e.g. E.164 number for WhatsApp DMs). */
+      sender_id: z.string().min(1),
+      /** Optional human-readable sender label surfaced in the task body. */
+      sender_display_name: z.string().optional(),
+      /** Per-binding account identifier; 'default' when omitted. */
+      account: z.string().default('default'),
+    }),
   ])
   .nullable()
 export type TaskSource = z.infer<typeof TaskSourceSchema>

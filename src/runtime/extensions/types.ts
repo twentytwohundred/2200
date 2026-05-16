@@ -211,8 +211,21 @@ export const ExtensionManifestSchema = z.object({
       uninstall: z.string().optional(),
       update: z.string().optional(),
       tick: z.string().optional(),
+      /**
+       * Long-lived child process spawned when the Extension is
+       * installed AND at least one Agent declares a binding to the
+       * connector's id. Used by connector Extensions. See
+       * [[../decisions/2026-05-16-connector-extensions]].
+       */
+      gateway: GatewayHookSchema.optional(),
     })
     .default({}),
+  /**
+   * Optional connector block. Extensions that declare this surface in
+   * the Connector Store and are eligible to be bound from Agent
+   * Identity frontmatter. See [[../decisions/2026-05-16-connector-extensions]].
+   */
+  connector: ConnectorManifestBlockSchema.optional(),
 })
 export type ExtensionManifest = z.infer<typeof ExtensionManifestSchema>
 

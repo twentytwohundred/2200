@@ -99,6 +99,7 @@ function fakeIdentity(): IdentityRecord {
       },
       notification_policy: { tiers_allowed: ['passive', 'normal', 'important'] },
       mcp_servers: [],
+      connectors: [],
     },
     body: '',
   }

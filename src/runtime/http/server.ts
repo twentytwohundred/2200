@@ -69,6 +69,8 @@ import {
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
 import { loadIdentity } from '../identity/loader.js'
+import { ConnectorInboundEventSchema } from '../connectors/inbound-types.js'
+import { routeInbound } from '../connectors/router.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -3433,6 +3435,124 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // handler shape but the TS surface is stricter; using `register` with an
   // inline plugin lets us cast the socket precisely without polluting the
   // public Fastify types.
+  // ------------------------------------------------------------------------
+  // Connector inbound endpoint (decision: 2026-05-16-connector-extensions).
+  //
+  // Per-connector gateway processes (the long-lived child processes the
+  // supervisor spawns for WhatsApp / Slack / Discord / Telegram
+  // Extensions) POST normalized inbound events here. The handler resolves
+  // which Agents have a binding to the connector, applies their per-
+  // binding allowlist + policy, and creates synthetic tasks on each Agent
+  // that passes. No auth in v1: the endpoint is loopback-only and the
+  // gateways run on the same host as the supervisor. Hardening to a
+  // shared install-time secret is deferred to the install-flow work.
+  // ------------------------------------------------------------------------
+  fastify.post<{ Params: { connector_id: string } }>(
+    '/api/v1/connectors/:connector_id/inbound',
+    async (req, reply) => {
+      const parsed = ConnectorInboundEventSchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ code: 'invalid_inbound_event', errors: parsed.error.issues })
+      }
+      const event = parsed.data
+      if (event.connector_id !== req.params.connector_id) {
+        return reply.status(400).send({
+          code: 'connector_id_mismatch',
+          path: req.params.connector_id,
+          body: event.connector_id,
+        })
+      }
+      const snap = supervisor.snapshot()
+      const identities: Array<{ agent: string; frontmatter: import('../identity/types.js').IdentityFrontmatter }> = []
+      for (const [name, rec] of Object.entries(snap.agents)) {
+        try {
+          const id = await loadIdentity(rec.identity_path)
+          identities.push({ agent: name, frontmatter: id.frontmatter })
+        } catch {
+          // Identity unreadable; skip this Agent for routing purposes.
+        }
+      }
+      const decisions = routeInbound({ event, identities })
+      const passed = decisions.filter((d) => d.kind === 'pass')
+      const paired = decisions.filter((d) => d.kind === 'pair')
+      const blocked = decisions.filter((d) => d.kind === 'block')
+      const createdTasks: Array<{ agent: string; task_id: string }> = []
+      for (const decision of passed) {
+        try {
+          const taskStore = new TaskStore(home, decision.agent)
+          const taskId = newTaskId()
+          const senderLabel = event.sender.display_name ?? event.sender.id
+          const conversationLabel =
+            event.conversation.display_name ?? event.conversation.id
+          const titleBody = event.text ?? '(media-only message)'
+          const title = titleBody.slice(0, 60).replace(/\s+/g, ' ').trim() || 'connector message'
+          const taskBody = [
+            `Incoming ${event.connector_id} ${event.conversation.kind} from **${senderLabel}** in conversation \`${conversationLabel}\`.`,
+            '',
+            event.text ? event.text : '_(media or non-text content; see attachments below)_',
+            event.attachments.length > 0
+              ? `\n\nAttachments:\n${event.attachments
+                  .map((a) => `- ${a.kind}: ${a.url}${a.caption ? ` (${a.caption})` : ''}`)
+                  .join('\n')}`
+              : '',
+            '',
+            `Reply via \`${event.connector_id}_send\` with \`to: "${event.conversation.id}"\`.`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+          const task = newPendingTask({
+            id: taskId,
+            agent: decision.agent,
+            title,
+            body: taskBody,
+            priority: 0,
+            idempotency: 'destructive',
+            source: {
+              kind: 'connector',
+              connector_id: event.connector_id,
+              conversation_id: event.conversation.id,
+              sender_id: event.sender.id,
+              account: event.account,
+              ...(event.sender.display_name !== undefined
+                ? { sender_display_name: event.sender.display_name }
+                : {}),
+            },
+          })
+          await taskStore.save(task)
+          createdTasks.push({ agent: decision.agent, task_id: taskId })
+          log?.info('connector inbound → task created', {
+            connector_id: event.connector_id,
+            agent: decision.agent,
+            task_id: taskId,
+            conversation: event.conversation.id,
+            sender: event.sender.id,
+          })
+        } catch (err) {
+          log?.warn('connector inbound → failed to enqueue task', {
+            agent: decision.agent,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      // Pairing requests (v1: log only; operator-notification fan-out is a
+      // follow-on once the pairing-approval UI lands).
+      for (const p of paired) {
+        log?.info('connector inbound → pairing required (no task created)', {
+          connector_id: event.connector_id,
+          agent: p.agent,
+          sender: event.sender.id,
+        })
+      }
+      return reply.status(202).send({
+        passed: createdTasks,
+        paired: paired.map((p) => ({ agent: p.agent, reason: p.reason })),
+        blocked: blocked.map((b) => ({ agent: b.agent, reason: b.reason })),
+      })
+    },
+  )
+
   await fastify.register((instance, _opts, done) => {
     // `wsHandler` is added by @fastify/websocket via module augmentation.
     // The TS surface for fastify@5 + @fastify/websocket@11 doesn't pick up

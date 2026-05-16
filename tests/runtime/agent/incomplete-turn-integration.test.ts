@@ -103,6 +103,7 @@ function fakeIdentity(): IdentityRecord {
         tiers_allowed: ['passive', 'normal', 'important'],
       },
       mcp_servers: [],
+      connectors: [],
     },
     body: 'You are hobby.',
   }

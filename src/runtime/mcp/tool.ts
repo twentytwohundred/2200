@@ -62,6 +62,14 @@ export interface ToolContext {
     | { kind: 'delegation'; parent_task_id: string }
     | { kind: 'cli' }
     | { kind: 'self_spawn' }
+    | {
+        kind: 'connector'
+        connector_id: string
+        conversation_id: string
+        sender_id: string
+        account: string
+        sender_display_name?: string | undefined
+      }
     | null
 }
 
