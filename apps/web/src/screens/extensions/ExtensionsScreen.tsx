@@ -18,7 +18,7 @@
  *   - [[../../decisions/2026-05-16-connector-extensions]]
  */
 import { useMemo, useState, type ReactElement } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApiError,
   NetworkError,
@@ -674,6 +674,7 @@ function AgentSetupPanel({
   onConnected: (agent: string, info: { botUsername: string; botUserId: string }) => void
   onCancel: () => void
 }): ReactElement {
+  const queryClient = useQueryClient()
   const agentsQuery = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.agents(),
@@ -692,10 +693,18 @@ function AgentSetupPanel({
   }, [agentsQuery.data, excludeAgents])
 
   const setupMutation = useMutation({
-    mutationFn: () =>
-      apiExtensions.agentSetup(entry.id, selectedAgent, {
+    mutationFn: async () => {
+      // Reset any prior pair-state cache entry for this agent so a retry
+      // after an `errored` state actually re-polls instead of getting
+      // stuck on the cached errored result (refetchInterval bails out
+      // on errored).
+      await queryClient.resetQueries({
+        queryKey: ['extensionPairState', entry.id, selectedAgent],
+      })
+      return apiExtensions.agentSetup(entry.id, selectedAgent, {
         credentials: { bot_token: token },
-      }),
+      })
+    },
     onSuccess: () => {
       setPollingAgent(selectedAgent)
       setError(null)
@@ -809,9 +818,14 @@ function AgentSetupPanel({
             In the left sidebar of the new application, click <strong>Bot</strong>.
           </li>
           <li>
-            Under <strong>TOKEN</strong>, click <strong>Reset Token</strong>. Confirm the two
-            prompts (and enter your 2FA code if prompted). Click <strong>Copy</strong> on the token
-            that appears.
+            Scroll down to <strong>Privileged Gateway Intents</strong>. Toggle{' '}
+            <strong>Message Content Intent</strong> ON. Click <strong>Save Changes</strong> at the
+            bottom. Without this, Discord refuses the bot login.
+          </li>
+          <li>
+            Scroll back up to <strong>TOKEN</strong>, click <strong>Reset Token</strong>. Confirm
+            the two prompts (and enter your 2FA code if prompted). Click <strong>Copy</strong> on
+            the token that appears.
           </li>
           <li>Paste the token into the field below.</li>
         </ol>
@@ -862,8 +876,31 @@ function AgentSetupPanel({
       {error && <div className={styles.pairError}>{error}</div>}
       {stateQuery.data?.state === 'errored' && (
         <div className={styles.pairError}>
-          Bot login failed: {stateQuery.data.detail ?? 'unknown error'}. Token rejected? Reset it in
-          the Developer Portal and try again.
+          <strong>Bot login failed:</strong> {stateQuery.data.detail ?? 'unknown error'}
+          {(stateQuery.data.detail ?? '').toLowerCase().includes('intent') ? (
+            <div style={{ marginTop: 8 }}>
+              Discord rejected the bot because <strong>Message Content Intent</strong> isn't
+              enabled. Go back to your bot's page on the{' '}
+              <a
+                href="https://discord.com/developers/applications"
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: 'var(--accent)' }}
+              >
+                Discord Developer Portal
+              </a>
+              , click <strong>Bot</strong> in the sidebar, scroll to{' '}
+              <strong>Privileged Gateway Intents</strong>, toggle{' '}
+              <strong>Message Content Intent</strong> ON, click <strong>Save Changes</strong>, then
+              click <strong>Connect {selectedAgent}</strong> below to retry. (No need to reset the
+              token.)
+            </div>
+          ) : (
+            <div style={{ marginTop: 8 }}>
+              Token rejected? Reset it in the Developer Portal (Bot tab → Reset Token) and try again
+              with the new token.
+            </div>
+          )}
         </div>
       )}
 
