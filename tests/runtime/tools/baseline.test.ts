@@ -54,13 +54,16 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 41 tools (40 prior + discord_send)', () => {
+  it('exports exactly 42 tools (41 prior + task_await_response)', () => {
     // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
     // 38 with `credential_has`, 39 with `http_request`. 2026-05-16
     // bumped to 40 with `whatsapp_send` and 41 with `discord_send`
     // ... outbound tools for the WhatsApp Inbox + Discord connectors
     // respectively (decision 2026-05-16-connector-per-agent-identity).
-    expect(BASELINE_TOOL_NAMES).toHaveLength(41)
+    // Bumped to 42 with `task_await_response` (decision
+    // 2026-05-16-task-continuation-primitive): the multi-hop
+    // primitive that parks a task on a wait_for block.
+    expect(BASELINE_TOOL_NAMES).toHaveLength(42)
   })
 
   it('baselineServers() builds sixteen servers (adds whatsapp + discord)', () => {

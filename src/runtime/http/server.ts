@@ -99,6 +99,7 @@ import {
 import { listSkills } from '../skills/registry.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
+import { buildContinuationSection } from '../agent/task/continuation.js'
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
 import {
@@ -2022,22 +2023,60 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       const taskBody = buildChatTaskBody(recent as ChatMessage[], body.body, req.params.name)
 
       const taskStore = new TaskStore(home, req.params.name)
-      const taskId = newTaskId()
-      const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
       const idempotency = body.mode ?? 'destructive'
-      const task = newPendingTask({
-        id: taskId,
-        agent: req.params.name,
-        title,
-        body: taskBody,
-        priority: 0,
-        idempotency,
-        // Multi-chat endpoint: the chat_id is the path param. Sets
-        // task.source so surface-aware tools (credential_request) can
-        // verify this task originated from a 1:1 chat.
-        source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
+
+      // Continuation primitive (decision:
+      // 2026-05-16-task-continuation-primitive): if this agent has a
+      // task parked on a wait_for matching this chat thread + sender,
+      // resume it instead of spawning a fresh task. The chat
+      // continuity case is the user replying after the Agent called
+      // `await_response` with source_kind='chat' (e.g. "I'll come back
+      // when I have an answer from X" then the user replied first).
+      const waitingChat = await taskStore.findWaiting({
+        kind: 'chat',
+        chat_id: req.params.chatId,
       })
-      await taskStore.save(task)
+      let taskId: string
+      if (waitingChat) {
+        const continuation = buildContinuationSection({
+          source_kind: 'chat',
+          sender_label: 'user',
+          context_note: waitingChat.frontmatter.wait_for?.context_note ?? '',
+          body_text: body.body,
+          reply_hint:
+            'Reply via `chat_send` ... your assistant reply will be appended automatically when the task completes.',
+        })
+        const resumed = await taskStore.updateRecord(waitingChat.frontmatter.id, (rec) => ({
+          frontmatter: {
+            ...rec.frontmatter,
+            state: 'pending',
+            wait_for: null,
+          },
+          body: `${rec.body}\n\n${continuation}`,
+        }))
+        taskId = resumed?.frontmatter.id ?? newTaskId()
+        log?.info('chat inbound → resumed parked task', {
+          agent: req.params.name,
+          task_id: taskId,
+          chat_id: req.params.chatId,
+        })
+      } else {
+        taskId = newTaskId()
+        const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
+        const task = newPendingTask({
+          id: taskId,
+          agent: req.params.name,
+          title,
+          body: taskBody,
+          priority: 0,
+          idempotency,
+          // Multi-chat endpoint: the chat_id is the path param. Sets
+          // task.source so surface-aware tools (credential_request) can
+          // verify this task originated from a 1:1 chat.
+          source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
+        })
+        await taskStore.save(task)
+      }
 
       void watchAndAppendChatThreadReply({
         home,
@@ -3523,13 +3562,62 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       const passed = decisions.filter((d) => d.kind === 'pass')
       const paired = decisions.filter((d) => d.kind === 'pair')
       const blocked = decisions.filter((d) => d.kind === 'block')
-      const createdTasks: { agent: string; task_id: string }[] = []
+      const createdTasks: { agent: string; task_id: string; resumed: boolean }[] = []
       for (const decision of passed) {
         try {
           const taskStore = new TaskStore(home, decision.agent)
-          const taskId = newTaskId()
           const senderLabel = event.sender.display_name ?? event.sender.id
           const conversationLabel = event.conversation.display_name ?? event.conversation.id
+
+          // Continuation primitive (decision:
+          // 2026-05-16-task-continuation-primitive): before creating a
+          // fresh task, see if this Agent has a task parked on a
+          // wait_for that matches this inbound. If so, resume that task
+          // with the inbound appended as continuation context instead
+          // of starting a fresh isolated task.
+          const waiting = await taskStore.findWaiting({
+            kind: 'connector',
+            connector_id: event.connector_id,
+            conversation_id: event.conversation.id,
+            sender: event.sender.id,
+          })
+          if (waiting) {
+            const continuation = buildContinuationSection({
+              source_kind: 'connector',
+              sender_label: senderLabel,
+              context_note: waiting.frontmatter.wait_for?.context_note ?? '',
+              body_text: event.text ?? '(media-only message)',
+              attachments: event.attachments.map(
+                (a) => `${a.kind}: ${a.url}${a.caption ? ` (${a.caption})` : ''}`,
+              ),
+              reply_hint: `Reply via \`${event.connector_id}_send\` with \`to: "${event.conversation.id}"\`.`,
+            })
+            const resumed = await taskStore.updateRecord(waiting.frontmatter.id, (rec) => ({
+              frontmatter: {
+                ...rec.frontmatter,
+                state: 'pending',
+                wait_for: null,
+              },
+              body: `${rec.body}\n\n${continuation}`,
+            }))
+            if (resumed) {
+              createdTasks.push({
+                agent: decision.agent,
+                task_id: waiting.frontmatter.id,
+                resumed: true,
+              })
+              log?.info('connector inbound → resumed parked task', {
+                connector_id: event.connector_id,
+                agent: decision.agent,
+                task_id: waiting.frontmatter.id,
+                conversation: event.conversation.id,
+                sender: event.sender.id,
+              })
+              continue
+            }
+          }
+
+          const taskId = newTaskId()
           const titleBody = event.text ?? '(media-only message)'
           const title = titleBody.slice(0, 60).replace(/\s+/g, ' ').trim() || 'connector message'
           const taskBody = [
@@ -3565,7 +3653,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
             },
           })
           await taskStore.save(task)
-          createdTasks.push({ agent: decision.agent, task_id: taskId })
+          createdTasks.push({ agent: decision.agent, task_id: taskId, resumed: false })
           log?.info('connector inbound → task created', {
             connector_id: event.connector_id,
             agent: decision.agent,
@@ -3586,6 +3674,24 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         log?.info('connector inbound → pairing required (no task created)', {
           connector_id: event.connector_id,
           agent: p.agent,
+          sender: event.sender.id,
+        })
+      }
+      // Visibility for misconfiguration: log blocked decisions so
+      // operator-side issues (account mismatch, missing mention,
+      // disabled policy) surface instead of being silently dropped.
+      // mention_required + group_not_allowlisted are noisy and
+      // expected on chatty servers; suppress them at info level.
+      for (const b of blocked) {
+        if (b.reason === 'mention_required' || b.reason === 'group_not_allowlisted') {
+          continue
+        }
+        log?.info('connector inbound → blocked', {
+          connector_id: event.connector_id,
+          agent: b.agent,
+          reason: b.reason,
+          event_account: event.account,
+          binding_account: b.binding.account,
           sender: event.sender.id,
         })
       }
@@ -3669,6 +3775,108 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       return reply.send(await readFile(path))
     }
     return reply.status(404).send({ code: 'icon_not_found', id })
+  })
+
+  // List installed Extensions + their per-Agent bindings + gateway
+  // state. This is what the Store's "Installed" tab + Configure view
+  // reads to render persistent state across page reloads.
+  fastify.get('/api/v1/extensions/installed', async (_req, reply) => {
+    const extensionsRoot = join(home, 'extensions')
+    interface InstalledBinding {
+      agent: string
+      account: string
+      bot_user_id?: string
+      bot_username?: string
+      gateway_running: boolean
+      pair_state: string
+      pair_state_detail?: string
+      pair_state_updated_at?: string
+      allowlist_dm: string[]
+      allowlist_group: string[]
+      dm_policy: 'open' | 'allowlist' | 'disabled' | 'pairing'
+      group_policy: 'open' | 'allowlist' | 'disabled'
+      require_mention: boolean
+    }
+    interface InstalledExtension {
+      id: string
+      manifest: Record<string, unknown>
+      bindings: InstalledBinding[]
+      // For extension-scope connectors (WhatsApp Inbox), gateway state
+      // lives at the extension level (no per-Agent breakdown).
+      extension_gateway?: {
+        running: boolean
+        pair_state: string
+        self_jid?: string | null
+      }
+    }
+    const items: InstalledExtension[] = []
+    let extDirs: string[]
+    try {
+      const { readdir } = await import('node:fs/promises')
+      const entries = await readdir(extensionsRoot, { withFileTypes: true })
+      extDirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name)
+    } catch {
+      return reply.send({ items: [] })
+    }
+
+    const snap = supervisor.snapshot()
+    const allIdentities: { agent: string; frontmatter: IdentityFrontmatter }[] = []
+    for (const [name, rec] of Object.entries(snap.agents)) {
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        allIdentities.push({ agent: name, frontmatter: id.frontmatter })
+      } catch {
+        // best effort
+      }
+    }
+
+    for (const dir of extDirs) {
+      let manifest: Record<string, unknown>
+      try {
+        const { readFile: rf } = await import('node:fs/promises')
+        const text = await rf(join(extensionsRoot, dir, 'manifest.json'), 'utf-8')
+        manifest = JSON.parse(text) as Record<string, unknown>
+      } catch {
+        // skip non-Extension directories
+        continue
+      }
+      const bindings: InstalledBinding[] = []
+      for (const { agent, frontmatter } of allIdentities) {
+        const b = frontmatter.connectors.find((c) => c.connector_id === dir)
+        if (!b) continue
+        const ps = pairStates.get(pairKey(dir, agent))
+        const binding: InstalledBinding = {
+          agent,
+          account: b.account,
+          gateway_running: gatewayManager.isRunning(dir, agent),
+          pair_state: ps?.state ?? 'idle',
+          allowlist_dm: b.allowlist.dm,
+          allowlist_group: b.allowlist.group,
+          dm_policy: b.policies.dm_policy,
+          group_policy: b.policies.group_policy,
+          require_mention: b.policies.require_mention,
+        }
+        if (ps?.self_user) {
+          binding.bot_user_id = ps.self_user.id
+          binding.bot_username = ps.self_user.username
+        }
+        if (ps?.detail) binding.pair_state_detail = ps.detail
+        if (ps?.updated_at) binding.pair_state_updated_at = ps.updated_at
+        bindings.push(binding)
+      }
+      const item: InstalledExtension = { id: dir, manifest, bindings }
+      // Extension-scope summary (WhatsApp Inbox).
+      const extPs = pairStates.get(pairKey(dir, null))
+      if (extPs) {
+        item.extension_gateway = {
+          running: gatewayManager.isRunning(dir, null),
+          pair_state: extPs.state,
+          ...(extPs.self_jid !== undefined ? { self_jid: extPs.self_jid } : {}),
+        }
+      }
+      items.push(item)
+    }
+    return reply.send({ items })
   })
 
   fastify.get('/api/v1/extensions/catalog', async (_req, reply) => {
@@ -3864,6 +4072,15 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     credentials: z.record(z.string().min(1), z.string().min(1)).default({}),
     /** Default allowlist tweaks (optional). */
     allowlist_dm: z.array(z.string()).optional(),
+    /**
+     * Discord channel allowlist. Required for Discord (per-Agent bots
+     * are pinned to a dedicated channel ... users can't DM bots, so
+     * the channel is the only viable conversation surface). When set,
+     * the router uses allowlist-based group routing without
+     * require_mention; messages in this channel wake the Agent
+     * directly. Optional for other connectors.
+     */
+    allowlist_group: z.array(z.string().regex(/^\d+$/)).optional(),
   })
 
   fastify.post<{ Params: { id: string; agent: string } }>(
@@ -3927,23 +4144,33 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
 
       // 2. Add / update the binding in identity.md.
-      // Per-connector default policies: Discord bots are dedicated
-      // identities the operator invited to a server, so default-open
-      // DM + group makes sense (guarded by require_mention in groups
-      // to avoid chatter). WhatsApp Inbox-style connectors get
-      // tighter defaults at their own endpoints.
+      // For Discord: the channel allowlist IS the conversation gate
+      // (no bot DMs on Discord, so users can only reach the Agent via
+      // a channel the bot is in). group_policy=allowlist + the
+      // channel id in allowlist.group means every message in that
+      // channel wakes the Agent; require_mention=false because the
+      // channel is already dedicated to this Agent. For other
+      // per-Agent connectors, we ship a pairing-style default until
+      // their UX work happens.
+      const channelAllowlist = parsed.data.allowlist_group ?? []
+      if (id === 'discord' && channelAllowlist.length === 0) {
+        return await reply.status(400).send({
+          code: 'channel_required',
+          message: 'Discord setup requires at least one channel id in allowlist_group',
+        })
+      }
       const defaultPolicies =
         id === 'discord'
-          ? ({
+          ? {
               dm_policy: 'open' as const,
-              group_policy: 'open' as const,
-              require_mention: true,
-            })
-          : ({
+              group_policy: 'allowlist' as const,
+              require_mention: false,
+            }
+          : {
               dm_policy: 'pairing' as const,
               group_policy: 'allowlist' as const,
               require_mention: true,
-            })
+            }
       try {
         await upsertConnectorBinding(rec.identity_path, {
           connector_id: id,
@@ -3951,7 +4178,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           credentials: credentialMap,
           allowlist: {
             dm: parsed.data.allowlist_dm ?? [],
-            group: [],
+            group: channelAllowlist,
           },
           policies: defaultPolicies,
         })
@@ -3988,6 +4215,88 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           message: err instanceof Error ? err.message : String(err),
         })
       }
+    },
+  )
+
+  // -- per-Agent binding policy patch -----------------------------------
+  // Update the allowlist + policy block on an existing binding
+  // without touching credentials or restarting the Agent. The
+  // supervisor's router re-reads identity.md on every inbound POST,
+  // so the new policy takes effect on the next message ... no
+  // restart needed (routing happens in the supervisor, not the
+  // Agent process). Mainly used for "change the Discord channel"
+  // from the Configure view in the Store.
+  // ----------------------------------------------------------------------
+  const PatchAgentBindingBodySchema = z.object({
+    allowlist_dm: z.array(z.string()).optional(),
+    allowlist_group: z.array(z.string().regex(/^\d+$/)).optional(),
+  })
+  fastify.patch<{ Params: { id: string; agent: string } }>(
+    '/api/v1/extensions/:id/agents/:agent/policy',
+    async (req, reply) => {
+      const id = req.params.id
+      const agent = req.params.agent
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      if (!/^[a-z][a-z0-9_-]*$/.test(agent)) {
+        return reply.status(400).send({ code: 'invalid_agent' })
+      }
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[agent]
+      if (!rec) return reply.status(404).send({ code: 'agent_not_found', agent })
+      const parsed = PatchAgentBindingBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_patch_body', errors: parsed.error.issues })
+      }
+      const identity = await loadIdentity(rec.identity_path)
+      const existing = identity.frontmatter.connectors.find(
+        (b) => b.connector_id === id && b.account === 'default',
+      )
+      if (!existing) {
+        return reply.status(404).send({
+          code: 'binding_not_found',
+          message: `agent "${agent}" has no binding for "${id}" / account=default`,
+        })
+      }
+      const nextAllowlist = {
+        dm: parsed.data.allowlist_dm ?? existing.allowlist.dm,
+        group: parsed.data.allowlist_group ?? existing.allowlist.group,
+      }
+      // When the operator pins the Agent to a Discord channel (the
+      // canonical Discord per-Agent pattern), auto-shift the policy
+      // block to "channel-allowlist, no mention required" ... the
+      // alternative is the operator manually editing identity.md
+      // to flip group_policy + require_mention, which defeats the
+      // purpose of a UI knob.
+      const nextPolicies =
+        id === 'discord' && nextAllowlist.group.length > 0
+          ? {
+              ...existing.policies,
+              group_policy: 'allowlist' as const,
+              require_mention: false,
+            }
+          : existing.policies
+      try {
+        await upsertConnectorBinding(rec.identity_path, {
+          connector_id: existing.connector_id,
+          account: existing.account,
+          credentials: existing.credentials,
+          allowlist: nextAllowlist,
+          policies: nextPolicies,
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'identity_write_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+      return reply.status(200).send({
+        extension_id: id,
+        agent_name: agent,
+        allowlist: nextAllowlist,
+        policies: nextPolicies,
+      })
     },
   )
 

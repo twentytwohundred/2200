@@ -41,6 +41,7 @@ import { newTaskId } from '../../util/id.js'
 import { agentPaths } from '../../storage/layout.js'
 import { stat } from 'node:fs/promises'
 import { emitNotification } from '../../notifications/writer.js'
+import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 export const MAX_DELEGATION_DEPTH = 5
 
@@ -90,7 +91,178 @@ async function agentExists(home: string, name: string): Promise<boolean> {
   }
 }
 
-export function makeTaskDelegateTools(): ToolDefinition[] {
+/** Hardcoded for v1; bounded because long parks degrade the substrate's
+ *  visibility into Agent state and operators eventually move on. */
+const MIN_TIMEOUT_SECONDS = 60
+const MAX_TIMEOUT_SECONDS = 6 * 60 * 60 // 6h
+const DEFAULT_TIMEOUT_SECONDS = 30 * 60 // 30 min
+
+const AwaitResponseArgsSchema = z.object({
+  source_kind: z
+    .enum(['pub', 'connector', 'chat'])
+    .describe(
+      'Which surface the expected response will arrive on. ' +
+        '`pub` for a pub-room reply, `connector` for a Discord/WhatsApp/Slack message, ' +
+        '`chat` for a reply in your per-Agent chat thread.',
+    ),
+  source_ref: z
+    .object({
+      pub: z.string().min(1).optional(),
+      connector_id: z.string().min(1).optional(),
+      conversation_id: z.string().min(1).optional(),
+      chat_id: z.string().min(1).optional(),
+    })
+    .describe(
+      'Where exactly the response will arrive. For `pub` set `{ pub: "<name>" }`. ' +
+        'For `connector` set `{ connector_id, conversation_id }` (the same ids your inbound task ' +
+        'showed in its source block). For `chat` set `{ chat_id }`.',
+    ),
+  expected_from: z
+    .string()
+    .min(1)
+    .describe(
+      'Who you expect to reply. For `pub`: the Agent name (e.g. "hobby"). ' +
+        'For `connector`: the opaque sender id from the inbound (e.g. a Discord user id). ' +
+        'For `chat`: always pass `"user"` (you can only wait on the chat owner).',
+    ),
+  context_note: z
+    .string()
+    .min(1)
+    .max(1000)
+    .describe(
+      "Free-text reminder of what you're waiting for and why. Surfaces in your context " +
+        'when the response arrives so you remember what to do with it (e.g. ' +
+        '"Doug asked in Discord channel X; I forwarded to Hobby and will relay back").',
+    ),
+  timeout_seconds: z
+    .number()
+    .int()
+    .min(MIN_TIMEOUT_SECONDS)
+    .max(MAX_TIMEOUT_SECONDS)
+    .optional()
+    .default(DEFAULT_TIMEOUT_SECONDS)
+    .describe(
+      `How long to wait before the supervisor resumes the task with a "no response" continuation. ` +
+        `Default ${String(DEFAULT_TIMEOUT_SECONDS)} (30 min). Min ${String(MIN_TIMEOUT_SECONDS)}, max ${String(MAX_TIMEOUT_SECONDS)}.`,
+    ),
+})
+
+export type AwaitResponseGetBlockerRegistry = () => TaskBlockerRegistry | null
+
+function makeAwaitResponseTool(
+  getBlockerRegistry: AwaitResponseGetBlockerRegistry,
+): ToolDefinition {
+  return defineTool({
+    name: 'task_await_response',
+    description:
+      'Park the current task waiting for a response from another conversational party. ' +
+      'Call this after you send a message asking another Agent (in a pub) or another user (in a ' +
+      'connector channel or your chat) a question on behalf of someone else. The supervisor will ' +
+      'route the matching inbound back to THIS task and resume you with the response appended ' +
+      'instead of starting a new isolated task. ' +
+      'After this tool returns, the loop exits cleanly ... your task is parked until either the ' +
+      'expected response arrives or the timeout expires. You do NOT call any more tools after ' +
+      'await_response in the same iteration; the substrate stops dispatching them. ' +
+      'Use this whenever you have promised to relay an answer back to a user. ' +
+      'See decision: wiki/decisions/2026-05-16-task-continuation-primitive.md.',
+    idempotency: 'destructive',
+    argsSchema: AwaitResponseArgsSchema,
+    execute: async (args, ctx) => {
+      if (!ctx.taskId) {
+        throw new Error(
+          'await_response requires a task context (ctx.taskId is null). ' +
+            'This indicates a runtime bug; please report.',
+        )
+      }
+      // Validate source_kind ↔ source_ref consistency at the substrate
+      // boundary so the router never sees a malformed wait_for.
+      if (args.source_kind === 'pub' && !args.source_ref.pub) {
+        throw new Error("await_response source_kind='pub' requires source_ref.pub")
+      }
+      if (
+        args.source_kind === 'connector' &&
+        (!args.source_ref.connector_id || !args.source_ref.conversation_id)
+      ) {
+        throw new Error(
+          "await_response source_kind='connector' requires both source_ref.connector_id and source_ref.conversation_id",
+        )
+      }
+      if (args.source_kind === 'chat' && !args.source_ref.chat_id) {
+        throw new Error("await_response source_kind='chat' requires source_ref.chat_id")
+      }
+      if (args.source_kind === 'chat' && args.expected_from !== 'user') {
+        throw new Error(
+          "await_response source_kind='chat' requires expected_from='user' (chat sender is always the chat owner)",
+        )
+      }
+
+      const now = new Date()
+      const expiresAt = new Date(now.getTime() + args.timeout_seconds * 1000).toISOString()
+
+      // Persist wait_for + state transition to disk. The supervisor's
+      // router reads this directly to match inbound events. Writing
+      // to disk before the loop exits guarantees state is durable
+      // even if the agent process crashes.
+      const store = new TaskStore(ctx.home, ctx.callingAgent)
+      const updated = await store.update(ctx.taskId, (fm) => ({
+        ...fm,
+        state: 'blocked_on_agent',
+        wait_for: {
+          source_kind: args.source_kind,
+          source_ref: {
+            ...(args.source_ref.pub ? { pub: args.source_ref.pub } : {}),
+            ...(args.source_ref.connector_id ? { connector_id: args.source_ref.connector_id } : {}),
+            ...(args.source_ref.conversation_id
+              ? { conversation_id: args.source_ref.conversation_id }
+              : {}),
+            ...(args.source_ref.chat_id ? { chat_id: args.source_ref.chat_id } : {}),
+          },
+          expected_from: args.expected_from,
+          expires_at: expiresAt,
+          context_note: args.context_note,
+          waiting_since: now.toISOString(),
+        },
+      }))
+      if (!updated) {
+        throw new Error(
+          `await_response could not load task ${ctx.taskId} for the calling Agent ` +
+            `"${ctx.callingAgent}". This indicates a runtime bug.`,
+        )
+      }
+
+      // Register an external_response blocker so the loop exits cleanly
+      // at its next blocker check (pre-model-call or mid-batch). The
+      // blocker is in-memory; the task state on disk is the persistent
+      // signal the router and a process restart both observe.
+      const reg = getBlockerRegistry()
+      if (reg) {
+        reg.register({
+          id: `await:${ctx.taskId}`,
+          kind: 'external_response',
+          description: `awaiting ${args.source_kind} response from ${args.expected_from}`,
+          metadata: {
+            task_id: ctx.taskId,
+            source_kind: args.source_kind,
+            expected_from: args.expected_from,
+            expires_at: expiresAt,
+          },
+        })
+      }
+
+      return {
+        ok: true,
+        task_id: ctx.taskId,
+        parked_until: expiresAt,
+        source_kind: args.source_kind,
+        expected_from: args.expected_from,
+      }
+    },
+  })
+}
+
+export function makeTaskDelegateTools(
+  getBlockerRegistry: AwaitResponseGetBlockerRegistry = () => null,
+): ToolDefinition[] {
   const taskCreateForAgent = defineTool({
     name: 'task_create_for_agent',
     description:
@@ -193,5 +365,5 @@ export function makeTaskDelegateTools(): ToolDefinition[] {
     },
   })
 
-  return [taskCreateForAgent]
+  return [taskCreateForAgent, makeAwaitResponseTool(getBlockerRegistry)]
 }

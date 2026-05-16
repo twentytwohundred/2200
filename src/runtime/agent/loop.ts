@@ -604,6 +604,20 @@ export type LoopResult =
       kind: 'blocked_on_user'
       blockers: TaskBlocker[]
     }
+  | {
+      /**
+       * The loop returned early because an `external_response` TaskBlocker
+       * is active ... the Agent called `await_response` and is parked
+       * waiting on an inbound event from another conversational party.
+       * The task is persisted as `blocked_on_agent` on disk (the
+       * `await_response` tool writes that state before returning), so the
+       * agent process won't re-pick it until the supervisor's router
+       * matches an inbound event and flips state back to `pending`. See
+       * decision: 2026-05-16-task-continuation-primitive.
+       */
+      kind: 'blocked_on_agent_response'
+      blockers: TaskBlocker[]
+    }
 
 export class AgentLoop {
   private readonly log: Logger
@@ -767,6 +781,22 @@ export class AgentLoop {
     this.lastClaimAudit = null
     this.successfulToolCallsAtLastKickback = 0
     this.writtenPathsThisTask.clear()
+    // Continuation primitive (decision:
+    // 2026-05-16-task-continuation-primitive): blockers of kind
+    // `external_response` are per-task; once we're entering a new
+    // run of `run()` they're stale by definition. The supervisor's
+    // router already flipped the task's on-disk state back to
+    // `pending` when it resumed; without clearing the in-memory
+    // blocker the loop would exit immediately on the pre-iteration
+    // check and never give the model a chance to act on the
+    // continuation. Bug observed 2026-05-16 Simon Discord test.
+    const droppedExternal = this.blockers.clearByKind('external_response')
+    if (droppedExternal > 0) {
+      this.log.info('cleared stale external_response blockers at task start', {
+        task_id: task.frontmatter.id,
+        dropped: droppedExternal,
+      })
+    }
     this.history.push({ role: 'user', content: task.body })
     // If this task is being resumed after a detector trip, inject a forcing
     // tool-role message before the model's first call. The model otherwise
@@ -812,6 +842,17 @@ export class AgentLoop {
         return {
           kind: 'blocked_on_user' as const,
           blockers: this.blockers.getActive('human_gate'),
+        }
+      }
+      // Structural pause for await_response (decision
+      // 2026-05-16-task-continuation-primitive): the Agent called
+      // await_response in a prior iteration; we're now waiting on the
+      // router to match an inbound event back to this task. Exit
+      // cleanly so the agent process goes idle for this task.
+      if (this.blockers.hasActive('external_response')) {
+        return {
+          kind: 'blocked_on_agent_response' as const,
+          blockers: this.blockers.getActive('external_response'),
         }
       }
 
@@ -1172,6 +1213,17 @@ export class AgentLoop {
           return {
             kind: 'blocked_on_user' as const,
             blockers: this.blockers.getActive('human_gate'),
+          }
+        }
+        // Mid-batch external_response: the tool just dispatched
+        // (`await_response`) parked the task on a wait_for block. Same
+        // logic ... drop remaining batched tools and exit cleanly with
+        // the appropriate kind so the agent process transitions to
+        // blocked_on_agent instead of blocked_on_user.
+        if (this.blockers.hasActive('external_response')) {
+          return {
+            kind: 'blocked_on_agent_response' as const,
+            blockers: this.blockers.getActive('external_response'),
           }
         }
 
@@ -1625,6 +1677,29 @@ export class AgentLoop {
       '  - `pub_send` is for everyone in the pub (the room sees it). Use this when the work is team-relevant or another Agent is involved.',
       '',
       'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat_send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat_send` explicitly.',
+      '',
+      '## Multi-hop coordination (task_await_response)',
+      '',
+      'When a user asks you on one surface (Discord channel, chat, pub) to fetch something from someone on another surface (another Agent in a pub, a peer over a connector), you can\'t just send the question and return ... the response will arrive later, in an entirely different inbound event, and the substrate has no idea those two events are connected. Without help, the chain dies: you say "I\'ll relay the answer" and never do.',
+      '',
+      'The `task_await_response` tool fixes this. After you send the question, call `task_await_response` to park the current task on a wait for the expected reply. When the matching inbound arrives, the supervisor resumes THIS SAME task with the response appended ... not a new isolated task. Your next loop iteration sees the original request + the answer in one continuous thread and can forward the result back to whoever originally asked.',
+      '',
+      'The canonical shape:',
+      '  1. Receive a request on surface A ("Doug in Discord channel X: ask Hobby what he needs from me").',
+      '  2. Send the question on surface B (`pub_send` to Studio, @-mentioning Hobby).',
+      '  3. Acknowledge to the user on surface A so they know you heard them and are working on it (e.g. `discord_send`: "I\'ve asked Hobby; I\'ll relay his answer when it lands.").',
+      '  4. Call `task_await_response` with `source_kind` and `source_ref` pointing to surface B (where the reply will land) and `expected_from` set to the Agent / user you asked. Pass a `context_note` reminding yourself why you are waiting.',
+      '  5. After `task_await_response` returns, the loop exits cleanly. Do NOT call any more tools in this iteration ... the substrate stops dispatching them.',
+      '  6. When the reply arrives, you wake on this same task with a `## Continuation:` section appended to your task body. Read it, forward the substance back to surface A (`discord_send` / `chat_send` / `pub_send` as appropriate), and produce a final reply.',
+      '',
+      'When NOT to call `task_await_response`:',
+      '  - You answered the request directly and there is nothing to wait for. Just produce the final reply.',
+      '  - You delegated work to another Agent via `task_create_for_agent` ... that flow has its own completion notification (delegation_complete in your inbox); do not double-track with task_await_response.',
+      '  - You are not relaying for someone else. task_await_response is the multi-hop primitive; if you are the sole party that wants the answer, you can ask, wait for the next wake, and decide whether to keep going.',
+      '',
+      'Timeout: defaults to 30 minutes. If no matching reply arrives in that window, the substrate wakes you with a `## Continuation: response timed out` section so you can decide whether to give up, retry, or report the timeout to the original requester. Choose a longer timeout (up to 6h) only when the peer Agent is doing genuinely long-running work.',
+      '',
+      'CRITICAL: if you promise to relay an answer and forget to call `task_await_response`, the substrate has no way to bring you back to forward the result. The peer\'s reply will create a fresh, context-free task on the other surface; your original promise dies silently. Treat `task_await_response` as the substrate equivalent of "I owe a follow-up" ... the only reliable way to keep that promise.',
       '',
       '## Load-bearing rules',
       '',

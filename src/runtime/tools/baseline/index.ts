@@ -89,6 +89,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'schedule_run_once',
   'image_generate',
   'task_create_for_agent',
+  'task_await_response',
   'credential_request',
   'credential_has',
   'http_request',
@@ -144,7 +145,10 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('chat', chatTools),
     createInProcessServer('schedule', scheduleTools(getSupervisorRpc)),
     createInProcessServer('image', imageTools),
-    createInProcessServer('task', makeTaskDelegateTools()),
+    createInProcessServer(
+      'task',
+      makeTaskDelegateTools(() => opts.getBlockerRegistry?.() ?? null),
+    ),
     createInProcessServer(
       'credential',
       credentialTools(getIdentity, getSupervisorRpc, opts.getBlockerRegistry),

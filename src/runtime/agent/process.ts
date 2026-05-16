@@ -849,6 +849,30 @@ export class AgentProcess {
       })
       return
     }
+    if (result.kind === 'blocked_on_agent_response') {
+      // The Agent called `await_response` and the task is now parked
+      // on a wait_for block (the tool already persisted state=blocked_on_agent
+      // and the wait_for frontmatter to disk before returning). All this
+      // handler does is mirror the state up to the per-Agent state
+      // machine so observability surfaces (status RPC, fleet view) see
+      // the agent as blocked. The supervisor's inbound router is what
+      // eventually flips the task state back to `pending` when a
+      // matching event arrives, at which point the next loop tick picks
+      // it back up. Decision: 2026-05-16-task-continuation-primitive.
+      try {
+        this.machine.transition(
+          'blocked_on_agent',
+          `await_response active: ${result.blockers.map((b) => b.description).join('; ')}`,
+        )
+      } catch {
+        // already in some other state; the next heartbeat reconciles
+      }
+      this.log.info('loop returned blocked_on_agent_response; parked on wait_for', {
+        task_id: taskId,
+        blocker_ids: result.blockers.map((b) => b.id),
+      })
+      return
+    }
     // errored
     const erroredTask = await this.taskStore.update(taskId, (fm) => ({
       ...fm,

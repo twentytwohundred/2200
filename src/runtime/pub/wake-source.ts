@@ -18,6 +18,7 @@
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import type { TaskStore } from '../agent/task/store.js'
+import { buildContinuationSection } from '../agent/task/continuation.js'
 import type { Logger } from '../util/logger.js'
 import { createLogger } from '../util/logger.js'
 import { isDirectedTo, type ResolverAgentIdentity } from './directed-to.js'
@@ -570,6 +571,48 @@ export class PubWakeSource {
     envelope: 'message' | 'conversation_event'
     antecedent?: { display_name: string; content: string }
   }): Promise<void> {
+    // Continuation primitive (decision:
+    // 2026-05-16-task-continuation-primitive): before spawning a fresh
+    // synthetic task, check whether this agent has a task parked on a
+    // wait_for matching (pub, sender). If so, resume that task with
+    // the inbound appended as continuation context. This is what
+    // turns the Discord→Studio→Discord forwarding chain into a single
+    // coherent task instead of two isolated ones. The display name
+    // comparison is case-insensitive ... agent names are lowercase by
+    // convention but display names can drift.
+    const waiting = await this.opts.taskStore.findWaiting({
+      kind: 'pub',
+      pub: this.opts.pubName,
+      sender: args.sender_display_name,
+    })
+    if (waiting) {
+      const continuation = buildContinuationSection({
+        source_kind: 'pub',
+        sender_label: args.sender_display_name,
+        context_note: waiting.frontmatter.wait_for?.context_note ?? '',
+        body_text: args.sender_content,
+        reply_hint:
+          `Reply via \`pub_send\` with \`pub: "${this.opts.pubName}"\`. ` +
+          `Or use \`discord_send\` / \`whatsapp_send\` / \`chat_send\` to forward back to ` +
+          `whoever you originally promised an answer to.`,
+      })
+      await this.opts.taskStore.updateRecord(waiting.frontmatter.id, (rec) => ({
+        frontmatter: {
+          ...rec.frontmatter,
+          state: 'pending',
+          wait_for: null,
+        },
+        body: `${rec.body}\n\n${continuation}`,
+      }))
+      this.recordProcessed(args.message_id)
+      this.log.info('pub wake → resumed parked task', {
+        pub: this.opts.pubName,
+        agent: this.opts.agentName,
+        task_id: waiting.frontmatter.id,
+        sender: args.sender_display_name,
+      })
+      return
+    }
     const task = newPendingTask({
       id: newTaskId(),
       agent: this.opts.agentName,
