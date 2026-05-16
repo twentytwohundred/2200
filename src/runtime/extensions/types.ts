@@ -109,6 +109,20 @@ export type ExtensionTool = z.infer<typeof ExtensionToolSchema>
 export const ConnectorAuthModelSchema = z.enum(['qr_pair', 'oauth', 'bot_token', 'api_key'])
 export type ConnectorAuthModel = z.infer<typeof ConnectorAuthModelSchema>
 
+/**
+ * Scope of a connector's identity model:
+ *
+ * - `extension`: one identity per Extension instance. Pair once, bind
+ *   to an Agent. Used by WhatsApp Inbox (one paired phone number =
+ *   one identity, can only triage one Agent's inbox).
+ * - `agent`: one identity per Agent. Each Agent gets its own auth
+ *   credentials (bot token, OAuth tokens, etc.) sealed to its vault.
+ *   Used by Discord, Telegram, Slack ... each Agent appears as a
+ *   separate contact/bot in the platform.
+ */
+export const ConnectorAccountScopeSchema = z.enum(['extension', 'agent'])
+export type ConnectorAccountScope = z.infer<typeof ConnectorAccountScopeSchema>
+
 export const ConnectorManifestBlockSchema = z.object({
   /** Stable id used by Agent Identity bindings (e.g. 'whatsapp', 'slack'). */
   id: z
@@ -126,6 +140,13 @@ export const ConnectorManifestBlockSchema = z.object({
   docs_path: z.string().optional(),
   /** Auth model the operator will see at install time. */
   auth_model: ConnectorAuthModelSchema,
+  /**
+   * Identity scope: per-Extension (one paired identity, bound to an
+   * Agent) or per-Agent (each Agent gets its own bot identity in the
+   * platform). Default 'extension' for backwards-compat with WhatsApp
+   * Inbox; Discord / Telegram / Slack will set 'agent'.
+   */
+  account_scope: ConnectorAccountScopeSchema.default('extension'),
   /**
    * ToS-acknowledgment string the user must explicitly agree to at install
    * time. Surfaced verbatim by the install flow. The Baileys-backed

@@ -11,7 +11,11 @@
  */
 import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
-import { ConnectorAuthModelSchema, ExtensionPermissionSchema } from './types.js'
+import {
+  ConnectorAccountScopeSchema,
+  ConnectorAuthModelSchema,
+  ExtensionPermissionSchema,
+} from './types.js'
 
 /**
  * How the supervisor's installer resolves the Extension's code.
@@ -54,6 +58,13 @@ export const CatalogEntrySchema = z.object({
   category: CatalogCategorySchema,
   /** Auth model the Store flow dispatches off (connectors only; null for non-connectors). */
   auth_model: ConnectorAuthModelSchema.nullable(),
+  /**
+   * Identity scope for connectors: 'extension' = pair-once-bind-to-Agent
+   * (WhatsApp Inbox); 'agent' = each Agent has its own bot identity
+   * (Discord, Telegram, Slack). Null for non-connector Extensions.
+   * Default 'extension' for backwards-compat with the catalog v1.
+   */
+  account_scope: ConnectorAccountScopeSchema.nullable().default('extension'),
   /** Permissions the Extension declares; shown in the install modal. */
   permissions: z.array(ExtensionPermissionSchema),
   /** ToS acknowledgment surfaced verbatim at install time. */

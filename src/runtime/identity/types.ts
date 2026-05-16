@@ -437,6 +437,15 @@ export const AgentConnectorBindingSchema = z.object({
    */
   account: z.string().min(1).default('default'),
   /**
+   * Per-Agent auth credentials for connectors with `account_scope:
+   * 'agent'`. Keys are connector-specific (e.g. Discord uses
+   * `bot_token`); values are vault credential names ... the actual
+   * secret lives in the per-Agent vault sealed at install time, never
+   * in the Identity file. Connectors with `account_scope: 'extension'`
+   * (WhatsApp Inbox) leave this empty.
+   */
+  credentials: z.record(z.string().min(1), z.string().min(1)).default({}),
+  /**
    * Allowlists controlling who can wake this Agent on this connector.
    * `dm`: direct-chat senders allowed (E.164 numbers / handles, normalized
    *       by the gateway). `*` admits everyone.

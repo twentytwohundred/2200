@@ -2,8 +2,8 @@
   "schema_version": 1,
   "name": "whatsapp",
   "version": "0.1.0",
-  "display_name": "WhatsApp",
-  "description": "Connect your Agents to WhatsApp via WhatsApp Web (Baileys). Pair once with a QR scan; messages go inbound to Agents you bind; replies go outbound through the same socket. Personal-use; not affiliated with WhatsApp.",
+  "display_name": "WhatsApp Inbox",
+  "description": "Let an Agent triage your WhatsApp inbox. Pair once with a QR scan; the Agent reads incoming DMs from allowlisted senders and may reply on your behalf. One Agent per paired number at v1. Multi-bot-number expansion via Twilio (each Agent gets its own WhatsApp identity, like Discord) lands in a later release. Personal-use; not affiliated with WhatsApp.",
   "author": "2200",
   "homepage": "https://2200.ai/docs/connectors/whatsapp",
   "permissions": ["network", "tools", "notifications", "fs.scratch"],
@@ -23,8 +23,8 @@
   },
   "connector": {
     "id": "whatsapp",
-    "label": "WhatsApp",
-    "blurb": "Bring your Agents into WhatsApp DMs and groups. Pair via QR; works with your existing WhatsApp number.",
+    "label": "WhatsApp Inbox",
+    "blurb": "Pair your WhatsApp number; one Agent triages incoming messages from allowlisted senders. Inbox automator, not multi-bot chat ... see the Twilio expansion for multi-Agent WhatsApp.",
     "docs_path": "design/connectors/whatsapp",
     "auth_model": "qr_pair",
     "tos_acknowledgment": "The WhatsApp connector uses the open-source Baileys library to connect to WhatsApp Web on your behalf. You are responsible for using it in a way that complies with WhatsApp's Terms of Service. WhatsApp's ToS forbids unofficial clients for commercial use and prohibits bulk / spam-like behavior; bot accounts that trip Meta's spam detection can be banned. By installing this connector, you accept the Baileys library's MIT license and you take on the responsibility for your own compliance with WhatsApp's Terms of Service. 2200 is not a party to that relationship."
