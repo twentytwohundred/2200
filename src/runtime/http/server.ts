@@ -4448,6 +4448,41 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const url = `http://${host}:${String(boundPort)}`
   log?.info('http server up', { url, port: boundPort, host, staticDir })
 
+  // Boot-time gateway recovery.
+  //
+  // Connector gateways are child processes of the supervisor. When
+  // the supervisor restarts (daemon stop/start, SIGKILL, crash), the
+  // gateways either die alongside it (clean shutdown via stopAll) or
+  // are orphaned (SIGKILL case). Either way, the new supervisor's
+  // GatewayManager starts with empty state and no gateway is running
+  // for any installed Extension. Inbound messages disappear silently
+  // until the operator manually re-spawns each gateway. This block
+  // closes that gap: walk installed Extensions + per-Agent bindings
+  // and spawn the gateways that should be running.
+  //
+  // For per-Agent connectors (Discord), one gateway per (extension,
+  // Agent) tuple. For per-Extension connectors (WhatsApp Inbox), one
+  // gateway per Extension if at least one Agent has a binding. The
+  // platform's single-bot-connection semantics (Discord disconnects
+  // older clients holding the same token; Baileys takes over the
+  // device pair) handle the orphan case ... the new gateway takes
+  // over and the orphan gets kicked.
+  //
+  // Fire-and-forget: failures on individual gateways are logged but
+  // do not block the server from coming up. The operator can always
+  // hit the Configure view's "Start gateway" button as a fallback.
+  void recoverGateways({
+    home,
+    catalogPath,
+    gatewayManager,
+    snapshot: () => supervisor.snapshot(),
+    log: log?.child('gateway-recovery'),
+  }).catch((err: unknown) => {
+    log?.warn('gateway recovery failed', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+  })
+
   return {
     url,
     port: boundPort,
@@ -4480,6 +4515,204 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       })
       for (const c of wsClients) c.send(msg)
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boot-time gateway recovery (decision: 2026-05-16-connector-extensions).
+// ---------------------------------------------------------------------------
+
+interface RecoverGatewaysArgs {
+  home: string
+  catalogPath: string
+  gatewayManager: GatewayManager
+  snapshot: () => ReturnType<Supervisor['snapshot']>
+  log: Logger | undefined
+}
+
+async function recoverGateways(args: RecoverGatewaysArgs): Promise<void> {
+  const { home, catalogPath, gatewayManager, snapshot, log } = args
+  // Load the catalog so we know which connectors have gateway hooks
+  // and what their account_scope is.
+  let catalog: Awaited<ReturnType<typeof loadCatalog>>
+  try {
+    catalog = await loadCatalog(catalogPath)
+  } catch (err) {
+    log?.warn('catalog unreadable; skipping gateway recovery', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return
+  }
+  // Orphan sweep: when a prior supervisor was SIGKILL'd (instead of
+  // SIGTERM'd) its child gateways survived. Each gateway writes its
+  // own pid + port to gateway.json at startup; walk those files and
+  // SIGTERM any pids that are still alive before spawning fresh.
+  // Without this, the new gateway and the orphan both connect to
+  // Discord with the same bot token; Discord's single-bot-token rule
+  // kicks one but the orphan keeps reconnect-looping in the
+  // background, leaking memory and noise.
+  await sweepOrphanGateways(join(home, 'state', 'extensions'), log)
+  const { readdir } = await import('node:fs/promises')
+  const extensionsRoot = join(home, 'extensions')
+  let installed: string[]
+  try {
+    const entries = await readdir(extensionsRoot, { withFileTypes: true })
+    installed = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name)
+  } catch {
+    // No extensions installed yet; nothing to recover.
+    return
+  }
+  // Build the set of (agent, connector_id) bindings by walking each
+  // Agent's identity.md. We only spawn gateways for connectors that
+  // (a) are installed, (b) have a gateway hook in the catalog entry,
+  // and (c) have at least one Agent binding.
+  const snap = snapshot()
+  const agentBindings: { agent: string; connector_id: string }[] = []
+  for (const [name, rec] of Object.entries(snap.agents)) {
+    try {
+      const id = await loadIdentity(rec.identity_path)
+      for (const c of id.frontmatter.connectors) {
+        agentBindings.push({ agent: name, connector_id: c.connector_id })
+      }
+    } catch {
+      // Identity unreadable; skip this Agent for recovery purposes.
+    }
+  }
+  let started = 0
+  let skipped = 0
+  let failed = 0
+  for (const extId of installed) {
+    const entry = catalog.extensions.find((e) => e.id === extId)
+    if (entry?.category !== 'connector') {
+      skipped += 1
+      continue
+    }
+    const scope = entry.account_scope ?? 'extension'
+    const bindings = agentBindings.filter((b) => b.connector_id === extId)
+    if (bindings.length === 0) {
+      // No Agent uses this Extension; no gateway to spawn.
+      skipped += 1
+      continue
+    }
+    if (scope === 'extension') {
+      // One gateway per Extension; pair-once shared across all bindings.
+      try {
+        const handle = await gatewayManager.start(extId, null)
+        log?.info('gateway recovered (extension scope)', {
+          extension_id: extId,
+          pid: handle.pid,
+          port: handle.port,
+          bindings: bindings.length,
+        })
+        started += 1
+      } catch (err) {
+        log?.warn('gateway recovery failed (extension scope)', {
+          extension_id: extId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        failed += 1
+      }
+    } else {
+      // Per-Agent: one gateway per (extension, agent) tuple.
+      for (const b of bindings) {
+        try {
+          const handle = await gatewayManager.start(extId, b.agent)
+          log?.info('gateway recovered (per-Agent scope)', {
+            extension_id: extId,
+            agent: b.agent,
+            pid: handle.pid,
+            port: handle.port,
+          })
+          started += 1
+        } catch (err) {
+          log?.warn('gateway recovery failed (per-Agent scope)', {
+            extension_id: extId,
+            agent: b.agent,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          failed += 1
+        }
+      }
+    }
+  }
+  log?.info('gateway recovery complete', { started, skipped, failed })
+}
+
+/**
+ * Walk `<state>/extensions/*\/gateway.json` and
+ * `<state>/extensions/*\/agents/*\/gateway.json`, read each pid, and
+ * SIGTERM any that are still alive. Best-effort: we wait briefly for
+ * the process to exit but do not block recovery on stragglers (the
+ * platform's single-connection semantics will kick them anyway). A
+ * 200ms wait covers the common case where the orphan respects
+ * SIGTERM; anything slower we leave for the OS to reap.
+ */
+async function sweepOrphanGateways(stateRoot: string, log: Logger | undefined): Promise<void> {
+  const { readdir, readFile } = await import('node:fs/promises')
+  const candidates: string[] = []
+  let extDirs: string[]
+  try {
+    const entries = await readdir(stateRoot, { withFileTypes: true })
+    extDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  } catch {
+    // No extensions directory; nothing to sweep.
+    return
+  }
+  for (const extName of extDirs) {
+    candidates.push(join(stateRoot, extName, 'gateway.json'))
+    try {
+      const agentsRoot = join(stateRoot, extName, 'agents')
+      const agentDirs = await readdir(agentsRoot, { withFileTypes: true })
+      for (const a of agentDirs) {
+        if (a.isDirectory()) {
+          candidates.push(join(stateRoot, extName, 'agents', a.name, 'gateway.json'))
+        }
+      }
+    } catch {
+      // No per-Agent gateways for this Extension.
+    }
+  }
+  let killed = 0
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    let pid: number | null = null
+    try {
+      const raw = await readFile(path, 'utf-8')
+      const parsed = JSON.parse(raw) as { pid?: number }
+      if (typeof parsed.pid === 'number') pid = parsed.pid
+    } catch {
+      continue
+    }
+    if (pid === null) continue
+    let alive = false
+    try {
+      // Signal 0 doesn't deliver a signal, just probes whether the
+      // pid exists and we're allowed to signal it. EPERM also means
+      // alive (running as another user, but we're single-user here).
+      process.kill(pid, 0)
+      alive = true
+    } catch (err) {
+      const errno = (err as NodeJS.ErrnoException).code
+      if (errno === 'EPERM') alive = true
+    }
+    if (!alive) continue
+    try {
+      process.kill(pid, 'SIGTERM')
+      killed += 1
+      log?.info('orphan gateway killed', { pid, gateway_info_path: path })
+    } catch (err) {
+      log?.warn('orphan gateway kill failed', {
+        pid,
+        path,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  if (killed > 0) {
+    // Give the orphans a moment to exit cleanly before we spawn
+    // replacements that contend for the same bot token / device pair.
+    await new Promise((r) => setTimeout(r, 200))
+    log?.info('orphan gateway sweep complete', { killed })
   }
 }
 
