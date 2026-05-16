@@ -189,9 +189,10 @@ async function handleInbound(env: GatewayEnv, msg: Message, selfUserId: string):
     conversation: {
       id: msg.channel.id,
       kind: (isDm ? 'dm' : 'group') as 'dm' | 'group',
-      ...(isGuildText && msg.guild
-        ? { display_name: `${msg.guild.name} · #${'name' in msg.channel ? msg.channel.name : msg.channel.id}` }
-        : { display_name: msg.author.username }),
+      display_name:
+        isGuildText && msg.guild
+          ? `${msg.guild.name} · #${(msg.channel as { name?: string }).name ?? msg.channel.id}`
+          : msg.author.username,
     },
     sender: {
       id: msg.author.id,
@@ -295,7 +296,15 @@ async function run(): Promise<void> {
   await postPairState(env, { state: 'connecting' })
 
   const next = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.DirectMessages,
+      // MessageContent is the privileged intent the operator toggled
+      // in the Developer Portal during install. Required to read the
+      // `content` field of messages in both DMs and guild channels.
+      GatewayIntentBits.MessageContent,
+    ],
     partials: [Partials.Channel, Partials.Message],
   })
   client = next
