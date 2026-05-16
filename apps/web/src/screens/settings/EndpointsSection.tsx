@@ -143,6 +143,26 @@ function EndpointRow({
     onSuccess: onDeleted,
   })
 
+  // Live model poll: hit the endpoint's /v1/models every 30s so the
+  // operator sees what the upstream server is currently serving. The
+  // saved `endpoint.models` is what the operator selected to expose
+  // to Agent identities; this query is what's *available right now*.
+  // A model that's available but unselected is rendered as a ghost
+  // chip; a selected model that's no longer being served is flagged.
+  const liveModels = useQuery({
+    queryKey: ['settings', 'endpoints', endpoint.id, 'models'],
+    queryFn: () => api.endpointModels(endpoint.id),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  })
+
+  const liveIds = new Set<string>(
+    liveModels.data?.ok === true ? liveModels.data.models.map((m) => m.id) : [],
+  )
+  const selectedIds = new Set<string>(endpoint.models.map((m) => m.id))
+  const liveOnly = [...liveIds].filter((id) => !selectedIds.has(id))
+  const missingFromUpstream = endpoint.models.filter((m) => !liveIds.has(m.id))
+
   return (
     <Card padding={20}>
       <div className={styles.rowHead}>
@@ -151,6 +171,17 @@ function EndpointRow({
         <span className={styles.rowSpacer} />
         <Pill variant={endpoint.api_key_set ? 'info' : 'idle'}>
           {endpoint.api_key_set ? 'key set' : 'no key'}
+        </Pill>
+        <Pill
+          variant={
+            liveModels.data?.ok === true ? 'running' : liveModels.isLoading ? 'idle' : 'error'
+          }
+        >
+          {liveModels.data?.ok === true
+            ? `${String(liveModels.data.models.length)} live`
+            : liveModels.isLoading
+              ? 'probing'
+              : 'unreachable'}
         </Pill>
         <Button size="sm" variant="ghost" onClick={onEdit}>
           Edit
@@ -168,21 +199,113 @@ function EndpointRow({
           v={<span style={{ fontFamily: 'var(--ds-font-mono)' }}>{endpoint.base_url}</span>}
         />
         <KV
-          k="MODELS"
+          k="SELECTED"
           v={
             endpoint.models.length === 0 ? (
-              <span className={styles.rowMutedValue}>none selected</span>
+              <span className={styles.rowMutedValue}>none selected (edit to pick)</span>
             ) : (
               <div className={styles.modelChips}>
-                {endpoint.models.map((m) => (
-                  <code key={m.id} className={styles.modelChip}>
-                    {m.label ?? m.id}
-                  </code>
-                ))}
+                {endpoint.models.map((m) => {
+                  const stillServed = liveIds.has(m.id)
+                  return (
+                    <code
+                      key={m.id}
+                      className={styles.modelChip}
+                      style={
+                        !stillServed && liveModels.data?.ok === true
+                          ? {
+                              borderColor: 'var(--danger)',
+                              color: 'var(--danger)',
+                              opacity: 0.8,
+                            }
+                          : undefined
+                      }
+                      title={
+                        !stillServed && liveModels.data?.ok === true
+                          ? 'Saved but not currently served by this endpoint'
+                          : undefined
+                      }
+                    >
+                      {m.label ?? m.id}
+                      {!stillServed && liveModels.data?.ok === true ? ' (missing)' : ''}
+                    </code>
+                  )
+                })}
               </div>
             )
           }
         />
+        {liveModels.data?.ok === true && (
+          <KV
+            k="AVAILABLE NOW"
+            v={
+              liveModels.data.models.length === 0 ? (
+                <span className={styles.rowMutedValue}>endpoint reports no models</span>
+              ) : (
+                <div className={styles.modelChips}>
+                  {liveModels.data.models.map((m) => {
+                    const isSelected = selectedIds.has(m.id)
+                    return (
+                      <code
+                        key={m.id}
+                        className={styles.modelChip}
+                        style={
+                          isSelected
+                            ? undefined
+                            : {
+                                opacity: 0.55,
+                                borderStyle: 'dashed',
+                              }
+                        }
+                        title={
+                          isSelected
+                            ? 'Served and currently selected'
+                            : 'Served by this endpoint but not yet selected for Agent use ... edit to enable'
+                        }
+                      >
+                        {m.id}
+                      </code>
+                    )
+                  })}
+                </div>
+              )
+            }
+          />
+        )}
+        {liveModels.data?.ok === false && (
+          <KV
+            k="POLL ERROR"
+            v={
+              <span style={{ color: 'var(--danger)', fontSize: 12 }}>
+                {liveModels.data.error.kind}: {liveModels.data.error.message}
+              </span>
+            }
+          />
+        )}
+        {liveModels.data?.ok === true &&
+          (liveOnly.length > 0 || missingFromUpstream.length > 0) && (
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                fontSize: 11,
+                color: 'var(--text-3)',
+                marginTop: 4,
+              }}
+            >
+              {liveOnly.length > 0 && (
+                <>
+                  {String(liveOnly.length)} unselected model{liveOnly.length === 1 ? '' : 's'}{' '}
+                  available.{' '}
+                </>
+              )}
+              {missingFromUpstream.length > 0 && (
+                <span style={{ color: 'var(--danger)' }}>
+                  {String(missingFromUpstream.length)} selected model
+                  {missingFromUpstream.length === 1 ? '' : 's'} no longer served.
+                </span>
+              )}
+            </div>
+          )}
       </div>
     </Card>
   )

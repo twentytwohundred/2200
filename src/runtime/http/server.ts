@@ -713,6 +713,42 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     }
   })
 
+  // Live-poll models from a saved endpoint without re-passing its
+  // api_key. The Endpoints UI hits this on a periodic schedule per
+  // row so the human sees what the upstream server is currently
+  // serving (e.g. a GB10 swapping between Llama 3.3 70B and a
+  // smaller model). Returns the same shape as /discover so the
+  // client can dedupe its render logic.
+  fastify.get<{ Params: { id: string } }>(
+    '/api/v1/settings/endpoints/:id/models',
+    async (req, reply) => {
+      const existing = await endpointStore.get(req.params.id)
+      if (!existing) throw notFound('endpoint', req.params.id)
+      try {
+        const models = await discoverModels({
+          baseUrl: existing.base_url,
+          ...(existing.api_key ? { apiKey: existing.api_key } : {}),
+        })
+        return await reply.send({
+          ok: true as const,
+          endpoint_id: existing.id,
+          models: models.map((m) => ({ id: m.id })),
+          fetched_at: new Date().toISOString(),
+        })
+      } catch (err) {
+        if (err instanceof EndpointDiscoveryError) {
+          return await reply.send({
+            ok: false as const,
+            endpoint_id: existing.id,
+            error: { kind: err.kind, message: err.message },
+            fetched_at: new Date().toISOString(),
+          })
+        }
+        throw err
+      }
+    },
+  )
+
   // -- agents --------------------------------------------------------------
   fastify.get('/api/v1/agents', async () => {
     const snap = supervisor.snapshot()

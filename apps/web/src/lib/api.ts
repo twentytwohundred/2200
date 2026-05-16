@@ -1016,6 +1016,28 @@ export const api = {
       | { ok: false; error: { kind: string; message: string } }
     >('/api/v1/settings/endpoints/discover', { method: 'POST', body }),
   /**
+   * Live-poll an already-saved endpoint's models without re-passing
+   * the api_key. Used by the Endpoints UI to show what the upstream
+   * server is currently serving (e.g. a homelab box swapping between
+   * model loads). The runtime resolves the saved key on the server
+   * side so the browser never re-handles it.
+   */
+  endpointModels: (id: string) =>
+    request<
+      | {
+          ok: true
+          endpoint_id: string
+          models: { id: string }[]
+          fetched_at: string
+        }
+      | {
+          ok: false
+          endpoint_id: string
+          error: { kind: string; message: string }
+          fetched_at: string
+        }
+    >(`/api/v1/settings/endpoints/${encodeURIComponent(id)}/models`),
+  /**
    * Build an image-loadable URL for an endpoint that requires the
    * bearer token. The browser's `<img>` tag cannot set an
    * Authorization header, so the runtime accepts `?token=...` as an
