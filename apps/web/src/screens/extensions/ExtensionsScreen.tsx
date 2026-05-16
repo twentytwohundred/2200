@@ -5,17 +5,21 @@
  * `/api/v1/extensions/catalog` endpoint, which sources from
  * `extensions-catalog/v1.json` in dev and 2200.ai-hosted JSON in
  * production). Lets the operator install an Extension with a
- * permission + ToS modal, then surfaces a "pair your device"
- * callout for `qr_pair` connectors.
+ * permission + ToS modal, then surfaces a pair flow or per-Agent
+ * setup flow inline on the card.
  *
- * Today's scope is browse + install + post-install handoff. The
- * QR-in-browser pair flow + allowlist editor land in the next
- * pass; the install step puts the Extension on disk and the
- * post-install callout tells the operator the next manual step.
+ * Persistent installed state comes from
+ * `/api/v1/extensions/installed`, which the runtime computes from
+ * `<home>/extensions/<id>/manifest.json` plus each Agent's
+ * identity.md `connectors` block plus live gateway state. The
+ * "Installed" tab + ConfigureView read from this so refreshing the
+ * page does not erase the installed signal (the prior version held
+ * install state in React-local memory and lost it on reload).
  *
  * Decisions:
  *   - [[../../decisions/2026-05-16-connector-store]]
  *   - [[../../decisions/2026-05-16-connector-extensions]]
+ *   - [[../../decisions/2026-05-16-connector-per-agent-identity]]
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -27,6 +31,7 @@ import {
   type Catalog,
   type CatalogEntry,
   type ExtensionPairState,
+  type InstalledExtensionEntry,
 } from '../../lib/api'
 import { Button, Card, Screen, ScreenNavLink } from '../../primitives'
 import styles from './ExtensionsScreen.module.css'
@@ -44,14 +49,36 @@ function formatError(err: unknown): string {
 export function ExtensionsScreen(): ReactElement {
   const [tab, setTab] = useState<Tab>('connectors')
   const [installModalEntry, setInstallModalEntry] = useState<CatalogEntry | null>(null)
-  const [recentInstalls, setRecentInstalls] = useState<Record<string, CatalogEntry>>({})
+  const [expandedConfig, setExpandedConfig] = useState<string | null>(null)
+  // Cards that just completed install in this session expand their
+  // setup flow inline (pair / per-Agent). The server-side `installed`
+  // query is authoritative for the "Installed" pill; this just tracks
+  // which cards should auto-expand their inline setup section.
+  const [recentInstalls, setRecentInstalls] = useState<Set<string>>(new Set())
 
   const catalogQuery = useQuery({
     queryKey: ['extensionsCatalog'],
     queryFn: () => apiExtensions.catalog(),
   })
 
-  const entries = useMemo(() => filterEntries(catalogQuery.data, tab), [catalogQuery.data, tab])
+  const installedQuery = useQuery({
+    queryKey: ['extensionsInstalled'],
+    queryFn: () => apiExtensions.installed(),
+    refetchInterval: 4000,
+  })
+
+  const installedMap = useMemo(() => {
+    const map = new Map<string, InstalledExtensionEntry>()
+    for (const item of installedQuery.data?.items ?? []) {
+      map.set(item.id, item)
+    }
+    return map
+  }, [installedQuery.data])
+
+  const entries = useMemo(
+    () => filterEntries(catalogQuery.data, tab, installedMap),
+    [catalogQuery.data, tab, installedMap],
+  )
 
   return (
     <Screen
@@ -90,7 +117,7 @@ export function ExtensionsScreen(): ReactElement {
             setTab('installed')
           }}
         >
-          Installed
+          Installed {installedMap.size > 0 && `(${String(installedMap.size)})`}
         </TabButton>
       </div>
 
@@ -116,16 +143,33 @@ export function ExtensionsScreen(): ReactElement {
       )}
 
       <div className={styles.list}>
-        {entries.map((entry) => (
-          <ExtensionCard
-            key={entry.id}
-            entry={entry}
-            recentInstall={recentInstalls[entry.id] ?? null}
-            onInstall={() => {
-              setInstallModalEntry(entry)
-            }}
-          />
-        ))}
+        {entries.map((entry) => {
+          const installed = installedMap.get(entry.id) ?? null
+          const isExpanded = expandedConfig === entry.id || recentInstalls.has(entry.id)
+          return (
+            <ExtensionCard
+              key={entry.id}
+              entry={entry}
+              installed={installed}
+              isExpanded={isExpanded}
+              onInstall={() => {
+                setInstallModalEntry(entry)
+              }}
+              onToggleConfigure={() => {
+                setExpandedConfig((cur) => (cur === entry.id ? null : entry.id))
+                // Clicking "Installed" pill stops treating this entry
+                // as "just-installed" (the recentInstalls auto-expand);
+                // user is now in explicit configure mode.
+                setRecentInstalls((prev) => {
+                  if (!prev.has(entry.id)) return prev
+                  const next = new Set(prev)
+                  next.delete(entry.id)
+                  return next
+                })
+              }}
+            />
+          )
+        })}
       </div>
 
       {installModalEntry && (
@@ -135,7 +179,12 @@ export function ExtensionsScreen(): ReactElement {
             setInstallModalEntry(null)
           }}
           onComplete={() => {
-            setRecentInstalls((prev) => ({ ...prev, [installModalEntry.id]: installModalEntry }))
+            const id = installModalEntry.id
+            setRecentInstalls((prev) => {
+              const next = new Set(prev)
+              next.add(id)
+              return next
+            })
             setInstallModalEntry(null)
           }}
         />
@@ -144,10 +193,14 @@ export function ExtensionsScreen(): ReactElement {
   )
 }
 
-function filterEntries(catalog: Catalog | undefined, tab: Tab): CatalogEntry[] {
+function filterEntries(
+  catalog: Catalog | undefined,
+  tab: Tab,
+  installedMap: Map<string, InstalledExtensionEntry>,
+): CatalogEntry[] {
   if (!catalog) return []
   if (tab === 'connectors') return catalog.extensions.filter((e) => e.category === 'connector')
-  if (tab === 'installed') return [] // v1 placeholder until the supervisor exposes installed Extensions list
+  if (tab === 'installed') return catalog.extensions.filter((e) => installedMap.has(e.id))
   return catalog.extensions
 }
 
@@ -183,12 +236,20 @@ function TabButton({ active, onClick, children }: TabButtonProps): ReactElement 
 
 interface ExtensionCardProps {
   entry: CatalogEntry
-  recentInstall: CatalogEntry | null
+  installed: InstalledExtensionEntry | null
+  isExpanded: boolean
   onInstall: () => void
+  onToggleConfigure: () => void
 }
 
-function ExtensionCard({ entry, recentInstall, onInstall }: ExtensionCardProps): ReactElement {
-  const installedInThisSession = recentInstall !== null
+function ExtensionCard({
+  entry,
+  installed,
+  isExpanded,
+  onInstall,
+  onToggleConfigure,
+}: ExtensionCardProps): ReactElement {
+  const isInstalled = installed !== null
   return (
     <div className={styles.card}>
       <div className={styles.icon}>
@@ -217,18 +278,23 @@ function ExtensionCard({ entry, recentInstall, onInstall }: ExtensionCardProps):
             </span>
           ))}
         </div>
-        {installedInThisSession && entry.auth_model === 'qr_pair' && <PairFlow entry={entry} />}
-        {installedInThisSession && entry.auth_model === 'bot_token' && (
-          <BotTokenPerAgentFlow entry={entry} />
+        {isInstalled && isExpanded && (
+          <ConfigureView entry={entry} installed={installed} onClose={onToggleConfigure} />
         )}
       </div>
       <div className={styles.actions}>
-        <span className={styles.status} data-tone={installedInThisSession ? 'ok' : undefined}>
-          {installedInThisSession ? 'installed' : `v${entry.current_version}`}
+        <span className={styles.status} data-tone={isInstalled ? 'ok' : undefined}>
+          {isInstalled ? `installed · v${entry.current_version}` : `v${entry.current_version}`}
         </span>
-        <Button variant="primary" size="md" onClick={onInstall} disabled={installedInThisSession}>
-          {installedInThisSession ? 'Installed' : 'Install'}
-        </Button>
+        {isInstalled ? (
+          <Button variant="ghost" size="md" onClick={onToggleConfigure}>
+            {isExpanded ? 'Hide' : 'Installed ✓ Configure'}
+          </Button>
+        ) : (
+          <Button variant="primary" size="md" onClick={onInstall}>
+            Install
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -241,6 +307,7 @@ interface InstallModalProps {
 }
 
 function InstallModal({ entry, onClose, onComplete }: InstallModalProps): ReactElement {
+  const queryClient = useQueryClient()
   const [grantedPerms, setGrantedPerms] = useState<Set<string>>(new Set(entry.permissions))
   const [tosAcked, setTosAcked] = useState(false)
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null)
@@ -263,7 +330,13 @@ function InstallModal({ entry, onClose, onComplete }: InstallModalProps): ReactE
       }, 400)
       setTimeout(() => {
         setProgress({ percent: 100, message: 'Install complete.' })
-        setTimeout(onComplete, 600)
+        setTimeout(() => {
+          // Refresh the installed list so the card's "Installed" pill
+          // appears on the next render. Without this, the card stays
+          // on "Install" until the 4s poll catches up.
+          void queryClient.invalidateQueries({ queryKey: ['extensionsInstalled'] })
+          onComplete()
+        }, 600)
       }, 1200)
     },
     onError: (err) => {
@@ -383,8 +456,321 @@ function InstallModal({ entry, onClose, onComplete }: InstallModalProps): ReactE
   )
 }
 
+// ---------------------------------------------------------------------------
+// ConfigureView: opens under an installed card when the "Installed ✓"
+// pill is clicked. Routes to the right inline editor based on the
+// catalog entry's auth_model and account_scope. The shared layout +
+// header live here; the per-auth-model editors are below.
+// ---------------------------------------------------------------------------
+
+interface ConfigureViewProps {
+  entry: CatalogEntry
+  installed: InstalledExtensionEntry
+  onClose: () => void
+}
+
+function ConfigureView({ entry, installed, onClose }: ConfigureViewProps): ReactElement {
+  // Per-Agent connectors (Discord, future Telegram/Slack) get the
+  // per-Agent management view. Pair-once connectors (WhatsApp Inbox)
+  // get the extension-level pair view.
+  const isPerAgent = entry.account_scope === 'agent'
+  return (
+    <div className={styles.pairCallout}>
+      <div className={styles.pairHeader}>
+        <span className={styles.pairTitle}>Configure {entry.label}</span>
+        <span className={styles.pairStatus}>
+          {isPerAgent
+            ? `${String(installed.bindings.length)} Agent${installed.bindings.length === 1 ? '' : 's'} wired`
+            : installed.extension_gateway?.pair_state === 'paired'
+              ? 'paired'
+              : 'not paired'}
+        </span>
+      </div>
+      {isPerAgent ? (
+        <PerAgentManagement entry={entry} installed={installed} />
+      ) : (
+        <ExtensionPairManagement entry={entry} installed={installed} />
+      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <Button variant="ghost" size="md" onClick={onClose}>
+          Done
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function PerAgentManagement({
+  entry,
+  installed,
+}: {
+  entry: CatalogEntry
+  installed: InstalledExtensionEntry
+}): ReactElement {
+  const [addingAgent, setAddingAgent] = useState(installed.bindings.length === 0)
+  const excludeAgents = installed.bindings.map((b) => b.agent)
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {installed.bindings.map((b) => (
+        <BindingRow key={b.agent} extensionId={entry.id} binding={b} />
+      ))}
+      {addingAgent ? (
+        <AgentSetupPanel
+          entry={entry}
+          excludeAgents={excludeAgents}
+          onConnected={() => {
+            setAddingAgent(false)
+          }}
+          onCancel={() => {
+            if (installed.bindings.length > 0) setAddingAgent(false)
+          }}
+        />
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => {
+              setAddingAgent(true)
+            }}
+          >
+            + Set up another Agent
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BindingRow({
+  extensionId,
+  binding,
+}: {
+  extensionId: string
+  binding: InstalledExtensionEntry['bindings'][number]
+}): ReactElement {
+  const queryClient = useQueryClient()
+  const restart = useMutation({
+    mutationFn: () => apiExtensions.pairStart(extensionId, binding.agent),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['extensionsInstalled'] })
+    },
+  })
+  // Inline channel-allowlist editor (Discord only for now ... other
+  // per-Agent connectors land their own UX as they ship).
+  const currentChannel = binding.allowlist_group[0] ?? ''
+  const [channelInput, setChannelInput] = useState(currentChannel)
+  const [channelError, setChannelError] = useState<string | null>(null)
+  const channelDirty = channelInput.trim() !== currentChannel
+  const savePolicy = useMutation({
+    mutationFn: () =>
+      apiExtensions.policyUpdate(extensionId, binding.agent, {
+        allowlist_group: channelInput.trim() ? [channelInput.trim()] : [],
+      }),
+    onSuccess: () => {
+      setChannelError(null)
+      void queryClient.invalidateQueries({ queryKey: ['extensionsInstalled'] })
+    },
+    onError: (err) => {
+      setChannelError(formatError(err))
+    },
+  })
+  // For Discord: the bot's client_id (= bot_user_id) lets us
+  // regenerate the OAuth invite URL. The same permission integer
+  // (85056) covers View Channel + Send + Embed + History + Reactions.
+  const inviteUrl = binding.bot_user_id
+    ? `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(binding.bot_user_id)}&scope=bot&permissions=85056`
+    : null
+
+  return (
+    <div
+      style={{
+        padding: '14px 16px',
+        background: 'var(--bg)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        display: 'grid',
+        gap: 10,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+        }}
+      >
+        <div>
+          <strong style={{ color: 'var(--text)' }}>{binding.agent}</strong>
+          {binding.bot_username && (
+            <>
+              {' '}
+              <span style={{ color: 'var(--text-2)' }}>as</span>{' '}
+              <strong style={{ color: 'var(--text)' }}>@{binding.bot_username}</strong>
+            </>
+          )}
+        </div>
+        <span
+          style={{
+            fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+            fontSize: 11,
+            color: binding.gateway_running ? 'var(--accent)' : 'var(--text-3)',
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+          }}
+        >
+          {binding.gateway_running ? '● gateway running' : '○ gateway stopped'}
+        </span>
+      </div>
+      {binding.pair_state_detail && binding.pair_state !== 'paired' && (
+        <div style={{ color: 'var(--text-3)', fontSize: 12 }}>{binding.pair_state_detail}</div>
+      )}
+      {extensionId === 'discord' && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <div
+            style={{
+              fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+              fontSize: 10,
+              color: 'var(--text-3)',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Channel ID
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={channelInput}
+              onChange={(e) => {
+                setChannelInput(e.target.value)
+                setChannelError(null)
+              }}
+              placeholder="e.g. 1505299465865527418"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              style={{
+                flex: 1,
+                padding: '7px 10px',
+                background: 'var(--bg-sunk)',
+                color: 'var(--text)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                fontSize: 12,
+                fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+              }}
+            />
+            <Button
+              variant="primary"
+              size="md"
+              onClick={() => {
+                if (channelInput.trim() && !/^\d+$/.test(channelInput.trim())) {
+                  setChannelError('Channel IDs are numeric (Discord snowflakes).')
+                  return
+                }
+                savePolicy.mutate()
+              }}
+              disabled={!channelDirty || savePolicy.isPending}
+            >
+              {savePolicy.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+          {channelError && (
+            <div style={{ color: 'var(--danger)', fontSize: 11 }}>{channelError}</div>
+          )}
+          {!currentChannel && !channelInput && (
+            <div style={{ color: 'var(--text-3)', fontSize: 11, lineHeight: 1.5 }}>
+              No channel pinned. Enable Developer Mode in Discord (Settings → Advanced), right-click
+              the channel you want this Agent in, choose <strong>Copy Channel ID</strong>, paste
+              here. Every message in that channel wakes the Agent.
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        {inviteUrl && (
+          <a
+            href={inviteUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              background: 'var(--accent)',
+              color: 'var(--on-accent)',
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: 'none',
+            }}
+          >
+            Invite {binding.agent}'s bot to a server →
+          </a>
+        )}
+        {!binding.gateway_running && (
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={() => {
+              restart.mutate()
+            }}
+            disabled={restart.isPending}
+          >
+            {restart.isPending ? 'Starting…' : 'Start gateway'}
+          </Button>
+        )}
+        <span
+          style={{
+            color: 'var(--text-3)',
+            fontSize: 11,
+            fontFamily: 'monospace',
+            marginLeft: 'auto',
+          }}
+        >
+          {extensionId}/{binding.agent}
+        </span>
+      </div>
+      {restart.isError && (
+        <div className={styles.pairError}>
+          Could not start the gateway: {formatError(restart.error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExtensionPairManagement({
+  entry,
+  installed,
+}: {
+  entry: CatalogEntry
+  installed: InstalledExtensionEntry
+}): ReactElement {
+  // Extension-scope (WhatsApp Inbox): one gateway per Extension, paired
+  // once to the operator's phone. Show pair state + self_jid + a
+  // re-pair button that kicks the gateway to render a fresh QR.
+  const gateway = installed.extension_gateway
+  const isPaired = gateway?.pair_state === 'paired'
+  if (isPaired) {
+    return (
+      <div className={styles.pairSuccess}>
+        <div className={styles.pairSuccessIcon}>✓</div>
+        <div>
+          Paired as <strong>{gateway.self_jid ?? '<unknown>'}</strong>. Messages from allowlisted
+          contacts wake bound Agents.
+        </div>
+      </div>
+    )
+  }
+  return <PairFlow entry={entry} autoStart={gateway?.running ?? false} />
+}
+
 interface PairFlowProps {
   entry: CatalogEntry
+  /** When true, skip the "Finish install" CTA and poll pair state directly. */
+  autoStart?: boolean
 }
 
 function pairStatusLabel(state: ExtensionPairState): string {
@@ -404,8 +790,8 @@ function pairStatusLabel(state: ExtensionPairState): string {
   }
 }
 
-function PairFlow({ entry }: PairFlowProps): ReactElement {
-  const [started, setStarted] = useState(false)
+function PairFlow({ entry, autoStart = false }: PairFlowProps): ReactElement {
+  const [started, setStarted] = useState(autoStart)
   const [startError, setStartError] = useState<string | null>(null)
 
   const startMutation = useMutation({
@@ -426,7 +812,6 @@ function PairFlow({ entry }: PairFlowProps): ReactElement {
     refetchInterval: (q) => {
       const data = q.state.data
       if (!data) return 600
-      // Stop polling once paired; keep polling while waiting.
       if (data.state === 'paired') return false
       return 600
     },
@@ -548,128 +933,19 @@ pnpm tsx src/gateway.ts`}
 }
 
 // ---------------------------------------------------------------------------
-// Per-Agent install flow (account_scope: 'agent' connectors)
+// Per-Agent setup panel (account_scope: 'agent' connectors).
+//
+// Used both during the post-install "set up your first bot" flow and
+// from the ConfigureView's "+ Set up another Agent" action. Wires:
+//   1. picks an Agent (skipping any already wired)
+//   2. walks the user through getting a Discord bot token
+//   3. POSTs to /api/v1/extensions/:id/agents/:agent/setup
+//   4. polls /pair/state until paired or errored
+//
+// On `paired`, calls onConnected so the parent can refresh state. The
+// parent invalidates the installedQuery to flip the card's pill to
+// "Installed ✓" and refresh the bindings list.
 // ---------------------------------------------------------------------------
-
-interface BotTokenPerAgentFlowProps {
-  entry: CatalogEntry
-}
-
-function BotTokenPerAgentFlow({ entry }: BotTokenPerAgentFlowProps): ReactElement {
-  // Track each Agent we've successfully wired up in this session. The
-  // server is the source of truth via /pair/state; this local set
-  // controls the "Connected ✓" card on the screen + lets the user
-  // queue up another Agent setup right after one finishes.
-  const [connectedAgents, setConnectedAgents] = useState<
-    Record<string, { botUsername: string; botUserId: string }>
-  >({})
-  const [addingAgent, setAddingAgent] = useState(true)
-
-  return (
-    <div className={styles.pairCallout}>
-      <div className={styles.pairHeader}>
-        <span className={styles.pairTitle}>Installed ✓ ... set up a bot per Agent</span>
-        <span className={styles.pairStatus}>{Object.keys(connectedAgents).length} connected</span>
-      </div>
-      <p style={{ margin: 0, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.55 }}>
-        Each Agent gets its own Discord bot identity. Create one Discord application per Agent,
-        paste the bot token below, and we'll wire everything up and start the bot. Repeat for every
-        Agent you want available in Discord.
-      </p>
-
-      {Object.entries(connectedAgents).map(([agent, info]) => (
-        <ConnectedAgentRow key={agent} agent={agent} botInfo={info} extensionId={entry.id} />
-      ))}
-
-      {addingAgent ? (
-        <AgentSetupPanel
-          entry={entry}
-          excludeAgents={Object.keys(connectedAgents)}
-          onConnected={(agent, info) => {
-            setConnectedAgents((prev) => ({ ...prev, [agent]: info }))
-            setAddingAgent(false)
-          }}
-          onCancel={() => {
-            if (Object.keys(connectedAgents).length > 0) setAddingAgent(false)
-          }}
-        />
-      ) : (
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Button
-            variant="primary"
-            size="md"
-            onClick={() => {
-              setAddingAgent(true)
-            }}
-          >
-            + Set up another Agent
-          </Button>
-        </div>
-      )}
-
-      <AdvancedTerminalHandoff entry={entry} />
-    </div>
-  )
-}
-
-function ConnectedAgentRow({
-  agent,
-  botInfo,
-  extensionId,
-}: {
-  agent: string
-  botInfo: { botUsername: string; botUserId: string }
-  extensionId: string
-}): ReactElement {
-  // Auto-generate the OAuth invite link from the bot's user id (for
-  // Discord, the application id is the same as the bot user id). The
-  // bot needs to be in a server with the user before DMs work, so
-  // this link is load-bearing for first-message UX.
-  // Discord permission integer:
-  //   1024  View Channel       (without this, the bot can't see the channel at all)
-  //   2048  Send Messages      (so the bot can reply via discord_send)
-  //   16384 Embed Links        (so bot replies that include URLs render rich)
-  //   65536 Read Message History (so the bot can read existing context on resume)
-  //   64    Add Reactions      (so the bot can ack with an emoji before replying)
-  // Sum: 85056. Excludes Administrator and channel-management; only what a
-  // chat-style bot needs.
-  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(botInfo.botUserId)}&scope=bot&permissions=85056`
-  return (
-    <div className={styles.pairSuccess}>
-      <div className={styles.pairSuccessIcon}>✓</div>
-      <div style={{ flex: 1 }}>
-        <div>
-          <strong>{agent}</strong> connected as <strong>@{botInfo.botUsername}</strong>. Add the bot
-          to a server you're in (or a private test server), then DM <strong>{agent}</strong> in
-          Discord to start chatting.
-        </div>
-        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center' }}>
-          <a
-            href={inviteUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              padding: '6px 12px',
-              background: 'var(--accent)',
-              color: 'var(--on-accent)',
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              textDecoration: 'none',
-            }}
-          >
-            Invite {agent}'s bot to a server →
-          </a>
-          <span style={{ color: 'var(--text-3)', fontSize: 11, fontFamily: 'monospace' }}>
-            {extensionId}/{agent}
-          </span>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 function AgentSetupPanel({
   entry,
@@ -690,8 +966,12 @@ function AgentSetupPanel({
   const [selectedAgent, setSelectedAgent] = useState<string>('')
   const [token, setToken] = useState('')
   const [showToken, setShowToken] = useState(false)
+  const [channelId, setChannelId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pollingAgent, setPollingAgent] = useState<string | null>(null)
+  // Discord requires a channel id; other connectors don't (yet).
+  const channelRequired = entry.id === 'discord'
+  const channelValid = !channelRequired || /^\d+$/.test(channelId.trim())
 
   const availableAgents = useMemo(() => {
     if (!agentsQuery.data) return []
@@ -711,6 +991,7 @@ function AgentSetupPanel({
       })
       return apiExtensions.agentSetup(entry.id, selectedAgent, {
         credentials: { bot_token: token },
+        ...(channelId.trim() ? { allowlist_group: [channelId.trim()] } : {}),
       })
     },
     onSuccess: () => {
@@ -736,15 +1017,17 @@ function AgentSetupPanel({
   })
 
   // When we transition to paired, hand off to the parent's connected
-  // list. Same for errored ... but keep showing the error so the user
-  // can re-paste a fixed token.
+  // list AND invalidate the installedQuery so the bindings list
+  // refreshes immediately (without waiting for the 4s background poll).
   if (pollingAgent && stateQuery.data?.state === 'paired' && stateQuery.data.self_user) {
     const info = {
       botUsername: stateQuery.data.self_user.username,
       botUserId: stateQuery.data.self_user.id,
     }
+    const agent = pollingAgent
     queueMicrotask(() => {
-      onConnected(pollingAgent, info)
+      void queryClient.invalidateQueries({ queryKey: ['extensionsInstalled'] })
+      onConnected(agent, info)
     })
   }
 
@@ -847,7 +1130,10 @@ function AgentSetupPanel({
 
       {/* Token input */}
       <div>
-        <div className={styles.modalLabel}>Step 3: Paste the bot token</div>
+        <div className={styles.modalLabel}>
+          Step 3: Paste the bot token{' '}
+          {!token && <span style={{ color: 'var(--danger)' }}>(required)</span>}
+        </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
           <input
             type={showToken ? 'text' : 'password'}
@@ -880,6 +1166,65 @@ function AgentSetupPanel({
           </Button>
         </div>
       </div>
+
+      {/* Channel id input (Discord only for v1) */}
+      {channelRequired && (
+        <div>
+          <div className={styles.modalLabel}>
+            Step 4: Paste the Discord channel ID{' '}
+            <span style={{ color: 'var(--danger)' }}>(required)</span>
+          </div>
+          <div className={styles.advancedBody} style={{ marginTop: 8 }}>
+            <strong style={{ color: 'var(--text)' }}>How to get a channel ID:</strong>
+            <ol style={{ marginTop: 8, paddingLeft: 20, lineHeight: 1.7 }}>
+              <li>
+                In Discord, open <strong>Settings → Advanced</strong>. Toggle{' '}
+                <strong>Developer Mode</strong> on. (Phone: Settings → App Settings → Behavior.)
+              </li>
+              <li>
+                Go to the server / channel you want this Agent to live in. Make a dedicated channel
+                if you don't have one (e.g. <code>#{selectedAgent || 'simon'}</code>).
+              </li>
+              <li>
+                Right-click the channel name in the sidebar (long-press on mobile). Pick{' '}
+                <strong>Copy Channel ID</strong>.
+              </li>
+              <li>Paste it below. Every message in that channel wakes this Agent.</li>
+            </ol>
+            <p style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 12 }}>
+              You can't DM Discord bots directly, so the channel is your conversation surface. Treat
+              it like a DM ... only you (and the Agent) belong in it.
+            </p>
+          </div>
+          <input
+            type="text"
+            value={channelId}
+            onChange={(e) => {
+              setChannelId(e.target.value)
+            }}
+            placeholder="e.g. 1505299465865527418"
+            disabled={isPolling || setupMutation.isPending}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            style={{
+              marginTop: 8,
+              width: '100%',
+              padding: '10px 12px',
+              background: 'var(--bg-sunk)',
+              color: 'var(--text)',
+              border: `1px solid ${channelId && !channelValid ? 'var(--danger)' : 'var(--line)'}`,
+              borderRadius: 8,
+              fontSize: 13,
+              fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+            }}
+          />
+          {channelId && !channelValid && (
+            <div style={{ marginTop: 6, color: 'var(--danger)', fontSize: 12 }}>
+              Channel IDs are all-numeric Discord snowflakes (no letters, no spaces).
+            </div>
+          )}
+        </div>
+      )}
 
       {error && <div className={styles.pairError}>{error}</div>}
       {stateQuery.data?.state === 'errored' && (
@@ -935,15 +1280,21 @@ function AgentSetupPanel({
         }}
       >
         {/* Inline "why is the button disabled" hint when something is missing. */}
-        {!setupMutation.isPending && !isPolling && (!selectedAgent || token.length === 0) && (
-          <span style={{ color: 'var(--text-3)', fontSize: 12, marginRight: 'auto' }}>
-            {!selectedAgent && token.length === 0
-              ? 'Pick an Agent + paste a bot token to continue'
-              : !selectedAgent
+        {!setupMutation.isPending &&
+          !isPolling &&
+          (!selectedAgent ||
+            token.length === 0 ||
+            (channelRequired && (channelId.trim().length === 0 || !channelValid))) && (
+            <span style={{ color: 'var(--text-3)', fontSize: 12, marginRight: 'auto' }}>
+              {!selectedAgent
                 ? 'Pick an Agent above to continue'
-                : 'Paste a bot token to continue'}
-          </span>
-        )}
+                : token.length === 0
+                  ? 'Paste a bot token to continue'
+                  : channelRequired && channelId.trim().length === 0
+                    ? 'Paste a channel ID to continue'
+                    : 'Channel ID must be numeric'}
+            </span>
+          )}
         {!isPolling && (
           <Button variant="ghost" size="md" onClick={onCancel}>
             Cancel
@@ -955,7 +1306,13 @@ function AgentSetupPanel({
           onClick={() => {
             setupMutation.mutate()
           }}
-          disabled={!selectedAgent || token.length === 0 || setupMutation.isPending || isPolling}
+          disabled={
+            !selectedAgent ||
+            token.length === 0 ||
+            (channelRequired && (channelId.trim().length === 0 || !channelValid)) ||
+            setupMutation.isPending ||
+            isPolling
+          }
         >
           {setupMutation.isPending
             ? 'Setting up…'
@@ -965,7 +1322,9 @@ function AgentSetupPanel({
                 ? 'Pick an Agent first'
                 : token.length === 0
                   ? 'Paste token first'
-                  : `Connect ${selectedAgent}`}
+                  : channelRequired && channelId.trim().length === 0
+                    ? 'Paste channel ID first'
+                    : `Connect ${selectedAgent}`}
         </Button>
       </div>
     </div>
