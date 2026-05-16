@@ -6,7 +6,7 @@
       "id": "whatsapp",
       "label": "WhatsApp",
       "blurb": "Bring your Agents into WhatsApp DMs and groups. Pair via QR with your existing WhatsApp number; messages route to bound Agents; replies go out through the same socket.",
-      "icon": null,
+      "icon": "/api/v1/extensions/whatsapp/icon",
       "category": "connector",
       "auth_model": "qr_pair",
       "permissions": ["network", "tools", "notifications", "fs.scratch"],

@@ -3582,6 +3582,42 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // ------------------------------------------------------------------------
   const catalogPath = resolveCatalogPath(options.catalogPath)
 
+  // Serve per-Extension icon files. Prefers the installed copy at
+  // <home>/extensions/<id>/icon.svg; falls back to the workspace
+  // source directory listed in the catalog (so the icon is available
+  // for browse before install). Extensions can ship `icon.svg`,
+  // `icon.png`, or omit (catalog `icon` field null and the Store
+  // card renders a fallback glyph).
+  fastify.get<{ Params: { id: string } }>('/api/v1/extensions/:id/icon', async (req, reply) => {
+    const id = req.params.id
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+      return reply.status(400).send({ code: 'invalid_id' })
+    }
+    const candidates: string[] = [
+      join(home, 'extensions', id, 'icon.svg'),
+      join(home, 'extensions', id, 'icon.png'),
+    ]
+    try {
+      const catalog = await loadCatalog(catalogPath)
+      const entry = catalog.extensions.find((e) => e.id === id)
+      if (entry?.source.type === 'workspace') {
+        const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+        candidates.push(join(repoRoot, entry.source.path, 'icon.svg'))
+        candidates.push(join(repoRoot, entry.source.path, 'icon.png'))
+      }
+    } catch {
+      // Catalog unreadable; fall through with installed-only candidates.
+    }
+    for (const path of candidates) {
+      if (!existsSync(path)) continue
+      const mime = path.endsWith('.svg') ? 'image/svg+xml' : 'image/png'
+      reply.header('content-type', mime)
+      reply.header('cache-control', 'public, max-age=3600')
+      return reply.send(await readFile(path))
+    }
+    return reply.status(404).send({ code: 'icon_not_found', id })
+  })
+
   fastify.get('/api/v1/extensions/catalog', async (_req, reply) => {
     try {
       const catalog = await loadCatalog(catalogPath)

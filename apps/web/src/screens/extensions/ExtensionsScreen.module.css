@@ -23,6 +23,17 @@
   border: 1px solid var(--line-soft);
   display: grid;
   place-items: center;
+  overflow: hidden;
+}
+
+.iconImg {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  display: block;
+}
+
+.iconGlyph {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-weight: 700;
   font-size: 22px;

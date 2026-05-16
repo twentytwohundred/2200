@@ -189,7 +189,22 @@ function ExtensionCard({ entry, recentInstall, onInstall }: ExtensionCardProps):
   const installedInThisSession = recentInstall !== null
   return (
     <div className={styles.card}>
-      <div className={styles.icon}>{entry.label.slice(0, 2).toLowerCase()}</div>
+      <div className={styles.icon}>
+        {entry.icon ? (
+          <img
+            src={entry.icon}
+            alt={`${entry.label} icon`}
+            className={styles.iconImg}
+            onError={(e) => {
+              // Fall back: hide the broken image if the icon endpoint
+              // is unreachable. The card still renders with empty icon.
+              e.currentTarget.style.display = 'none'
+            }}
+          />
+        ) : (
+          <span className={styles.iconGlyph}>{entry.label.slice(0, 2).toLowerCase()}</span>
+        )}
+      </div>
       <div className={styles.body}>
         <div className={styles.title}>{entry.label}</div>
         <div className={styles.blurb}>{entry.blurb}</div>
