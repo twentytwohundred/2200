@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-16T16:00:00Z",
+  "extensions": [
+    {
+      "id": "whatsapp",
+      "label": "WhatsApp",
+      "blurb": "Bring your Agents into WhatsApp DMs and groups. Pair via QR with your existing WhatsApp number; messages route to bound Agents; replies go out through the same socket.",
+      "icon": null,
+      "category": "connector",
+      "auth_model": "qr_pair",
+      "permissions": ["network", "tools", "notifications", "fs.scratch"],
+      "tos_acknowledgment": "The WhatsApp connector uses the open-source Baileys library to connect to WhatsApp Web on your behalf. You are responsible for using it in a way that complies with WhatsApp's Terms of Service. WhatsApp's ToS forbids unofficial clients for commercial use and prohibits bulk / spam-like behavior; bot accounts that trip Meta's spam detection can be banned. By installing this connector, you accept the Baileys library's MIT license and you take on the responsibility for your own compliance with WhatsApp's Terms of Service. 2200 is not a party to that relationship.",
+      "docs_url": "https://github.com/twentytwohundred/wiki/blob/main/design/connectors/whatsapp.md",
+      "screenshots": [],
+      "current_version": "0.1.0",
+      "min_2200_version": "0.7.0",
+      "source": {
+        "type": "workspace",
+        "path": "apps/whatsapp-connector"
+      }
+    }
+  ]
+}

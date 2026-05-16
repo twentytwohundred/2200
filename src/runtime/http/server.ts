@@ -72,6 +72,8 @@ import { loadIdentity } from '../identity/loader.js'
 import { ConnectorInboundEventSchema } from '../connectors/inbound-types.js'
 import { routeInbound } from '../connectors/router.js'
 import type { IdentityFrontmatter } from '../identity/types.js'
+import { loadCatalog, type CatalogEntry } from '../extensions/catalog.js'
+import { installFromCatalogEntry, type InstallProgressEvent } from '../extensions/install-pipeline.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -143,6 +145,11 @@ export interface HttpServerOptions {
   logger?: Logger
   /** Override resolution of the static frontend dir (testing). */
   staticDir?: string
+  /**
+   * Override the Extensions catalog path. Production fetches from
+   * 2200.ai; dev falls back to the in-repo `extensions-catalog/v1.json`.
+   */
+  catalogPath?: string
 }
 
 export interface HttpServerHandle {
@@ -174,6 +181,14 @@ export interface WsEvent {
 }
 
 type AuthedRequest = FastifyRequest & { principal: Principal }
+
+function resolveCatalogPath(override?: string): string {
+  if (override) return override
+  // src/runtime/http/server.ts → ../../../extensions-catalog/v1.json
+  // dist/runtime/http/server.js → ../../../extensions-catalog/v1.json
+  const here = dirname(fileURLToPath(import.meta.url))
+  return resolvePath(here, '..', '..', '..', 'extensions-catalog', 'v1.json')
+}
 
 function resolveStaticDir(override?: string): string | null {
   // An override is only honored if it actually contains an index.html.
@@ -3552,6 +3567,89 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       })
     },
   )
+
+  // ------------------------------------------------------------------------
+  // Extension catalog + install endpoints (decision: 2026-05-16-connector-store).
+  //
+  // The catalog is served from the in-repo file in dev; production
+  // moves to a 2200.ai-hosted endpoint. Install resolves a catalog
+  // entry, copies the workspace source (or pulls npm; not yet wired),
+  // validates the manifest, runs the install hook, and broadcasts WS
+  // progress events as `extension.install_progress`.
+  // ------------------------------------------------------------------------
+  const catalogPath = resolveCatalogPath(options.catalogPath)
+
+  fastify.get('/api/v1/extensions/catalog', async (_req, reply) => {
+    try {
+      const catalog = await loadCatalog(catalogPath)
+      return catalog
+    } catch (err) {
+      log?.warn('catalog load failed', {
+        path: catalogPath,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return reply.status(500).send({
+        code: 'catalog_unavailable',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+
+  const InstallBodySchema = z.object({
+    source: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('catalog'), id: z.string().min(1) }),
+      z.object({ type: z.literal('npm'), package: z.string().min(1) }),
+      z.object({ type: z.literal('path'), path: z.string().min(1) }),
+    ]),
+    permissions_acknowledged: z.array(z.string()).default([]),
+    tos_acknowledged: z.boolean().default(false),
+  })
+
+  fastify.post('/api/v1/extensions/install', async (req, reply) => {
+    const body = InstallBodySchema.parse(req.body)
+    let entry: CatalogEntry
+    if (body.source.type === 'catalog') {
+      const requestedId = body.source.id
+      const catalog = await loadCatalog(catalogPath)
+      const found = catalog.extensions.find((e) => e.id === requestedId)
+      if (!found) {
+        return reply.status(404).send({ code: 'catalog_entry_not_found', id: requestedId })
+      }
+      entry = found
+    } else {
+      // npm + path direct-install paths are out of scope for v1; the
+      // Store UX only exercises the catalog flow.
+      return reply.status(400).send({
+        code: 'source_type_not_supported',
+        message: `source.type '${body.source.type}' not implemented in this endpoint; use catalog source`,
+      })
+    }
+
+    // Fire-and-forget the install; progress streams over WS.
+    const installId = `inst_pending_${String(Date.now())}`
+    const broadcastProgress = (event: InstallProgressEvent): void => {
+      const msg = JSON.stringify({
+        event: 'extension.install_progress',
+        occurred_at: new Date().toISOString(),
+        payload: event as unknown as Record<string, unknown>,
+      })
+      for (const c of wsClients) c.send(msg)
+    }
+    void installFromCatalogEntry({
+      entry,
+      home,
+      permissionsAcknowledged: body.permissions_acknowledged,
+      tosAcknowledged: body.tos_acknowledged,
+      onProgress: broadcastProgress,
+    }).catch((err: unknown) => {
+      log?.warn('install pipeline failed', {
+        extension_id: entry.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+
+    return reply.status(202).send({ install_id: installId, extension_id: entry.id })
+  })
 
   await fastify.register((instance, _opts, done) => {
     // `wsHandler` is added by @fastify/websocket via module augmentation.
