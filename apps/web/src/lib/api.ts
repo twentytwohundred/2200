@@ -1356,6 +1356,8 @@ export type CatalogSource =
   | { type: 'workspace'; path: string }
   | { type: 'npm'; package: string; sha256: string }
 
+export type ConnectorAccountScope = 'extension' | 'agent'
+
 export interface CatalogEntry {
   id: string
   label: string
@@ -1363,6 +1365,12 @@ export interface CatalogEntry {
   icon: string | null
   category: CatalogCategory
   auth_model: ConnectorAuthModel | null
+  /**
+   * 'extension' = pair-once-bind-to-Agent (WhatsApp Inbox);
+   * 'agent' = per-Agent bot identity (Discord, Telegram, Slack).
+   * Default 'extension' for catalog entries that omit the field.
+   */
+  account_scope: ConnectorAccountScope | null
   permissions: string[]
   tos_acknowledgment?: string
   docs_url?: string
@@ -1405,10 +1413,14 @@ export type ExtensionPairState =
 
 export interface ExtensionPairStateResponse {
   extension_id: string
+  agent_name?: string | null
   gateway_running: boolean
   state: ExtensionPairState
   qr_data_url?: string
+  /** WhatsApp Inbox: bot's WhatsApp JID after pair. */
   self_jid?: string | null
+  /** Discord: bot's Discord user (id, username) after connect. */
+  self_user?: { id: string; username: string; discriminator?: string }
   detail?: string
   account: string
   updated_at: string
@@ -1428,11 +1440,38 @@ export const apiExtensions = {
       method: 'POST',
       body,
     }),
-  pairStart: (id: string) =>
+  pairStart: (id: string, agent?: string) => {
+    const qs = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+    return request<{
+      extension_id: string
+      agent_name: string | null
+      gateway: { pid: number; port: number; started_at: string }
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/start${qs}`, { method: 'POST' })
+  },
+  pairState: (id: string, agent?: string) => {
+    const qs = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+    return request<ExtensionPairStateResponse>(
+      `/api/v1/extensions/${encodeURIComponent(id)}/pair/state${qs}`,
+    )
+  },
+  /**
+   * Per-Agent connector setup (for account_scope: 'agent' connectors).
+   * Seals credentials to the picked Agent's vault, writes the binding
+   * into identity.md, restarts the Agent so the binding loads,
+   * spawns the gateway. One call = full setup.
+   */
+  agentSetup: (
+    id: string,
+    agent: string,
+    body: { credentials: Record<string, string>; allowlist_dm?: string[] },
+  ) =>
     request<{
       extension_id: string
+      agent_name: string
       gateway: { pid: number; port: number; started_at: string }
-    }>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/start`, { method: 'POST' }),
-  pairState: (id: string) =>
-    request<ExtensionPairStateResponse>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/state`),
+      credentials_sealed: string[]
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/agents/${encodeURIComponent(agent)}/setup`, {
+      method: 'POST',
+      body,
+    }),
 }

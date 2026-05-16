@@ -22,6 +22,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ApiError,
   NetworkError,
+  api,
   apiExtensions,
   type Catalog,
   type CatalogEntry,
@@ -217,6 +218,9 @@ function ExtensionCard({ entry, recentInstall, onInstall }: ExtensionCardProps):
           ))}
         </div>
         {installedInThisSession && entry.auth_model === 'qr_pair' && <PairFlow entry={entry} />}
+        {installedInThisSession && entry.auth_model === 'bot_token' && (
+          <BotTokenPerAgentFlow entry={entry} />
+        )}
       </div>
       <div className={styles.actions}>
         <span className={styles.status} data-tone={installedInThisSession ? 'ok' : undefined}>
@@ -540,5 +544,361 @@ pnpm tsx src/gateway.ts`}
         The supervisor's "Finish install" button does this for you automatically.
       </div>
     </details>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Per-Agent install flow (account_scope: 'agent' connectors)
+// ---------------------------------------------------------------------------
+
+interface BotTokenPerAgentFlowProps {
+  entry: CatalogEntry
+}
+
+function BotTokenPerAgentFlow({ entry }: BotTokenPerAgentFlowProps): ReactElement {
+  // Track each Agent we've successfully wired up in this session. The
+  // server is the source of truth via /pair/state; this local set
+  // controls the "Connected ✓" card on the screen + lets the user
+  // queue up another Agent setup right after one finishes.
+  const [connectedAgents, setConnectedAgents] = useState<
+    Record<string, { botUsername: string; botUserId: string }>
+  >({})
+  const [addingAgent, setAddingAgent] = useState(true)
+
+  return (
+    <div className={styles.pairCallout}>
+      <div className={styles.pairHeader}>
+        <span className={styles.pairTitle}>Installed ✓ ... set up a bot per Agent</span>
+        <span className={styles.pairStatus}>{Object.keys(connectedAgents).length} connected</span>
+      </div>
+      <p style={{ margin: 0, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.55 }}>
+        Each Agent gets its own Discord bot identity. Create one Discord application per Agent,
+        paste the bot token below, and we'll wire everything up and start the bot. Repeat for every
+        Agent you want available in Discord.
+      </p>
+
+      {Object.entries(connectedAgents).map(([agent, info]) => (
+        <ConnectedAgentRow key={agent} agent={agent} botInfo={info} extensionId={entry.id} />
+      ))}
+
+      {addingAgent ? (
+        <AgentSetupPanel
+          entry={entry}
+          excludeAgents={Object.keys(connectedAgents)}
+          onConnected={(agent, info) => {
+            setConnectedAgents((prev) => ({ ...prev, [agent]: info }))
+            setAddingAgent(false)
+          }}
+          onCancel={() => {
+            if (Object.keys(connectedAgents).length > 0) setAddingAgent(false)
+          }}
+        />
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => {
+              setAddingAgent(true)
+            }}
+          >
+            + Set up another Agent
+          </Button>
+        </div>
+      )}
+
+      <AdvancedTerminalHandoff entry={entry} />
+    </div>
+  )
+}
+
+function ConnectedAgentRow({
+  agent,
+  botInfo,
+  extensionId,
+}: {
+  agent: string
+  botInfo: { botUsername: string; botUserId: string }
+  extensionId: string
+}): ReactElement {
+  // Auto-generate the OAuth invite link from the bot's user id (for
+  // Discord, the application id is the same as the bot user id). The
+  // bot needs to be in a server with the user before DMs work, so
+  // this link is load-bearing for first-message UX.
+  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(botInfo.botUserId)}&scope=bot&permissions=2048`
+  return (
+    <div className={styles.pairSuccess}>
+      <div className={styles.pairSuccessIcon}>✓</div>
+      <div style={{ flex: 1 }}>
+        <div>
+          <strong>{agent}</strong> connected as <strong>@{botInfo.botUsername}</strong>. Add the bot
+          to a server you're in (or a private test server), then DM <strong>{agent}</strong> in
+          Discord to start chatting.
+        </div>
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center' }}>
+          <a
+            href={inviteUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              background: 'var(--accent)',
+              color: 'var(--on-accent)',
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: 'none',
+            }}
+          >
+            Invite {agent}'s bot to a server →
+          </a>
+          <span style={{ color: 'var(--text-3)', fontSize: 11, fontFamily: 'monospace' }}>
+            {extensionId}/{agent}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AgentSetupPanel({
+  entry,
+  excludeAgents,
+  onConnected,
+  onCancel,
+}: {
+  entry: CatalogEntry
+  excludeAgents: string[]
+  onConnected: (agent: string, info: { botUsername: string; botUserId: string }) => void
+  onCancel: () => void
+}): ReactElement {
+  const agentsQuery = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.agents(),
+  })
+  const [selectedAgent, setSelectedAgent] = useState<string>('')
+  const [token, setToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [pollingAgent, setPollingAgent] = useState<string | null>(null)
+
+  const availableAgents = useMemo(() => {
+    if (!agentsQuery.data) return []
+    return agentsQuery.data.items
+      .filter((a) => a.archived === null)
+      .filter((a) => !excludeAgents.includes(a.name))
+  }, [agentsQuery.data, excludeAgents])
+
+  const setupMutation = useMutation({
+    mutationFn: () =>
+      apiExtensions.agentSetup(entry.id, selectedAgent, {
+        credentials: { bot_token: token },
+      }),
+    onSuccess: () => {
+      setPollingAgent(selectedAgent)
+      setError(null)
+    },
+    onError: (err) => {
+      setError(formatError(err))
+    },
+  })
+
+  const stateQuery = useQuery({
+    queryKey: ['extensionPairState', entry.id, pollingAgent],
+    queryFn: () => apiExtensions.pairState(entry.id, pollingAgent ?? undefined),
+    enabled: pollingAgent !== null,
+    refetchInterval: (q) => {
+      const data = q.state.data
+      if (!data) return 600
+      if (data.state === 'paired') return false
+      if (data.state === 'errored') return false
+      return 600
+    },
+  })
+
+  // When we transition to paired, hand off to the parent's connected
+  // list. Same for errored ... but keep showing the error so the user
+  // can re-paste a fixed token.
+  if (pollingAgent && stateQuery.data?.state === 'paired' && stateQuery.data.self_user) {
+    const info = {
+      botUsername: stateQuery.data.self_user.username,
+      botUserId: stateQuery.data.self_user.id,
+    }
+    queueMicrotask(() => {
+      onConnected(pollingAgent, info)
+    })
+  }
+
+  const isPolling = pollingAgent !== null && stateQuery.data?.state !== 'paired'
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      {/* Agent picker */}
+      <div>
+        <div className={styles.modalLabel}>Pick which Agent gets this Discord bot</div>
+        <select
+          value={selectedAgent}
+          onChange={(e) => {
+            setSelectedAgent(e.target.value)
+          }}
+          disabled={isPolling || setupMutation.isPending}
+          style={{
+            marginTop: 8,
+            width: '100%',
+            padding: '10px 12px',
+            background: 'var(--bg-sunk)',
+            color: 'var(--text)',
+            border: '1px solid var(--line)',
+            borderRadius: 8,
+            fontSize: 14,
+            fontFamily: 'inherit',
+          }}
+        >
+          <option value="">— pick an Agent —</option>
+          {availableAgents.map((a) => (
+            <option key={a.name} value={a.name}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        {availableAgents.length === 0 && agentsQuery.data && (
+          <p style={{ marginTop: 6, color: 'var(--text-3)', fontSize: 12 }}>
+            All Agents on this instance already have a Discord bot wired up. Spawn another Agent
+            first if you want more bots.
+          </p>
+        )}
+      </div>
+
+      {/* Walkthrough */}
+      <div className={styles.advancedBody}>
+        <strong style={{ color: 'var(--text)' }}>
+          Get a Discord bot token for {selectedAgent || 'this Agent'}:
+        </strong>
+        <ol style={{ marginTop: 10, paddingLeft: 20, lineHeight: 1.7 }}>
+          <li>
+            Open the{' '}
+            <a
+              href="https://discord.com/developers/applications"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--accent)' }}
+            >
+              Discord Developer Portal
+            </a>{' '}
+            in a new tab. (Sign in with your Discord account if prompted.)
+          </li>
+          <li>
+            Click <strong>New Application</strong> in the top right.
+          </li>
+          <li>
+            Name it after your Agent
+            {selectedAgent ? (
+              <>
+                {' '}
+                ... e.g. <code>{selectedAgent}</code>
+              </>
+            ) : null}
+            . Accept the developer terms. Click <strong>Create</strong>.
+          </li>
+          <li>
+            In the left sidebar of the new application, click <strong>Bot</strong>.
+          </li>
+          <li>
+            Under <strong>TOKEN</strong>, click <strong>Reset Token</strong>. Confirm the two
+            prompts (and enter your 2FA code if prompted). Click <strong>Copy</strong> on the token
+            that appears.
+          </li>
+          <li>Paste the token into the field below.</li>
+        </ol>
+        <p style={{ marginTop: 12, color: 'var(--text-3)', fontSize: 12, lineHeight: 1.6 }}>
+          The token is sealed directly into{' '}
+          {selectedAgent ? <strong>{selectedAgent}</strong> : 'the Agent'}'s private vault. 2200
+          never logs, transmits, or stores it in any other place. You can revoke + rotate at any
+          time from the same Bot page in the Developer Portal.
+        </p>
+      </div>
+
+      {/* Token input */}
+      <div>
+        <div className={styles.modalLabel}>Bot token</div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <input
+            type={showToken ? 'text' : 'password'}
+            value={token}
+            onChange={(e) => {
+              setToken(e.target.value)
+            }}
+            placeholder="paste the bot token here"
+            disabled={isPolling || setupMutation.isPending}
+            style={{
+              flex: 1,
+              padding: '10px 12px',
+              background: 'var(--bg-sunk)',
+              color: 'var(--text)',
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              fontSize: 13,
+              fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+            }}
+          />
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={() => {
+              setShowToken((s) => !s)
+            }}
+            disabled={isPolling || setupMutation.isPending}
+          >
+            {showToken ? 'Hide' : 'Show'}
+          </Button>
+        </div>
+      </div>
+
+      {error && <div className={styles.pairError}>{error}</div>}
+      {stateQuery.data?.state === 'errored' && (
+        <div className={styles.pairError}>
+          Bot login failed: {stateQuery.data.detail ?? 'unknown error'}. Token rejected? Reset it in
+          the Developer Portal and try again.
+        </div>
+      )}
+
+      {isPolling && (
+        <div
+          style={{
+            padding: '10px 12px',
+            background: 'var(--bg-sunk)',
+            borderRadius: 8,
+            color: 'var(--text-2)',
+            fontSize: 13,
+          }}
+        >
+          Wiring up {pollingAgent}'s bot ... ({stateQuery.data?.state ?? 'starting'})
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        {!isPolling && (
+          <Button variant="ghost" size="md" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+        <Button
+          variant="primary"
+          size="md"
+          onClick={() => {
+            setupMutation.mutate()
+          }}
+          disabled={!selectedAgent || token.length === 0 || setupMutation.isPending || isPolling}
+        >
+          {setupMutation.isPending
+            ? 'Setting up…'
+            : isPolling
+              ? 'Connecting…'
+              : `Connect ${selectedAgent || 'bot'}`}
+        </Button>
+      </div>
+    </div>
   )
 }
