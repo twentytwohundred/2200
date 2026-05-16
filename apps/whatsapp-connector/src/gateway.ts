@@ -27,7 +27,7 @@
  * Reference: wiki/decisions/2026-05-16-connector-extensions.md
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 
 import makeWASocket, {
@@ -45,6 +45,13 @@ interface GatewayEnv {
   authDir: string
   account: string
   supervisorBearer: string | null
+  /**
+   * Absolute path to `<home>/state/extensions/whatsapp/gateway.json`.
+   * The gateway writes its port here at startup so the runtime's
+   * `whatsapp_send` tool can find it. Optional: if unset, the gateway
+   * does not advertise (useful for dev runs that only test inbound).
+   */
+  gatewayInfoPath: string | null
 }
 
 const CONNECTOR_ID = 'whatsapp'
@@ -61,12 +68,48 @@ function readEnv(): GatewayEnv {
   const authDirRaw = process.env['AUTH_DIR']
   if (!authDirRaw) throw new Error('AUTH_DIR required')
   const authDir = isAbsolute(authDirRaw) ? authDirRaw : resolvePath(process.cwd(), authDirRaw)
+  const gatewayInfoRaw = process.env['GATEWAY_INFO_PATH']
+  const gatewayInfoPath = gatewayInfoRaw
+    ? isAbsolute(gatewayInfoRaw)
+      ? gatewayInfoRaw
+      : resolvePath(process.cwd(), gatewayInfoRaw)
+    : null
   return {
     supervisorUrl,
     gatewayPort,
     authDir,
     account: process.env['CONNECTOR_ACCOUNT'] ?? 'default',
     supervisorBearer: process.env['SUPERVISOR_BEARER'] ?? null,
+    gatewayInfoPath,
+  }
+}
+
+async function writeGatewayInfo(env: GatewayEnv): Promise<void> {
+  if (!env.gatewayInfoPath) return
+  const dir = env.gatewayInfoPath.slice(0, env.gatewayInfoPath.lastIndexOf('/'))
+  if (dir) await mkdir(dir, { recursive: true })
+  await writeFile(
+    env.gatewayInfoPath,
+    JSON.stringify(
+      {
+        port: env.gatewayPort,
+        account: env.account,
+        pid: process.pid,
+        started_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  )
+  console.error(`[whatsapp-gateway] info written to ${env.gatewayInfoPath}`)
+}
+
+async function clearGatewayInfo(env: GatewayEnv): Promise<void> {
+  if (!env.gatewayInfoPath) return
+  try {
+    await unlink(env.gatewayInfoPath)
+  } catch {
+    // best effort
   }
 }
 
@@ -232,6 +275,7 @@ async function run(): Promise<void> {
   let selfJid: string | null = null
 
   startOutboundListener(env, () => sock)
+  await writeGatewayInfo(env)
 
   const connect = (): void => {
     const next = makeWASocket({
@@ -287,16 +331,14 @@ async function run(): Promise<void> {
 
   connect()
 
-  process.on('SIGTERM', () => {
-    console.error('[whatsapp-gateway] SIGTERM; closing socket')
+  const shutdown = async (signal: string): Promise<void> => {
+    console.error(`[whatsapp-gateway] ${signal}; closing socket`)
     sock?.end(undefined)
+    await clearGatewayInfo(env)
     process.exit(0)
-  })
-  process.on('SIGINT', () => {
-    console.error('[whatsapp-gateway] SIGINT; closing socket')
-    sock?.end(undefined)
-    process.exit(0)
-  })
+  }
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
 }
 
 run().catch((err: unknown) => {
