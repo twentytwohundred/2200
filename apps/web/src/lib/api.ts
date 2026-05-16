@@ -1343,3 +1343,213 @@ export interface PubMessage {
 
 /** Internal handle for tests and hooks that need to share the request helper. */
 export { request as __request }
+
+// ---------------------------------------------------------------------------
+// Extensions catalog + install (decision: 2026-05-16-connector-store).
+// ---------------------------------------------------------------------------
+
+export type ConnectorAuthModel = 'qr_pair' | 'oauth' | 'bot_token' | 'api_key'
+
+export type CatalogCategory = 'connector' | 'voice' | 'skill' | 'model_provider'
+
+export type CatalogSource =
+  | { type: 'workspace'; path: string }
+  | { type: 'npm'; package: string; sha256: string }
+
+export type ConnectorAccountScope = 'extension' | 'agent'
+
+export interface CatalogEntry {
+  id: string
+  label: string
+  blurb: string
+  icon: string | null
+  category: CatalogCategory
+  auth_model: ConnectorAuthModel | null
+  /**
+   * 'extension' = pair-once-bind-to-Agent (WhatsApp Inbox);
+   * 'agent' = per-Agent bot identity (Discord, Telegram, Slack).
+   * Default 'extension' for catalog entries that omit the field.
+   */
+  account_scope: ConnectorAccountScope | null
+  permissions: string[]
+  tos_acknowledgment?: string
+  docs_url?: string
+  screenshots: string[]
+  current_version: string
+  min_2200_version?: string
+  source: CatalogSource
+}
+
+export interface Catalog {
+  schema_version: 1
+  generated_at: string
+  extensions: CatalogEntry[]
+}
+
+export type ExtensionInstallStage =
+  | 'resolving'
+  | 'copying'
+  | 'validating_manifest'
+  | 'running_install_hook'
+  | 'completed'
+  | 'failed'
+
+export interface ExtensionInstallProgressPayload {
+  install_id: string
+  extension_id: string
+  stage: ExtensionInstallStage
+  percent: number
+  message?: string
+  error_code?: string
+}
+
+export type ExtensionPairState =
+  | 'idle'
+  | 'awaiting_qr_scan'
+  | 'connecting'
+  | 'paired'
+  | 'disconnected'
+  | 'errored'
+
+export interface ExtensionPairStateResponse {
+  extension_id: string
+  agent_name?: string | null
+  gateway_running: boolean
+  state: ExtensionPairState
+  qr_data_url?: string
+  /** WhatsApp Inbox: bot's WhatsApp JID after pair. */
+  self_jid?: string | null
+  /** Discord: bot's Discord user (id, username) after connect. */
+  self_user?: { id: string; username: string; discriminator?: string }
+  detail?: string
+  account: string
+  updated_at: string
+}
+
+/**
+ * Installed Extensions response (the "Installed" tab in the Store).
+ * Each item is an Extension that has a manifest on disk under
+ * `<home>/extensions/<id>/`, plus the per-Agent bindings reading from
+ * each Identity's `connectors` block + live gateway state.
+ */
+export interface InstalledExtensionBinding {
+  agent: string
+  account: string
+  bot_user_id?: string
+  bot_username?: string
+  gateway_running: boolean
+  pair_state: ExtensionPairState
+  pair_state_detail?: string
+  pair_state_updated_at?: string
+  allowlist_dm: string[]
+  /**
+   * Discord channel allowlist (and equivalent for future per-channel
+   * connectors). For Discord per-Agent: a list of channel IDs the
+   * Agent's bot is pinned to ... messages in any of these channels
+   * wake the Agent without needing an @-mention.
+   */
+  allowlist_group: string[]
+  dm_policy: 'open' | 'allowlist' | 'disabled' | 'pairing'
+  group_policy: 'open' | 'allowlist' | 'disabled'
+  require_mention: boolean
+}
+
+export interface InstalledExtensionGatewaySummary {
+  running: boolean
+  pair_state: ExtensionPairState
+  self_jid?: string | null
+}
+
+export interface InstalledExtensionEntry {
+  id: string
+  manifest: {
+    id: string
+    label?: string
+    name?: string
+    version?: string
+    description?: string
+    permissions?: string[]
+    [k: string]: unknown
+  }
+  bindings: InstalledExtensionBinding[]
+  extension_gateway?: InstalledExtensionGatewaySummary
+}
+
+export const apiExtensions = {
+  catalog: () => request<Catalog>('/api/v1/extensions/catalog'),
+  installed: () => request<{ items: InstalledExtensionEntry[] }>('/api/v1/extensions/installed'),
+  install: (body: {
+    source:
+      | { type: 'catalog'; id: string }
+      | { type: 'npm'; package: string }
+      | { type: 'path'; path: string }
+    permissions_acknowledged: string[]
+    tos_acknowledged: boolean
+  }) =>
+    request<{ install_id: string; extension_id: string }>('/api/v1/extensions/install', {
+      method: 'POST',
+      body,
+    }),
+  pairStart: (id: string, agent?: string) => {
+    const qs = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+    return request<{
+      extension_id: string
+      agent_name: string | null
+      gateway: { pid: number; port: number; started_at: string }
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/pair/start${qs}`, { method: 'POST' })
+  },
+  pairState: (id: string, agent?: string) => {
+    const qs = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+    return request<ExtensionPairStateResponse>(
+      `/api/v1/extensions/${encodeURIComponent(id)}/pair/state${qs}`,
+    )
+  },
+  /**
+   * Per-Agent connector setup (for account_scope: 'agent' connectors).
+   * Seals credentials to the picked Agent's vault, writes the binding
+   * into identity.md, restarts the Agent so the binding loads,
+   * spawns the gateway. One call = full setup.
+   */
+  agentSetup: (
+    id: string,
+    agent: string,
+    body: {
+      credentials: Record<string, string>
+      allowlist_dm?: string[]
+      /**
+       * Channel allowlist. Required for Discord (the per-Agent bot
+       * is pinned to one or more channels; messages in those
+       * channels wake the Agent without an @-mention).
+       */
+      allowlist_group?: string[]
+    },
+  ) =>
+    request<{
+      extension_id: string
+      agent_name: string
+      gateway: { pid: number; port: number; started_at: string }
+      credentials_sealed: string[]
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/agents/${encodeURIComponent(agent)}/setup`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Update only the policy + allowlist block on an existing binding
+   * (no credential change, no Agent restart). Used by the Configure
+   * view to change the Discord channel without re-pasting the token.
+   */
+  policyUpdate: (
+    id: string,
+    agent: string,
+    body: { allowlist_dm?: string[]; allowlist_group?: string[] },
+  ) =>
+    request<{
+      extension_id: string
+      agent_name: string
+      allowlist: { dm: string[]; group: string[] }
+      policies: { dm_policy: string; group_policy: string; require_mention: boolean }
+    }>(`/api/v1/extensions/${encodeURIComponent(id)}/agents/${encodeURIComponent(agent)}/policy`, {
+      method: 'PATCH',
+      body,
+    }),
+}

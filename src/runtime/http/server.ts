@@ -69,6 +69,16 @@ import {
   type ScheduleEntry,
 } from '../scheduler/schedule.js'
 import { loadIdentity } from '../identity/loader.js'
+import { ConnectorInboundEventSchema } from '../connectors/inbound-types.js'
+import { routeInbound } from '../connectors/router.js'
+import type { IdentityFrontmatter } from '../identity/types.js'
+import { loadCatalog, type CatalogEntry } from '../extensions/catalog.js'
+import {
+  installFromCatalogEntry,
+  type InstallProgressEvent,
+} from '../extensions/install-pipeline.js'
+import { GatewayManager } from '../connectors/gateway-manager.js'
+import { upsertConnectorBinding } from '../identity/binding-writer.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -89,6 +99,7 @@ import {
 import { listSkills } from '../skills/registry.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask, type TaskRecord, type TaskState } from '../agent/task/types.js'
+import { buildContinuationSection } from '../agent/task/continuation.js'
 import { newTaskId } from '../util/id.js'
 import { ChatStore, type ChatMessage } from '../agent/chat/store.js'
 import {
@@ -140,6 +151,11 @@ export interface HttpServerOptions {
   logger?: Logger
   /** Override resolution of the static frontend dir (testing). */
   staticDir?: string
+  /**
+   * Override the Extensions catalog path. Production fetches from
+   * 2200.ai; dev falls back to the in-repo `extensions-catalog/v1.json`.
+   */
+  catalogPath?: string
 }
 
 export interface HttpServerHandle {
@@ -171,6 +187,14 @@ export interface WsEvent {
 }
 
 type AuthedRequest = FastifyRequest & { principal: Principal }
+
+function resolveCatalogPath(override?: string): string {
+  if (override) return override
+  // src/runtime/http/server.ts → ../../../extensions-catalog/v1.json
+  // dist/runtime/http/server.js → ../../../extensions-catalog/v1.json
+  const here = dirname(fileURLToPath(import.meta.url))
+  return resolvePath(here, '..', '..', '..', 'extensions-catalog', 'v1.json')
+}
 
 function resolveStaticDir(override?: string): string | null {
   // An override is only honored if it actually contains an index.html.
@@ -285,6 +309,30 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     if (req.url.startsWith('/api/v1/ws')) {
       // The WS upgrade is authenticated separately below. Pre-handler
       // does not see the upgraded socket.
+      return
+    }
+    // Extension icon endpoint is public ... `<img src>` tags can't
+    // send Authorization headers, and icons are branding assets, not
+    // sensitive data. Match the supervisor's static-frontend posture.
+    if (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/icon$/.test(req.url)) {
+      return
+    }
+    // Gateway → supervisor pair-state push is loopback-only (the
+    // gateway child process runs on the same host as the supervisor).
+    // The GET counterpart stays authenticated.
+    if (
+      req.method === 'POST' &&
+      /^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url)
+    ) {
+      return
+    }
+    // Connector gateways post their inbound events here. Same
+    // loopback-only rationale as pair/state; the substrate-side
+    // endpoint validates the Extension manifest carefully.
+    if (
+      req.method === 'POST' &&
+      /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url)
+    ) {
       return
     }
     const principal = await authenticate(req)
@@ -1975,22 +2023,60 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       const taskBody = buildChatTaskBody(recent as ChatMessage[], body.body, req.params.name)
 
       const taskStore = new TaskStore(home, req.params.name)
-      const taskId = newTaskId()
-      const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
       const idempotency = body.mode ?? 'destructive'
-      const task = newPendingTask({
-        id: taskId,
-        agent: req.params.name,
-        title,
-        body: taskBody,
-        priority: 0,
-        idempotency,
-        // Multi-chat endpoint: the chat_id is the path param. Sets
-        // task.source so surface-aware tools (credential_request) can
-        // verify this task originated from a 1:1 chat.
-        source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
+
+      // Continuation primitive (decision:
+      // 2026-05-16-task-continuation-primitive): if this agent has a
+      // task parked on a wait_for matching this chat thread + sender,
+      // resume it instead of spawning a fresh task. The chat
+      // continuity case is the user replying after the Agent called
+      // `await_response` with source_kind='chat' (e.g. "I'll come back
+      // when I have an answer from X" then the user replied first).
+      const waitingChat = await taskStore.findWaiting({
+        kind: 'chat',
+        chat_id: req.params.chatId,
       })
-      await taskStore.save(task)
+      let taskId: string
+      if (waitingChat) {
+        const continuation = buildContinuationSection({
+          source_kind: 'chat',
+          sender_label: 'user',
+          context_note: waitingChat.frontmatter.wait_for?.context_note ?? '',
+          body_text: body.body,
+          reply_hint:
+            'Reply via `chat_send` ... your assistant reply will be appended automatically when the task completes.',
+        })
+        const resumed = await taskStore.updateRecord(waitingChat.frontmatter.id, (rec) => ({
+          frontmatter: {
+            ...rec.frontmatter,
+            state: 'pending',
+            wait_for: null,
+          },
+          body: `${rec.body}\n\n${continuation}`,
+        }))
+        taskId = resumed?.frontmatter.id ?? newTaskId()
+        log?.info('chat inbound → resumed parked task', {
+          agent: req.params.name,
+          task_id: taskId,
+          chat_id: req.params.chatId,
+        })
+      } else {
+        taskId = newTaskId()
+        const title = body.body.slice(0, 60).replace(/\s+/g, ' ').trim() || 'chat message from web'
+        const task = newPendingTask({
+          id: taskId,
+          agent: req.params.name,
+          title,
+          body: taskBody,
+          priority: 0,
+          idempotency,
+          // Multi-chat endpoint: the chat_id is the path param. Sets
+          // task.source so surface-aware tools (credential_request) can
+          // verify this task originated from a 1:1 chat.
+          source: { kind: 'chat', chat_id: req.params.chatId, message_id: userMsg.id },
+        })
+        await taskStore.save(task)
+      }
 
       void watchAndAppendChatThreadReply({
         home,
@@ -3433,6 +3519,843 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // handler shape but the TS surface is stricter; using `register` with an
   // inline plugin lets us cast the socket precisely without polluting the
   // public Fastify types.
+  // ------------------------------------------------------------------------
+  // Connector inbound endpoint (decision: 2026-05-16-connector-extensions).
+  //
+  // Per-connector gateway processes (the long-lived child processes the
+  // supervisor spawns for WhatsApp / Slack / Discord / Telegram
+  // Extensions) POST normalized inbound events here. The handler resolves
+  // which Agents have a binding to the connector, applies their per-
+  // binding allowlist + policy, and creates synthetic tasks on each Agent
+  // that passes. No auth in v1: the endpoint is loopback-only and the
+  // gateways run on the same host as the supervisor. Hardening to a
+  // shared install-time secret is deferred to the install-flow work.
+  // ------------------------------------------------------------------------
+  fastify.post<{ Params: { connector_id: string } }>(
+    '/api/v1/connectors/:connector_id/inbound',
+    async (req, reply) => {
+      const parsed = ConnectorInboundEventSchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ code: 'invalid_inbound_event', errors: parsed.error.issues })
+      }
+      const event = parsed.data
+      if (event.connector_id !== req.params.connector_id) {
+        return reply.status(400).send({
+          code: 'connector_id_mismatch',
+          path: req.params.connector_id,
+          body: event.connector_id,
+        })
+      }
+      const snap = supervisor.snapshot()
+      const identities: { agent: string; frontmatter: IdentityFrontmatter }[] = []
+      for (const [name, rec] of Object.entries(snap.agents)) {
+        try {
+          const id = await loadIdentity(rec.identity_path)
+          identities.push({ agent: name, frontmatter: id.frontmatter })
+        } catch {
+          // Identity unreadable; skip this Agent for routing purposes.
+        }
+      }
+      const decisions = routeInbound({ event, identities })
+      const passed = decisions.filter((d) => d.kind === 'pass')
+      const paired = decisions.filter((d) => d.kind === 'pair')
+      const blocked = decisions.filter((d) => d.kind === 'block')
+      const createdTasks: { agent: string; task_id: string; resumed: boolean }[] = []
+      for (const decision of passed) {
+        try {
+          const taskStore = new TaskStore(home, decision.agent)
+          const senderLabel = event.sender.display_name ?? event.sender.id
+          const conversationLabel = event.conversation.display_name ?? event.conversation.id
+
+          // Continuation primitive (decision:
+          // 2026-05-16-task-continuation-primitive): before creating a
+          // fresh task, see if this Agent has a task parked on a
+          // wait_for that matches this inbound. If so, resume that task
+          // with the inbound appended as continuation context instead
+          // of starting a fresh isolated task.
+          const waiting = await taskStore.findWaiting({
+            kind: 'connector',
+            connector_id: event.connector_id,
+            conversation_id: event.conversation.id,
+            sender: event.sender.id,
+          })
+          if (waiting) {
+            const continuation = buildContinuationSection({
+              source_kind: 'connector',
+              sender_label: senderLabel,
+              context_note: waiting.frontmatter.wait_for?.context_note ?? '',
+              body_text: event.text ?? '(media-only message)',
+              attachments: event.attachments.map(
+                (a) => `${a.kind}: ${a.url}${a.caption ? ` (${a.caption})` : ''}`,
+              ),
+              reply_hint: `Reply via \`${event.connector_id}_send\` with \`to: "${event.conversation.id}"\`.`,
+            })
+            const resumed = await taskStore.updateRecord(waiting.frontmatter.id, (rec) => ({
+              frontmatter: {
+                ...rec.frontmatter,
+                state: 'pending',
+                wait_for: null,
+              },
+              body: `${rec.body}\n\n${continuation}`,
+            }))
+            if (resumed) {
+              createdTasks.push({
+                agent: decision.agent,
+                task_id: waiting.frontmatter.id,
+                resumed: true,
+              })
+              log?.info('connector inbound → resumed parked task', {
+                connector_id: event.connector_id,
+                agent: decision.agent,
+                task_id: waiting.frontmatter.id,
+                conversation: event.conversation.id,
+                sender: event.sender.id,
+              })
+              continue
+            }
+          }
+
+          const taskId = newTaskId()
+          const titleBody = event.text ?? '(media-only message)'
+          const title = titleBody.slice(0, 60).replace(/\s+/g, ' ').trim() || 'connector message'
+          const taskBody = [
+            `Incoming ${event.connector_id} ${event.conversation.kind} from **${senderLabel}** in conversation \`${conversationLabel}\`.`,
+            '',
+            event.text ?? '_(media or non-text content; see attachments below)_',
+            event.attachments.length > 0
+              ? `\n\nAttachments:\n${event.attachments
+                  .map((a) => `- ${a.kind}: ${a.url}${a.caption ? ` (${a.caption})` : ''}`)
+                  .join('\n')}`
+              : '',
+            '',
+            `Reply via \`${event.connector_id}_send\` with \`to: "${event.conversation.id}"\`.`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+          const task = newPendingTask({
+            id: taskId,
+            agent: decision.agent,
+            title,
+            body: taskBody,
+            priority: 0,
+            idempotency: 'destructive',
+            source: {
+              kind: 'connector',
+              connector_id: event.connector_id,
+              conversation_id: event.conversation.id,
+              sender_id: event.sender.id,
+              account: event.account,
+              ...(event.sender.display_name !== undefined
+                ? { sender_display_name: event.sender.display_name }
+                : {}),
+            },
+          })
+          await taskStore.save(task)
+          createdTasks.push({ agent: decision.agent, task_id: taskId, resumed: false })
+          log?.info('connector inbound → task created', {
+            connector_id: event.connector_id,
+            agent: decision.agent,
+            task_id: taskId,
+            conversation: event.conversation.id,
+            sender: event.sender.id,
+          })
+        } catch (err) {
+          log?.warn('connector inbound → failed to enqueue task', {
+            agent: decision.agent,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      // Pairing requests (v1: log only; operator-notification fan-out is a
+      // follow-on once the pairing-approval UI lands).
+      for (const p of paired) {
+        log?.info('connector inbound → pairing required (no task created)', {
+          connector_id: event.connector_id,
+          agent: p.agent,
+          sender: event.sender.id,
+        })
+      }
+      // Visibility for misconfiguration: log blocked decisions so
+      // operator-side issues (account mismatch, missing mention,
+      // disabled policy) surface instead of being silently dropped.
+      // mention_required + group_not_allowlisted are noisy and
+      // expected on chatty servers; suppress them at info level.
+      for (const b of blocked) {
+        if (b.reason === 'mention_required' || b.reason === 'group_not_allowlisted') {
+          continue
+        }
+        log?.info('connector inbound → blocked', {
+          connector_id: event.connector_id,
+          agent: b.agent,
+          reason: b.reason,
+          event_account: event.account,
+          binding_account: b.binding.account,
+          sender: event.sender.id,
+        })
+      }
+      return reply.status(202).send({
+        passed: createdTasks,
+        paired: paired.map((p) => ({ agent: p.agent, reason: p.reason })),
+        blocked: blocked.map((b) => ({ agent: b.agent, reason: b.reason })),
+      })
+    },
+  )
+
+  // ------------------------------------------------------------------------
+  // Extension catalog + install endpoints (decision: 2026-05-16-connector-store).
+  //
+  // The catalog is served from the in-repo file in dev; production
+  // moves to a 2200.ai-hosted endpoint. Install resolves a catalog
+  // entry, copies the workspace source (or pulls npm; not yet wired),
+  // validates the manifest, runs the install hook, and broadcasts WS
+  // progress events as `extension.install_progress`.
+  // ------------------------------------------------------------------------
+  const catalogPath = resolveCatalogPath(options.catalogPath)
+
+  // Connector gateway processes are managed by the supervisor when
+  // the operator clicks "Finish install" in the Store UI. Gateway
+  // child processes POST their pair state (qr image, paired,
+  // disconnected) to /pair/state below; the web UI polls /pair/state
+  // for live updates.
+  const gatewayManager = new GatewayManager({
+    home,
+    supervisorUrl: `http://127.0.0.1:${String(port)}`,
+    catalogPath,
+  })
+
+  interface PairState {
+    state: 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored' | 'idle'
+    qr_data_url?: string
+    self_jid?: string | null
+    self_user?: { id: string; username: string; discriminator?: string }
+    detail?: string
+    account: string
+    updated_at: string
+  }
+  // Keyed by `${extension_id}::${agent_or_extension}` so per-Agent
+  // (Discord) and per-Extension (WhatsApp Inbox) pair states don't
+  // collide. agent_or_extension is the agent name for per-Agent
+  // connectors, '_extension' for per-Extension scope.
+  const pairStates = new Map<string, PairState>()
+  const pairKey = (id: string, agent: string | null): string => `${id}::${agent ?? '_extension'}`
+
+  // Serve per-Extension icon files. Prefers the installed copy at
+  // <home>/extensions/<id>/icon.svg; falls back to the workspace
+  // source directory listed in the catalog (so the icon is available
+  // for browse before install). Extensions can ship `icon.svg`,
+  // `icon.png`, or omit (catalog `icon` field null and the Store
+  // card renders a fallback glyph).
+  fastify.get<{ Params: { id: string } }>('/api/v1/extensions/:id/icon', async (req, reply) => {
+    const id = req.params.id
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+      return reply.status(400).send({ code: 'invalid_id' })
+    }
+    const candidates: string[] = [
+      join(home, 'extensions', id, 'icon.svg'),
+      join(home, 'extensions', id, 'icon.png'),
+    ]
+    try {
+      const catalog = await loadCatalog(catalogPath)
+      const entry = catalog.extensions.find((e) => e.id === id)
+      if (entry?.source.type === 'workspace') {
+        const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+        candidates.push(join(repoRoot, entry.source.path, 'icon.svg'))
+        candidates.push(join(repoRoot, entry.source.path, 'icon.png'))
+      }
+    } catch {
+      // Catalog unreadable; fall through with installed-only candidates.
+    }
+    for (const path of candidates) {
+      if (!existsSync(path)) continue
+      const mime = path.endsWith('.svg') ? 'image/svg+xml' : 'image/png'
+      reply.header('content-type', mime)
+      reply.header('cache-control', 'public, max-age=3600')
+      return reply.send(await readFile(path))
+    }
+    return reply.status(404).send({ code: 'icon_not_found', id })
+  })
+
+  // List installed Extensions + their per-Agent bindings + gateway
+  // state. This is what the Store's "Installed" tab + Configure view
+  // reads to render persistent state across page reloads.
+  fastify.get('/api/v1/extensions/installed', async (_req, reply) => {
+    const extensionsRoot = join(home, 'extensions')
+    interface InstalledBinding {
+      agent: string
+      account: string
+      bot_user_id?: string
+      bot_username?: string
+      gateway_running: boolean
+      pair_state: string
+      pair_state_detail?: string
+      pair_state_updated_at?: string
+      allowlist_dm: string[]
+      allowlist_group: string[]
+      dm_policy: 'open' | 'allowlist' | 'disabled' | 'pairing'
+      group_policy: 'open' | 'allowlist' | 'disabled'
+      require_mention: boolean
+    }
+    interface InstalledExtension {
+      id: string
+      manifest: Record<string, unknown>
+      bindings: InstalledBinding[]
+      // For extension-scope connectors (WhatsApp Inbox), gateway state
+      // lives at the extension level (no per-Agent breakdown).
+      extension_gateway?: {
+        running: boolean
+        pair_state: string
+        self_jid?: string | null
+      }
+    }
+    const items: InstalledExtension[] = []
+    let extDirs: string[]
+    try {
+      const { readdir } = await import('node:fs/promises')
+      const entries = await readdir(extensionsRoot, { withFileTypes: true })
+      extDirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name)
+    } catch {
+      return reply.send({ items: [] })
+    }
+
+    const snap = supervisor.snapshot()
+    const allIdentities: { agent: string; frontmatter: IdentityFrontmatter }[] = []
+    for (const [name, rec] of Object.entries(snap.agents)) {
+      try {
+        const id = await loadIdentity(rec.identity_path)
+        allIdentities.push({ agent: name, frontmatter: id.frontmatter })
+      } catch {
+        // best effort
+      }
+    }
+
+    for (const dir of extDirs) {
+      let manifest: Record<string, unknown>
+      try {
+        const { readFile: rf } = await import('node:fs/promises')
+        const text = await rf(join(extensionsRoot, dir, 'manifest.json'), 'utf-8')
+        manifest = JSON.parse(text) as Record<string, unknown>
+      } catch {
+        // skip non-Extension directories
+        continue
+      }
+      const bindings: InstalledBinding[] = []
+      for (const { agent, frontmatter } of allIdentities) {
+        const b = frontmatter.connectors.find((c) => c.connector_id === dir)
+        if (!b) continue
+        const ps = pairStates.get(pairKey(dir, agent))
+        const binding: InstalledBinding = {
+          agent,
+          account: b.account,
+          gateway_running: gatewayManager.isRunning(dir, agent),
+          pair_state: ps?.state ?? 'idle',
+          allowlist_dm: b.allowlist.dm,
+          allowlist_group: b.allowlist.group,
+          dm_policy: b.policies.dm_policy,
+          group_policy: b.policies.group_policy,
+          require_mention: b.policies.require_mention,
+        }
+        if (ps?.self_user) {
+          binding.bot_user_id = ps.self_user.id
+          binding.bot_username = ps.self_user.username
+        }
+        if (ps?.detail) binding.pair_state_detail = ps.detail
+        if (ps?.updated_at) binding.pair_state_updated_at = ps.updated_at
+        bindings.push(binding)
+      }
+      const item: InstalledExtension = { id: dir, manifest, bindings }
+      // Extension-scope summary (WhatsApp Inbox).
+      const extPs = pairStates.get(pairKey(dir, null))
+      if (extPs) {
+        item.extension_gateway = {
+          running: gatewayManager.isRunning(dir, null),
+          pair_state: extPs.state,
+          ...(extPs.self_jid !== undefined ? { self_jid: extPs.self_jid } : {}),
+        }
+      }
+      items.push(item)
+    }
+    return reply.send({ items })
+  })
+
+  fastify.get('/api/v1/extensions/catalog', async (_req, reply) => {
+    try {
+      const catalog = await loadCatalog(catalogPath)
+      return catalog
+    } catch (err) {
+      log?.warn('catalog load failed', {
+        path: catalogPath,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return reply.status(500).send({
+        code: 'catalog_unavailable',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+
+  // -- pair flow (connector Extensions) ----------------------------------
+  // The Store UI's "Finish install" CTA hits POST /pair/start, which
+  // spawns the gateway child process. The gateway then POSTs its pair
+  // state (qr | connecting | paired | disconnected) to /pair/state as
+  // events fire. The Store polls GET /pair/state every ~500ms during
+  // active pairing.
+  //
+  // POST /pair/state is the gateway → supervisor channel. Marked public
+  // in the auth pre-handler regex (loopback-only in practice; gateway
+  // runs on the same host).
+
+  // Extract the optional agent query param. Per-Agent connectors
+  // pass `?agent=simon`; per-Extension (WhatsApp Inbox) omits.
+  function readAgentParam(query: unknown): string | null {
+    if (typeof query !== 'object' || query === null) return null
+    const q = query as Record<string, unknown>
+    const a = q['agent']
+    if (typeof a !== 'string' || a.length === 0) return null
+    if (!/^[a-z][a-z0-9_-]*$/.test(a)) {
+      throw new Error('agent name must be lowercase letter + lowercase / digits / -_')
+    }
+    return a
+  }
+
+  fastify.post<{ Params: { id: string }; Querystring: { agent?: string } }>(
+    '/api/v1/extensions/:id/pair/start',
+    async (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      let agent: string | null
+      try {
+        agent = readAgentParam(req.query)
+      } catch (err) {
+        return reply.status(400).send({
+          code: 'invalid_agent',
+          message: err instanceof Error ? err.message : 'invalid agent',
+        })
+      }
+      try {
+        const handle = await gatewayManager.start(id, agent)
+        const seedKey = pairKey(id, agent)
+        if (!pairStates.has(seedKey)) {
+          pairStates.set(seedKey, {
+            state: 'connecting',
+            account: agent ?? 'default',
+            updated_at: new Date().toISOString(),
+          })
+        }
+        return await reply.status(200).send({
+          extension_id: handle.extension_id,
+          agent_name: handle.agent_name,
+          gateway: { pid: handle.pid, port: handle.port, started_at: handle.started_at },
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'gateway_start_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    },
+  )
+
+  const PairStateBodySchema = z.object({
+    state: z.enum(['awaiting_qr_scan', 'connecting', 'paired', 'disconnected', 'errored']),
+    qr_data_url: z.string().optional(),
+    self_jid: z.string().nullable().optional(),
+    self_user: z
+      .object({
+        id: z.string(),
+        username: z.string(),
+        discriminator: z.string().optional(),
+      })
+      .optional(),
+    detail: z.string().optional(),
+    // For per-Extension connectors the gateway sends 'default'; for
+    // per-Agent connectors the gateway sends the Agent name. Treat as
+    // the pair-state key disambiguator either way.
+    account: z.string().default('default'),
+    at: z.string().optional(),
+  })
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/extensions/:id/pair/state',
+    async (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      const parsed = PairStateBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_pair_state', errors: parsed.error.issues })
+      }
+      const next: PairState = {
+        state: parsed.data.state,
+        account: parsed.data.account,
+        updated_at: new Date().toISOString(),
+      }
+      if (parsed.data.qr_data_url) next.qr_data_url = parsed.data.qr_data_url
+      if (parsed.data.self_jid !== undefined) next.self_jid = parsed.data.self_jid
+      if (parsed.data.self_user) {
+        next.self_user = {
+          id: parsed.data.self_user.id,
+          username: parsed.data.self_user.username,
+          ...(parsed.data.self_user.discriminator !== undefined
+            ? { discriminator: parsed.data.self_user.discriminator }
+            : {}),
+        }
+      }
+      if (parsed.data.detail) next.detail = parsed.data.detail
+      // For per-Extension connectors, account = 'default' maps to
+      // the '_extension' bucket. For per-Agent connectors, account =
+      // <agent_name>.
+      const agentKey = parsed.data.account === 'default' ? null : parsed.data.account
+      const k = pairKey(id, agentKey)
+      pairStates.set(k, next)
+      log?.info('pair state updated', {
+        extension_id: id,
+        agent: agentKey ?? '_extension',
+        state: next.state,
+      })
+      return reply.status(200).send({ ok: true })
+    },
+  )
+
+  fastify.get<{ Params: { id: string }; Querystring: { agent?: string } }>(
+    '/api/v1/extensions/:id/pair/state',
+    (req, reply) => {
+      const id = req.params.id
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      let agent: string | null
+      try {
+        agent = readAgentParam(req.query)
+      } catch (err) {
+        return reply.status(400).send({
+          code: 'invalid_agent',
+          message: err instanceof Error ? err.message : 'invalid agent',
+        })
+      }
+      const k = pairKey(id, agent)
+      const state = pairStates.get(k) ?? {
+        state: 'idle' as const,
+        account: agent ?? 'default',
+        updated_at: new Date(0).toISOString(),
+      }
+      return reply.send({
+        extension_id: id,
+        agent_name: agent,
+        gateway_running: gatewayManager.isRunning(id, agent),
+        ...state,
+      })
+    },
+  )
+
+  // -- per-Agent connector setup (for account_scope: 'agent') -----------
+  // The Store's per-Agent install flow POSTs here after the operator
+  // pastes the bot token. We:
+  //   1. Validate the Agent exists.
+  //   2. Seal credentials into the per-Agent vault (name: `${id}-${key}`).
+  //   3. Add/update the connector binding in the Agent's identity.md.
+  //   4. Restart the Agent so the loop picks up the new binding.
+  //   5. Spawn the gateway for (extension_id, agent_name).
+  // ----------------------------------------------------------------------
+
+  const SetupAgentBindingBodySchema = z.object({
+    /**
+     * Credentials map. Keys match the binding's `credentials` schema
+     * (e.g. `bot_token` for Discord). Values are the actual plaintext
+     * secrets the operator pasted; we seal them to vault here and
+     * record only the credential name in the binding.
+     */
+    credentials: z.record(z.string().min(1), z.string().min(1)).default({}),
+    /** Default allowlist tweaks (optional). */
+    allowlist_dm: z.array(z.string()).optional(),
+    /**
+     * Discord channel allowlist. Required for Discord (per-Agent bots
+     * are pinned to a dedicated channel ... users can't DM bots, so
+     * the channel is the only viable conversation surface). When set,
+     * the router uses allowlist-based group routing without
+     * require_mention; messages in this channel wake the Agent
+     * directly. Optional for other connectors.
+     */
+    allowlist_group: z.array(z.string().regex(/^\d+$/)).optional(),
+  })
+
+  fastify.post<{ Params: { id: string; agent: string } }>(
+    '/api/v1/extensions/:id/agents/:agent/setup',
+    async (req, reply) => {
+      const id = req.params.id
+      const agent = req.params.agent
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      if (!/^[a-z][a-z0-9_-]*$/.test(agent)) {
+        return reply.status(400).send({ code: 'invalid_agent' })
+      }
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[agent]
+      if (!rec) return reply.status(404).send({ code: 'agent_not_found', agent })
+      const parsed = SetupAgentBindingBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_setup_body', errors: parsed.error.issues })
+      }
+
+      // Catalog lookup for the connector entry (auth_model + permissions).
+      const catalog = await loadCatalog(catalogPath)
+      const entry = catalog.extensions.find((e) => e.id === id)
+      if (!entry) {
+        return reply.status(404).send({ code: 'catalog_entry_not_found', id })
+      }
+      if (entry.account_scope !== 'agent') {
+        return reply.status(400).send({
+          code: 'wrong_account_scope',
+          message: `${id} is account_scope="${entry.account_scope ?? 'null'}"; use /pair/start for extension-scope connectors`,
+        })
+      }
+
+      // 1. Seal credentials to vault.
+      const vault = new CredentialVault(home, agent)
+      const credentialMap: Record<string, string> = {}
+      for (const [bindingKey, secret] of Object.entries(parsed.data.credentials)) {
+        // Credential names use the slug regex (lowercase + digits + dashes
+        // only) so the binding key's underscores are normalized to dashes.
+        // The Identity binding's `credentials` map still uses the original
+        // (snake_case) key as the lookup, but the underlying credential
+        // name on disk is the slug form.
+        const credentialName = `${id}-${bindingKey.replace(/_/g, '-')}`
+        try {
+          await vault.set(credentialName, {
+            value: secret,
+            metadata: {
+              created_at: new Date().toISOString(),
+              provider: id,
+              notes: `sealed by Store install flow for binding "${bindingKey}"`,
+            },
+          })
+          credentialMap[bindingKey] = credentialName
+        } catch (err) {
+          return await reply.status(500).send({
+            code: 'vault_write_failed',
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+
+      // 2. Add / update the binding in identity.md.
+      // For Discord: the channel allowlist IS the conversation gate
+      // (no bot DMs on Discord, so users can only reach the Agent via
+      // a channel the bot is in). group_policy=allowlist + the
+      // channel id in allowlist.group means every message in that
+      // channel wakes the Agent; require_mention=false because the
+      // channel is already dedicated to this Agent. For other
+      // per-Agent connectors, we ship a pairing-style default until
+      // their UX work happens.
+      const channelAllowlist = parsed.data.allowlist_group ?? []
+      if (id === 'discord' && channelAllowlist.length === 0) {
+        return await reply.status(400).send({
+          code: 'channel_required',
+          message: 'Discord setup requires at least one channel id in allowlist_group',
+        })
+      }
+      const defaultPolicies =
+        id === 'discord'
+          ? {
+              dm_policy: 'open' as const,
+              group_policy: 'allowlist' as const,
+              require_mention: false,
+            }
+          : {
+              dm_policy: 'pairing' as const,
+              group_policy: 'allowlist' as const,
+              require_mention: true,
+            }
+      try {
+        await upsertConnectorBinding(rec.identity_path, {
+          connector_id: id,
+          account: 'default',
+          credentials: credentialMap,
+          allowlist: {
+            dm: parsed.data.allowlist_dm ?? [],
+            group: channelAllowlist,
+          },
+          policies: defaultPolicies,
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'identity_write_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      // 3. Restart the Agent so the new binding loads.
+      try {
+        await supervisor.stopAgent(agent)
+        await supervisor.startAgent(agent)
+      } catch (err) {
+        log?.warn('agent restart after binding setup failed', {
+          agent,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      // 4. Spawn the gateway.
+      try {
+        const handle = await gatewayManager.start(id, agent)
+        return await reply.status(200).send({
+          extension_id: id,
+          agent_name: agent,
+          gateway: { pid: handle.pid, port: handle.port, started_at: handle.started_at },
+          credentials_sealed: Object.keys(credentialMap),
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'gateway_start_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    },
+  )
+
+  // -- per-Agent binding policy patch -----------------------------------
+  // Update the allowlist + policy block on an existing binding
+  // without touching credentials or restarting the Agent. The
+  // supervisor's router re-reads identity.md on every inbound POST,
+  // so the new policy takes effect on the next message ... no
+  // restart needed (routing happens in the supervisor, not the
+  // Agent process). Mainly used for "change the Discord channel"
+  // from the Configure view in the Store.
+  // ----------------------------------------------------------------------
+  const PatchAgentBindingBodySchema = z.object({
+    allowlist_dm: z.array(z.string()).optional(),
+    allowlist_group: z.array(z.string().regex(/^\d+$/)).optional(),
+  })
+  fastify.patch<{ Params: { id: string; agent: string } }>(
+    '/api/v1/extensions/:id/agents/:agent/policy',
+    async (req, reply) => {
+      const id = req.params.id
+      const agent = req.params.agent
+      if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+        return reply.status(400).send({ code: 'invalid_id' })
+      }
+      if (!/^[a-z][a-z0-9_-]*$/.test(agent)) {
+        return reply.status(400).send({ code: 'invalid_agent' })
+      }
+      const snap = supervisor.snapshot()
+      const rec = snap.agents[agent]
+      if (!rec) return reply.status(404).send({ code: 'agent_not_found', agent })
+      const parsed = PatchAgentBindingBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(400).send({ code: 'invalid_patch_body', errors: parsed.error.issues })
+      }
+      const identity = await loadIdentity(rec.identity_path)
+      const existing = identity.frontmatter.connectors.find(
+        (b) => b.connector_id === id && b.account === 'default',
+      )
+      if (!existing) {
+        return reply.status(404).send({
+          code: 'binding_not_found',
+          message: `agent "${agent}" has no binding for "${id}" / account=default`,
+        })
+      }
+      const nextAllowlist = {
+        dm: parsed.data.allowlist_dm ?? existing.allowlist.dm,
+        group: parsed.data.allowlist_group ?? existing.allowlist.group,
+      }
+      // When the operator pins the Agent to a Discord channel (the
+      // canonical Discord per-Agent pattern), auto-shift the policy
+      // block to "channel-allowlist, no mention required" ... the
+      // alternative is the operator manually editing identity.md
+      // to flip group_policy + require_mention, which defeats the
+      // purpose of a UI knob.
+      const nextPolicies =
+        id === 'discord' && nextAllowlist.group.length > 0
+          ? {
+              ...existing.policies,
+              group_policy: 'allowlist' as const,
+              require_mention: false,
+            }
+          : existing.policies
+      try {
+        await upsertConnectorBinding(rec.identity_path, {
+          connector_id: existing.connector_id,
+          account: existing.account,
+          credentials: existing.credentials,
+          allowlist: nextAllowlist,
+          policies: nextPolicies,
+        })
+      } catch (err) {
+        return await reply.status(500).send({
+          code: 'identity_write_failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+      return reply.status(200).send({
+        extension_id: id,
+        agent_name: agent,
+        allowlist: nextAllowlist,
+        policies: nextPolicies,
+      })
+    },
+  )
+
+  const InstallBodySchema = z.object({
+    source: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('catalog'), id: z.string().min(1) }),
+      z.object({ type: z.literal('npm'), package: z.string().min(1) }),
+      z.object({ type: z.literal('path'), path: z.string().min(1) }),
+    ]),
+    permissions_acknowledged: z.array(z.string()).default([]),
+    tos_acknowledged: z.boolean().default(false),
+  })
+
+  fastify.post('/api/v1/extensions/install', async (req, reply) => {
+    const body = InstallBodySchema.parse(req.body)
+    let entry: CatalogEntry
+    if (body.source.type === 'catalog') {
+      const requestedId = body.source.id
+      const catalog = await loadCatalog(catalogPath)
+      const found = catalog.extensions.find((e) => e.id === requestedId)
+      if (!found) {
+        return reply.status(404).send({ code: 'catalog_entry_not_found', id: requestedId })
+      }
+      entry = found
+    } else {
+      // npm + path direct-install paths are out of scope for v1; the
+      // Store UX only exercises the catalog flow.
+      return reply.status(400).send({
+        code: 'source_type_not_supported',
+        message: `source.type '${body.source.type}' not implemented in this endpoint; use catalog source`,
+      })
+    }
+
+    // Fire-and-forget the install; progress streams over WS.
+    const installId = `inst_pending_${String(Date.now())}`
+    const broadcastProgress = (event: InstallProgressEvent): void => {
+      const msg = JSON.stringify({
+        event: 'extension.install_progress',
+        occurred_at: new Date().toISOString(),
+        payload: event as unknown as Record<string, unknown>,
+      })
+      for (const c of wsClients) c.send(msg)
+    }
+    void installFromCatalogEntry({
+      entry,
+      home,
+      permissionsAcknowledged: body.permissions_acknowledged,
+      tosAcknowledged: body.tos_acknowledged,
+      onProgress: broadcastProgress,
+    }).catch((err: unknown) => {
+      log?.warn('install pipeline failed', {
+        extension_id: entry.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+
+    return reply.status(202).send({ install_id: installId, extension_id: entry.id })
+  })
+
   await fastify.register((instance, _opts, done) => {
     // `wsHandler` is added by @fastify/websocket via module augmentation.
     // The TS surface for fastify@5 + @fastify/websocket@11 doesn't pick up
@@ -3546,6 +4469,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
       wsClients.clear()
       await pubBridge.close()
+      await gatewayManager.stopAll()
       await fastify.close()
     },
     broadcast: (event) => {

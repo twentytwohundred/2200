@@ -182,4 +182,115 @@ export class TaskStore {
     await this.save(next)
     return next
   }
+
+  /**
+   * Mutate both frontmatter and body atomically. Used by the
+   * continuation-resume path to clear `wait_for`, flip state back to
+   * `pending`, and append a continuation section to the body in one
+   * write.
+   */
+  async updateRecord(
+    taskId: string,
+    mutator: (rec: TaskRecord) => TaskRecord,
+  ): Promise<TaskRecord | null> {
+    const cur = await this.get(taskId)
+    if (!cur) return null
+    const next = mutator(cur)
+    await this.save(next)
+    return next
+  }
+
+  /**
+   * Find a single waiting task whose `wait_for` block matches the
+   * inbound event. Used by the supervisor's router to resume a
+   * blocked task instead of creating a fresh isolated one. See
+   * decision: 2026-05-16-task-continuation-primitive.
+   *
+   * Match rules per source_kind:
+   *   pub       → source_ref.pub == criteria.pub AND
+   *               expected_from == criteria.sender (case-insensitive)
+   *   connector → source_ref.connector_id == criteria.connector_id AND
+   *               source_ref.conversation_id == criteria.conversation_id AND
+   *               expected_from == criteria.sender
+   *   chat      → source_ref.chat_id == criteria.chat_id AND
+   *               expected_from == 'user' (chat sender is always the
+   *               chat owner; the field is encoded as 'user' by the
+   *               await_response tool)
+   *
+   * Returns the oldest matching task (FIFO), or null when no waiting
+   * task matches. Expired waits are filtered out here ... the
+   * timeout sweep handles them separately so the router never
+   * resumes an expired wait with stale context.
+   */
+  async findWaiting(
+    criteria:
+      | { kind: 'pub'; pub: string; sender: string }
+      | {
+          kind: 'connector'
+          connector_id: string
+          conversation_id: string
+          sender: string
+        }
+      | { kind: 'chat'; chat_id: string },
+    now: Date = new Date(),
+  ): Promise<TaskRecord | null> {
+    const all = await this.list()
+    const nowIso = now.toISOString()
+    const candidates = all.filter((t) => {
+      if (t.frontmatter.state !== 'blocked_on_agent') return false
+      const w = t.frontmatter.wait_for
+      if (!w) return false
+      if (w.expires_at <= nowIso) return false
+      if (w.source_kind !== criteria.kind) return false
+      if (criteria.kind === 'pub') {
+        if (w.source_ref.pub !== criteria.pub) return false
+        return w.expected_from.toLowerCase() === criteria.sender.toLowerCase()
+      }
+      if (criteria.kind === 'connector') {
+        if (w.source_ref.connector_id !== criteria.connector_id) return false
+        if (w.source_ref.conversation_id !== criteria.conversation_id) return false
+        return w.expected_from === criteria.sender
+      }
+      // chat
+      if (w.source_ref.chat_id !== criteria.chat_id) return false
+      return w.expected_from === 'user'
+    })
+    if (candidates.length === 0) return null
+    // Oldest-wait-wins so a long-pending forward doesn't get
+    // overtaken by a newer one for the same target. Ties (same
+    // waiting_since) break on task creation time.
+    candidates.sort((a, b) => {
+      const aw = a.frontmatter.wait_for
+      const bw = b.frontmatter.wait_for
+      if (aw && bw && aw.waiting_since !== bw.waiting_since) {
+        return aw.waiting_since.localeCompare(bw.waiting_since)
+      }
+      return a.frontmatter.created.localeCompare(b.frontmatter.created)
+    })
+    return candidates[0] ?? null
+  }
+
+  /**
+   * Find all tasks whose wait_for has expired (expires_at <= now and
+   * state == blocked_on_agent). Returned oldest-first so the sweep
+   * processes them in fairness order. Used by the supervisor's
+   * timeout sweep.
+   */
+  async findExpiredWaits(now: Date = new Date()): Promise<TaskRecord[]> {
+    const all = await this.list()
+    const nowIso = now.toISOString()
+    const expired = all.filter((t) => {
+      if (t.frontmatter.state !== 'blocked_on_agent') return false
+      const w = t.frontmatter.wait_for
+      if (!w) return false
+      return w.expires_at <= nowIso
+    })
+    expired.sort((a, b) => {
+      const aw = a.frontmatter.wait_for
+      const bw = b.frontmatter.wait_for
+      if (aw && bw) return aw.waiting_since.localeCompare(bw.waiting_since)
+      return a.frontmatter.created.localeCompare(b.frontmatter.created)
+    })
+    return expired
+  }
 }

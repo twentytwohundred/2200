@@ -38,6 +38,7 @@ import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layou
 import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { TaskStore } from '../agent/task/store.js'
+import { buildTimeoutContinuationSection } from '../agent/task/continuation.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { findFreePort } from '../util/free-port.js'
@@ -189,6 +190,7 @@ export class Supervisor {
    */
   private livenessTimer: NodeJS.Timeout | undefined
   private credentialRequestSweeperTimer: NodeJS.Timeout | undefined
+  private waitForSweeperTimer: NodeJS.Timeout | undefined
   private readonly scheduler: Scheduler
   private readonly tokenRefresh: TokenRefreshService
   private readonly onboardingSessions: OnboardingSessionStore
@@ -325,6 +327,13 @@ export class Supervisor {
     // One-shot sweep at boot: cover any requests that expired while
     // the supervisor was down. Async; intentional fire-and-forget.
     this.startupTasks.push(this.sweepCredentialRequestsOnce())
+    // Wait-for sweeper: every 30s, scan every Agent's tasks for
+    // wait_for blocks whose expires_at has passed. Resume those
+    // tasks with a "no response" continuation so the Agent can
+    // decide whether to give up, retry, or report the timeout.
+    // Decision: 2026-05-16-task-continuation-primitive.
+    this.startWaitForSweeper()
+    this.startupTasks.push(this.sweepWaitForOnce())
   }
 
   /**
@@ -496,6 +505,96 @@ export class Supervisor {
         }
       } catch {
         // Lost a race; ignore.
+      }
+    }
+  }
+
+  /**
+   * Start the wait-for sweeper. Mirrors the credential-request
+   * sweeper: 30-second tick, off-loop, errors are logged but never
+   * throw. Decision: 2026-05-16-task-continuation-primitive.
+   */
+  private startWaitForSweeper(): void {
+    if (this.waitForSweeperTimer) return
+    const tick = (): void => {
+      void this.sweepWaitForOnce().catch((err: unknown) => {
+        this.log.warn('wait_for sweep failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
+    this.waitForSweeperTimer = setInterval(tick, 30_000)
+    if (typeof this.waitForSweeperTimer === 'object' && 'unref' in this.waitForSweeperTimer) {
+      this.waitForSweeperTimer.unref()
+    }
+  }
+
+  /**
+   * Scan every Agent's tasks for wait_for blocks whose `expires_at`
+   * has passed. For each one: append a "no response within X" timeout
+   * continuation to the task body, clear wait_for, transition the
+   * task back to `pending` so the Agent's loop picks it up on the
+   * next poll. The Agent then decides what to do (give up, retry,
+   * report).
+   */
+  private async sweepWaitForOnce(): Promise<void> {
+    if (this.isShuttingDown) return
+    const now = new Date()
+    for (const [agentName] of Object.entries(this.state.agents)) {
+      const store = new TaskStore(this.state.home, agentName)
+      let expired: Awaited<ReturnType<TaskStore['findExpiredWaits']>>
+      try {
+        expired = await store.findExpiredWaits(now)
+      } catch (err) {
+        this.log.warn('wait_for sweep: list failed for agent', {
+          agent: agentName,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        continue
+      }
+      for (const task of expired) {
+        const w = task.frontmatter.wait_for
+        if (!w) continue
+        const waitedFor = Math.max(
+          0,
+          Math.round((now.getTime() - new Date(w.waiting_since).getTime()) / 1000),
+        )
+        const replyHint =
+          w.source_kind === 'pub'
+            ? `If you want to forward the timeout, use \`pub_send\` or whichever \`*_send\` your original requester used.`
+            : w.source_kind === 'connector'
+              ? `If you want to forward the timeout, use \`${w.source_ref.connector_id ?? '<connector>'}_send\` ` +
+                `with \`to: "${w.source_ref.conversation_id ?? '<conversation>'}"\`.`
+              : `If you want to forward the timeout, use \`chat_send\`.`
+        const continuation = buildTimeoutContinuationSection({
+          context_note: w.context_note,
+          expected_from: w.expected_from,
+          source_kind: w.source_kind,
+          waited_for_seconds: waitedFor,
+          reply_hint: replyHint,
+        })
+        try {
+          await store.updateRecord(task.frontmatter.id, (rec) => ({
+            frontmatter: {
+              ...rec.frontmatter,
+              state: 'pending',
+              wait_for: null,
+            },
+            body: `${rec.body}\n\n${continuation}`,
+          }))
+          this.log.info('wait_for sweep → resumed task after timeout', {
+            agent: agentName,
+            task_id: task.frontmatter.id,
+            expected_from: w.expected_from,
+            waited_for_seconds: waitedFor,
+          })
+        } catch (err) {
+          this.log.warn('wait_for sweep: resume write failed', {
+            agent: agentName,
+            task_id: task.frontmatter.id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
       }
     }
   }
@@ -696,6 +795,10 @@ export class Supervisor {
     if (this.credentialRequestSweeperTimer) {
       clearInterval(this.credentialRequestSweeperTimer)
       this.credentialRequestSweeperTimer = undefined
+    }
+    if (this.waitForSweeperTimer) {
+      clearInterval(this.waitForSweeperTimer)
+      this.waitForSweeperTimer = undefined
     }
     for (const watcher of this.pulseWatchers.values()) watcher.stop()
     this.pulseWatchers.clear()

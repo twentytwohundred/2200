@@ -26,6 +26,8 @@ import { imageTools } from './image.js'
 import { makeTaskDelegateTools } from './task-delegate.js'
 import { credentialTools } from './credential.js'
 import { httpTools } from './http.js'
+import { whatsappTools } from './whatsapp.js'
+import { discordTools } from './discord.js'
 import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 /**
@@ -87,9 +89,12 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'schedule_run_once',
   'image_generate',
   'task_create_for_agent',
+  'task_await_response',
   'credential_request',
   'credential_has',
   'http_request',
+  'whatsapp_send',
+  'discord_send',
 ]
 
 export interface BaselineServersOptions {
@@ -140,11 +145,16 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('chat', chatTools),
     createInProcessServer('schedule', scheduleTools(getSupervisorRpc)),
     createInProcessServer('image', imageTools),
-    createInProcessServer('task', makeTaskDelegateTools()),
+    createInProcessServer(
+      'task',
+      makeTaskDelegateTools(() => opts.getBlockerRegistry?.() ?? null),
+    ),
     createInProcessServer(
       'credential',
       credentialTools(getIdentity, getSupervisorRpc, opts.getBlockerRegistry),
     ),
     createInProcessServer('http', httpTools),
+    createInProcessServer('whatsapp', whatsappTools),
+    createInProcessServer('discord', discordTools),
   ]
 }

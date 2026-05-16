@@ -190,9 +190,63 @@ export const TaskSourceSchema = z
     }),
     z.object({ kind: z.literal('cli') }),
     z.object({ kind: z.literal('self_spawn') }),
+    z.object({
+      kind: z.literal('connector'),
+      /** Connector Extension's id (e.g. 'whatsapp', 'slack'). */
+      connector_id: z.string().min(1),
+      /** Conversation identifier the inbound message arrived in (e.g. WhatsApp JID). */
+      conversation_id: z.string().min(1),
+      /** Sender identifier (e.g. E.164 number for WhatsApp DMs). */
+      sender_id: z.string().min(1),
+      /** Optional human-readable sender label surfaced in the task body. */
+      sender_display_name: z.string().optional(),
+      /** Per-binding account identifier; 'default' when omitted. */
+      account: z.string().default('default'),
+    }),
   ])
   .nullable()
 export type TaskSource = z.infer<typeof TaskSourceSchema>
+
+/**
+ * Multi-hop continuation primitive (decision:
+ * 2026-05-16-task-continuation-primitive).
+ *
+ * Set by the `await_response` baseline tool when an Agent asks another
+ * party a question on a user's behalf and needs to relay back. The
+ * supervisor's inbound router matches subsequent events against
+ * waiting tasks and resumes them instead of creating new isolated
+ * tasks. `null` means the task is not waiting on anyone.
+ *
+ * source_kind determines which source_ref fields are populated:
+ *   pub       → source_ref.pub
+ *   connector → source_ref.connector_id + source_ref.conversation_id
+ *   chat      → source_ref.chat_id
+ *
+ * expected_from is the sender identifier in the source's namespace:
+ *   pub       → agent name (display_name OR agent_id resolves)
+ *   connector → opaque sender id (e.g. Discord user id)
+ *   chat      → always 'user'
+ */
+export const WaitForSchema = z
+  .object({
+    source_kind: z.enum(['pub', 'connector', 'chat']),
+    source_ref: z.object({
+      pub: z.string().min(1).optional(),
+      connector_id: z.string().min(1).optional(),
+      conversation_id: z.string().min(1).optional(),
+      chat_id: z.string().min(1).optional(),
+    }),
+    expected_from: z.string().min(1),
+    /** ISO 8601 UTC. Past expiration triggers a "no response" resume. */
+    expires_at: z.string(),
+    /** Free-text the loop sees in the continuation prompt so the Agent
+     *  remembers what they were doing when they decided to wait. */
+    context_note: z.string(),
+    /** ISO 8601 UTC of when the wait was opened. */
+    waiting_since: z.string(),
+  })
+  .nullable()
+export type WaitFor = z.infer<typeof WaitForSchema>
 
 /**
  * Task frontmatter, locked v1 schema.
@@ -261,6 +315,15 @@ export const TaskFrontmatterSchema = z.object({
    * is allowed only from chat).
    */
   source: TaskSourceSchema.optional().default(null),
+  /**
+   * Multi-hop continuation block (decision:
+   * 2026-05-16-task-continuation-primitive). Non-null only when the
+   * Agent has called `await_response` on this task and is parked in
+   * `blocked_on_agent` waiting on an inbound event. Cleared when the
+   * supervisor's router matches an inbound to this wait and resumes
+   * the task.
+   */
+  wait_for: WaitForSchema.optional().default(null),
 })
 export type TaskFrontmatter = z.infer<typeof TaskFrontmatterSchema>
 
@@ -312,6 +375,7 @@ export function newPendingTask(args: {
       audit: null,
       agent_state_at_terminal: null,
       source: args.source ?? null,
+      wait_for: null,
     },
     body: args.body,
   }

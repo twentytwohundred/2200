@@ -99,6 +99,7 @@ export function FleetScreen(): ReactElement {
         <>
           <ScreenNavLink to="/studio">Studio</ScreenNavLink>
           <ScreenNavLink to="/rooms">Rooms</ScreenNavLink>
+          <ScreenNavLink to="/extensions">Extensions</ScreenNavLink>
           <ScreenNavLink to="/inbox">
             Inbox{pendingCount > 0 ? ` · ${String(pendingCount)}` : ''}
           </ScreenNavLink>

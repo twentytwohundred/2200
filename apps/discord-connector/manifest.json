@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "discord",
+  "version": "0.1.0",
+  "display_name": "Discord",
+  "description": "Per-Agent Discord bots. Each Agent gets its own Discord application and bot identity; you DM each one independently. Setup: create a Discord app, paste the bot token, invite to a server, done.",
+  "author": "2200",
+  "homepage": "https://2200.ai/docs/connectors/discord",
+  "permissions": ["network", "tools", "notifications", "fs.scratch"],
+  "schedules": [],
+  "tools": [
+    {
+      "name": "discord_send",
+      "description": "Send a Discord message to a user / channel the Agent's bot has access to."
+    }
+  ],
+  "hooks": {
+    "install": "./install.mjs",
+    "gateway": {
+      "script": "./src/gateway.ts",
+      "restart_policy": "always"
+    }
+  },
+  "connector": {
+    "id": "discord",
+    "label": "Discord",
+    "blurb": "Give each Agent its own Discord bot. DM them independently; they reply with their own identity.",
+    "docs_path": "design/connectors/discord",
+    "auth_model": "bot_token",
+    "account_scope": "agent",
+    "tos_acknowledgment": "Discord bots are subject to the Discord Developer Terms of Service and the Discord Community Guidelines. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Discord. 2200 is not a party to your relationship with Discord."
+  }
+}

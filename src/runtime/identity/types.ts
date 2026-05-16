@@ -405,6 +405,74 @@ export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
 export type McpServerSpecStdio = z.infer<typeof McpServerSpecStdioSchema>
 export type McpServerSpecHttp = z.infer<typeof McpServerSpecHttpSchema>
 
+/**
+ * Connector binding (Identity frontmatter).
+ *
+ * Each entry declares that this Agent listens on a specific connector
+ * Extension's id (`whatsapp`, `slack`, `discord`, `telegram`). Inbound
+ * events from the connector's gateway are routed to this Agent if the
+ * conversation + sender pass the allowlist + policy gates.
+ *
+ * See [[../../decisions/2026-05-16-connector-extensions]].
+ */
+export const ConnectorDmPolicySchema = z.enum(['allowlist', 'pairing', 'open', 'disabled'])
+export type ConnectorDmPolicy = z.infer<typeof ConnectorDmPolicySchema>
+
+export const ConnectorGroupPolicySchema = z.enum(['allowlist', 'open', 'disabled'])
+export type ConnectorGroupPolicy = z.infer<typeof ConnectorGroupPolicySchema>
+
+export const AgentConnectorBindingSchema = z.object({
+  /** Connector Extension's `connector.id` (e.g. 'whatsapp', 'slack'). */
+  connector_id: z
+    .string()
+    .min(1)
+    .regex(/^[a-z][a-z0-9_]*$/, {
+      message:
+        'connector_id must be lowercase letter followed by lowercase letters / digits / underscores',
+    }),
+  /**
+   * Per-connector account identifier for multi-account setups. Falls
+   * through to 'default' when absent. The gateway interprets this
+   * (e.g. WhatsApp uses it to pick which WhatsApp Web auth dir to load).
+   */
+  account: z.string().min(1).default('default'),
+  /**
+   * Per-Agent auth credentials for connectors with `account_scope:
+   * 'agent'`. Keys are connector-specific (e.g. Discord uses
+   * `bot_token`); values are vault credential names ... the actual
+   * secret lives in the per-Agent vault sealed at install time, never
+   * in the Identity file. Connectors with `account_scope: 'extension'`
+   * (WhatsApp Inbox) leave this empty.
+   */
+  credentials: z.record(z.string().min(1), z.string().min(1)).default({}),
+  /**
+   * Allowlists controlling who can wake this Agent on this connector.
+   * `dm`: direct-chat senders allowed (E.164 numbers / handles, normalized
+   *       by the gateway). `*` admits everyone.
+   * `group`: group ids allowed. `*` admits all groups.
+   */
+  allowlist: z
+    .object({
+      dm: z.array(z.string().min(1)).default([]),
+      group: z.array(z.string().min(1)).default([]),
+    })
+    .default({ dm: [], group: [] }),
+  /**
+   * Per-binding policies. `dm_policy` controls how unknown DM senders are
+   * handled (`pairing` = ask operator on first contact; default).
+   * `group_policy` defaults to `allowlist` (silent reject for unknown
+   * groups). `require_mention` gates group activation to bot-mention only.
+   */
+  policies: z
+    .object({
+      dm_policy: ConnectorDmPolicySchema.default('pairing'),
+      group_policy: ConnectorGroupPolicySchema.default('allowlist'),
+      require_mention: z.boolean().default(true),
+    })
+    .default({ dm_policy: 'pairing', group_policy: 'allowlist', require_mention: true }),
+})
+export type AgentConnectorBinding = z.infer<typeof AgentConnectorBindingSchema>
+
 export const IdentityFrontmatterSchema = z.object({
   schema_version: z.literal(5),
   agent_name: z
@@ -504,6 +572,32 @@ export const IdentityFrontmatterSchema = z.object({
           })
         }
         seen.add(name)
+      }
+    }),
+  /**
+   * Connector bindings (decision: 2026-05-16-connector-extensions).
+   *
+   * Each entry binds this Agent to a connector Extension's id. Inbound
+   * events from the connector's gateway are routed to this Agent if
+   * the conversation + sender pass the binding's allowlist + policy
+   * gates. Default: no connectors ... an Agent with no `connectors:`
+   * block is invisible to every installed connector.
+   */
+  connectors: z
+    .array(AgentConnectorBindingSchema)
+    .default([])
+    .superRefine((bindings, ctx) => {
+      const seen = new Set<string>()
+      for (let i = 0; i < bindings.length; i++) {
+        const key = `${bindings[i]?.connector_id ?? ''}::${bindings[i]?.account ?? ''}`
+        if (seen.has(key)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [i, 'connector_id'],
+            message: `duplicate connectors[] entry for ${key}; each (connector_id, account) pair may appear at most once`,
+          })
+        }
+        seen.add(key)
       }
     }),
 })

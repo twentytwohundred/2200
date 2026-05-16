@@ -1,0 +1,28 @@
+{
+  "name": "@2200/whatsapp-connector",
+  "version": "0.1.0",
+  "description": "WhatsApp connector Extension for 2200 (Baileys-backed WhatsApp Web)",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "2200-whatsapp-gateway": "./dist/gateway.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "gateway": "tsx src/gateway.ts"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc11",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "undici": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  }
+}

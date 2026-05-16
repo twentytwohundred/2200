@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-16T16:00:00Z",
+  "extensions": [
+    {
+      "id": "discord",
+      "label": "Discord",
+      "blurb": "Give each Agent its own Discord bot. Create a Discord app per Agent (5-minute walkthrough), paste the bot token, invite to a server, and DM each Agent independently. Built for the chat-with-multiple-bots model Discord excels at.",
+      "icon": "/api/v1/extensions/discord/icon",
+      "category": "connector",
+      "auth_model": "bot_token",
+      "account_scope": "agent",
+      "permissions": ["network", "tools", "notifications", "fs.scratch"],
+      "tos_acknowledgment": "Discord bots are subject to the Discord Developer Terms of Service and the Discord Community Guidelines. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Discord. 2200 is not a party to your relationship with Discord.",
+      "docs_url": "https://github.com/twentytwohundred/wiki/blob/main/design/connectors/discord.md",
+      "screenshots": [],
+      "current_version": "0.1.0",
+      "min_2200_version": "0.7.0",
+      "source": {
+        "type": "workspace",
+        "path": "apps/discord-connector"
+      }
+    },
+    {
+      "id": "whatsapp",
+      "label": "WhatsApp Inbox",
+      "blurb": "Let an Agent triage your WhatsApp inbox. Pair your number; the Agent reads incoming DMs from allowlisted senders and may reply on your behalf. Useful for vacation responders, customer-service triage, or screening family pings. v1 supports one Agent per paired number; multi-bot-number expansion (Twilio path) lands later.",
+      "icon": "/api/v1/extensions/whatsapp/icon",
+      "category": "connector",
+      "auth_model": "qr_pair",
+      "permissions": ["network", "tools", "notifications", "fs.scratch"],
+      "tos_acknowledgment": "The WhatsApp connector uses the open-source Baileys library to connect to WhatsApp Web on your behalf. You are responsible for using it in a way that complies with WhatsApp's Terms of Service. WhatsApp's ToS forbids unofficial clients for commercial use and prohibits bulk / spam-like behavior; bot accounts that trip Meta's spam detection can be banned. By installing this connector, you accept the Baileys library's MIT license and you take on the responsibility for your own compliance with WhatsApp's Terms of Service. 2200 is not a party to that relationship.",
+      "docs_url": "https://github.com/twentytwohundred/wiki/blob/main/design/connectors/whatsapp.md",
+      "screenshots": [],
+      "current_version": "0.1.0",
+      "min_2200_version": "0.7.0",
+      "source": {
+        "type": "workspace",
+        "path": "apps/whatsapp-connector"
+      }
+    }
+  ]
+}
