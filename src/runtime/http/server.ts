@@ -3615,6 +3615,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const gatewayManager = new GatewayManager({
     home,
     supervisorUrl: `http://127.0.0.1:${String(port)}`,
+    catalogPath,
   })
 
   interface PairState {
