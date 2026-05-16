@@ -1,0 +1,230 @@
+.list {
+  display: grid;
+  gap: 14px;
+}
+
+.card {
+  background: var(--surface-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  padding: 20px 22px;
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  gap: 18px;
+  align-items: start;
+}
+
+.icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: var(--surface-2, #21262d);
+  display: grid;
+  place-items: center;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 22px;
+  color: var(--text-2);
+}
+
+.body {
+  display: grid;
+  gap: 8px;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.blurb {
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-2, #21262d);
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.status {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.status[data-tone='ok'] {
+  color: var(--ok, #22c97a);
+}
+
+.status[data-tone='warn'] {
+  color: var(--warn, #e3a847);
+}
+
+.status[data-tone='err'] {
+  color: var(--err, #e35d4d);
+}
+
+.progress {
+  width: 240px;
+  height: 4px;
+  background: var(--surface-2, #21262d);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progressBar {
+  height: 100%;
+  background: var(--text-2);
+  transition: width 200ms ease;
+}
+
+.progressMessage {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+
+/* Modal */
+.modalScrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+}
+
+.modalCard {
+  max-width: 560px;
+  width: calc(100% - 48px);
+  background: var(--surface-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border-radius: 14px;
+  padding: 28px 32px;
+  display: grid;
+  gap: 16px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modalTitle {
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: -0.015em;
+}
+
+.modalLabel {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.permList {
+  display: grid;
+  gap: 8px;
+}
+
+.permItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2, #21262d);
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.permItem input {
+  accent-color: var(--ok, #22c97a);
+}
+
+.permName {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.tosBox {
+  padding: 14px 16px;
+  background: var(--surface-2, #21262d);
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tosCheckbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.installedBanner {
+  background: var(--surface-2, #21262d);
+  border-left: 3px solid var(--ok, #22c97a);
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pairCallout {
+  margin-top: 8px;
+  padding: 14px 16px;
+  background: var(--surface-2, #21262d);
+  border-radius: 8px;
+  border: 1px dashed var(--line, rgba(255, 255, 255, 0.12));
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pairCallout code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}

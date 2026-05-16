@@ -73,7 +73,10 @@ import { ConnectorInboundEventSchema } from '../connectors/inbound-types.js'
 import { routeInbound } from '../connectors/router.js'
 import type { IdentityFrontmatter } from '../identity/types.js'
 import { loadCatalog, type CatalogEntry } from '../extensions/catalog.js'
-import { installFromCatalogEntry, type InstallProgressEvent } from '../extensions/install-pipeline.js'
+import {
+  installFromCatalogEntry,
+  type InstallProgressEvent,
+} from '../extensions/install-pipeline.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {

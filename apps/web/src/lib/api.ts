@@ -1343,3 +1343,70 @@ export interface PubMessage {
 
 /** Internal handle for tests and hooks that need to share the request helper. */
 export { request as __request }
+
+// ---------------------------------------------------------------------------
+// Extensions catalog + install (decision: 2026-05-16-connector-store).
+// ---------------------------------------------------------------------------
+
+export type ConnectorAuthModel = 'qr_pair' | 'oauth' | 'bot_token' | 'api_key'
+
+export type CatalogCategory = 'connector' | 'voice' | 'skill' | 'model_provider'
+
+export type CatalogSource =
+  | { type: 'workspace'; path: string }
+  | { type: 'npm'; package: string; sha256: string }
+
+export interface CatalogEntry {
+  id: string
+  label: string
+  blurb: string
+  icon: string | null
+  category: CatalogCategory
+  auth_model: ConnectorAuthModel | null
+  permissions: string[]
+  tos_acknowledgment?: string
+  docs_url?: string
+  screenshots: string[]
+  current_version: string
+  min_2200_version?: string
+  source: CatalogSource
+}
+
+export interface Catalog {
+  schema_version: 1
+  generated_at: string
+  extensions: CatalogEntry[]
+}
+
+export type ExtensionInstallStage =
+  | 'resolving'
+  | 'copying'
+  | 'validating_manifest'
+  | 'running_install_hook'
+  | 'completed'
+  | 'failed'
+
+export interface ExtensionInstallProgressPayload {
+  install_id: string
+  extension_id: string
+  stage: ExtensionInstallStage
+  percent: number
+  message?: string
+  error_code?: string
+}
+
+export const apiExtensions = {
+  catalog: () => request<Catalog>('/api/v1/extensions/catalog'),
+  install: (body: {
+    source:
+      | { type: 'catalog'; id: string }
+      | { type: 'npm'; package: string }
+      | { type: 'path'; path: string }
+    permissions_acknowledged: string[]
+    tos_acknowledged: boolean
+  }) =>
+    request<{ install_id: string; extension_id: string }>('/api/v1/extensions/install', {
+      method: 'POST',
+      body,
+    }),
+}

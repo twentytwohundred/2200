@@ -11,10 +11,7 @@
  */
 import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
-import {
-  ConnectorAuthModelSchema,
-  ExtensionPermissionSchema,
-} from './types.js'
+import { ConnectorAuthModelSchema, ExtensionPermissionSchema } from './types.js'
 
 /**
  * How the supervisor's installer resolves the Extension's code.
@@ -38,12 +35,7 @@ export const CatalogSourceSchema = z.discriminatedUnion('type', [
 ])
 export type CatalogSource = z.infer<typeof CatalogSourceSchema>
 
-export const CatalogCategorySchema = z.enum([
-  'connector',
-  'voice',
-  'skill',
-  'model_provider',
-])
+export const CatalogCategorySchema = z.enum(['connector', 'voice', 'skill', 'model_provider'])
 export type CatalogCategory = z.infer<typeof CatalogCategorySchema>
 
 export const CatalogEntrySchema = z.object({
@@ -71,9 +63,7 @@ export const CatalogEntrySchema = z.object({
   /** Marketing screenshots; URLs. */
   screenshots: z.array(z.string()).default([]),
   /** Pinned version users get on a fresh install. */
-  current_version: z
-    .string()
-    .regex(/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/, 'must be semver'),
+  current_version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/, 'must be semver'),
   /** Runtime version gate. */
   min_2200_version: z.string().optional(),
   /** How the installer fetches the code. */
@@ -97,9 +87,7 @@ export async function loadCatalog(path: string): Promise<Catalog> {
   const json = JSON.parse(text) as unknown
   const result = CatalogSchema.safeParse(json)
   if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  ${i.path.join('.')}: ${i.message}`)
-      .join('\n')
+    const issues = result.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n')
     throw new Error(`catalog at ${path} is invalid:\n${issues}`)
   }
   return result.data

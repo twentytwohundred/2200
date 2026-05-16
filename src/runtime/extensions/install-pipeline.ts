@@ -127,7 +127,11 @@ export async function installFromCatalogEntry(args: InstallArgs): Promise<Instal
       })
       throw err instanceof Error ? err : new Error(String(err))
     }
-  } else if (args.entry.source.type === 'npm') {
+  } else {
+    // The catalog source schema is a discriminated union of workspace +
+    // npm; anything reaching this branch is npm. npm-source installs
+    // need the registry-resolve + tarball-fetch + sha256-verify path
+    // that lands when first-party packages publish.
     emit({
       stage: 'failed',
       percent: 5,
@@ -135,14 +139,6 @@ export async function installFromCatalogEntry(args: InstallArgs): Promise<Instal
       error_code: 'unsupported_source',
     })
     throw new Error('install: npm source not implemented')
-  } else {
-    emit({
-      stage: 'failed',
-      percent: 5,
-      message: 'Unknown source type',
-      error_code: 'unsupported_source',
-    })
-    throw new Error('install: unknown source type')
   }
 
   // 3. Copy / install.
@@ -241,8 +237,8 @@ async function runInstallHook(
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stderr = ''
-    child.stdout?.on('data', () => undefined)
-    child.stderr?.on('data', (chunk: Buffer) => {
+    child.stdout.on('data', () => undefined)
+    child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf-8')
     })
     const timeout = setTimeout(() => {

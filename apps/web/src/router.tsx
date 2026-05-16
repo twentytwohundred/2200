@@ -13,6 +13,7 @@ import { ToolsScreen } from './screens/tools/ToolsScreen'
 import { StudioScreen } from './screens/studio/StudioScreen'
 import { RoomsScreen } from './screens/rooms/RoomsScreen'
 import { FleetDocScreen } from './screens/fleet-doc/FleetDocScreen'
+import { ExtensionsScreen } from './screens/extensions/ExtensionsScreen'
 import { ComponentsPage } from './dev/ComponentsPage'
 import { CommandPalette } from './palette/CommandPalette'
 
@@ -52,6 +53,7 @@ export function Router(): ReactElement {
         <Route path="/studio/:pub" element={<StudioScreen />} />
         <Route path="/rooms" element={<RoomsScreen />} />
         <Route path="/fleet" element={<FleetDocScreen />} />
+        <Route path="/extensions" element={<ExtensionsScreen />} />
         <Route path="/dev/components" element={<ComponentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

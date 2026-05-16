@@ -41,5 +41,4 @@ export const newCredentialRequestId = (): CredentialRequestId =>
   makeId('credreq') as CredentialRequestId
 
 export type ExtensionInstallId = `inst_${string}` & { readonly __brand: 'ExtensionInstallId' }
-export const newExtensionInstallId = (): ExtensionInstallId =>
-  makeId('inst') as ExtensionInstallId
+export const newExtensionInstallId = (): ExtensionInstallId => makeId('inst') as ExtensionInstallId
