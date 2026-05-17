@@ -148,6 +148,147 @@ describe('Rule 1: direct mention', () => {
   })
 })
 
+describe('Rule 1: @team broadcast (wakes every Agent)', () => {
+  it('matches @team in content even when this Agent is not in mentions[] and not by handle', () => {
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: '@team morning status briefing please',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(true)
+    expect(result.rule).toBe('direct_mention')
+    expect(result.detail).toBe('@team broadcast')
+  })
+
+  it('matches case-insensitively (@Team, @TEAM)', () => {
+    for (const variant of ['@Team hi', '@TEAM hi', '@TeAm hi']) {
+      const result = isDirectedTo({
+        message: {
+          message_id: 'm',
+          agent_id: OTHER_AGENT_ID,
+          content: variant,
+          mentions: [],
+          reply_to: null,
+        },
+        agent: SELF,
+        pub: EMPTY_PUB,
+        sentMessageIds: NO_SENT,
+      })
+      expect(result.matched).toBe(true)
+      expect(result.detail).toBe('@team broadcast')
+    }
+  })
+
+  it('matches @team mid-sentence with surrounding text', () => {
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: 'hey @team, can we sync on the deploy?',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(true)
+  })
+
+  it('does NOT match @teammate (word-boundary guard)', () => {
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: 'hey @teammate, just you',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(false)
+  })
+
+  it('does NOT match @teams (word-boundary guard)', () => {
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: 'all the @teams should review',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(false)
+  })
+
+  it('does NOT wake the sender on their own @team message', () => {
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: 'agent-self',
+        content: '@team Hi, I just came online.',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(false)
+  })
+
+  it('wakes any peer Agent regardless of their handle (the broadcast property)', () => {
+    // Demonstrate that @team works for an Agent whose handle is nothing like "@team".
+    const simon: ResolverAgentIdentity = { agent_id: 'agent-simon', handle: '@simon' }
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: '@team please confirm you each got the update',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: simon,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(true)
+    expect(result.rule).toBe('direct_mention')
+    expect(result.detail).toBe('@team broadcast')
+  })
+
+  it('falls through to @<handle> check when @team is absent', () => {
+    // Make sure the @team rule does not block the existing @handle path.
+    const result = isDirectedTo({
+      message: {
+        message_id: 'm',
+        agent_id: OTHER_AGENT_ID,
+        content: '@hobby specific question for you',
+        mentions: [],
+        reply_to: null,
+      },
+      agent: SELF,
+      pub: EMPTY_PUB,
+      sentMessageIds: NO_SENT,
+    })
+    expect(result.matched).toBe(true)
+    expect(result.detail).toContain('@hobby')
+  })
+})
+
 describe('Rule 2: reply_to_mine', () => {
   it('matches when reply_to is in our sent set', () => {
     const result = isDirectedTo({
