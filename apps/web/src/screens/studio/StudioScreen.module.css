@@ -90,6 +90,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .feed {
@@ -98,6 +99,7 @@
   flex-direction: column;
   gap: 28px;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding-right: 8px;
 }
@@ -162,6 +164,7 @@
 .message {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .messageHead {
@@ -209,7 +212,9 @@
   color: var(--text);
   font-size: 14.5px;
   line-height: 1.55;
+  min-width: 0;
   word-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* Markdown rendering inside a Studio message. Mirrors the chat
