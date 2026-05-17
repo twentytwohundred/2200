@@ -251,15 +251,32 @@ describe('createAgent — pub block, pub running (full registration)', () => {
   })
 })
 
-describe('createAgent — multiple pubs without --pub picks ambiguous', () => {
-  it('errors clearly when more than one pub exists and no pub picked', async () => {
+describe('createAgent — multiple pubs without --pub picks a sensible default', () => {
+  it('prefers `studio` (canonical team room) when present', async () => {
+    await setup()
+    await client!.call('cli.pub.create', { name: 'ops' })
+    await client!.call('cli.pub.create', { name: 'studio' })
+    await client!.call('cli.pub.create', { name: 'family' })
+    const src = await writeIdentitySource('poe', true)
+    await client!.call('cli.agent.create', { name: 'poe', identity_path: src })
+    const credPath = agentPaths(home, 'poe').pubSecret
+    const cred = await readCredentialFile(credPath)
+    // Studio's pub URL identifies the chosen target. The actual port
+    // varies per test; we just confirm the cred file landed (not the
+    // "deferred without target" zero-pub path).
+    expect(cred.issuer_url).toMatch(/^local:\/\/127\.0\.0\.1:/)
+  })
+
+  it('falls back to alphabetically-first pub when no `studio` exists', async () => {
     await setup()
     await client!.call('cli.pub.create', { name: 'ops' })
     await client!.call('cli.pub.create', { name: 'family' })
     const src = await writeIdentitySource('poe', true)
-    await expect(
-      client!.call('cli.agent.create', { name: 'poe', identity_path: src }),
-    ).rejects.toThrow(/multiple pubs exist/)
+    // Should not throw: `family` (alphabetically first) is picked.
+    await client!.call('cli.agent.create', { name: 'poe', identity_path: src })
+    const credPath = agentPaths(home, 'poe').pubSecret
+    const cred = await readCredentialFile(credPath)
+    expect(cred.issuer_url).toMatch(/^local:\/\/127\.0\.0\.1:/)
   })
 
   it('respects --pub when multiple pubs exist (deferred registration since no pub running)', async () => {

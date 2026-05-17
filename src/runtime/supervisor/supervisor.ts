@@ -2468,9 +2468,16 @@ function pickTargetPub(
   const all = Object.values(pubs)
   if (all.length === 0) return null
   if (all.length === 1) return all[0] ?? null
-  throw new Error(
-    `multiple pubs exist; please specify --pub <name> (available: ${all.map((p) => p.name).join(', ')})`,
-  )
+  // With multiple pubs and no explicit pick, prefer `studio` (the
+  // canonical team room) so the web onboarding flow can land a new
+  // Agent in the right place without forcing a picker UI. Operator
+  // can move them via the Studio guests editor later. Falls back to
+  // the alphabetically-first pub if no `studio` exists so the rule
+  // is deterministic regardless of pub-creation order.
+  const studio = pubs['studio']
+  if (studio) return studio
+  const sorted = all.slice().sort((a, b) => a.name.localeCompare(b.name))
+  return sorted[0] ?? null
 }
 
 /** Default handle: lowercase the display_name and strip whitespace. */

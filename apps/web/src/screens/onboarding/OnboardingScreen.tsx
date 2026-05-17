@@ -620,7 +620,7 @@ function PreviewView({
           Cancel
         </Button>
         <Button variant="primary" onClick={onConfirm} disabled={confirmDisabled}>
-          {confirmPending ? 'Spawning...' : 'Confirm + spawn'}
+          {confirmPending ? 'Building...' : 'Confirm + build'}
         </Button>
       </div>
     </>
