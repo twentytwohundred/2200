@@ -17,8 +17,8 @@
  *
  * This module reads `~/.config/2200/runtime.env` (or any path the
  * caller passes), parses bash-style `export KEY=value` lines, and
- * returns a `Record<string, string>`. Callers (daemon-spawn, agent-
- * spawn) merge the result with `process.env` and pass the union as
+ * returns a `Record<string, string>`. Callers (daemon-start, agent-
+ * start) merge the result with `process.env` and pass the union as
  * the child process's env.
  *
  * Security:

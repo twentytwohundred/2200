@@ -4,7 +4,7 @@
  * `@openpub-ai/pub-server@0.3.3` requires three secrets at startup
  * when running in LOCAL_TRUST mode:
  *   - `OPENPUB_ADMIN_SECRET` — gates POST /admin/register-agent. The
- *     supervisor passes this to pub-server at spawn AND uses it on
+ *     supervisor passes this to pub-server at launch AND uses it on
  *     register-agent calls (via the X-OpenPub-Admin-Secret header).
  *   - `PUB_SIGNING_PRIVATE_KEY` — Ed25519 private key the pub itself
  *     uses to sign relay messages.

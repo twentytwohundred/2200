@@ -13,7 +13,7 @@
  *     id: '<credential>' }` resolves against the calling Agent's
  *     vault. SecretRef ids of the form `<agent>:<credential>` resolve
  *     against a different Agent's vault (used by supervisor-mediated
- *     resolution at MCP server spawn time).
+ *     resolution at MCP server launch time).
  */
 import { z } from 'zod'
 

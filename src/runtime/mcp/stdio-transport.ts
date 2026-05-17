@@ -3,14 +3,14 @@
  * (Epic 9 Phase A PR B).
  *
  * Wraps `@modelcontextprotocol/sdk`'s `Client` + `StdioClientTransport`
- * with a 2200-shaped facade: spawn a child process declared in the
+ * with a 2200-shaped facade: launch a child process declared in the
  * Agent's Identity (`mcp_servers[]` block, Epic 9 PR A), discover the
  * tools the server exposes, and surface each tool as a 2200
  * `ToolDefinition` so the existing `ToolRegistry` and dispatcher can
  * route calls without further special-casing.
  *
  * The transport is stateless across reconnects: a `close()` followed by
- * a fresh `spawnStdioMcpServer()` is the canonical way to "restart"
+ * a fresh `launchStdioMcpServer()` is the canonical way to "restart"
  * (the supervisor's restart manager, PR C, owns the backoff + crash
  * policy locked in the Phase A spec).
  *
@@ -53,7 +53,7 @@ export interface StdioMcpServerHandle extends McpServer {
   readonly client: Client
 }
 
-export interface SpawnStdioMcpArgs {
+export interface LaunchStdioMcpArgs {
   /**
    * Identity-declared server name. Used as the dotted prefix on every
    * tool the server exposes ... if `name: github` and the server lists
@@ -61,14 +61,14 @@ export interface SpawnStdioMcpArgs {
    * `github.list_issues`.
    */
   name: string
-  /** Executable to spawn. */
+  /** Executable to launch. */
   command: string
   /** Arguments to pass to the executable. */
   args: string[]
   /**
    * Already-resolved environment variables. The supervisor resolves
    * each Identity SecretRef to its literal value before calling
-   * `spawnStdioMcpServer`; the literal value never appears in this
+   * `launchStdioMcpServer`; the literal value never appears in this
    * module's logs.
    */
   env: Record<string, string>
@@ -79,7 +79,7 @@ export interface SpawnStdioMcpArgs {
    */
   clientInfo?: { name: string; version: string }
   /**
-   * Optional working directory for the spawned process. Defaults to
+   * Optional working directory for the launched process. Defaults to
    * the supervisor's working directory.
    */
   cwd?: string
@@ -91,12 +91,12 @@ const DEFAULT_CLIENT_INFO = {
 }
 
 /**
- * Spawn a stdio MCP server, run the initialize handshake, list its
+ * Launch a stdio MCP server, run the initialize handshake, list its
  * tools, and return a 2200 handle with each tool wrapped as a
  * `ToolDefinition` ready for the registry.
  *
  * Throws on:
- *   - spawn failure (executable not found, permission denied)
+ *   - launch failure (executable not found, permission denied)
  *   - initialize handshake failure (server crash, protocol error)
  *   - tools/list failure
  *
@@ -104,7 +104,9 @@ const DEFAULT_CLIENT_INFO = {
  * shutting down the Agent process (or restarting the server). Failure
  * to close leaks the child process.
  */
-export async function spawnStdioMcpServer(args: SpawnStdioMcpArgs): Promise<StdioMcpServerHandle> {
+export async function launchStdioMcpServer(
+  args: LaunchStdioMcpArgs,
+): Promise<StdioMcpServerHandle> {
   const transport = new StdioClientTransport({
     command: args.command,
     args: args.args,

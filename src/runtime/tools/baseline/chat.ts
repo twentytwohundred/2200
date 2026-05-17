@@ -7,7 +7,7 @@
  *
  * Why the Agent needs this:
  *   The chat surface was historically one-way ... user posts, the
- *   daemon spawns a task, on completion the daemon appends the
+ *   daemon starts a task, on completion the daemon appends the
  *   assistant reply. So the only way an Agent could appear in its
  *   chat was as a response to the user's most recent turn. There
  *   was no path for the Agent to say "hey, follow-up after my

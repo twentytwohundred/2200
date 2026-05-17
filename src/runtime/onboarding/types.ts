@@ -14,7 +14,7 @@
  * drills into vague answers, skips redundant questions when the user
  * already covered them, and adapts to the actual lane the user is
  * describing. The interviewer is itself an Agent (single-shot, lives
- * only for the duration of the spawn) ... a fitting first user of the
+ * only for the duration of the build) ... a fitting first user of the
  * platform's LLM stack.
  *
  * Each interview turn the LLM either (a) asks the next question with

@@ -1,7 +1,7 @@
 /**
  * Connector gateway manager.
  *
- * Spawns + supervises the long-lived gateway processes a connector
+ * Starts + supervises the long-lived gateway processes a connector
  * Extension declares via `hooks.gateway`. The manager handles BOTH
  * identity scopes from the connector catalog:
  *
@@ -64,7 +64,7 @@ export class GatewayManager {
   }
 
   /**
-   * Spawn the gateway. For per-Extension scope, pass `agentName: null`.
+   * Start the gateway. For per-Extension scope, pass `agentName: null`.
    * For per-Agent scope, pass the agent name; the manager reads the
    * Agent's binding, unseals credentials from vault, and injects them
    * into the gateway's env. Throws with a clear message on failure;
@@ -87,7 +87,7 @@ export class GatewayManager {
     if (!entry) throw new Error(`catalog has no entry for "${extensionId}"`)
     if (entry.source.type !== 'workspace') {
       throw new Error(
-        `gateway spawn for source.type="${entry.source.type}" not implemented yet; use workspace source for dev`,
+        `gateway start for source.type="${entry.source.type}" not implemented yet; use workspace source for dev`,
       )
     }
     const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -135,19 +135,19 @@ export class GatewayManager {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    const spawnState: { failure: Error | null } = { failure: null }
+    const launchState: { failure: Error | null } = { failure: null }
     child.on('error', (err) => {
-      spawnState.failure = err
-      process.stderr.write(`[gateway/${key}] spawn error: ${err.message}\n`)
+      launchState.failure = err
+      process.stderr.write(`[gateway/${key}] launch error: ${err.message}\n`)
       this.gateways.delete(key)
     })
 
     if (!child.pid) {
       await new Promise((r) => setImmediate(r))
-      if (spawnState.failure) {
-        throw new Error(`gateway spawn failed: ${spawnState.failure.message}`)
+      if (launchState.failure) {
+        throw new Error(`gateway launch failed: ${launchState.failure.message}`)
       }
-      throw new Error(`failed to spawn gateway ${key} (no pid, no error)`)
+      throw new Error(`failed to launch gateway ${key} (no pid, no error)`)
     }
 
     const managed: ManagedGateway = {
@@ -237,7 +237,7 @@ export class GatewayManager {
     const binding = id.frontmatter.connectors.find((b) => b.connector_id === entry.id)
     if (!binding) {
       throw new Error(
-        `Agent "${agentName}" has no connector binding for "${entry.id}"; nothing to spawn`,
+        `Agent "${agentName}" has no connector binding for "${entry.id}"; nothing to start`,
       )
     }
     const env: Record<string, string> = {}

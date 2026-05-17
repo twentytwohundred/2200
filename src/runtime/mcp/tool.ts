@@ -47,7 +47,7 @@ export interface ToolContext {
   /** Per-call ID assigned by the dispatcher. */
   callId: string
   /**
-   * Spawn source of the originating task. Surface-aware tools
+   * Source of the originating task. Surface-aware tools
    * (request_credential) read this to enforce origin restrictions
    * (e.g., "chat only"). Null when the task has no recorded source
    * (legacy records or ad-hoc calls outside a task). Optional so
@@ -61,7 +61,7 @@ export interface ToolContext {
     | { kind: 'schedule'; schedule_id: string }
     | { kind: 'delegation'; parent_task_id: string }
     | { kind: 'cli' }
-    | { kind: 'self_spawn' }
+    | { kind: 'self_started' }
     | {
         kind: 'connector'
         connector_id: string

@@ -1,14 +1,14 @@
 /**
  * MCP server restart manager (Epic 9 Phase A PR D).
  *
- * Wraps `spawnStdioMcpServer` (PR B) with the locked backoff + crash
+ * Wraps `launchStdioMcpServer` (PR B) with the locked backoff + crash
  * policy from the Phase A spec:
  *
  *   - 3 fast retries: 200ms, 1s, 5s
  *   - Then exponential starting at 30s, capped at 5 minutes
  *   - Passive notification on first restart
  *   - Important notification at 5+ consecutive failures
- *   - Consecutive-failures counter resets on a successful spawn
+ *   - Consecutive-failures counter resets on a successful launch
  *
  * The manager exposes the same `McpServer` shape that the registry
  * consumes ... a stable Map<string, ToolDefinition> ... so the
@@ -29,8 +29,8 @@
 import { defineTool, type ToolContext, type ToolDefinition } from './tool.js'
 import type { McpServer } from './server.js'
 import {
-  spawnStdioMcpServer,
-  type SpawnStdioMcpArgs,
+  launchStdioMcpServer,
+  type LaunchStdioMcpArgs,
   type StdioMcpServerHandle,
 } from './stdio-transport.js'
 import { z } from 'zod'
@@ -103,12 +103,12 @@ export type RestartNotifier = (args: {
 export interface McpServerManagerArgs {
   /** Identity-declared server name; also the dotted namespace prefix. */
   serverName: string
-  /** Spawn arguments forwarded to `spawnStdioMcpServer`. */
-  spawnArgs: SpawnStdioMcpArgs
+  /** Launch arguments forwarded to `launchStdioMcpServer`. */
+  launchArgs: LaunchStdioMcpArgs
   /** Notification emitter for restart events. */
   notifier: RestartNotifier
-  /** Test injection: override the spawn function. */
-  spawn?: (args: SpawnStdioMcpArgs) => Promise<StdioMcpServerHandle>
+  /** Test injection: override the launch function. */
+  launch?: (args: LaunchStdioMcpArgs) => Promise<StdioMcpServerHandle>
   /** Test injection: override the sleep function. */
   sleep?: (ms: number) => Promise<void>
   /** Optional logger. */
@@ -136,14 +136,14 @@ export class McpServerManager implements McpServer {
   readonly name: string
   readonly tools: ReadonlyMap<string, ToolDefinition>
 
-  private readonly spawnArgs: SpawnStdioMcpArgs
+  private readonly launchArgs: LaunchStdioMcpArgs
   private readonly notifier: RestartNotifier
-  private readonly spawnFn: (args: SpawnStdioMcpArgs) => Promise<StdioMcpServerHandle>
+  private readonly launchFn: (args: LaunchStdioMcpArgs) => Promise<StdioMcpServerHandle>
   private readonly sleepFn: (ms: number) => Promise<void>
   private readonly log: Logger
 
   private currentHandle: StdioMcpServerHandle | undefined
-  /** Tools the FIRST successful spawn discovered. Stable thereafter. */
+  /** Tools the FIRST successful launch discovered. Stable thereafter. */
   private readonly discoveredTools = new Set<string>()
   private consecutiveFailures = 0
   private stopped = false
@@ -152,34 +152,34 @@ export class McpServerManager implements McpServer {
 
   constructor(args: McpServerManagerArgs) {
     this.name = args.serverName
-    this.spawnArgs = args.spawnArgs
+    this.launchArgs = args.launchArgs
     this.notifier = args.notifier
-    this.spawnFn = args.spawn ?? spawnStdioMcpServer
+    this.launchFn = args.launch ?? launchStdioMcpServer
     this.sleepFn = args.sleep ?? defaultSleep
     this.log = args.logger ?? NOOP_LOGGER
 
     // The tools Map the registry holds onto is created up front and
-    // populated lazily on first successful spawn. Forwarding tool
+    // populated lazily on first successful launch. Forwarding tool
     // definitions check the current handle at call time.
     this.tools = new Map<string, ToolDefinition>()
   }
 
   /**
-   * First spawn. Throws if it fails ... an Agent that cannot start its
+   * First launch. Throws if it fails ... an Agent that cannot start its
    * MCP servers should not start. Subsequent crashes are non-fatal and
    * trigger the restart loop.
    */
   async start(): Promise<void> {
-    const handle = await this.spawnFn(this.spawnArgs)
+    const handle = await this.launchFn(this.launchArgs)
     this.currentHandle = handle
     this.attachCloseListener(handle)
 
-    // Populate the tools map ONCE on first spawn. Subsequent restarts
+    // Populate the tools map ONCE on first launch. Subsequent restarts
     // re-register against the same Map so registry consumers see no
     // change. If the server's tool list legitimately changes across a
     // restart (rare in practice for a stable MCP server), tools added
     // post-restart are missing here and tools removed post-restart
-    // throw at call time. Future polish can refresh on each spawn.
+    // throw at call time. Future polish can refresh on each launch.
     const mutableTools = this.tools as Map<string, ToolDefinition>
     for (const name of handle.tools.keys()) {
       this.discoveredTools.add(name)
@@ -199,13 +199,13 @@ export class McpServerManager implements McpServer {
       await h.close().catch(() => undefined)
     }
     // Wait for any pending restart to settle so we do not leak a
-    // newly-spawned child after stop returns.
+    // newly-launched child after stop returns.
     if (this.restartPromise !== undefined) {
       await this.restartPromise.catch(() => undefined)
     }
   }
 
-  /** Tools discovered on the first successful spawn, exposed for tests. */
+  /** Tools discovered on the first successful launch, exposed for tests. */
   get knownToolNames(): readonly string[] {
     return [...this.discoveredTools]
   }
@@ -215,7 +215,7 @@ export class McpServerManager implements McpServer {
     return this.currentHandle !== undefined
   }
 
-  /** Number of consecutive failures since the last successful spawn. */
+  /** Number of consecutive failures since the last successful launch. */
   get failureCount(): number {
     return this.consecutiveFailures
   }
@@ -250,8 +250,8 @@ export class McpServerManager implements McpServer {
 
   private async restartLoop(): Promise<void> {
     // Loop with explicit `stopped` checks at every async boundary so
-    // a stop() call between the sleep and the spawn does not result
-    // in a stale spawn after shutdown. The redundant-conditional lint
+    // a stop() call between the sleep and the launch does not result
+    // in a stale launch after shutdown. The redundant-conditional lint
     // rule is silenced on the post-await checks because TypeScript's
     // flow analysis can not see through async boundaries (stop() may
     // run between the await and the next statement).
@@ -260,10 +260,10 @@ export class McpServerManager implements McpServer {
       const attemptNumber = this.consecutiveFailures
       const delayMs = computeBackoffMs(attemptNumber)
       // emitRestartNotification was previously OUTSIDE the try/catch
-      // around spawnFn ... a notification-write failure (disk full,
+      // around launchFn ... a notification-write failure (disk full,
       // file permissions, brain index lock) would bubble out of the
       // loop as an unhandled rejection and crash the agent process.
-      // Wrapped now so the loop continues to attempt the spawn even
+      // Wrapped now so the loop continues to attempt the launch even
       // if the operator-facing notification can't land.
       try {
         await this.emitRestartNotification(attemptNumber)
@@ -284,7 +284,7 @@ export class McpServerManager implements McpServer {
       if (this.stopped) return
 
       try {
-        const next = await this.spawnFn(this.spawnArgs)
+        const next = await this.launchFn(this.launchArgs)
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (this.stopped) {
           await next.close().catch(() => undefined)

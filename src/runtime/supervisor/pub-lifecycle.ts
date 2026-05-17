@@ -1,5 +1,5 @@
 /**
- * Pub-server process lifecycle: spawn, track, kill.
+ * Pub-server process lifecycle: launch, track, kill.
  *
  * The supervisor owns this layer. It uses Node's `child_process.spawn`
  * to launch `openpub-server` (from `@openpub-ai/pub-server`) for each
@@ -10,7 +10,7 @@
  * Why a separate module from `lifecycle.ts`: the env contract differs
  * (PUB_MD_PATH, PORT, OPENPUB_ISSUER) and the process binary differs
  * (openpub-server, not the in-tree Agent bootstrap). Sharing one
- * spawner would require either a parameterized hairball or an
+ * launcher would require either a parameterized hairball or an
  * abstract base, both of which are heavier than two small modules.
  *
  * State-on-disk discipline (upgrade-readiness #2): the live PID map
@@ -25,10 +25,10 @@ import { fileURLToPath } from 'node:url'
 import { createLogger, type Logger } from '../util/logger.js'
 import { pubPaths } from '../storage/layout.js'
 
-export interface SpawnedPub {
+export interface StartedPub {
   /** The pub's name (matches its record key in supervisor.json). */
   readonly name: string
-  /** The OS process ID of the spawned pub-server. */
+  /** The OS process ID of the started pub-server. */
   readonly pid: number
   /** Resolves when the process exits. */
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
@@ -36,7 +36,7 @@ export interface SpawnedPub {
   stop(timeoutMs?: number): Promise<void>
 }
 
-class SpawnedPubImpl implements SpawnedPub {
+class StartedPubImpl implements StartedPub {
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
 
   constructor(
@@ -75,7 +75,7 @@ class SpawnedPubImpl implements SpawnedPub {
   }
 }
 
-export interface SpawnPubOptions {
+export interface StartPubOptions {
   /** Pub name (slug). Used for log labeling and PID file naming. */
   name: string
   /** 2200_HOME root. Per-pub state lives at `<home>/state/openpub/<name>/`. */
@@ -100,15 +100,15 @@ export interface SpawnPubOptions {
 }
 
 /**
- * Spawn an `openpub-server` child for a pub. Returns once the process
- * is launched (spawned); does NOT wait for the pub-server to bind its
- * port or report ready. Callers that need ready-state should poll the
- * pub-server's `/info` endpoint after spawn.
+ * Launch an `openpub-server` child for a pub. Returns once the process
+ * is started; does NOT wait for the pub-server to bind its port or
+ * report ready. Callers that need ready-state should poll the
+ * pub-server's `/info` endpoint after launch.
  *
  * The child's stdout and stderr are piped to `<home>/state/openpub/<name>/pub.log`
  * for post-mortem inspection without bloating the supervisor's own log.
  */
-export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
+export function launchPubProcess(opts: StartPubOptions, log?: Logger): StartedPub {
   const componentLog = log ?? createLogger('pub-lifecycle')
   const executable = opts.executablePath ?? defaultPubServerExecutable()
   const paths = pubPaths(opts.home, opts.name)
@@ -130,11 +130,13 @@ export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
   // cli.pub.create time and persists them into the pub's state dir.
   const issuer = opts.issuer ?? 'local'
   if (issuer === 'local' && !opts.adminSecret) {
-    throw new Error(`spawnPub: adminSecret is required when issuer === 'local' (pub: ${opts.name})`)
+    throw new Error(
+      `launchPubProcess: adminSecret is required when issuer === 'local' (pub: ${opts.name})`,
+    )
   }
   if (!opts.signingPrivateKey || !opts.signingPublicKey) {
     throw new Error(
-      `spawnPub: signingPrivateKey and signingPublicKey are required (pub: ${opts.name})`,
+      `launchPubProcess: signingPrivateKey and signingPublicKey are required (pub: ${opts.name})`,
     )
   }
   const env: NodeJS.ProcessEnv = {
@@ -159,7 +161,7 @@ export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
 
   if (child.pid === undefined) {
     throw new Error(
-      `failed to spawn pub-server for ${opts.name}: no pid (executable: ${executable})`,
+      `failed to launch pub-server for ${opts.name}: no pid (executable: ${executable})`,
     )
   }
 
@@ -181,7 +183,7 @@ export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
     logStream.end()
   })
 
-  componentLog.info('pub-server spawned', {
+  componentLog.info('pub-server started', {
     name: opts.name,
     pid: child.pid,
     port: opts.port,
@@ -189,14 +191,14 @@ export function spawnPub(opts: SpawnPubOptions, log?: Logger): SpawnedPub {
     trust_mode: opts.issuer ?? 'local',
   })
 
-  return new SpawnedPubImpl(opts.name, child.pid, child, componentLog.child(opts.name))
+  return new StartedPubImpl(opts.name, child.pid, child, componentLog.child(opts.name))
 }
 
 /**
  * Resolve the openpub-server executable path. v1 strategy:
  *   1. If the local `node_modules/.bin/openpub-server` exists, use it.
  *   2. Otherwise, fall back to bare `openpub-server` and let PATH lookup
- *      do its job (or fail with a clear error at spawn time).
+ *      do its job (or fail with a clear error at launch time).
  *
  * The dependency is `@openpub-ai/pub-server`; installing it places the
  * binary at `node_modules/.bin/openpub-server`. PR A pins to v0.3.1.
@@ -219,9 +221,9 @@ function defaultPubServerExecutable(): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
   }
-  // Fall back to PATH lookup. Spawn will fail with ENOENT if the binary
-  // is not installed, with a message clear enough to point the user at
-  // `pnpm add @openpub-ai/pub-server`.
+  // Fall back to PATH lookup. The launch will fail with ENOENT if the
+  // binary is not installed, with a message clear enough to point the
+  // user at `pnpm add @openpub-ai/pub-server`.
   return 'openpub-server'
 }
 

@@ -9,7 +9,7 @@
  * v1 issue kinds (server side, kept in sync there):
  *   - agent_errored_recoverable  (fix: restart the Agent)
  *   - agent_errored_unknown      (report only; operator triages)
- *   - connector_gateway_missing  (fix: spawn the gateway)
+ *   - connector_gateway_missing  (fix: start the gateway)
  *   - pending_credential_orphaned (fix: expire the request)
  *
  * Decision context: 2026-05-16 evening Doctor add ... self-healing as

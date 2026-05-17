@@ -156,7 +156,7 @@ export type TaskError = z.infer<typeof TaskErrorSchema>
  * certain operations may only run from certain surfaces. Optional /
  * nullable so legacy task records pre-dating this field load cleanly.
  *
- * Set by the task creator at spawn time:
+ * Set by the task creator at start time:
  *   - chat HTTP handler  → { kind: 'chat', chat_id, message_id? }
  *   - pub wake-source    → { kind: 'pub', pub: <name> }
  *   - scheduler          → { kind: 'schedule', schedule_id }
@@ -165,7 +165,7 @@ export type TaskError = z.infer<typeof TaskErrorSchema>
  *
  * Other task-frontmatter fields capture delegation provenance
  * already (delegated_by, delegating_task_id). This `source` field is
- * the broader generalization across all spawn surfaces.
+ * the broader generalization across all task creation surfaces.
  */
 export const TaskSourceSchema = z
   .discriminatedUnion('kind', [
@@ -173,7 +173,7 @@ export const TaskSourceSchema = z
       kind: z.literal('chat'),
       /** The chat thread the message landed in. Required for chat sources. */
       chat_id: z.string().min(1),
-      /** The user message that triggered the spawn, if known. */
+      /** The user message that triggered the task, if known. */
       message_id: z.string().optional(),
     }),
     z.object({
@@ -189,7 +189,7 @@ export const TaskSourceSchema = z
       parent_task_id: z.string().min(1),
     }),
     z.object({ kind: z.literal('cli') }),
-    z.object({ kind: z.literal('self_spawn') }),
+    z.object({ kind: z.literal('self_started') }),
     z.object({
       kind: z.literal('connector'),
       /** Connector Extension's id (e.g. 'whatsapp', 'slack'). */
@@ -310,7 +310,7 @@ export const TaskFrontmatterSchema = z.object({
   /**
    * Where the task originated (decision:
    * 2026-05-14-request-credential-substrate). Optional so legacy
-   * records load; new code sets it at spawn time. Surface-aware tools
+   * records load; new code sets it at start time. Surface-aware tools
    * use this to enforce origin restrictions (e.g., request_credential
    * is allowed only from chat).
    */
@@ -349,7 +349,7 @@ export function newPendingTask(args: {
   delegated_by?: string | null
   delegating_task_id?: string | null
   delegation_depth?: number
-  /** Spawn surface; defaults to null (treated as "unknown / non-chat" by surface-aware tools). */
+  /** Task source; defaults to null (treated as "unknown / non-chat" by surface-aware tools). */
   source?: TaskSource
   now?: () => Date
 }): TaskRecord {

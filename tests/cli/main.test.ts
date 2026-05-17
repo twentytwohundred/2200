@@ -152,17 +152,17 @@ describe('daemon subcommand', () => {
 })
 
 describe('agent subcommand', () => {
-  it('has create, migrate, spawn, start, stop, resume, status, budget, identity, tool-health', () => {
+  it('has build, create, migrate, start, stop, resume, status, budget, identity, tool-health', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
     const subs = agent.commands.map((c) => c.name()).sort()
     expect(subs).toEqual([
       'budget',
+      'build',
       'create',
       'identity',
       'migrate',
       'resume',
-      'spawn',
       'start',
       'status',
       'stop',
@@ -183,11 +183,11 @@ describe('agent subcommand', () => {
     expect(longs).toContain('--validate')
   })
 
-  it('agent spawn accepts --script, --provider, --model, --yes, --dry-run', () => {
+  it('agent build accepts --script, --provider, --model, --yes, --dry-run', () => {
     const program = buildProgram()
     const agent = findSubcommand(program, 'agent')!
-    const spawn = findSubcommand(agent, 'spawn')!
-    const longs = spawn.options.map((o) => o.long)
+    const build = findSubcommand(agent, 'build')!
+    const longs = build.options.map((o) => o.long)
     expect(longs).toContain('--script')
     expect(longs).toContain('--provider')
     expect(longs).toContain('--model')

@@ -1,7 +1,7 @@
 /**
  * Manual-test smoke for Epic 9 Phase C-1 (HTTP MCP transport).
  *
- * Connects 2200's actual `spawnHttpMcpServer` to a live public MCP endpoint
+ * Connects 2200's actual `launchHttpMcpServer` to a live public MCP endpoint
  * (DeepWiki — no auth, public-mode tools). Verifies:
  *   1. The transport opens and `initialize` succeeds.
  *   2. `tools/list` returns real tools wrapped as 2200 ToolDefinitions.
@@ -9,14 +9,14 @@
  *
  * Run: pnpm tsx scripts/smoke-http-mcp.ts
  */
-import { spawnHttpMcpServer } from '../src/runtime/mcp/http-transport.js'
+import { launchHttpMcpServer } from '../src/runtime/mcp/http-transport.js'
 import type { ToolContext } from '../src/runtime/mcp/tool.js'
 
 const ENDPOINT = 'https://mcp.deepwiki.com/mcp'
 
 async function main(): Promise<void> {
   console.log(`[smoke] connecting to ${ENDPOINT} ...`)
-  const handle = await spawnHttpMcpServer({
+  const handle = await launchHttpMcpServer({
     name: 'deepwiki',
     url: ENDPOINT,
   })

@@ -163,17 +163,45 @@ export type AgentErroredResult = z.infer<typeof AgentErroredResultSchema>
 export const StateSnapshotParamsSchema = z.object({}).strict()
 export type StateSnapshotParams = z.infer<typeof StateSnapshotParamsSchema>
 
-export const AgentRecordSchema = z.object({
-  name: z.string(),
-  identity_path: z.string(),
-  state: AgentStateSchema,
-  pid: z.number().int().positive().nullable(),
-  spawned_at: z.string().nullable(),
-  last_heartbeat: z.string().nullable(),
-  errored_at: z.string().nullable(),
-  errored_reason: z.string().nullable(),
-  current_task_id: z.string().nullable(),
-})
+/**
+ * Legacy field-rename normalizer for AgentRecord / PubRecord.
+ *
+ * Pre-2026-05-17, both records stored their creation timestamp under
+ * `spawned_at`. The 2026-05-17 operator-language sweep renamed it to
+ * `created_at` across every surface (runtime types, HTTP API, web client).
+ * Existing on-disk `supervisor.json` snapshots written by the previous
+ * runtime still carry `spawned_at`; this preprocess copies it into
+ * `created_at` before Zod validates so the daemon does not refuse to
+ * boot on a legacy snapshot. The next successful state save writes the
+ * new field name and the migration is permanent for that install.
+ *
+ * Safe to remove once no live install has a `spawned_at`-shaped snapshot
+ * on disk (probably v2 schema bump material).
+ */
+function migrateSpawnedAtToCreatedAt(input: unknown): unknown {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const obj = input as Record<string, unknown>
+    if (obj['spawned_at'] !== undefined && obj['created_at'] === undefined) {
+      return { ...obj, created_at: obj['spawned_at'] }
+    }
+  }
+  return input
+}
+
+export const AgentRecordSchema = z.preprocess(
+  migrateSpawnedAtToCreatedAt,
+  z.object({
+    name: z.string(),
+    identity_path: z.string(),
+    state: AgentStateSchema,
+    pid: z.number().int().positive().nullable(),
+    created_at: z.string().nullable(),
+    last_heartbeat: z.string().nullable(),
+    errored_at: z.string().nullable(),
+    errored_reason: z.string().nullable(),
+    current_task_id: z.string().nullable(),
+  }),
+)
 export type AgentRecord = z.infer<typeof AgentRecordSchema>
 
 /**
@@ -199,16 +227,19 @@ export type PubState = z.infer<typeof PubStateSchema>
  * the conversation. There is no "channel" abstraction inside a pub;
  * a multi-pub install runs N supervised pub-server children.
  */
-export const PubRecordSchema = z.object({
-  name: z.string(),
-  pub_md_path: z.string(),
-  port: z.number().int().positive(),
-  state: PubStateSchema,
-  pid: z.number().int().positive().nullable(),
-  spawned_at: z.string().nullable(),
-  errored_at: z.string().nullable(),
-  errored_reason: z.string().nullable(),
-})
+export const PubRecordSchema = z.preprocess(
+  migrateSpawnedAtToCreatedAt,
+  z.object({
+    name: z.string(),
+    pub_md_path: z.string(),
+    port: z.number().int().positive(),
+    state: PubStateSchema,
+    pid: z.number().int().positive().nullable(),
+    created_at: z.string().nullable(),
+    errored_at: z.string().nullable(),
+    errored_reason: z.string().nullable(),
+  }),
+)
 export type PubRecord = z.infer<typeof PubRecordSchema>
 
 /**
@@ -273,7 +304,7 @@ export const CliAgentCreateResultSchema = z.object({
 })
 export type CliAgentCreateResult = z.infer<typeof CliAgentCreateResultSchema>
 
-/** C->S: spawn the Agent process for an existing record. */
+/** C->S: start the Agent process for an existing record. */
 export const CliAgentStartParamsSchema = z.object({
   name: z.string().min(1),
 })
@@ -415,7 +446,7 @@ export const PubListEntrySchema = z.object({
   state: PubStateSchema,
   port: z.number().int().positive(),
   pid: z.number().int().positive().nullable(),
-  spawned_at: z.string().nullable(),
+  created_at: z.string().nullable(),
   errored_reason: z.string().nullable(),
 })
 export type PubListEntry = z.infer<typeof PubListEntrySchema>
@@ -596,11 +627,11 @@ export const CliSchedulerReloadResultSchema = z.object({
 export type CliSchedulerReloadResult = z.infer<typeof CliSchedulerReloadResultSchema>
 
 /**
- * cli.spawn.from-handoff
+ * cli.build.from-handoff
  *
  * Run the migration orchestrator (the same path used by `agent
- * migrate` and `agent spawn`'s standalone branch) inside the running
- * supervisor. The CLI uses this when the daemon is up so the spawn
+ * migrate` and `agent build`'s standalone branch) inside the running
+ * supervisor. The CLI uses this when the daemon is up so the build
  * pipeline goes through the daemon's Supervisor instance instead of
  * opening a second one (which would race on state files).
  *
@@ -617,21 +648,21 @@ export const HandoffDocumentInputSchema = z.object({
 })
 export type HandoffDocumentInput = z.infer<typeof HandoffDocumentInputSchema>
 
-export const CliSpawnFromHandoffParamsSchema = z.object({
+export const CliBuildFromHandoffParamsSchema = z.object({
   handoff: HandoffDocumentInputSchema,
   /** Replace any existing Agent of the same name. Destructive. */
   force: z.boolean().optional(),
 })
-export type CliSpawnFromHandoffParams = z.infer<typeof CliSpawnFromHandoffParamsSchema>
+export type CliBuildFromHandoffParams = z.infer<typeof CliBuildFromHandoffParamsSchema>
 
-export const CliSpawnFromHandoffResultSchema = z.object({
+export const CliBuildFromHandoffResultSchema = z.object({
   agent_name: z.string(),
   identity_path: z.string(),
   continuity_note_slug: z.string(),
   brain_imported_count: z.number().int().nonnegative(),
   notification_id: z.string(),
 })
-export type CliSpawnFromHandoffResult = z.infer<typeof CliSpawnFromHandoffResultSchema>
+export type CliBuildFromHandoffResult = z.infer<typeof CliBuildFromHandoffResultSchema>
 
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
@@ -744,9 +775,9 @@ export const METHODS = {
     params: CliSchedulerReloadParamsSchema,
     result: CliSchedulerReloadResultSchema,
   },
-  'cli.spawn.from-handoff': {
-    params: CliSpawnFromHandoffParamsSchema,
-    result: CliSpawnFromHandoffResultSchema,
+  'cli.build.from-handoff': {
+    params: CliBuildFromHandoffParamsSchema,
+    result: CliBuildFromHandoffResultSchema,
   },
 } as const
 

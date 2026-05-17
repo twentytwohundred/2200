@@ -24,7 +24,7 @@
  *     (Identity loader applies the same default; we set explicitly so
  *     it round-trips to ts callers).
  *   - budget.daily_cap_usd: defaulted at the onboarding layer to a
- *     conservative $25/day. Operators adjust per Agent post-spawn via
+ *     conservative $25/day. Operators adjust per Agent post-build via
  *     normal Identity edits.
  *   - brain.inline_notes: a single inline note carrying the LLM's
  *     summary as the continuity-from-onboarding seed.
@@ -77,7 +77,7 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
   // Soft fallback for v2 LLM-driven interviews: if the interviewer
   // never reached the agent_name goal (model timed out, forced
   // 'done' on a malformed directive, etc.), synthesize a name from
-  // the opening answer so the spawn can still produce an Identity
+  // the opening answer so the build can still produce an Identity
   // the operator can rename later. The v1 (retired) scripts always
   // included an agent_name question, so this path didn't apply.
   const cleanName =
@@ -91,7 +91,7 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
   //   - v2 (LLM-driven): chosen_branch is always 'llm_driven', which
   //     is a poor user-facing tag. Default to a generic 'agent'; the
   //     downstream 'humanizeAgentType' renders that as "agent" cleanly,
-  //     and operators can edit the Identity post-spawn if they want a
+  //     and operators can edit the Identity post-build if they want a
   //     more specific role.
   const agentType = t.chosen_branch === 'llm_driven' ? 'agent' : stripBranchSuffix(t.chosen_branch)
 
@@ -205,6 +205,6 @@ function synthesizeAgentName(t: InterviewTranscript): string {
     }
   }
   // Last-resort name: timestamp suffix keeps it unique enough that
-  // re-spawning back-to-back doesn't collide.
+  // re-building back-to-back doesn't collide.
   return `agent-${Date.now().toString(36).slice(-6)}`
 }

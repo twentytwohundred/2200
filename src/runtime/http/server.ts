@@ -1345,7 +1345,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     state: TaskStateEnum.optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
     /**
-     * Source filter. 'other' (default) excludes chat-spawned tasks;
+     * Source filter. 'other' (default) excludes chat-created tasks;
      * the chat screen already surfaces those. 'chat' returns only
      * chat tasks. 'all' returns everything regardless of source.
      */
@@ -1809,7 +1809,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
 
   // -- agent chat (Epic 15 Phase C interaction surface) -------------------
   // Persistent conversation thread with the Agent. Each user message
-  // appends to the chat log + spawns a task that sees the full prior
+  // appends to the chat log + starts a task that sees the full prior
   // history; on task completion the assistant message is appended.
   // The web /chat screen polls (and listens to WS task events) to
   // surface assistant turns as they land.
@@ -1866,13 +1866,13 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       idempotency: 'destructive',
       // The legacy `/chat` endpoint targets the implicit default
       // thread. credential_request reads `task.source.kind === 'chat'`
-      // to gate dispatch; without this, every chat-spawned task would
+      // to gate dispatch; without this, every chat-created task would
       // present as null-source and the surface check would reject.
       source: { kind: 'chat', chat_id: 'default', message_id: userMsg.id },
     })
     await taskStore.save(task)
 
-    // Spawn a background watcher: when the task transitions to a
+    // Start a background watcher: when the task transitions to a
     // terminal state, append the assistant message back into the
     // chat log. We poll the task store rather than reach into the
     // agent process; the daemon watches its own filesystem.
@@ -2042,7 +2042,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         message: toMultiChatMessageDto(userMsg),
       })
 
-      // Spawn an Agent task with the full chat history as context. The
+      // Start an Agent task with the full chat history as context. The
       // assistant reply is appended by watchAndAppendChatThreadReply
       // when the task lands in a terminal state.
       const history = await store.listMessages(req.params.chatId)
@@ -2064,7 +2064,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // Continuation primitive (decision:
       // 2026-05-16-task-continuation-primitive): if this agent has a
       // task parked on a wait_for matching this chat thread + sender,
-      // resume it instead of spawning a fresh task. The chat
+      // resume it instead of starting a fresh task. The chat
       // continuity case is the user replying after the Agent called
       // `await_response` with source_kind='chat' (e.g. "I'll come back
       // when I have an answer from X" then the user replied first).
@@ -2493,7 +2493,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       state: p.state,
       port: p.port,
       pid: p.pid,
-      spawned_at: p.spawned_at,
+      created_at: p.created_at,
       errored_at: p.errored_at,
       errored_reason: p.errored_reason,
     }))
@@ -2566,9 +2566,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         `pub record created but startup failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
-    // Settle: the pub-server is spawned but its HTTP listener may
+    // Settle: the pub-server is launched but its HTTP listener may
     // not yet be bound. The existing supervisor recoverState path
-    // waits 800ms after pub spawn for the same reason. Wait + ping
+    // waits 800ms after pub launch for the same reason. Wait + ping
     // /agents/me-style endpoint until it responds before we try to
     // register anyone.
     {
@@ -3013,7 +3013,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       state: pub.state,
       port: pub.port,
       pid: pub.pid,
-      spawned_at: pub.spawned_at,
+      created_at: pub.created_at,
       errored_at: pub.errored_at,
       errored_reason: pub.errored_reason,
       members,
@@ -3302,7 +3302,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // -- onboarding (Epic 14 + Epic 15 Phase B Card Stack) --------------------
   // Server-side state machine for the conversational onboarding flow.
   // The web app calls these endpoints to drive a question/answer
-  // conversation, see a preview, and confirm to spawn an Agent.
+  // conversation, see a preview, and confirm to build an Agent.
   // Sessions are in-memory only on the supervisor; a daemon restart
   // drops every in-flight interview, mirroring the CLI's flow.
   const sessions = supervisor.getOnboardingSessions()
@@ -3477,7 +3477,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     // Auto-start the new Agent. Without this, the Agent record is on disk
     // in `state: 'stopped'` and the seeded orientation task sits in the
     // queue waiting indefinitely. v1 scope's Capability 1 onboarding
-    // expects "Agent is spawned ... reports ready" to happen from a single
+    // expects "Agent is built ... reports ready" to happen from a single
     // operator action; the start has to fire here, not via a follow-up
     // CLI call. Failure to start is logged via notification but does not
     // fail the confirm ... the operator can `2200 agent start <name>`
@@ -3559,7 +3559,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // Connector inbound endpoint (decision: 2026-05-16-connector-extensions).
   //
   // Per-connector gateway processes (the long-lived child processes the
-  // supervisor spawns for WhatsApp / Slack / Discord / Telegram
+  // supervisor starts for WhatsApp / Slack / Discord / Telegram
   // Extensions) POST normalized inbound events here. The handler resolves
   // which Agents have a binding to the connector, applies their per-
   // binding allowlist + policy, and creates synthetic tasks on each Agent
@@ -3933,7 +3933,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
 
   // -- pair flow (connector Extensions) ----------------------------------
   // The Store UI's "Finish install" CTA hits POST /pair/start, which
-  // spawns the gateway child process. The gateway then POSTs its pair
+  // starts the gateway child process. The gateway then POSTs its pair
   // state (qr | connecting | paired | disconnected) to /pair/state as
   // events fire. The Store polls GET /pair/state every ~500ms during
   // active pairing.
@@ -4095,7 +4095,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   //   2. Seal credentials into the per-Agent vault (name: `${id}-${key}`).
   //   3. Add/update the connector binding in the Agent's identity.md.
   //   4. Restart the Agent so the loop picks up the new binding.
-  //   5. Spawn the gateway for (extension_id, agent_name).
+  //   5. Start the gateway for (extension_id, agent_name).
   // ----------------------------------------------------------------------
 
   const SetupAgentBindingBodySchema = z.object({
@@ -4236,7 +4236,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         })
       }
 
-      // 4. Spawn the gateway.
+      // 4. Start the gateway.
       try {
         const handle = await gatewayManager.start(id, agent)
         return await reply.status(200).send({
@@ -4562,7 +4562,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
                 `but the gateway process is not live. Inbound messages will not wake anyone ` +
                 `until the gateway is back up.`,
               fix_available: true,
-              fix_label: 'Spawn gateway',
+              fix_label: 'Start gateway',
             })
           }
         } else {
@@ -4577,7 +4577,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
                   `${agent} has a ${entry.label} binding but the per-Agent gateway is not live. ` +
                   `${entry.label} messages to ${agent} will not arrive until the gateway is back up.`,
                 fix_available: true,
-                fix_label: `Spawn gateway for ${agent}`,
+                fix_label: `Start gateway for ${agent}`,
               })
             }
           }
@@ -4655,12 +4655,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         const handle = await gatewayManager.start(extId, agentName)
         return await reply.send({
           applied: true,
-          message: `Spawned ${extId} gateway${agentName ? ` for ${agentName}` : ''} (pid ${String(handle.pid)}).`,
+          message: `Started ${extId} gateway${agentName ? ` for ${agentName}` : ''} (pid ${String(handle.pid)}).`,
         })
       } catch (err) {
         return reply.status(500).send({
           applied: false,
-          message: `Could not spawn gateway: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Could not start gateway: ${err instanceof Error ? err.message : String(err)}`,
         })
       }
     }
@@ -4712,9 +4712,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // are orphaned (SIGKILL case). Either way, the new supervisor's
   // GatewayManager starts with empty state and no gateway is running
   // for any installed Extension. Inbound messages disappear silently
-  // until the operator manually re-spawns each gateway. This block
+  // until the operator manually re-starts each gateway. This block
   // closes that gap: walk installed Extensions + per-Agent bindings
-  // and spawn the gateways that should be running.
+  // and start the gateways that should be running.
   //
   // For per-Agent connectors (Discord), one gateway per (extension,
   // Agent) tuple. For per-Extension connectors (WhatsApp Inbox), one
@@ -4802,7 +4802,7 @@ async function recoverGateways(args: RecoverGatewaysArgs): Promise<void> {
   // Orphan sweep: when a prior supervisor was SIGKILL'd (instead of
   // SIGTERM'd) its child gateways survived. Each gateway writes its
   // own pid + port to gateway.json at startup; walk those files and
-  // SIGTERM any pids that are still alive before spawning fresh.
+  // SIGTERM any pids that are still alive before starting fresh.
   // Without this, the new gateway and the orphan both connect to
   // Discord with the same bot token; Discord's single-bot-token rule
   // kicks one but the orphan keeps reconnect-looping in the
@@ -4819,7 +4819,7 @@ async function recoverGateways(args: RecoverGatewaysArgs): Promise<void> {
     return
   }
   // Build the set of (agent, connector_id) bindings by walking each
-  // Agent's identity.md. We only spawn gateways for connectors that
+  // Agent's identity.md. We only start gateways for connectors that
   // (a) are installed, (b) have a gateway hook in the catalog entry,
   // and (c) have at least one Agent binding.
   const snap = snapshot()
@@ -4846,7 +4846,7 @@ async function recoverGateways(args: RecoverGatewaysArgs): Promise<void> {
     const scope = entry.account_scope ?? 'extension'
     const bindings = agentBindings.filter((b) => b.connector_id === extId)
     if (bindings.length === 0) {
-      // No Agent uses this Extension; no gateway to spawn.
+      // No Agent uses this Extension; no gateway to start.
       skipped += 1
       continue
     }
@@ -4965,7 +4965,7 @@ async function sweepOrphanGateways(stateRoot: string, log: Logger | undefined): 
     }
   }
   if (killed > 0) {
-    // Give the orphans a moment to exit cleanly before we spawn
+    // Give the orphans a moment to exit cleanly before we start
     // replacements that contend for the same bot token / device pair.
     await new Promise((r) => setTimeout(r, 200))
     log?.info('orphan gateway sweep complete', { killed })
@@ -5086,7 +5086,7 @@ async function toAgentDto(
     pid: number | null
     current_task_id: string | null
     identity_path: string
-    spawned_at: string | null
+    created_at: string | null
     last_heartbeat: string | null
     errored_at: string | null
     errored_reason: string | null
@@ -5136,7 +5136,7 @@ async function toAgentDto(
     pid: rec.pid,
     current_task_id: rec.current_task_id,
     identity_path: rec.identity_path,
-    spawned_at: rec.spawned_at,
+    created_at: rec.created_at,
     last_heartbeat: rec.last_heartbeat,
     errored_at: rec.errored_at,
     errored_reason: rec.errored_reason,
@@ -5564,7 +5564,7 @@ function stripTopLevelBlock(lines: string[], key: string): string[] {
   return out
 }
 
-/** Marker prefix that identifies a chat-spawned task body. Kept in sync with buildChatTaskBody. */
+/** Marker prefix that identifies a chat-created task body. Kept in sync with buildChatTaskBody. */
 const CHAT_TASK_BODY_PREFIX = 'You are continuing a chat with the user.'
 
 function classifyTaskSource(body: string): 'chat' | 'other' {

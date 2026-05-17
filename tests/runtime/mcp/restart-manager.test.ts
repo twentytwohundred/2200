@@ -1,12 +1,12 @@
 /**
  * Tests for the MCP restart manager (Epic 9 Phase A PR D).
  *
- * Pure unit tests with the spawn function and sleep injected. Verifies:
+ * Pure unit tests with the launch function and sleep injected. Verifies:
  *   - the locked backoff schedule (200/1000/5000, then 30s × 2^n
  *     capped at 300s)
  *   - first restart emits a Passive notification
  *   - 5th consecutive failure emits an Important notification
- *   - successful spawn after a crash resets the failure counter
+ *   - successful launch after a crash resets the failure counter
  *   - the forwarding tool definition routes through the current handle
  *   - tool calls during the restart window throw "currently down"
  *   - stop() prevents further restarts even if a close event fires
@@ -22,7 +22,7 @@ import {
   type RestartNotifier,
 } from '../../../src/runtime/mcp/restart-manager.js'
 import type {
-  SpawnStdioMcpArgs,
+  LaunchStdioMcpArgs,
   StdioMcpServerHandle,
 } from '../../../src/runtime/mcp/stdio-transport.js'
 import type { ToolContext, ToolDefinition } from '../../../src/runtime/mcp/tool.js'
@@ -93,7 +93,7 @@ function makeFakeHandle(opts: { name: string; toolNames: string[] }): FakeHandle
   }
 }
 
-const SPAWN_ARGS: SpawnStdioMcpArgs = {
+const LAUNCH_ARGS: LaunchStdioMcpArgs = {
   name: 'fake',
   command: '/bin/true',
   args: [],
@@ -127,13 +127,13 @@ describe('computeBackoffMs', () => {
 })
 
 describe('McpServerManager', () => {
-  it('discovers tools on first spawn and registers forwarding definitions', async () => {
+  it('discovers tools on first launch and registers forwarding definitions', async () => {
     const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo', 'fake_read'] })
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier: vi.fn(),
-      spawn: () => Promise.resolve(fake.handle),
+      launch: () => Promise.resolve(fake.handle),
     })
     await manager.start()
     expect([...manager.knownToolNames].sort()).toEqual(['fake_echo', 'fake_read'])
@@ -145,9 +145,9 @@ describe('McpServerManager', () => {
     const fake = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier: vi.fn(),
-      spawn: () => Promise.resolve(fake.handle),
+      launch: () => Promise.resolve(fake.handle),
     })
     await manager.start()
     const tool = manager.tools.get('fake_echo')!
@@ -160,20 +160,20 @@ describe('McpServerManager', () => {
     let attempt = 0
     const handle1 = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const handle2 = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
-    const spawn = vi.fn(() => {
+    const launch = vi.fn(() => {
       attempt++
       return Promise.resolve(attempt === 1 ? handle1.handle : handle2.handle)
     })
     const notifier = vi.fn<RestartNotifier>(() => Promise.resolve())
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier,
-      spawn,
+      launch,
       sleep: () => Promise.resolve(),
     })
     await manager.start()
-    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(launch).toHaveBeenCalledTimes(1)
 
     handle1.triggerClose()
     // Yield event loop so the restart loop runs
@@ -185,7 +185,7 @@ describe('McpServerManager', () => {
     const firstCall = notifier.mock.calls[0]?.[0]
     expect(firstCall?.tier).toBe('passive')
     expect(firstCall?.body).toContain('fake')
-    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(launch).toHaveBeenCalledTimes(2)
     expect(manager.failureCount).toBe(0) // reset after success
     await manager.stop()
   })
@@ -200,25 +200,25 @@ describe('McpServerManager', () => {
     expect(notificationTierForAttempt(100)).toBeNull()
   })
 
-  it('throws "currently down" on tool calls while the server is between spawns', async () => {
-    let resolveSpawn: ((value: StdioMcpServerHandle) => void) | undefined
-    let spawnInvocations = 0
+  it('throws "currently down" on tool calls while the server is between launches', async () => {
+    let resolveLaunch: ((value: StdioMcpServerHandle) => void) | undefined
+    let launchInvocations = 0
     const initialHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
     const replacementHandle = makeFakeHandle({ name: 'fake', toolNames: ['fake_echo'] })
-    const spawn = async (): Promise<StdioMcpServerHandle> => {
-      spawnInvocations++
-      if (spawnInvocations === 1) return initialHandle.handle
-      // Block the second spawn so the test can call a tool while
+    const launch = async (): Promise<StdioMcpServerHandle> => {
+      launchInvocations++
+      if (launchInvocations === 1) return initialHandle.handle
+      // Block the second launch so the test can call a tool while
       // the manager is mid-restart.
       return new Promise<StdioMcpServerHandle>((resolve) => {
-        resolveSpawn = resolve
+        resolveLaunch = resolve
       })
     }
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier: vi.fn(),
-      spawn,
+      launch,
       sleep: () => Promise.resolve(),
     })
     await manager.start()
@@ -226,60 +226,60 @@ describe('McpServerManager', () => {
 
     // Kill the underlying server.
     initialHandle.triggerClose()
-    // Yield once so the restart loop starts and the second spawn is pending.
+    // Yield once so the restart loop starts and the second launch is pending.
     await new Promise((r) => setImmediate(r))
     await new Promise((r) => setImmediate(r))
 
     await expect(tool.execute({}, FAKE_CTX)).rejects.toThrow(/currently down/)
 
-    // Let the second spawn finish so stop() does not hang.
-    resolveSpawn!(replacementHandle.handle)
+    // Let the second launch finish so stop() does not hang.
+    resolveLaunch!(replacementHandle.handle)
     await manager.stop()
   })
 
   it('stop() prevents further restarts and closes the current handle', async () => {
     const handle1 = makeFakeHandle({ name: 'fake', toolNames: ['t'] })
-    const spawn = vi.fn(() => Promise.resolve(handle1.handle))
+    const launch = vi.fn(() => Promise.resolve(handle1.handle))
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier: vi.fn(),
-      spawn,
+      launch,
       sleep: () => Promise.resolve(),
     })
     await manager.start()
     expect(handle1.closed.value).toBe(false)
     await manager.stop()
     expect(handle1.closed.value).toBe(true)
-    // Trigger close after stop ... no new spawn should run.
+    // Trigger close after stop ... no new launch should run.
     handle1.triggerClose()
     await new Promise((r) => setImmediate(r))
-    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(launch).toHaveBeenCalledTimes(1)
   })
 
   it('a successful restart resets the consecutive-failures counter', async () => {
-    let spawnCount = 0
+    let launchCount = 0
     const handles = [
       makeFakeHandle({ name: 'fake', toolNames: ['t'] }),
       makeFakeHandle({ name: 'fake', toolNames: ['t'] }),
       makeFakeHandle({ name: 'fake', toolNames: ['t'] }),
     ]
-    const spawn = vi.fn(() => {
-      const h = handles[spawnCount]!.handle
-      spawnCount++
+    const launch = vi.fn(() => {
+      const h = handles[launchCount]!.handle
+      launchCount++
       return Promise.resolve(h)
     })
     const manager = new McpServerManager({
       serverName: 'fake',
-      spawnArgs: SPAWN_ARGS,
+      launchArgs: LAUNCH_ARGS,
       notifier: vi.fn(),
-      spawn,
+      launch,
       sleep: () => Promise.resolve(),
     })
     await manager.start()
     expect(manager.failureCount).toBe(0)
     handles[0]!.triggerClose()
-    for (let i = 0; i < 10 && spawnCount < 2; i++) {
+    for (let i = 0; i < 10 && launchCount < 2; i++) {
       await new Promise((r) => setImmediate(r))
     }
     expect(manager.failureCount).toBe(0) // success after restart resets

@@ -1,7 +1,7 @@
 /**
  * Integration test: real Supervisor + real JsonRpcClient over real UDS.
  *
- * Spins up a Supervisor in-process (no Agent processes spawned), connects a
+ * Spins up a Supervisor in-process (no Agent processes started), connects a
  * JsonRpcClient via UDS, and exercises:
  *  - state.snapshot returns the right shape
  *  - agent.register on a known Agent record marks it running

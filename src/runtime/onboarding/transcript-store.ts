@@ -1,7 +1,7 @@
 /**
  * Onboarding transcript persistence (Epic 14 Phase A: persistence + replay).
  *
- * Every successful `2200 spawn` saves the full interview transcript
+ * Every successful `2200 build` saves the full interview transcript
  * to disk for two reasons:
  *
  *   1. **Audit.** Operators can read back why a given Agent was
@@ -11,10 +11,10 @@
  *      the Agent reads on first run; the transcript is what the
  *      operator reads when they wonder how the Agent got its shape.
  *
- *   2. **Replay.** `2200 spawn --replay <path>` reads a saved
+ *   2. **Replay.** `2200 build --replay <path>` reads a saved
  *      transcript, skips the interview entirely, and feeds the
  *      transcript through the existing Identity / tool / schedule
- *      generators to reproduce the spawn. Used for testing
+ *      generators to reproduce the build. Used for testing
  *      onboarding-script changes against deterministic input and for
  *      reproducing a destroyed Agent without re-walking the
  *      conversation.
@@ -24,8 +24,8 @@
  *   <home>/state/onboarding/transcripts/<agent_name>-<iso>.json
  *
  * One file per saved transcript. The filename carries the agent name
- * and ISO timestamp so multiple spawns of the same agent are
- * distinguishable (the second spawn that replaces the first via
+ * and ISO timestamp so multiple builds of the same agent are
+ * distinguishable (the second build that replaces the first via
  * --force gets its own transcript file). Mode 0644; the transcript
  * does not contain secrets (the interview surfaces tool names and
  * placeholders, not credentials).
@@ -41,9 +41,9 @@ export const SAVED_TRANSCRIPT_SCHEMA_VERSION = 1 as const
 
 export const SavedTranscriptSchema = z.object({
   schema_version: z.literal(SAVED_TRANSCRIPT_SCHEMA_VERSION),
-  /** When the transcript was persisted to disk (post-spawn). */
+  /** When the transcript was persisted to disk (post-build). */
   saved_at: z.string().min(1),
-  /** Final agent name the spawn flow committed to. */
+  /** Final agent name the build flow committed to. */
   agent_name: z.string().min(1),
   /**
    * The raw transcript object. Carries its own
@@ -159,7 +159,7 @@ export async function listTranscripts(
       if (agentName && r.agent_name !== agentName) continue
       out.push({ path, agent_name: r.agent_name, saved_at: r.saved_at })
     } catch {
-      // Skip malformed entries; the spawn flow is the authoritative
+      // Skip malformed entries; the build flow is the authoritative
       // writer and the only realistic source of these files, so a
       // bad entry is a hand-edit case the lister doesn't need to
       // surface to callers.

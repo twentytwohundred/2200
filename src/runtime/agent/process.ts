@@ -7,7 +7,7 @@
  * lands in subsequent PRs.
  *
  * The Agent process expects three environment variables, set by the
- * supervisor's spawn:
+ * supervisor's launch:
  *   - TWENTYTWOHUNDRED_AGENT_NAME
  *   - TWENTYTWOHUNDRED_IDENTITY_PATH
  *   - TWENTYTWOHUNDRED_SOCKET_PATH
@@ -34,7 +34,7 @@ import { ToolDispatcher } from '../tools/dispatcher.js'
 import { BASELINE_TOOL_NAMES, baselineServers } from '../tools/baseline/index.js'
 import { platformServers } from '../tools/platform/index.js'
 import { McpServerManager } from '../mcp/restart-manager.js'
-import { spawnHttpMcpServer, type HttpMcpServerHandle } from '../mcp/http-transport.js'
+import { launchHttpMcpServer, type HttpMcpServerHandle } from '../mcp/http-transport.js'
 import { expandToolGrants } from '../mcp/tool-grants.js'
 import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
@@ -176,10 +176,10 @@ export class AgentProcess {
       registry.register(server)
     }
 
-    // Spawn declared MCP servers (Epic 9 Phase A) and register their
+    // Launch declared MCP servers (Epic 9 Phase A) and register their
     // tools. Each `mcp_servers[]` entry resolves its env SecretRefs to
-    // literal values before spawn; the literal values do not appear in
-    // logs. The first spawn failure aborts Agent start ... the operator
+    // literal values before launch; the literal values do not appear in
+    // logs. The first launch failure aborts Agent start ... the operator
     // fixes the configuration and retries. Mid-session crashes are
     // handled by McpServerManager's locked backoff + notification
     // policy (Epic 9 Phase A spec).
@@ -207,7 +207,7 @@ export class AgentProcess {
           }
           const manager = new McpServerManager({
             serverName: spec.name,
-            spawnArgs: {
+            launchArgs: {
               name: spec.name,
               command: spec.command,
               args: spec.args,
@@ -228,25 +228,25 @@ export class AgentProcess {
           this.mcpManagers.push(manager)
           await manager.start()
           registry.register(manager)
-          this.log.info('MCP server spawned (stdio)', {
+          this.log.info('MCP server started (stdio)', {
             name: spec.name,
             command: spec.command,
             tools: manager.knownToolNames.length,
           })
         } else {
           // transport === 'http'
-          const spawnArgs: Parameters<typeof spawnHttpMcpServer>[0] = {
+          const launchArgs: Parameters<typeof launchHttpMcpServer>[0] = {
             name: spec.name,
             url: spec.url,
             extraHeaders: spec.headers,
           }
           if (spec.auth.type === 'bearer') {
-            spawnArgs.bearerToken = await resolveSecret(spec.auth.token, {
+            launchArgs.bearerToken = await resolveSecret(spec.auth.token, {
               home: this.options.home,
               agentName: this.options.name,
             })
           }
-          const handle = await spawnHttpMcpServer(spawnArgs)
+          const handle = await launchHttpMcpServer(launchArgs)
           this.mcpHttpHandles.push(handle)
           registry.register(handle)
           this.log.info('MCP server connected (http)', {

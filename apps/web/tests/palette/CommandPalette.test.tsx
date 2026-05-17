@@ -38,7 +38,7 @@ function fakeAgent(name: string, status: string): Agent {
     pid: status === 'running' || status === 'waiting' ? 1234 : null,
     current_task_id: null,
     identity_path: `/home/agents/${name}/identity.md`,
-    spawned_at: '2026-04-24T08:00:00.000Z',
+    created_at: '2026-04-24T08:00:00.000Z',
     last_heartbeat: '2026-05-06T15:00:00.000Z',
     errored_at: null,
     errored_reason: null,

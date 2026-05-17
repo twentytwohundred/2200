@@ -6,7 +6,7 @@
  * "every weekday at 8am") is shown in the preview alongside the
  * suggested schedule for transparency, but v1 does NOT LLM-parse the
  * free-form text into a cron expression. The operator confirms the
- * default or edits via `2200 schedule add` post-spawn.
+ * default or edits via `2200 schedule add` post-build.
  *
  * v1 mappings:
  *
@@ -99,7 +99,7 @@ const SCHEDULE_BUILDERS: Record<string, ScheduleBuilder> = {
   }),
   // cadence_project + cadence_freeform: no default schedule. Project
   // Agents are typically event-driven; freeform Agents are too varied
-  // for a single curated default. Operators add schedules post-spawn
+  // for a single curated default. Operators add schedules post-build
   // via `2200 schedule add` if they want them.
 }
 

@@ -274,7 +274,7 @@ export function OnboardingScreen(): ReactElement {
                   <Link to="/settings" className={styles.tag}>
                     Settings
                   </Link>{' '}
-                  to add a provider key or register a custom endpoint before spawning.
+                  to add a provider key or register a custom endpoint before building.
                 </div>
               ) : (
                 <div className={styles.pickerRow}>
@@ -500,7 +500,7 @@ export function OnboardingScreen(): ReactElement {
                   setDraft('')
                 }}
               >
-                Spawn another
+                Build another
               </Button>
             </div>
           </div>

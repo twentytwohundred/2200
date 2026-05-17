@@ -12,7 +12,7 @@
  *
  * Auth: `XAI_API_KEY` env var, resolved at call time. The supervisor
  * inherits this from `~/.config/2200/runtime.env` and agents inherit
- * from the supervisor at spawn time.
+ * from the supervisor at start time.
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'

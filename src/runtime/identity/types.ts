@@ -334,7 +334,7 @@ const NOTIFICATION_POLICY_DEFAULT: NotificationPolicy = {
  *
  * Two transports:
  *
- * **stdio** ... the supervisor spawns the named `command` with `args`
+ * **stdio** ... the supervisor launches the named `command` with `args`
  * and the resolved `env`, then talks MCP JSON-RPC over the child's
  * stdin/stdout. Best for community npx-based servers (`@modelcontextprotocol/server-github`)
  * and locally-installed binaries.
@@ -348,7 +348,7 @@ const NOTIFICATION_POLICY_DEFAULT: NotificationPolicy = {
  * be unique within an Identity; the loader rejects duplicates.
  *
  * SecretRefs (in stdio `env` and HTTP `auth.token`) are resolved at
- * spawn time by the supervisor. Resolved values never appear in
+ * launch time by the supervisor. Resolved values never appear in
  * logs.
  */
 const McpServerSpecBaseSchema = z.object({
@@ -361,14 +361,14 @@ const McpServerSpecBaseSchema = z.object({
 
 const McpServerSpecStdioSchema = McpServerSpecBaseSchema.extend({
   transport: z.literal('stdio'),
-  /** Executable to spawn (e.g. `npx`, `node`, an absolute path to a binary). */
+  /** Executable to launch (e.g. `npx`, `node`, an absolute path to a binary). */
   command: z.string().min(1),
   /** Arguments passed to the command. Empty array allowed. */
   args: z.array(z.string()).default([]),
   /**
-   * Environment variables to set on the spawned child. Map of
+   * Environment variables to set on the launched child. Map of
    * env-var-name → SecretRef. The supervisor resolves SecretRefs at
-   * spawn time. The resolved values are passed to the child and never
+   * launch time. The resolved values are passed to the child and never
    * logged.
    */
   env: z.record(z.string().min(1), SecretRefSchema).default({}),
@@ -536,7 +536,7 @@ export const IdentityFrontmatterSchema = z.object({
    */
   pub: AgentPubBlockSchemaForIdentity().optional(),
   /**
-   * External MCP servers the supervisor spawns alongside the Agent
+   * External MCP servers the supervisor launches alongside the Agent
    * process at start (Epic 9 Phase A). Each entry's tools become
    * available to the Agent if granted via the `tools` array (by
    * exact name or `<namespace>.*` wildcard). Defaults to empty,

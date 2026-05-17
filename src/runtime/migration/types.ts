@@ -44,8 +44,8 @@ const HandoffNotificationTierSchema = z.enum(['passive', 'normal', 'important', 
  *
  * `display_name` flows into the OpenSCUT register call when the
  * orchestrator is invoked with `--provision-identity`. The OpenSCUT
- * service enforces a per-displayName-per-day rate limit (see
- * [[04-scut-identity-at-spawn]]); the operator chooses the migration
+ * service enforces a per-displayName-per-day rate limit (see the
+ * SCUT identity epic in the wiki); the operator chooses the migration
  * window with that constraint in mind.
  *
  * `notification_policy.tiers_allowed` defaults to passive/normal/important
@@ -198,7 +198,7 @@ export const HandoffFrontmatterSchema = z.object({
    * Both the migration flow (Epic 5) and the conversational onboarding
    * flow (Epic 14) populate this field: migration handoffs from a future
    * 2200-to-2200 export carry the source Agent's mcp_servers verbatim;
-   * `2200 agent spawn` populates it from the suggested-tools curated
+   * `2200 agent build` populates it from the suggested-tools curated
    * mapping (Epic 14 PR C). v1 in handoff documents on disk: optional
    * (defaults to empty); the loader silently accepts a v1 document
    * without the field.

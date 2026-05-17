@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fake stdio MCP server for tests of `spawnStdioMcpServer`.
+ * Fake stdio MCP server for tests of `launchStdioMcpServer`.
  *
  * Exposes:
  *   - `echo`: returns a text content block with the provided message.

@@ -317,10 +317,10 @@ export function extensionSchedulesDir(home: string, name: string): string {
  *
  *   <home>/state/onboarding/transcripts/<agent_name>-<iso>.json
  *
- * Each successful `2200 spawn` invocation persists the full interview
+ * Each successful `2200 build` invocation persists the full interview
  * transcript here so the operator can audit the conversation that
  * produced an Agent. The same file is the input format for the
- * `2200 spawn --replay <path>` flag, which skips the interview and
+ * `2200 build --replay <path>` flag, which skips the interview and
  * replays the captured transcript through the Identity / tool /
  * schedule generators.
  */

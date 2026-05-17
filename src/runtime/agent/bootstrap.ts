@@ -1,20 +1,20 @@
 /**
  * Agent process entry point.
  *
- * Spawned by the supervisor via `child_process.spawn`. Reads its config from
+ * Started by the supervisor via `child_process.spawn`. Reads its config from
  * env vars (set by the supervisor), constructs an `AgentProcess`, and runs
  * it until SIGTERM or supervisor disconnect.
  *
  * This file is the bin target for the Agent process; it is bundled by tsup
- * to `dist/runtime/agent/bootstrap.js`. The supervisor's `lifecycle.spawnAgent`
- * spawns Node with this file as the entry.
+ * to `dist/runtime/agent/bootstrap.js`. The supervisor's `lifecycle.launchAgentProcess`
+ * starts Node with this file as the entry.
  */
 import { AgentProcess } from './process.js'
 import { createLogger } from '../util/logger.js'
 
 /**
  * Swallow EPIPE on stdout/stderr so a broken pipe (typical cause:
- * the supervisor that spawned us bounced and closed its read end of
+ * the supervisor that started us bounced and closed its read end of
  * our pipes) does not synchronously crash the agent process. Node's
  * default behavior is to throw EPIPE on the next write, which
  * propagates as an uncaught exception and kills the process

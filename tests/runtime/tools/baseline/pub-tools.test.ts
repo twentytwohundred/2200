@@ -66,7 +66,7 @@ async function setup(agentName: string): Promise<ToolContext> {
   await supervisor.start()
   await supervisor.createPub('ops', { port: pub.port })
   // Inject 'running' state via the underlying state edit. Bypassing
-  // startPub because startPub would spawn a real openpub-server; the
+  // startPub because startPub would start a real openpub-server; the
   // fake server is what's actually listening.
   await supervisor.shutdown()
   const { loadState, saveState } = await import('../../../../src/runtime/supervisor/state.js')
@@ -76,7 +76,7 @@ async function setup(agentName: string): Promise<ToolContext> {
     ...record,
     state: 'running',
     pid: 12345,
-    spawned_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
   }
   await saveState(state)
   supervisor = await Supervisor.create({ home })

@@ -141,7 +141,7 @@ const TOOL_BUILDERS: Record<string, SuggestionBuilder> = {
       }
     }
     // No automatic suggestion for general ops targets at v1; operator
-    // picks the right MCP server for their stack post-spawn.
+    // picks the right MCP server for their stack post-build.
     return null
   },
 }

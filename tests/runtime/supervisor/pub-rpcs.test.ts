@@ -4,7 +4,7 @@
  * Covers cli.pub.create, cli.pub.start, cli.pub.stop, cli.pub.list,
  * cli.pub.status. Each test spins up a real supervisor with real
  * UDS, exercises the RPC, and asserts the on-disk state and
- * spawned-process state reflect the change.
+ * started-process state reflect the change.
  *
  * Pub-server itself is faked with a tiny Node script (mirrors the
  * pattern from pub-lifecycle.test.ts). The real `@openpub-ai/pub-server`
@@ -172,7 +172,7 @@ describe('cli.pub.start / cli.pub.stop', () => {
     await supervisor!.startPub('ops', { executablePath: fakeBin })
     // Exit-bad scripts exit immediately with code 7. Poll for the
     // supervisor's exit handler to update state, with a generous cap
-    // because Node's spawn+exit takes longer under Vitest parallelism.
+    // because Node's launch+exit takes longer under Vitest parallelism.
     let state: string | undefined
     for (let i = 0; i < 30; i++) {
       const snap = await client!.call('state.snapshot', {})

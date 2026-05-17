@@ -1,7 +1,7 @@
 /**
  * Tests for the stdio MCP transport (Epic 9 Phase A PR B).
  *
- * Spawns the fake MCP server in `fixtures/fake-mcp-server.mjs` for
+ * Launches the fake MCP server in `fixtures/fake-mcp-server.mjs` for
  * each test. Asserts:
  *   - the connect + tools/list handshake produces the expected
  *     namespaced tool definitions
@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
-  spawnStdioMcpServer,
+  launchStdioMcpServer,
   type StdioMcpServerHandle,
 } from '../../../src/runtime/mcp/stdio-transport.js'
 import type { ToolContext } from '../../../src/runtime/mcp/tool.js'
@@ -49,13 +49,13 @@ afterEach(async () => {
   }
 })
 
-async function spawnFakeServer(
+async function launchFakeServer(
   opts: {
     name?: string
     env?: Record<string, string>
   } = {},
 ): Promise<StdioMcpServerHandle> {
-  return spawnStdioMcpServer({
+  return launchStdioMcpServer({
     name: opts.name ?? 'fake',
     command: process.execPath,
     args: [FIXTURE_PATH],
@@ -67,23 +67,23 @@ async function spawnFakeServer(
   })
 }
 
-describe('spawnStdioMcpServer', () => {
+describe('launchStdioMcpServer', () => {
   it('lists the fake servers tools, namespaced by the supplied name', async () => {
-    handle = await spawnFakeServer({ name: 'fake' })
+    handle = await launchFakeServer({ name: 'fake' })
     expect(handle.name).toBe('fake')
     const toolNames = Array.from(handle.tools.keys()).sort()
     expect(toolNames).toEqual(['fake_echo', 'fake_fail', 'fake_read_env'])
   })
 
   it('describes each tool from the MCP server description field', async () => {
-    handle = await spawnFakeServer()
+    handle = await launchFakeServer()
     const echo = handle.tools.get('fake_echo')!
     expect(echo.description).toContain('Echo a message')
     expect(echo.idempotency).toBe('destructive')
   })
 
   it('routes a successful tool call and returns the content array', async () => {
-    handle = await spawnFakeServer()
+    handle = await launchFakeServer()
     const echo = handle.tools.get('fake_echo')!
     const result = (await echo.execute({ message: 'hello world' }, FAKE_CTX)) as {
       content: { type: string; text: string }[]
@@ -93,7 +93,7 @@ describe('spawnStdioMcpServer', () => {
   })
 
   it('translates MCP error responses (isError: true) into thrown errors', async () => {
-    handle = await spawnFakeServer()
+    handle = await launchFakeServer()
     const fail = handle.tools.get('fake_fail')!
     await expect(fail.execute({ reason: 'simulated failure' }, FAKE_CTX)).rejects.toThrow(
       /fake_fail/,
@@ -102,7 +102,7 @@ describe('spawnStdioMcpServer', () => {
   })
 
   it('propagates env vars to the child process', async () => {
-    handle = await spawnFakeServer({
+    handle = await launchFakeServer({
       env: { CUSTOM_VAR_FOR_TEST: 'a-test-secret-value' },
     })
     const readEnv = handle.tools.get('fake_read_env')!
@@ -113,20 +113,20 @@ describe('spawnStdioMcpServer', () => {
   })
 
   it('namespaces tools by the supplied server name', async () => {
-    handle = await spawnFakeServer({ name: 'github' })
+    handle = await launchFakeServer({ name: 'github' })
     expect(Array.from(handle.tools.keys())).toContain('github_echo')
     expect(handle.tools.has('fake_echo')).toBe(false)
   })
 
   it('close() shuts down without throwing', async () => {
-    handle = await spawnFakeServer()
+    handle = await launchFakeServer()
     await handle.close()
     handle = undefined
   })
 
   it('throws when the command does not exist', async () => {
     await expect(
-      spawnStdioMcpServer({
+      launchStdioMcpServer({
         name: 'noexist',
         command: '/nonexistent/binary/path',
         args: [],

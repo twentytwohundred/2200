@@ -5,7 +5,7 @@
  * server and what each peer does, so a request that lands outside
  * an agent's lane can be routed to the right peer (Hobby asks Simon
  * for DevOps, etc.) without escalating to the human. This is also
- * the substrate for newly-spawned agents (David in the Cray test) to
+ * the substrate for newly-created agents (David in the Cray test) to
  * orient on day one.
  *
  * Source of truth and lifecycle:

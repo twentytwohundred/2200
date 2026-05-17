@@ -3,7 +3,7 @@
  *
  * Posts to the WhatsApp connector gateway's local outbound listener.
  * The gateway port is discovered via `<home>/state/extensions/whatsapp/gateway.json`
- * (the supervisor writes this when it spawns the gateway). The tool
+ * (the supervisor writes this when it starts the gateway). The tool
  * fails cleanly with a "gateway_not_running" error if the file is
  * absent or the gateway is unreachable.
  *

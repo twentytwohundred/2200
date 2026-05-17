@@ -48,7 +48,7 @@ const CLI_REFERENCE: { command: string; description: string }[] = [
   { command: '2200 oauth login github', description: 'log into GitHub' },
   { command: '2200 oauth status', description: 'show OAuth credential status' },
   { command: '2200 agent edit <name>', description: 'open the Identity in your $EDITOR' },
-  { command: '2200 agent spawn', description: 'CLI conversational onboarding' },
+  { command: '2200 agent build', description: 'CLI conversational onboarding' },
   { command: '2200 daemon status', description: 'check the supervisor process' },
   { command: '2200 daemon restart', description: 'restart the supervisor' },
 ]

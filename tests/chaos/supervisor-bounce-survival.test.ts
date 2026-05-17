@@ -4,7 +4,7 @@
  * Reproduces and prevents regression of the "agents die silently
  * when the supervisor bounces" failure mode Doug surfaced during
  * session 13 testing on 2026-05-08. Root cause (per the Antigravity
- * codebase review): the agent's child process is spawned with
+ * codebase review): the agent's child process is started with
  * stderr/stdout pipes connected to the supervisor; on supervisor
  * exit the read ends close, the next stderr.write throws EPIPE, and
  * Node's default behavior crashes the agent process. The bootstrap
@@ -12,7 +12,7 @@
  * the heartbeat loop reconnects to a fresh supervisor on the same
  * UDS socket and re-registers.
  *
- * This is an integration test: real spawned Node child process, real
+ * This is an integration test: real started Node child process, real
  * UDS socket. Slow by design (~10s). Lives under tests/chaos/ to
  * keep it out of the unit-test critical path; runs as part of
  * `pnpm test` because vitest's default include glob picks it up.
@@ -120,10 +120,10 @@ describe('supervisor bounce survival (chaos)', () => {
     const idPath = await writeIdentity(home, 'chaos')
     await supervisor.createAgent('chaos', idPath)
 
-    // 2. Spawn a real agent child process. The supervisor's
-    //    `lifecycle.spawnAgent` is the production path; we go
+    // 2. Start a real agent child process. The supervisor's
+    //    `lifecycle.launchAgentProcess` is the production path; we go
     //    direct via child_process.spawn here so we own the handle.
-    //    This mirrors what spawnAgent does (stdio: ['ignore', 'pipe', 'pipe'])
+    //    This mirrors what launchAgentProcess does (stdio: ['ignore', 'pipe', 'pipe'])
     //    so the EPIPE failure mode reproduces.
     agent = spawn(process.execPath, [AGENT_BOOTSTRAP], {
       env: {
@@ -218,7 +218,7 @@ describe('supervisor bounce survival (chaos)', () => {
       )
     }
 
-    // 8. Final sanity: agent is still the same process we spawned.
+    // 8. Final sanity: agent is still the same process we started.
     expect(agent.exitCode).toBeNull()
     expect(supervisor.snapshot().agents['chaos']!.pid).toBe(agent.pid)
   }, 60_000)

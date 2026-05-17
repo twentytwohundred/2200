@@ -6,7 +6,7 @@
  * baseline an Agent can rely on without any out-of-band context: a
  * fresh consumer install of 2200 puts the platform overview, tool
  * reference, conventions, and workflow patterns in the shared brain
- * before any Agent is spawned.
+ * before any Agent is built.
  *
  * Notes managed here:
  *
@@ -66,7 +66,7 @@ find via a tool, you can also find by opening the file.
 The supervisor (a single daemon process) maintains an in-memory
 state map of every Agent + every Pub on this instance and persists
 it to \`<home>/state/supervisor.json\`. Each Agent process the
-supervisor spawns gets its own home (\`<home>/agents/<your-name>/\`),
+supervisor starts gets its own home (\`<home>/agents/<your-name>/\`),
 its own SQLite-indexed brain, its own task queue, its own chat log
 with the operator, and a JSON-RPC channel to the supervisor (over
 a Unix domain socket) for lifecycle events. Pubs run as
@@ -94,7 +94,7 @@ process with:
   / \`brain_read\` / \`brain_search\` / \`brain_list\` / \`brain_delete\`
   operate on it. Use it for things you want to remember across
   sessions.
-- A continuity-from-onboarding note in your brain. Written at spawn
+- A continuity-from-onboarding note in your brain. Written at build
   time from the interview that brought you into existence. Read it.
   It is the operator's spec for you in their own words.
 - Tasks, queued by the operator (CLI, chat) or by schedules, or by
@@ -454,7 +454,7 @@ speaker who can claim the action.
 Beyond the baseline, your Identity file may declare additional MCP
 servers (Gmail, Calendar, Drive, third-party APIs). Those tools
 appear in your tool registry alongside the baseline. The operator
-provisioned them at spawn time; they're listed in your Identity's
+provisioned them at build time; they're listed in your Identity's
 \`mcp_servers\` block if you want to introspect.
 
 ## Platform tools (Discord, Slack, Spotify)
@@ -765,7 +765,7 @@ Two paths, depending on urgency and form:
   task until the operator responds.
 - **Want to start a thread without blocking**: \`chat_send\` a
   message into your private chat. They'll respond when they see it
-  and the response will spawn a fresh task on you.
+  and the response will start a fresh task on you.
 
 ## You want to record a learning for future-you
 
@@ -843,7 +843,7 @@ The supervisor log line \`oauth refresh tick {scanned: N, refreshed: M, failed: 
 ## Common confusions to avoid
 
 - **"There's no vault, no TokenRefreshService."** Both exist. Confirm via the source of truth (the supervisor log, or \`src/runtime/credentials/vault.ts\` + \`src/runtime/oauth/refresh-service.ts\`).
-- **"Credentials need to be at \`/commons/reference/oauth-apps.env\`."** They don't. That virtual path is empty; the supervisor reads from \`~/.config/2200/\` (user config dir, outside the 2200_HOME tree). Env-var injection happens at process spawn.
+- **"Credentials need to be at \`/commons/reference/oauth-apps.env\`."** They don't. That virtual path is empty; the supervisor reads from \`~/.config/2200/\` (user config dir, outside the 2200_HOME tree). Env-var injection happens at process launch.
 - **"I should \`shell_run cat ~/.config/2200/oauth-apps.env\`."** Don't. The values are already in your \`process.env\`. Trying to cat the file from an Agent reveals secrets in plan-record bodies and crosses a boundary unnecessarily.
 
 ## If you think a credential is missing
@@ -1368,7 +1368,7 @@ export async function regenerateTeamNote(home: string, supervisor: Supervisor): 
   }
 
   if (agents.length === 0) {
-    lines.push(`*(No Agents yet. The first one to spawn will appear here.)*`)
+    lines.push(`*(No Agents yet. The first one to be built will appear here.)*`)
     lines.push(``)
   }
 
@@ -1385,7 +1385,7 @@ export async function regenerateTeamNote(home: string, supervisor: Supervisor): 
 }
 
 /**
- * Build the body for a freshly-spawned Agent's first task.
+ * Build the body for a freshly-created Agent's first task.
  *
  * Per the 2026-05-12 v1 scope, every new Agent's onboarding sequence is:
  *   1. Confirm shared brain access (reads)
@@ -1403,7 +1403,7 @@ export function buildOrientationTaskBody(args: {
   agentRole: string
   operatorAddressing: string
 }): string {
-  return `Welcome. You were just spawned. Before doing anything else, take a
+  return `Welcome. You were just created. Before doing anything else, take a
 moment to orient yourself and arrive properly.
 
 This task has four phases. Run them in order. Do not skip the

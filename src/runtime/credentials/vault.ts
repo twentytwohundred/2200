@@ -13,7 +13,7 @@
  *   └── <credential_name>.json            sealed envelope, mode 0600
  *
  * The vault is process-agnostic. The supervisor uses it at MCP server
- * spawn time to resolve SecretRefs of source 'vault'; the CLI uses
+ * launch time to resolve SecretRefs of source 'vault'; the CLI uses
  * it for `2200 credential set / list / show / delete`. v1 reads the
  * master key directly from disk (same posture as the SCUT keystore;
  * known limitation per CLAUDE.md). Hardening to TPM / OS-keychain

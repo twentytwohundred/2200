@@ -1,7 +1,7 @@
 /**
  * Supervisor process entry point.
  *
- * This is the bundled bin target the `2200 daemon start` command spawns
+ * This is the bundled bin target the `2200 daemon start` command starts
  * detached. It also runs in the foreground when a developer invokes
  * `2200 daemon` (no subcommand) — useful for development, debugging,
  * and tests.

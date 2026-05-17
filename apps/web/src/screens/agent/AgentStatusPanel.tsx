@@ -103,8 +103,8 @@ export function AgentStatusPanel({ agent }: AgentStatusPanelProps): ReactElement
               v={<span className={styles.mono}>{formatRelative(agent.last_heartbeat)}</span>}
             />
             <KV
-              k="spawned"
-              v={<span className={styles.mono}>{formatTime(agent.spawned_at)}</span>}
+              k="created"
+              v={<span className={styles.mono}>{formatTime(agent.created_at)}</span>}
             />
           </div>
         </Card>

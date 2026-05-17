@@ -3,7 +3,7 @@
  *
  * The transcript is the source of truth on the runtime side
  * (`<home>/agents/<name>/chat.jsonl`). Each user POST to /chat appends
- * a user-role message and spawns a checkpointed task whose body
+ * a user-role message and starts a checkpointed task whose body
  * carries the recent transcript + new turn as context. When the task
  * reaches a terminal state, the daemon appends the assistant reply
  * back into the chat log. This screen polls the chat list every 3s

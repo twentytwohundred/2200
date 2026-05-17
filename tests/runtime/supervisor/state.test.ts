@@ -34,7 +34,7 @@ describe('loadState', () => {
       identity_path: '/tmp/hobby.md',
       state: 'stopped',
       pid: null,
-      spawned_at: null,
+      created_at: null,
       last_heartbeat: null,
       errored_at: null,
       errored_reason: null,

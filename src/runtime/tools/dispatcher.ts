@@ -139,7 +139,7 @@ export interface DispatchInput {
   /** Task idempotency category, or null when no task. */
   taskIdempotency: Idempotency | null
   /**
-   * Spawn source of the originating task. Threaded through to
+   * Source of the originating task. Threaded through to
    * ToolContext.taskSource so surface-aware tools (request_credential)
    * can enforce origin restrictions. Null when unknown / ad-hoc.
    */

@@ -572,7 +572,7 @@ export class PubWakeSource {
     antecedent?: { display_name: string; content: string }
   }): Promise<void> {
     // Continuation primitive (decision:
-    // 2026-05-16-task-continuation-primitive): before spawning a fresh
+    // 2026-05-16-task-continuation-primitive): before starting a fresh
     // synthetic task, check whether this agent has a task parked on a
     // wait_for matching (pub, sender). If so, resume that task with
     // the inbound appended as continuation context. This is what

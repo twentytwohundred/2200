@@ -42,7 +42,7 @@ export interface ScreenProps {
  *   │ 2200 / FLEET (crumbs)                            │
  *   │                                                  │
  *   │ Fleet                                            │
- *   │ Mission control for the agents on this instance.  ...Inbox·15  Budget  Settings  [Spawn agent]
+ *   │ Mission control for the agents on this instance.  ...Inbox·15  Budget  Settings  [Build agent]
  *   │                                                  │
  *   │ {children}                                       │
  *   └──────────────────────────────────────────────────┘

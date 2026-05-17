@@ -121,7 +121,7 @@ const ENV_INHERIT_NAMES = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ'] as const
 
 /**
  * Build the capability-derived env for a hook child. Pure function so
- * callers can inspect what the hook will see without spawning.
+ * callers can inspect what the hook will see without launching.
  */
 export function buildHookEnv(args: {
   home: string
@@ -166,8 +166,8 @@ export function buildHookEnv(args: {
 }
 
 /**
- * Pick the spawn command for a hook script. JavaScript and shell are
- * spawned through a known interpreter; everything else must carry an
+ * Pick the launch command for a hook script. JavaScript and shell are
+ * launched through a known interpreter; everything else must carry an
  * exec bit + shebang and is run directly.
  */
 export function resolveHookCommand(scriptAbsolute: string): { command: string; args: string[] } {
@@ -209,7 +209,7 @@ export async function runHook(args: HookExecArgs): Promise<HookExecResult> {
     )
   }
 
-  // Ensure the state dir + log file's parent exist before the spawn
+  // Ensure the state dir + log file's parent exist before the launch
   // so we never lose stdio on a fresh install.
   const logPath = extensionHookLogPath(args.home, args.name, args.hook)
   await mkdir(dirname(logPath), { recursive: true })
@@ -255,7 +255,7 @@ export async function runHook(args: HookExecArgs): Promise<HookExecResult> {
         new HookExecError(
           args.hook,
           args.name,
-          `failed to spawn: ${err instanceof Error ? err.message : String(err)}`,
+          `failed to launch: ${err instanceof Error ? err.message : String(err)}`,
         ),
       )
       return

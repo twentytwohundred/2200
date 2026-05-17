@@ -1,7 +1,7 @@
 /**
  * Daemonize the supervisor.
  *
- * `spawnDaemon(stateDir)` launches the current `2200` binary in `daemon`
+ * `startDaemon(stateDir)` launches the current `2200` binary in `daemon`
  * mode as a detached background process, redirects its stdout/stderr to
  * `<state-dir>/supervisor.log`, writes the PID file, and returns the
  * child's PID. The parent CLI process can then exit immediately; the
@@ -13,7 +13,7 @@
  * survives the parent's exit.
  *
  * Daemon-side bootstrap (`src/runtime/supervisor/bootstrap.ts`) is the
- * entry point spawned here. It instantiates the Supervisor, listens on
+ * entry point started here. It instantiates the Supervisor, listens on
  * the UDS, and runs until SIGTERM.
  */
 import { spawn } from 'node:child_process'
@@ -31,7 +31,7 @@ export function logFilePath(home: string): string {
   return homePaths(home).stateSupervisorLog
 }
 
-export interface SpawnDaemonOptions {
+export interface StartDaemonOptions {
   /** 2200_HOME root. */
   home: string
   /** Override the bootstrap script (testing). Defaults to bundled entry. */
@@ -52,7 +52,7 @@ export interface SpawnDaemonOptions {
  * Launch the supervisor as a detached background process. Returns the
  * child's PID. Throws if a live daemon is already running.
  */
-export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
+export async function startDaemon(opts: StartDaemonOptions): Promise<number> {
   const log = opts.logger ?? createLogger('daemon')
   const paths = homePaths(opts.home)
   await mkdir(paths.state, { recursive: true })
@@ -66,10 +66,10 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
   const nodePath = opts.nodePath ?? process.execPath
   const logPath = logFilePath(opts.home)
 
-  // Load runtime.env so the daemon (and the agents it later spawns)
+  // Load runtime.env so the daemon (and the agents it later starts)
   // inherit long-lived secrets like LLM-provider API keys without the
   // user having to source a shell rc before `2200 daemon start`.
-  // Parse errors throw and abort the spawn; missing file is fine
+  // Parse errors throw and abort the launch; missing file is fine
   // (the daemon starts; agents will fail loudly if their required
   // keys aren't set, which is the correct degraded behavior).
   let runtimeEnv: Record<string, string> = {}
@@ -91,7 +91,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
     })
 
     if (child.pid === undefined) {
-      throw new Error('failed to spawn supervisor daemon: no pid')
+      throw new Error('failed to start supervisor daemon: no pid')
     }
 
     // Detach from the parent so we can exit without leaving the child
@@ -100,7 +100,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
 
     await writePidFile(opts.home, child.pid)
 
-    log.info('supervisor daemon spawned', {
+    log.info('supervisor daemon started', {
       pid: child.pid,
       home: opts.home,
       logPath,
@@ -129,7 +129,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<number> {
  * is registered. Used by `2200 daemon restart` to send SIGHUP, which
  * the supervisor's bootstrap interprets as "graceful shutdown that
  * preserves Agent and pub child processes." The CLI follows up by
- * waiting for the PID file to clear and re-spawning the daemon.
+ * waiting for the PID file to clear and re-starting the daemon.
  */
 export async function signalDaemon(home: string, signal: NodeJS.Signals): Promise<boolean> {
   const pid = await readLivePid(home)
@@ -233,7 +233,7 @@ function defaultBootstrapPath(): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
   }
-  // Fall back to the cli/main case; the spawn will error visibly if
+  // Fall back to the cli/main case; the launch will error visibly if
   // the file is missing and the user can pass `bootstrapPath` explicitly.
   const fallback = candidates[0]
   if (!fallback) throw new Error('no bootstrap path candidates configured')

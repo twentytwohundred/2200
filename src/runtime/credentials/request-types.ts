@@ -54,7 +54,7 @@ export const CredentialRequestSchema = z.object({
     message: 'credential request id must be `credreq_<32 hex>`',
   }),
   agent: z.string().min(1),
-  /** Chat thread the request was issued in. Required: requests only spawn from chat. */
+  /** Chat thread the request was issued in. Required: requests only originate from chat. */
   chat_id: z.string().min(1),
   credential_name: CredentialNameSchema,
   label: z.string().min(1),

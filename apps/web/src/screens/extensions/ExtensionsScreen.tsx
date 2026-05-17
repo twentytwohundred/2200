@@ -825,7 +825,7 @@ function PairFlow({ entry, autoStart = false }: PairFlowProps): ReactElement {
           <span className={styles.pairStatus}>ready</span>
         </div>
         <p style={{ margin: 0, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.55 }}>
-          Click "Finish install" and we'll spawn the WhatsApp gateway, then surface a QR for you to
+          Click "Finish install" and we'll start the WhatsApp gateway, then surface a QR for you to
           scan with your phone. Setup is fully automatic from here.
         </p>
         {startError && <div className={styles.pairError}>Start failed: {startError}</div>}
@@ -916,7 +916,7 @@ function AdvancedTerminalHandoff({ entry }: { entry: CatalogEntry }): ReactEleme
     <details className={styles.advanced}>
       <summary>Advanced ▸ start the gateway from a terminal</summary>
       <div className={styles.advancedBody}>
-        For developers running the gateway manually (skipping the supervisor-spawn path), the
+        For developers running the gateway manually (skipping the supervisor-launch path), the
         canonical command is:
         <pre>
           {`cd ~/.local/share/2200/extensions/${entry.id}
@@ -1068,7 +1068,7 @@ function AgentSetupPanel({
         </select>
         {availableAgents.length === 0 && agentsQuery.data && (
           <p style={{ marginTop: 6, color: 'var(--text-3)', fontSize: 12 }}>
-            All Agents on this instance already have a Discord bot wired up. Spawn another Agent
+            All Agents on this instance already have a Discord bot wired up. Build another Agent
             first if you want more bots.
           </p>
         )}

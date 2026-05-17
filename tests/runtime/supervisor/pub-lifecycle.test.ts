@@ -3,7 +3,7 @@
  *
  * Two surfaces under test:
  *   1. `composePubMd` — pure function, easy.
- *   2. `spawnPub` — uses Node's child_process. We exercise it with a
+ *   2. `launchPubProcess` — uses Node's child_process. We exercise it with a
  *      fake "openpub-server" implemented as a tiny Node script that
  *      either sleeps until killed (the running case) or exits
  *      immediately (the abnormal-exit case). This avoids depending on
@@ -16,7 +16,7 @@ import { mkdtemp, rm, stat, writeFile, chmod, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initHome, initPubDirs } from '../../../src/runtime/storage/init.js'
-import { composePubMd, spawnPub } from '../../../src/runtime/supervisor/pub-lifecycle.js'
+import { composePubMd, launchPubProcess } from '../../../src/runtime/supervisor/pub-lifecycle.js'
 import { pubPaths } from '../../../src/runtime/storage/layout.js'
 import { findFreePort } from '../../../src/runtime/util/free-port.js'
 
@@ -108,11 +108,11 @@ describe('composePubMd', () => {
   })
 })
 
-describe('spawnPub (using a fake binary)', () => {
+describe('launchPubProcess (using a fake binary)', () => {
   // Test stub for the v0.3.3 required secret material. Real values are
   // generated and persisted by Supervisor.createPub at runtime; the
   // unit test for the pub-lifecycle just needs SOME values to satisfy
-  // the contract guard in spawnPub.
+  // the contract guard in launchPubProcess.
   const REQUIRED_SECRETS = {
     adminSecret: 'test-admin-secret',
     signingPrivateKey: 'test-priv-key',
@@ -124,11 +124,11 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = ''
   })
 
-  it('spawns a child, captures pid, writes stdio to per-pub log', async () => {
+  it('starts a child, captures pid, writes stdio to per-pub log', async () => {
     fakeBin = await writeFakeBinary('sleep')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({
+    const sp = launchPubProcess({
       name: 'ops',
       home,
       port,
@@ -154,7 +154,7 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('sleep')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({
+    const sp = launchPubProcess({
       name: 'ops',
       home,
       port,
@@ -176,7 +176,7 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-clean')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({
+    const sp = launchPubProcess({
       name: 'ops',
       home,
       port,
@@ -192,7 +192,7 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-bad')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({
+    const sp = launchPubProcess({
       name: 'ops',
       home,
       port,
@@ -208,7 +208,7 @@ describe('spawnPub (using a fake binary)', () => {
     fakeBin = await writeFakeBinary('exit-clean')
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
-    const sp = spawnPub({
+    const sp = launchPubProcess({
       name: 'ops',
       home,
       port,
@@ -226,7 +226,7 @@ describe('spawnPub (using a fake binary)', () => {
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
     expect(() =>
-      spawnPub({
+      launchPubProcess({
         name: 'ops',
         home,
         port,
@@ -242,7 +242,7 @@ describe('spawnPub (using a fake binary)', () => {
     await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
     const port = await findFreePort()
     expect(() =>
-      spawnPub({
+      launchPubProcess({
         name: 'ops',
         home,
         port,

@@ -76,7 +76,7 @@ export interface Agent {
   pid: number | null
   current_task_id: string | null
   identity_path: string
-  spawned_at: string | null
+  created_at: string | null
   last_heartbeat: string | null
   errored_at: string | null
   errored_reason: string | null
@@ -352,7 +352,7 @@ export interface BrainNoteCreateBody {
 /**
  * Chat (Epic 15 Phase C). Persistent conversation thread per Agent.
  * GET returns the full message log; POST appends a user message and
- * spawns a task whose outcome lands as the assistant reply.
+ * starts a task whose outcome lands as the assistant reply.
  */
 export interface ChatMessage {
   id: string
@@ -1320,7 +1320,7 @@ export interface PubSummary {
   state: string
   port: number
   pid: number | null
-  spawned_at: string | null
+  created_at: string | null
   errored_at: string | null
   errored_reason: string | null
 }
@@ -1555,7 +1555,7 @@ export const apiExtensions = {
    * Per-Agent connector setup (for account_scope: 'agent' connectors).
    * Seals credentials to the picked Agent's vault, writes the binding
    * into identity.md, restarts the Agent so the binding loads,
-   * spawns the gateway. One call = full setup.
+   * starts the gateway. One call = full setup.
    */
   agentSetup: (
     id: string,

@@ -267,7 +267,7 @@ function runGitClone(
     } catch (err) {
       reject(
         new SourceResolutionError(
-          `git clone failed to spawn (is git on PATH?): ${err instanceof Error ? err.message : String(err)}`,
+          `git clone failed to launch (is git on PATH?): ${err instanceof Error ? err.message : String(err)}`,
         ),
       )
       return

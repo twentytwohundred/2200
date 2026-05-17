@@ -14,7 +14,7 @@
  * commands route through it via UDS RPC so the daemon's in-memory state
  * stays consistent. When no daemon is running, in-process operations are
  * used for state-only commands (`init`, `agent create`, `agent status`),
- * and process-spawning commands (`agent start`, `agent stop`) error with
+ * and process-launching commands (`agent start`, `agent stop`) error with
  * a clear "start the daemon first" message.
  *
  * See https://github.com/twentytwohundred/wiki/blob/main/epics/02-agent-runtime-minimum.md
@@ -44,7 +44,7 @@ import { parseDurationSeconds } from '../runtime/util/duration.js'
 import { BrainStore } from '../runtime/brain/store.js'
 import { BrainIndex } from '../runtime/brain/index-db.js'
 import { importFromDir } from '../runtime/brain/import.js'
-import { spawnDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
+import { startDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daemon.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
 import { registerWebCommands } from './web.js'
@@ -229,7 +229,7 @@ export function buildProgram(): Command {
     .description('start the supervisor as a detached background daemon')
     .action(async () => {
       const home = await resolveHomeFromOpts(program)
-      const pid = await spawnDaemon({ home })
+      const pid = await startDaemon({ home })
       console.log(`supervisor daemon started`)
       console.log(`  pid:        ${String(pid)}`)
       console.log(`  home:       ${home}`)
@@ -253,7 +253,7 @@ export function buildProgram(): Command {
   daemon
     .command('restart')
     .description(
-      'restart the supervisor daemon WITHOUT flapping the fleet (sends SIGHUP, agents survive, then re-spawns the daemon)',
+      'restart the supervisor daemon WITHOUT flapping the fleet (sends SIGHUP, agents survive, then re-starts the daemon)',
     )
     .action(async () => {
       const home = await resolveHomeFromOpts(program)
@@ -274,7 +274,7 @@ export function buildProgram(): Command {
           await new Promise((resolve) => setTimeout(resolve, 200))
         }
       }
-      const pid = await spawnDaemon({ home })
+      const pid = await startDaemon({ home })
       console.log(`supervisor daemon restarted`)
       console.log(`  pid:        ${String(pid)}`)
       console.log(`  home:       ${home}`)
@@ -369,9 +369,9 @@ export function buildProgram(): Command {
     )
 
   agent
-    .command('spawn')
+    .command('build')
     .description(
-      'spawn a new Agent through a guided conversation (Epic 14 Phase A; see wiki/epics/14-conversational-onboarding.md)',
+      'build a new Agent through a guided conversation (Epic 14 Phase A; see wiki/epics/14-conversational-onboarding.md)',
     )
     .option(
       '--script <path>',
@@ -389,7 +389,7 @@ export function buildProgram(): Command {
     .option('--dry-run', 'run the interview, print the preview, do not create')
     .option(
       '--replay <path>',
-      'skip the interview; replay a saved transcript JSON (from <home>/state/onboarding/transcripts/) through the rest of the spawn flow',
+      'skip the interview; replay a saved transcript JSON (from <home>/state/onboarding/transcripts/) through the rest of the build flow',
     )
     .action(
       async (opts: {
@@ -402,7 +402,7 @@ export function buildProgram(): Command {
       }) => {
         // Daemon detection. When the daemon is up we keep its
         // Supervisor as the single state-file writer and run the
-        // spawn's materialization step over RPC ("cli.spawn.from-
+        // build's materialization step over RPC ("cli.build.from-
         // handoff"). When it is down, the CLI opens a standalone
         // Supervisor itself. Both paths run the interview locally in
         // this CLI process.
@@ -425,12 +425,12 @@ export function buildProgram(): Command {
         // Hoisted so the handoff builder (after the if/else) can read
         // them. Replay mode leaves both undefined ... the resulting
         // Identity falls back to the hardcoded default model, which
-        // the operator can edit post-spawn.
+        // the operator can edit post-build.
         let interviewProvider: string | undefined
         let interviewModelId: string | undefined
         if (opts.replay !== undefined) {
           // Replay path: skip the interview entirely. Load the saved
-          // transcript JSON and re-run the rest of the spawn flow
+          // transcript JSON and re-run the rest of the build flow
           // through it. Useful for testing onboarding-script changes
           // against a deterministic input or reproducing a destroyed
           // Agent without re-walking the conversation.
@@ -551,8 +551,8 @@ export function buildProgram(): Command {
 
         // Build the handoff with suggested mcp_servers baked in so
         // the orchestrator writes them directly into the Identity ...
-        // no manual post-spawn YAML editing required. Schedules
-        // remain a separate post-spawn step at v1 (the schedule store
+        // no manual post-build YAML editing required. Schedules
+        // remain a separate post-build step at v1 (the schedule store
         // is per-Agent and the operator wants to confirm cadences
         // before the first fire).
         const agentNameForSuggest = (() => {
@@ -597,18 +597,18 @@ export function buildProgram(): Command {
         }
 
         // Materialize the Agent. When the daemon is up, route
-        // through cli.spawn.from-handoff so the daemon's Supervisor
+        // through cli.build.from-handoff so the daemon's Supervisor
         // owns state writes; when it is down, open a standalone
         // Supervisor here.
-        interface SpawnResult {
+        interface BuildResult {
           agent_name: string
           identity_path: string
           continuity_note_slug: string
         }
-        let result: SpawnResult
+        let result: BuildResult
         if (daemonClient) {
           try {
-            const rpcResult = await daemonClient.call('cli.spawn.from-handoff', {
+            const rpcResult = await daemonClient.call('cli.build.from-handoff', {
               handoff: {
                 frontmatter: handoff.frontmatter,
                 body: handoff.body,

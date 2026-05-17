@@ -3,7 +3,7 @@
  *
  * Mirrors the locked diagram in the Epic 2 spec
  * (wiki/epics/02-agent-runtime-minimum.md). At v1 we implement the minimum
- * set of transitions: spawn -> running, then external stop -> stopped, with
+ * set of transitions: start -> running, then external stop -> stopped, with
  * `errored` as a terminal-by-uncaught-exception transition. Other transitions
  * (waiting, blocked_*, detector trips) land as their corresponding subsystems
  * (scheduler, notifications, detectors) ship in subsequent PRs.

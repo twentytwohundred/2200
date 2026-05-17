@@ -3,7 +3,7 @@
  *
  * `createMockPair()` produces a (server, client) pair of `Connection`s
  * connected back-to-back. Whatever one writes, the other reads. Useful for
- * unit tests of the JsonRpcServer and JsonRpcClient without spawning a real
+ * unit tests of the JsonRpcServer and JsonRpcClient without starting a real
  * UDS or processes.
  */
 import type { Connection, Listener } from './transport.js'

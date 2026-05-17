@@ -1,9 +1,9 @@
 /**
- * Agent process lifecycle: spawn, adopt, track, kill.
+ * Agent process lifecycle: launch, adopt, track, kill.
  *
  * The supervisor owns this layer. Two ways an Agent process can be tracked:
  *
- *   - **Spawned**: the supervisor launched it via `child_process.spawn`. We
+ *   - **Started**: the supervisor launched it via `child_process.spawn`. We
  *     hold the ChildProcess reference and signal via it directly.
  *   - **Adopted**: the supervisor restarted (preserveChildren) and found a
  *     surviving Agent process running from a prior supervisor lifetime. We
@@ -23,7 +23,7 @@
  * old in-memory code. `validateAdoptedProcessArgv` reads the process's
  * argv via `ps` and confirms the bootstrap path matches the current dist.
  * The supervisor refuses to adopt processes that fail validation and
- * kills + respawns them instead.
+ * kills + restarts them instead.
  */
 import { execFileSync } from 'node:child_process'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -37,7 +37,7 @@ export interface TrackedAgent {
   readonly name: string
   /** The OS process ID. */
   readonly pid: number
-  /** Whether this process was adopted (true) or spawned by us (false). */
+  /** Whether this process was adopted (true) or started by us (false). */
   readonly adopted: boolean
   /** Resolves when the process exits. */
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
@@ -46,9 +46,9 @@ export interface TrackedAgent {
 }
 
 /** Back-compat alias. */
-export type SpawnedAgent = TrackedAgent
+export type StartedAgent = TrackedAgent
 
-class SpawnedAgentImpl implements TrackedAgent {
+class StartedAgentImpl implements TrackedAgent {
   readonly adopted = false
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
 
@@ -105,7 +105,7 @@ class AdoptedAgentImpl implements TrackedAgent {
    * `exit` event so this is how the supervisor's handleAgentExit
    * eventually fires; tight poll cadence keeps the gap between
    * stop() returning and `exited` resolving short enough that
-   * follow-up startAgent calls do not race `this.spawned.delete`.
+   * follow-up startAgent calls do not race `this.tracked.delete`.
    */
   private watchForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     return new Promise((resolve) => {
@@ -214,7 +214,7 @@ export function getProcessArgv(pid: number): string | null {
  * expected bootstrap path, false otherwise.
  *
  * Used at adopt-on-restart to refuse stale-dist processes. The supervisor
- * kills + respawns mismatched processes rather than adopting them.
+ * kills + restarts mismatched processes rather than adopting them.
  */
 export function validateAdoptedProcessArgv(pid: number, expectedBootstrapPath: string): boolean {
   const argv = getProcessArgv(pid)
@@ -233,7 +233,7 @@ export function adoptAgent(name: string, pid: number, log?: Logger): TrackedAgen
   return new AdoptedAgentImpl(name, pid, componentLog.child(name))
 }
 
-export interface SpawnAgentOptions {
+export interface StartAgentOptions {
   name: string
   identityPath: string
   socketPath: string
@@ -249,10 +249,10 @@ export interface SpawnAgentOptions {
 }
 
 /**
- * Spawn an Agent process. Returns once the process is launched (spawned);
- * does NOT wait for the Agent to register with the supervisor.
+ * Launch an Agent process. Returns once the process is started; does NOT
+ * wait for the Agent to register with the supervisor.
  */
-export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): TrackedAgent {
+export function launchAgentProcess(opts: StartAgentOptions, log?: Logger): TrackedAgent {
   const componentLog = log ?? createLogger('lifecycle')
   const bootstrapPath = opts.bootstrapPath ?? defaultBootstrapPath()
   const nodePath = opts.nodePath ?? process.execPath
@@ -273,7 +273,7 @@ export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): TrackedAgent 
   })
 
   if (child.pid === undefined) {
-    throw new Error(`failed to spawn Agent ${opts.name}: no pid`)
+    throw new Error(`failed to launch Agent ${opts.name}: no pid`)
   }
 
   // stdio: ['ignore', 'pipe', 'pipe'] above guarantees stdout and stderr are
@@ -286,13 +286,13 @@ export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): TrackedAgent 
     process.stderr.write(`[${opts.name}/stderr] ${data.toString()}`)
   })
 
-  componentLog.info('Agent process spawned', {
+  componentLog.info('Agent process started', {
     name: opts.name,
     pid: child.pid,
     bootstrapPath,
   })
 
-  return new SpawnedAgentImpl(opts.name, child.pid, child, componentLog.child(opts.name))
+  return new StartedAgentImpl(opts.name, child.pid, child, componentLog.child(opts.name))
 }
 
 /**
@@ -300,8 +300,8 @@ export function spawnAgent(opts: SpawnAgentOptions, log?: Logger): TrackedAgent 
  *
  * tsup bundles imports into entry files, so this module's `import.meta.url`
  * reports the entry file's URL (typically `dist/cli/main.js` when the CLI
- * spawns an Agent in-process, or `dist/runtime/supervisor/bootstrap.js`
- * when the supervisor daemon spawns one). Try the candidate paths in
+ * starts an Agent in-process, or `dist/runtime/supervisor/bootstrap.js`
+ * when the supervisor daemon starts one). Try the candidate paths in
  * order; pick the first that exists.
  */
 export function defaultBootstrapPath(): string {

@@ -193,7 +193,7 @@ export function AgentDetailScreen(): ReactElement {
     },
   })
 
-  // Track the task spawned by the most-recent send so we can show a
+  // Track the task created by the most-recent send so we can show a
   // "thinking…" placeholder until the assistant's reply lands, then
   // animate the reply in word-by-word.
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)

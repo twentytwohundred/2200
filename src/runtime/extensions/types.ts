@@ -159,7 +159,7 @@ export type ConnectorManifestBlock = z.infer<typeof ConnectorManifestBlockSchema
 /**
  * Gateway lifecycle hook (Extension grows a long-lived child process).
  *
- * The supervisor spawns the gateway script when the Extension is
+ * The supervisor starts the gateway script when the Extension is
  * installed AND at least one Agent declares a binding to the
  * connector's `id`. Restart policy controls supervisor behavior when
  * the gateway exits.
@@ -171,8 +171,8 @@ export const GatewayHookSchema = z.object({
   /** Relative path to the gateway entry script inside the Extension dir. */
   script: z.string().min(1),
   /**
-   * `always`: respawn whenever the process exits (with a small budget).
-   * `on_demand`: spawn only when an inbound or outbound request lands,
+   * `always`: restart whenever the process exits (with a small budget).
+   * `on_demand`: start only when an inbound or outbound request lands,
    *  exit on idle. Use `always` for socket-based gateways (WhatsApp,
    *  Discord); `on_demand` is reserved for poll-based gateways that
    *  don't need a persistent connection.
@@ -233,7 +233,7 @@ export const ExtensionManifestSchema = z.object({
       update: z.string().optional(),
       tick: z.string().optional(),
       /**
-       * Long-lived child process spawned when the Extension is
+       * Long-lived child process started when the Extension is
        * installed AND at least one Agent declares a binding to the
        * connector's id. Used by connector Extensions. See
        * [[../decisions/2026-05-16-connector-extensions]].

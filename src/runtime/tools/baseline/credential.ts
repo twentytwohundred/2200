@@ -9,7 +9,7 @@
  *   wiki/decisions/2026-05-14-request-credential-substrate.md
  *
  * Surface restriction: only tasks whose `source.kind === 'chat'` can
- * dispatch this tool. Pub / schedule / self-spawn / cli / null
+ * dispatch this tool. Pub / schedule / self-started / cli / null
  * sources are rejected inline with decline_reason='surface_invalid'.
  *
  * Rate cap: per-Agent rolling 1-hour window, default 15 / hour,
@@ -248,7 +248,7 @@ export function credentialTools(
     args: z.infer<typeof RequestCredentialArgsSchema>,
     ctx: ToolContext,
   ): Promise<CredentialRequestToolResult> {
-    // 1. Surface check: only chat-spawned tasks may dispatch.
+    // 1. Surface check: only chat-created tasks may dispatch.
     const source = ctx.taskSource ?? null
     if (source?.kind !== 'chat') {
       return {

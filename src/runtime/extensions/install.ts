@@ -241,7 +241,7 @@ export interface UpdateResult {
 /**
  * Install an Extension from a resolved source. Returns the manifest
  * and the install hook's result; throws on validation, copy, or hook
- * spawn failures with cleanup of any partial state.
+ * launch failures with cleanup of any partial state.
  */
 export async function installExtension(args: InstallArgs): Promise<InstallResult> {
   const manifest = await loadSourceManifest(args.source.rootDir)
@@ -414,7 +414,7 @@ export async function uninstallExtension(args: UninstallArgs): Promise<Uninstall
         hookFailed = true
       }
     } catch {
-      // Hook spawn error: continue with teardown anyway.
+      // Hook launch error: continue with teardown anyway.
       hookFailed = true
     }
   }

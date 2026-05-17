@@ -2,7 +2,7 @@
  * Identity migrator: schema_version 4 -> 5.
  *
  * v5 (Epic 9 Phase A) introduces the `mcp_servers` block ... per-Agent
- * declarations of external MCP servers the supervisor spawns alongside
+ * declarations of external MCP servers the supervisor launches alongside
  * the Agent process at start. The migrator just stamps the version;
  * the Zod schema's `mcp_servers` default ([]) fills the field for any
  * v4 file that lacks the block.

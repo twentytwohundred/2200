@@ -140,14 +140,14 @@ describe('credential_request — surface gating', () => {
     expect(out.decline_reason).toBe('surface_invalid')
   })
 
-  it('declines when taskSource is pub / schedule / cli / delegation / self_spawn', async () => {
+  it('declines when taskSource is pub / schedule / cli / delegation / self_started', async () => {
     const tool = findTool()
     const sources: ToolContext['taskSource'][] = [
       { kind: 'pub', pub: 'lobby' },
       { kind: 'schedule', schedule_id: 'sched_x' },
       { kind: 'cli' },
       { kind: 'delegation', parent_task_id: 'task_x' },
-      { kind: 'self_spawn' },
+      { kind: 'self_started' },
     ]
     const args = tool.argsSchema.parse(sampleArgs)
     for (const source of sources) {
@@ -268,7 +268,7 @@ describe('credential_request — persisted shape', () => {
       const args = tool.argsSchema.parse(sampleArgs)
 
       // Real chat threads are created by the web HTTP handlers before
-      // a task spawns; for the tool test we pre-create the thread so
+      // a task starts; for the tool test we pre-create the thread so
       // the system-role insertion path is exercised.
       const chats = new MultiChatStore(home, 'hobby')
       const chat = await chats.createChat({ title: 'auth setup' })

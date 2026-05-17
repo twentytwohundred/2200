@@ -1,7 +1,7 @@
 /**
  * The supervisor process.
  *
- * Owns Agent lifecycle: spawn, track, restart, stop. Hosts the control-plane
+ * Owns Agent lifecycle: start, track, restart, stop. Hosts the control-plane
  * server on a UDS at `<state-dir>/supervisor.sock`. Persists state to
  * `<state-dir>/supervisor.json` after every state change so a restart
  * resumes cleanly per upgrade-readiness #3.
@@ -23,15 +23,15 @@ import { type SupervisorState, type AgentRecord, type PubRecord } from './types.
 import { regenerateFleet } from './fleet.js'
 import { regenerateTeamNote, seedStarterPack } from '../onboarding/starter-pack.js'
 import {
-  spawnAgent,
+  launchAgentProcess,
   adoptAgent,
   isPidAlive,
   validateAdoptedProcessArgv,
   defaultBootstrapPath,
   type TrackedAgent,
-  type SpawnAgentOptions,
+  type StartAgentOptions,
 } from './lifecycle.js'
-import { spawnPub, composePubMd, type SpawnedPub } from './pub-lifecycle.js'
+import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
@@ -102,7 +102,7 @@ export interface SupervisorOptions {
   }
   /**
    * On boot, walk on-disk state and revive previously-running pubs
-   * (after killing any port-holding orphans) and respawn agents
+   * (after killing any port-holding orphans) and restart agents
    * that were running. Default false ... only the production
    * daemon bootstrap opts in. Tests construct Supervisors against
    * leftover on-disk state without expecting child processes to
@@ -134,29 +134,29 @@ export class Supervisor {
   private readonly server: JsonRpcServer
   private readonly connections = new Set<Connection>()
   private readonly agentByConnection = new WeakMap<Connection, string>()
-  private readonly spawned = new Map<string, TrackedAgent>()
-  private readonly spawnedPubs = new Map<string, SpawnedPub>()
+  private readonly tracked = new Map<string, TrackedAgent>()
+  private readonly trackedPubs = new Map<string, StartedPub>()
   /**
    * Names of Agents whose current process exit is the result of an
-   * operator-initiated stop (via `stopAgent`). The auto-respawn path in
+   * operator-initiated stop (via `stopAgent`). The auto-restart path in
    * `handleAgentExit` checks this set to distinguish "process died
-   * unexpectedly, supervisor should respawn it" from "we asked it to
+   * unexpectedly, supervisor should restart it" from "we asked it to
    * stop, leave it stopped".
    *
    * Add on stopAgent entry; remove after the post-stop state update.
    */
   private readonly intentionalStops = new Set<string>()
   /**
-   * Per-Agent respawn timestamps (epoch ms), capped to the last 3. Used
-   * to enforce a crash-respawn budget: if an Agent has been respawned 3
+   * Per-Agent restart timestamps (epoch ms), capped to the last 3. Used
+   * to enforce a crash-restart budget: if an Agent has been restarted 3
    * times in the last 60s, the 4th unexpected exit transitions it to
-   * `errored` instead of respawning again. Prevents spawn-crash-spawn
+   * `errored` instead of restarting again. Prevents start-crash-start
    * tight loops from burning resources.
    */
-  private readonly respawnHistory = new Map<string, number[]>()
+  private readonly restartHistory = new Map<string, number[]>()
   /**
    * One PulseWatcher per running Agent (Epic 15 PulseDot live-feed).
-   * Started when the agent is spawned, stopped when the agent exits
+   * Started when the agent is launched, stopped when the agent exits
    * or the supervisor shuts down. The watcher polls `pulse.json` and
    * forwards changes to the WS broadcast so connected web clients
    * see the dot animate without polling.
@@ -219,7 +219,7 @@ export class Supervisor {
 
   /**
    * The deployment tier this Supervisor is running in. Read by Agent
-   * subprocess spawn so the AgentLoop can branch on it (Epic 17
+   * subprocess launch so the AgentLoop can branch on it (Epic 17
    * substrate); read by the daemon for startup logging.
    */
   getRuntimeMode(): RuntimeMode {
@@ -230,7 +230,7 @@ export class Supervisor {
    * The shared onboarding-session store. Used by the HTTP server to
    * back the Card Stack onboarding flow's `POST /api/v1/onboarding/...`
    * endpoints. In-memory only ... a supervisor restart drops every
-   * in-flight interview, matching the CLI's `Ctrl-C aborts the spawn`
+   * in-flight interview, matching the CLI's `Ctrl-C aborts the build`
    * behavior.
    */
   /**
@@ -297,7 +297,7 @@ export class Supervisor {
       runtime_mode: this.runtimeMode,
     })
     // Recover from the previous incarnation: revive pubs and
-    // respawn agents that were running. Off by default so tests
+    // restart agents that were running. Off by default so tests
     // that construct a Supervisor don't accidentally fork child
     // processes from leftover on-disk state. Production bootstrap
     // opts in (`recoverFromState: true`).
@@ -370,7 +370,7 @@ export class Supervisor {
         pid: record.pid,
         last_heartbeat: record.last_heartbeat,
       })
-      this.spawned.delete(name)
+      this.tracked.delete(name)
       this.stopPulseWatcher(name)
       const errored: AgentRecord = {
         ...record,
@@ -604,7 +604,7 @@ export class Supervisor {
    * and agents.
    *
    * Pubs: anything in 'running' or 'errored' state gets a fresh
-   * spawn. Before spawning, we kill any orphan process listening on
+   * launch. Before launching, we kill any orphan process listening on
    * the recorded port (left over when a prior supervisor was
    * SIGKILL'd before its child cleanup ran). This is the cure for
    * the "pub-server is alive but supervisor.json says errored, so
@@ -612,8 +612,8 @@ export class Supervisor {
    * repeatedly during session-13 testing.
    *
    * Agents: anything previously in 'running' state is checked for a
-   * live pid. If still alive, adopt; if dead, respawn through the
-   * normal spawnAgent path (which clears errored_* fields).
+   * live pid. If still alive, adopt; if dead, restart through the
+   * normal startAgent path (which clears errored_* fields).
    *
    * All failures are warned-and-continue, never thrown ... boot
    * proceeds even if a single pub or agent fails to revive, so the
@@ -630,7 +630,7 @@ export class Supervisor {
       // If the recorded pub-server PID is still alive, the previous
       // supervisor exited via SIGHUP (preserveChildren) and the
       // pub-server is OUR child still listening on its port. Adopt
-      // rather than kill-and-respawn ... that flapping is what
+      // rather than kill-and-restart ... that flapping is what
       // disconnects every agent's WebSocket and breaks Studio after a
       // daemon restart. The pub-bridge will reconnect via its
       // existing retry path.
@@ -656,7 +656,7 @@ export class Supervisor {
       }
     }
 
-    // Brief settle so newly-spawned pub-servers have bound their
+    // Brief settle so newly-started pub-servers have bound their
     // ports before agents try to connect. The agent's PubClient
     // also retries on connect failure but biasing toward "pub is
     // already up" reduces wake-source warnings on first boot.
@@ -665,10 +665,10 @@ export class Supervisor {
     }
 
     const expectedBootstrap = defaultBootstrapPath()
-    let agentsRejectedAndRespawned = 0
+    let agentsRejectedAndRestarted = 0
     // Any non-terminal state was a live Agent at last shutdown; revive it.
     // 'stopped' is operator-requested rest; 'errored' is crashed beyond the
-    // respawn budget. Both stay down until the operator brings them back.
+    // restart budget. Both stay down until the operator brings them back.
     const reviveStates: AgentRecord['state'][] = [
       'running',
       'waiting',
@@ -684,7 +684,7 @@ export class Supervisor {
         // the Agent was alive, the process holds stale code in memory and
         // will service tasks with old behavior (this is the orphan-PID bug
         // that bit the 2026-05-11 smoke run). Refuse to adopt mismatches;
-        // kill and respawn instead.
+        // kill and restart instead.
         const valid = validateAdoptedProcessArgv(record.pid, expectedBootstrap)
         if (valid) {
           this.log.info('boot: agent process still alive; adopting', {
@@ -692,15 +692,15 @@ export class Supervisor {
             pid: record.pid,
           })
           const tracked = adoptAgent(name, record.pid, this.log.child('lifecycle'))
-          this.spawned.set(name, tracked)
+          this.tracked.set(name, tracked)
           void tracked.exited.then(({ code, signal }) => {
             void this.handleAgentExit(name, code, signal)
           })
           agentsAdopted += 1
           continue
         }
-        // Stale-dist process: kill it, then respawn fresh.
-        this.log.warn('boot: adopted process failed argv validation; killing and respawning', {
+        // Stale-dist process: kill it, then restart fresh.
+        this.log.warn('boot: adopted process failed argv validation; killing and restarting', {
           name,
           pid: record.pid,
           expected_bootstrap: expectedBootstrap,
@@ -709,7 +709,7 @@ export class Supervisor {
           const stale = adoptAgent(name, record.pid, this.log.child('lifecycle'))
           await stale.stop(5000)
         } catch (err) {
-          this.log.warn('boot: failed to kill stale process; will respawn anyway', {
+          this.log.warn('boot: failed to kill stale process; will restart anyway', {
             name,
             pid: record.pid,
             error: err instanceof Error ? err.message : String(err),
@@ -717,9 +717,9 @@ export class Supervisor {
         }
         try {
           await this.startAgent(name)
-          agentsRejectedAndRespawned += 1
+          agentsRejectedAndRestarted += 1
         } catch (err) {
-          this.log.warn('boot: failed to respawn after rejection', {
+          this.log.warn('boot: failed to restart after rejection', {
             name,
             error: err instanceof Error ? err.message : String(err),
           })
@@ -741,7 +741,7 @@ export class Supervisor {
       pubs_revived: pubsRevived,
       agents_revived: agentsRevived,
       agents_adopted: agentsAdopted,
-      agents_rejected_and_respawned: agentsRejectedAndRespawned,
+      agents_rejected_and_restarted: agentsRejectedAndRestarted,
       duration_ms: Date.now() - reviveStart,
     })
   }
@@ -804,7 +804,7 @@ export class Supervisor {
     this.pulseWatchers.clear()
     const stops = preserveChildren
       ? []
-      : Array.from(this.spawned.values()).map(async (sa) => {
+      : Array.from(this.tracked.values()).map(async (sa) => {
           try {
             await sa.stop(timeoutMs)
           } catch (err) {
@@ -816,7 +816,7 @@ export class Supervisor {
         })
     const pubStops = preserveChildren
       ? []
-      : Array.from(this.spawnedPubs.values()).map(async (sp) => {
+      : Array.from(this.trackedPubs.values()).map(async (sp) => {
           // Mark intent so `handlePubExit` routes to 'stopped', not 'errored'.
           this.pubStopRequested.add(sp.name)
           try {
@@ -946,7 +946,7 @@ export class Supervisor {
       identity_path: canonical,
       state: 'stopped',
       pid: null,
-      spawned_at: null,
+      created_at: null,
       last_heartbeat: null,
       errored_at: null,
       errored_reason: null,
@@ -1101,26 +1101,26 @@ export class Supervisor {
     }
   }
 
-  /** Spawn the Agent process for an existing record. */
+  /** Start the Agent process for an existing record. */
   async startAgent(name: string, options: { agentBootstrapPath?: string } = {}): Promise<void> {
     const record = this.state.agents[name]
     if (!record) {
       throw new Error(`no Agent record for ${name}`)
     }
-    if (this.spawned.has(name)) {
+    if (this.tracked.has(name)) {
       throw new Error(`Agent ${name} is already running`)
     }
     const socketPath = Supervisor.socketPath(this.state.home)
-    const spawnOpts: SpawnAgentOptions = {
+    const startOpts: StartAgentOptions = {
       name,
       identityPath: record.identity_path,
       socketPath,
       home: this.state.home,
       ...(options.agentBootstrapPath ? { bootstrapPath: options.agentBootstrapPath } : {}),
     }
-    const spawned = spawnAgent(spawnOpts, this.log.child('lifecycle'))
-    this.spawned.set(name, spawned)
-    void spawned.exited.then(({ code, signal }) => {
+    const tracked = launchAgentProcess(startOpts, this.log.child('lifecycle'))
+    this.tracked.set(name, tracked)
+    void tracked.exited.then(({ code, signal }) => {
       void this.handleAgentExit(name, code, signal)
     })
     this.startPulseWatcher(name)
@@ -1129,8 +1129,8 @@ export class Supervisor {
     // restarts, and snapshot reads; clearing them here keeps the
     // AgentDetail hero honest about current state.
     await this.updateAgent(name, {
-      pid: spawned.pid,
-      spawned_at: new Date().toISOString(),
+      pid: tracked.pid,
+      created_at: new Date().toISOString(),
       state: 'running',
       errored_at: null,
       errored_reason: null,
@@ -1181,19 +1181,19 @@ export class Supervisor {
    * Send `agent.stop` to a running Agent and wait for graceful exit.
    *
    * Sets `intentionalStops` BEFORE the kill so `handleAgentExit` sees
-   * the intent flag whether it fires synchronously (inside `spawned.stop`)
+   * the intent flag whether it fires synchronously (inside `tracked.stop`)
    * or asynchronously (microtask after we return). The flag is NOT
    * cleared here; `handleAgentExit` clears it after consuming it. This
    * fixes a microtask race observed 2026-05-12 where `stopAgent` cleared
    * the flag in a `finally` block, then `handleAgentExit` ran one tick
-   * later, saw no flag, and auto-respawned the agent we'd just asked to
+   * later, saw no flag, and auto-restarted the agent we'd just asked to
    * stop. Symptom: `agent stop X && agent start X` failed with "X is
-   * already running" because the supervisor had already respawned X.
+   * already running" because the supervisor had already restarted X.
    */
   async stopAgent(name: string, reason = 'user_requested'): Promise<void> {
     this.intentionalStops.add(name)
-    const spawned = this.spawned.get(name)
-    if (!spawned) {
+    const tracked = this.tracked.get(name)
+    if (!tracked) {
       // No running process; mark stopped and persist. Drop the flag
       // since no handleAgentExit will fire to consume it.
       this.intentionalStops.delete(name)
@@ -1202,7 +1202,7 @@ export class Supervisor {
     }
     // Send the RPC; the Agent acks and then exits. After the OS process
     // exits, `handleAgentExit` updates the record. If the Agent is
-    // unresponsive, `spawned.stop()` falls back to SIGKILL (5s timeout).
+    // unresponsive, `tracked.stop()` falls back to SIGKILL (5s timeout).
     const conn = this.findConnectionFor(name)
     if (conn) {
       try {
@@ -1219,12 +1219,12 @@ export class Supervisor {
       }
     }
     try {
-      await spawned.stop()
+      await tracked.stop()
       await this.updateAgent(name, { state: 'stopped', pid: null })
       this.log.info('Agent stopped', { name, reason })
     } catch (err) {
       // If the stop path itself errors, clear the flag so we don't leak
-      // it and inadvertently suppress a future legitimate auto-respawn.
+      // it and inadvertently suppress a future legitimate auto-restart.
       this.intentionalStops.delete(name)
       throw err
     }
@@ -1246,7 +1246,7 @@ export class Supervisor {
    */
   async removeAgent(name: string): Promise<void> {
     if (!this.state.agents[name]) return
-    if (this.spawned.get(name)) {
+    if (this.tracked.get(name)) {
       await this.stopAgent(name, 'remove_agent')
     }
     const next: Record<string, AgentRecord> = {}
@@ -1283,14 +1283,14 @@ export class Supervisor {
     const archivedAt = new Date().toISOString()
 
     // Stop the process (if any). Forces user-stop semantics so the
-    // exit handler routes to 'stopped' rather than auto-respawning.
-    if (this.spawned.get(name)) {
+    // exit handler routes to 'stopped' rather than auto-restarting.
+    if (this.tracked.get(name)) {
       await this.stopAgent(name, 'archive')
     }
     this.stopPulseWatcher(name)
 
     // Clear pubs.md so the archived Agent attaches no wake sources if
-    // anyone re-spawns it. (We won't, but defense in depth.)
+    // anyone re-starts it. (We won't, but defense in depth.)
     try {
       const pubsFile = agentPaths(this.state.home, name).pubsFile
       const existing = await readAgentPubsFile(pubsFile)
@@ -1342,7 +1342,7 @@ export class Supervisor {
       name: archivedName,
       state: 'archived',
       pid: null,
-      spawned_at: null,
+      created_at: null,
       identity_path: agentPaths(this.state.home, archivedName).identity,
       current_task_id: null,
     }
@@ -1422,7 +1422,7 @@ export class Supervisor {
       name: target,
       state: 'stopped',
       pid: null,
-      spawned_at: null,
+      created_at: null,
       last_heartbeat: null,
       identity_path: agentPaths(this.state.home, target).identity,
     }
@@ -1457,7 +1457,7 @@ export class Supervisor {
    */
   async removePub(name: string): Promise<void> {
     if (!this.state.pubs[name]) return
-    if (this.spawnedPubs.get(name)) {
+    if (this.trackedPubs.get(name)) {
       this.pubStopRequested.add(name)
       try {
         await this.stopPub(name, 'remove_pub')
@@ -1527,7 +1527,7 @@ export class Supervisor {
       port,
       state: 'stopped',
       pid: null,
-      spawned_at: null,
+      created_at: null,
       errored_at: null,
       errored_reason: null,
     }
@@ -1546,9 +1546,9 @@ export class Supervisor {
   }
 
   /**
-   * Spawn the pub-server process for an existing pub record.
+   * Start the pub-server process for an existing pub record.
    * Idempotent: starting an already-running pub returns the current
-   * pid without re-spawning.
+   * pid without re-launching.
    */
   async startPub(
     name: string,
@@ -1562,7 +1562,7 @@ export class Supervisor {
     if (!record) {
       throw new Error(`no pub record for ${name}`)
     }
-    const existing = this.spawnedPubs.get(name)
+    const existing = this.trackedPubs.get(name)
     if (existing) {
       return { pid: existing.pid, port: record.port }
     }
@@ -1571,7 +1571,7 @@ export class Supervisor {
       adminSecret: paths.adminSecret,
       signingKey: paths.signingKey,
     })
-    const spawned = spawnPub(
+    const tracked = launchPubProcess(
       {
         name,
         home: this.state.home,
@@ -1585,7 +1585,7 @@ export class Supervisor {
       },
       this.log.child('pub-lifecycle'),
     )
-    this.spawnedPubs.set(name, spawned)
+    this.trackedPubs.set(name, tracked)
     // Order of operations matters here. Persist `state: 'running'`
     // FIRST and only THEN attach the exit handler. If we attach the
     // handler before awaiting the disk write, an immediate-exit child
@@ -1598,14 +1598,14 @@ export class Supervisor {
     // queues a microtask that runs immediately after this turn,
     // which is exactly what we want.
     await this.updatePub(name, {
-      pid: spawned.pid,
-      spawned_at: new Date().toISOString(),
+      pid: tracked.pid,
+      created_at: new Date().toISOString(),
       state: 'running',
     })
-    void spawned.exited.then(({ code, signal }) => {
+    void tracked.exited.then(({ code, signal }) => {
       void this.handlePubExit(name, code, signal)
     })
-    return { pid: spawned.pid, port: record.port }
+    return { pid: tracked.pid, port: record.port }
   }
 
   /**
@@ -1613,8 +1613,8 @@ export class Supervisor {
    * pub records the state change but is otherwise a no-op.
    */
   async stopPub(name: string, reason = 'user_requested'): Promise<void> {
-    const spawned = this.spawnedPubs.get(name)
-    if (!spawned) {
+    const tracked = this.trackedPubs.get(name)
+    if (!tracked) {
       await this.updatePub(name, { state: 'stopped', pid: null })
       return
     }
@@ -1622,8 +1622,8 @@ export class Supervisor {
     // (which may race with us) sees the flag and routes to 'stopped'
     // rather than 'errored'.
     this.pubStopRequested.add(name)
-    await spawned.stop()
-    this.spawnedPubs.delete(name)
+    await tracked.stop()
+    this.trackedPubs.delete(name)
     await this.updatePub(name, { state: 'stopped', pid: null })
     this.log.info('Pub stopped', { name, reason })
   }
@@ -1635,7 +1635,7 @@ export class Supervisor {
       state: p.state,
       port: p.port,
       pid: p.pid,
-      spawned_at: p.spawned_at,
+      created_at: p.created_at,
       errored_reason: p.errored_reason,
     }))
   }
@@ -2132,7 +2132,7 @@ export class Supervisor {
         return { ok: true as const, armed }
       },
 
-      'cli.spawn.from-handoff': async (params) => {
+      'cli.build.from-handoff': async (params) => {
         const { migrateFromHandoff } = await import('../migration/orchestrator.js')
         const result = await migrateFromHandoff({
           handoff: {
@@ -2146,7 +2146,7 @@ export class Supervisor {
           seedFirstTask: true,
           ...(params.force === true ? { force: true } : {}),
         })
-        this.log.info('agent spawned via cli.spawn.from-handoff', {
+        this.log.info('agent built via cli.build.from-handoff', {
           name: result.agent_name,
           identity_path: result.identity_path,
         })
@@ -2166,7 +2166,7 @@ export class Supervisor {
     code: number | null,
     signal: NodeJS.Signals | null,
   ): Promise<void> {
-    this.spawned.delete(name)
+    this.tracked.delete(name)
     this.stopPulseWatcher(name)
     const record = this.state.agents[name]
     if (!record) return
@@ -2175,7 +2175,7 @@ export class Supervisor {
       return
     }
 
-    // Was this exit operator-initiated? Then no respawn; transition to stopped.
+    // Was this exit operator-initiated? Then no restart; transition to stopped.
     // The flag is a one-shot: consume it here so a subsequent unexpected
     // exit isn't suppressed.
     const intentional = this.intentionalStops.delete(name)
@@ -2237,43 +2237,43 @@ export class Supervisor {
       return
     }
 
-    // Unexpected exit. Apply the respawn budget: max 3 respawns in 60s. The
-    // budget prevents a misbehaving agent from triggering a spawn-crash-spawn
+    // Unexpected exit. Apply the restart budget: max 3 restarts in 60s. The
+    // budget prevents a misbehaving agent from triggering a start-crash-start
     // tight loop. After exhausting the budget, the agent is left errored so
     // the operator can investigate.
     const now = Date.now()
-    const recent = (this.respawnHistory.get(name) ?? []).filter((t) => now - t < 60_000)
+    const recent = (this.restartHistory.get(name) ?? []).filter((t) => now - t < 60_000)
     if (recent.length >= 3) {
-      this.log.warn('Agent crashed too many times in 60s; not respawning', {
+      this.log.warn('Agent crashed too many times in 60s; not restarting', {
         name,
         code,
         signal,
-        recent_respawns: recent.length,
+        recent_restarts: recent.length,
       })
       await this.updateAgent(name, {
         state: 'errored',
         pid: null,
         errored_at: new Date().toISOString(),
-        errored_reason: `crashed ${String(recent.length + 1)} times in 60s (code=${String(code)} signal=${String(signal)}); auto-respawn budget exhausted`,
+        errored_reason: `crashed ${String(recent.length + 1)} times in 60s (code=${String(code)} signal=${String(signal)}); auto-restart budget exhausted`,
       })
       return
     }
     recent.push(now)
-    this.respawnHistory.set(name, recent)
+    this.restartHistory.set(name, recent)
 
-    this.log.warn('Agent process exited unexpectedly; auto-respawning', {
+    this.log.warn('Agent process exited unexpectedly; auto-restarting', {
       name,
       code,
       signal,
       attempt: recent.length,
     })
 
-    // Best-effort respawn. If startAgent throws, fall through to errored.
+    // Best-effort restart. If startAgent throws, fall through to errored.
     try {
       await this.startAgent(name)
-      this.log.info('Agent auto-respawned', { name, attempt: recent.length })
+      this.log.info('Agent auto-restarted', { name, attempt: recent.length })
     } catch (err) {
-      this.log.warn('auto-respawn failed', {
+      this.log.warn('auto-restart failed', {
         name,
         error: err instanceof Error ? err.message : String(err),
       })
@@ -2281,7 +2281,7 @@ export class Supervisor {
         state: 'errored',
         pid: null,
         errored_at: new Date().toISOString(),
-        errored_reason: `auto-respawn failed after exit code=${String(code)} signal=${String(signal)}: ${err instanceof Error ? err.message : String(err)}`,
+        errored_reason: `auto-restart failed after exit code=${String(code)} signal=${String(signal)}: ${err instanceof Error ? err.message : String(err)}`,
       })
     }
   }
@@ -2346,7 +2346,7 @@ export class Supervisor {
       })
     }
     // Mirror the fleet snapshot into the shared brain as the "team"
-    // note so freshly-spawned Agents can read it via brain.* without
+    // note so freshly-started Agents can read it via brain.* without
     // traversing the supervisor state file. Failures here are
     // non-fatal: the fleet.md regen above already provides the
     // ground-truth surface; this is the orientation surface for
@@ -2385,7 +2385,7 @@ export class Supervisor {
     code: number | null,
     signal: NodeJS.Signals | null,
   ): Promise<void> {
-    this.spawnedPubs.delete(name)
+    this.trackedPubs.delete(name)
     const record = this.state.pubs[name]
     if (!record) return
     const wasRequested = this.pubStopRequested.delete(name)
@@ -2502,7 +2502,7 @@ function today(): string {
 /**
  * SIGKILL whatever is listening on `port`. Used during boot recovery
  * to clear a pub-server orphan left over from a force-killed prior
- * supervisor before re-spawning a fresh one on the same port.
+ * supervisor before re-launching a fresh one on the same port.
  *
  * Best-effort: if `lsof` is missing or returns nothing, we no-op.
  * Failures are logged at warn but never thrown.
@@ -2529,11 +2529,11 @@ async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
       }
     }
     // Settle for the kernel to actually release the listener so the
-    // imminent spawn doesn't hit EADDRINUSE.
+    // imminent launch doesn't hit EADDRINUSE.
     await new Promise((r) => setTimeout(r, 400))
   } catch (err) {
     // lsof is missing or otherwise failed. Probably non-fatal: if
-    // there really is an orphan, the spawn that follows will hit
+    // there really is an orphan, the launch that follows will hit
     // EADDRINUSE and surface a clear error. Linux/Alpine images
     // sometimes lack lsof; that's a packaging concern, not a runtime
     // one.

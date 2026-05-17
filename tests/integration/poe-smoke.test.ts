@@ -11,7 +11,7 @@
  *   1. Spin up a real Supervisor on a tmp 2200_HOME.
  *   2. createPub('ops') → generates per-pub admin secret + signing
  *      keypair, persists, registers a PubRecord.
- *   3. startPub('ops') → spawns the REAL openpub-server child with
+ *   3. startPub('ops') → starts the REAL openpub-server child with
  *      OPENPUB_TRUST_MODE=local, OPENPUB_ADMIN_SECRET, PUB_SIGNING_*,
  *      PUB_MD_PATH, PORT, OPENPUB_STATE_DIR.
  *   4. Wait for /health or /info to respond.
@@ -29,7 +29,7 @@
  *  11. Use poe's PubClient to send a reply.
  *  12. Assert the user's PubClient receives the reply event.
  *
- * The test takes a few seconds (real process spawn + network handshake).
+ * The test takes a few seconds (real process start + network handshake).
  * Skipped automatically if the openpub-server binary cannot be found
  * (e.g., on CI that has not installed the optional dep).
  */

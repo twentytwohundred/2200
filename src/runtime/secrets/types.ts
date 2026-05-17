@@ -15,7 +15,7 @@
  *    the calling Agent's vault, when the resolver context provides a
  *    default Agent) or `<agent_name>:<credential_name>` (resolved
  *    against a specific Agent's vault, used by the supervisor at MCP
- *    server spawn time when it knows which Agent is being spawned).
+ *    server launch time when it knows which Agent is being started).
  *
  * Future: `exec` (shell out to a helper command).
  */

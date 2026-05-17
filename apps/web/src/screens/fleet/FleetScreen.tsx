@@ -146,8 +146,8 @@ export function FleetScreen(): ReactElement {
           title="No Agents yet"
           body={
             <>
-              Spawn one through the conversational onboarding flow, or run{' '}
-              <code className={styles.bannerCode}>2200 agent spawn</code> in your shell. Either way
+              Build one through the conversational onboarding flow, or run{' '}
+              <code className={styles.bannerCode}>2200 agent build</code> in your shell. Either way
               the Agent lands here once it's on disk.
             </>
           }

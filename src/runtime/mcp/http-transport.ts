@@ -32,7 +32,7 @@ export interface HttpMcpServerHandle extends McpServer {
   readonly client: Client
 }
 
-export interface SpawnHttpMcpArgs {
+export interface LaunchHttpMcpArgs {
   /** Identity-declared server name; dotted prefix on every tool. */
   name: string
   /** MCP HTTP endpoint URL. */
@@ -52,7 +52,7 @@ const DEFAULT_CLIENT_INFO = {
   version: '0.0.0',
 }
 
-export async function spawnHttpMcpServer(args: SpawnHttpMcpArgs): Promise<HttpMcpServerHandle> {
+export async function launchHttpMcpServer(args: LaunchHttpMcpArgs): Promise<HttpMcpServerHandle> {
   const headers: Record<string, string> = { ...args.extraHeaders }
   if (args.bearerToken) {
     headers['Authorization'] = `Bearer ${args.bearerToken}`

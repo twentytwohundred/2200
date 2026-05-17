@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
-import { spawnHttpMcpServer } from '../../../src/runtime/mcp/http-transport.js'
+import { launchHttpMcpServer } from '../../../src/runtime/mcp/http-transport.js'
 
 interface RunningServer {
   server: Server
@@ -81,10 +81,10 @@ afterEach(async () => {
   }
 })
 
-describe('spawnHttpMcpServer', () => {
+describe('launchHttpMcpServer', () => {
   it('connects, lists tools, and dispatches a tool call', async () => {
     running = await startMcpServer()
-    const handle = await spawnHttpMcpServer({
+    const handle = await launchHttpMcpServer({
       name: 'remote',
       url: running.url,
     })
@@ -103,7 +103,7 @@ describe('spawnHttpMcpServer', () => {
 
   it('sends Authorization: Bearer when bearerToken is provided', async () => {
     running = await startMcpServer({ requireBearer: 'TKN-abc' })
-    const handle = await spawnHttpMcpServer({
+    const handle = await launchHttpMcpServer({
       name: 'remote',
       url: running.url,
       bearerToken: 'TKN-abc',
@@ -118,7 +118,7 @@ describe('spawnHttpMcpServer', () => {
   it('rejects when bearer token is wrong (server returns 401)', async () => {
     running = await startMcpServer({ requireBearer: 'TKN-correct' })
     await expect(
-      spawnHttpMcpServer({
+      launchHttpMcpServer({
         name: 'remote',
         url: running.url,
         bearerToken: 'TKN-wrong',
@@ -128,7 +128,7 @@ describe('spawnHttpMcpServer', () => {
 
   it('namespaces tools with the configured server name', async () => {
     running = await startMcpServer()
-    const handle = await spawnHttpMcpServer({
+    const handle = await launchHttpMcpServer({
       name: 'hosted_mcp',
       url: running.url,
     })
@@ -163,7 +163,7 @@ describe('spawnHttpMcpServer', () => {
     const url = `http://127.0.0.1:${String(addr.port)}/`
 
     try {
-      const handle = await spawnHttpMcpServer({
+      const handle = await launchHttpMcpServer({
         name: 'remote',
         url,
         bearerToken: 'tkn',

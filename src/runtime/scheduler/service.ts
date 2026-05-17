@@ -312,7 +312,7 @@ export class Scheduler {
    * Timer callback for an extension schedule. Re-reads the entry,
    * runs the Extension's tick hook, records the fire, arms next.
    *
-   * Hook failure (non-zero exit / timeout / spawn error) is logged
+   * Hook failure (non-zero exit / timeout / launch error) is logged
    * but does NOT disable the schedule. Operators disable misbehaving
    * extension schedules explicitly via the CLI; the runtime never
    * silently turns them off.

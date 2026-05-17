@@ -3,7 +3,7 @@
  *
  * Used by the supervisor when creating a pub: the supervisor binds a
  * fresh ephemeral port, captures the OS-assigned number, releases it,
- * and hands the number to the spawned `openpub-server` child to bind
+ * and hands the number to the launched `openpub-server` child to bind
  * itself.
  *
  * Race window: between the supervisor releasing the port and the

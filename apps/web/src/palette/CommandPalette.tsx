@@ -7,7 +7,7 @@
  *   - `agent`         go to /agent/:name
  *   - `route`         go to a fixed route (Fleet, Inbox, Budget,
  *                     Components)
- *   - `command`       theme toggle, Spawn an Agent, per-agent
+ *   - `command`       theme toggle, Build an Agent, per-agent
  *                     start/stop quick actions (gated by current
  *                     status)
  * The palette mounts at the root and floats above whatever route is
@@ -254,11 +254,11 @@ export function CommandPalette(): ReactElement {
 
     const commands: PaletteResult[] = [
       {
-        id: 'cmd:spawn',
+        id: 'cmd:build',
         group: 'COMMANDS',
         label: 'Build an Agent',
         hint: '/onboarding',
-        searchable: 'build spawn new agent onboarding create card stack interview',
+        searchable: 'build new agent onboarding create card stack interview',
         activate: () => {
           void navigate('/onboarding')
           close()

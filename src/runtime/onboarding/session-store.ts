@@ -6,7 +6,7 @@
  * `POST /:id/confirm`, and `DELETE /:id`. The store is in-memory only
  * ... an interview-in-progress is ephemeral until confirm() lands the
  * agent on disk. A supervisor restart drops every in-flight session,
- * which matches the CLI's flow: aborting `2200 agent spawn` mid-
+ * which matches the CLI's flow: aborting `2200 agent build` mid-
  * interview also writes nothing.
  *
  * TTL: sessions expire after a sliding `idleTtlMs` window of

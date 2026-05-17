@@ -1,12 +1,12 @@
 /**
- * Tests for the daemon spawn / kill helpers.
+ * Tests for the daemon start / kill helpers.
  *
- * These tests do NOT actually spawn the supervisor (that requires the
+ * These tests do NOT actually start the supervisor (that requires the
  * built dist/ bundle and would be a slower e2e test). They exercise the
- * pre-conditions and error paths: refusing to spawn when a live daemon
+ * pre-conditions and error paths: refusing to start when a live daemon
  * is already registered, and reporting nothing-to-stop cleanly.
  *
- * The spawn-and-RPC end-to-end path is covered by manual verification
+ * The start-and-RPC end-to-end path is covered by manual verification
  * (documented in the PR) plus the existing supervisor-uds integration
  * tests against an in-process Supervisor.
  */
@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { killDaemon, logFilePath, spawnDaemon } from '../../../src/runtime/supervisor/daemon.js'
+import { killDaemon, logFilePath, startDaemon } from '../../../src/runtime/supervisor/daemon.js'
 import { pidFilePath, readLivePid, writePidFile } from '../../../src/runtime/supervisor/pidfile.js'
 
 let home: string
@@ -33,21 +33,21 @@ describe('logFilePath', () => {
   })
 })
 
-describe('spawnDaemon precondition', () => {
+describe('startDaemon precondition', () => {
   it('refuses when a live daemon is already registered', async () => {
     // Use the current process PID as a guaranteed-alive sentinel.
     await writePidFile(home, process.pid)
-    await expect(spawnDaemon({ home })).rejects.toThrow(/already running/)
+    await expect(startDaemon({ home })).rejects.toThrow(/already running/)
   })
 
   it('proceeds past the precondition when the registered PID is stale', async () => {
     // PID 2^31 - 1 is essentially never live; the precondition treats it
-    // as "no daemon" and would attempt to spawn. We point bootstrapPath
-    // at a non-existent file so the spawn itself is deterministic and
+    // as "no daemon" and would attempt to start. We point bootstrapPath
+    // at a non-existent file so the launch itself is deterministic and
     // does not actually fork a real supervisor; we only verify the
     // precondition gate lets us through.
     await writePidFile(home, 2147483647)
-    const result = await spawnDaemon({
+    const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
     })
@@ -56,10 +56,10 @@ describe('spawnDaemon precondition', () => {
   })
 })
 
-describe('runtime-env loading on spawn', () => {
+describe('runtime-env loading on start', () => {
   it('proceeds when runtimeEnvPath points at a non-existent file', async () => {
     await writePidFile(home, 2147483647)
-    const result = await spawnDaemon({
+    const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
       runtimeEnvPath: join(home, 'no-such-runtime-env.env'),
@@ -69,7 +69,7 @@ describe('runtime-env loading on spawn', () => {
 
   it('respects runtimeEnvPath: null (disabled load) without throwing', async () => {
     await writePidFile(home, 2147483647)
-    const result = await spawnDaemon({
+    const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
       runtimeEnvPath: null,
@@ -77,13 +77,13 @@ describe('runtime-env loading on spawn', () => {
     expect(result).toBeGreaterThan(0)
   })
 
-  it('aborts the spawn when runtime-env file has a parse error', async () => {
+  it('aborts the start when runtime-env file has a parse error', async () => {
     await writePidFile(home, 2147483647)
     const { writeFile } = await import('node:fs/promises')
     const badPath = join(home, 'bad-runtime.env')
     await writeFile(badPath, 'this line is missing the equals sign\n')
     await expect(
-      spawnDaemon({
+      startDaemon({
         home,
         bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
         runtimeEnvPath: badPath,

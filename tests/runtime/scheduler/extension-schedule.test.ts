@@ -139,7 +139,7 @@ describe('Scheduler fires extension schedules through the tick hook', () => {
     const firstTimer = fake.timers[0]
     if (!firstTimer) throw new Error('expected a captured timer')
     firstTimer.cb()
-    // Wait for the FULL fire path to settle: tick hook spawn → log
+    // Wait for the FULL fire path to settle: tick hook launch → log
     // append → recordFired (which sets last_fired_at) → re-arm.
     // Checking last_fired_at is the last-meaningful side effect, so
     // the test cleanup doesn't race the in-flight writes.
