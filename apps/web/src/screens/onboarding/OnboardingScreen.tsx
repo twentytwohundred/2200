@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactElement } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 // Link kept for inline Settings link inside the body; header back-link uses ScreenNavLink.
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery } from '@tanstack/react-query'
 import {
   ApiError,
   NetworkError,
@@ -77,12 +77,26 @@ export function OnboardingScreen(): ReactElement {
     staleTime: 30_000,
   })
 
+  // Live-poll each saved endpoint for its actual /v1/models output.
+  // The dropdown uses the live list (union'd with operator-selected
+  // models, in case the upstream is briefly unreachable). This means
+  // a newly-added endpoint that the operator hasn't yet "Edit"-ed
+  // still appears as long as it's serving anything.
+  const endpointIds = (endpointsQuery.data?.items ?? []).map((e) => e.id)
+  const liveEndpointQueries = useQueries({
+    queries: endpointIds.map((id) => ({
+      queryKey: ['settings', 'endpoints', id, 'models'],
+      queryFn: () => api.endpointModels(id),
+      refetchInterval: 30_000,
+      staleTime: 15_000,
+    })),
+  })
+
   // Pickable options: built-in providers with a key configured PLUS
-  // custom endpoints (Settings -> Endpoints) that the operator has
-  // saved with at least one selected model. The runtime resolves the
-  // `endpoint:<id>` provider form to the matching endpoint's base_url
-  // + sealed api_key on the agent process side; the new Agent's
-  // identity binds via `provider: "endpoint:<id>"`.
+  // custom endpoints (Settings -> Endpoints). The runtime resolves
+  // the `endpoint:<id>` provider form to the matching endpoint's
+  // base_url + sealed api_key on the agent process side; the new
+  // Agent's identity binds via `provider: "endpoint:<id>"`.
   interface PickableOption {
     kind: 'provider' | 'endpoint'
     name: string
@@ -100,18 +114,35 @@ export function OnboardingScreen(): ReactElement {
           models: p.suggested_models,
         }),
       )
-    const endpoints = (endpointsQuery.data?.items ?? [])
-      .filter((e) => e.models.length > 0)
-      .map(
-        (e): PickableOption => ({
-          kind: 'endpoint',
-          name: `endpoint:${e.id}`,
-          label: `${e.name} (custom)`,
-          models: e.models.map((m) => m.id),
-        }),
-      )
+    const endpoints = (endpointsQuery.data?.items ?? []).map((e, i): PickableOption => {
+      const live = liveEndpointQueries[i]?.data
+      const liveModels = live && 'ok' in live && live.ok ? live.models.map((m) => m.id) : []
+      const selectedModels = e.models.map((m) => m.id)
+      // Union: live first (operator probably wants the currently-
+      // served model), then any selected-but-not-currently-live as
+      // a fallback. Deduped while preserving order.
+      const seen = new Set<string>()
+      const merged: string[] = []
+      for (const m of [...liveModels, ...selectedModels]) {
+        if (seen.has(m)) continue
+        seen.add(m)
+        merged.push(m)
+      }
+      const liveLabel =
+        live && 'ok' in live && live.ok
+          ? ` (${String(liveModels.length)} live)`
+          : selectedModels.length > 0
+            ? ` (saved)`
+            : ' (unreachable)'
+      return {
+        kind: 'endpoint',
+        name: `endpoint:${e.id}`,
+        label: `${e.name}${liveLabel}`,
+        models: merged,
+      }
+    })
     return [...providers, ...endpoints]
-  }, [providersQuery.data, endpointsQuery.data])
+  }, [providersQuery.data, endpointsQuery.data, liveEndpointQueries])
 
   // Auto-pick the first option's first model so the user can hit
   // Begin without touching the dropdowns. They can override before
