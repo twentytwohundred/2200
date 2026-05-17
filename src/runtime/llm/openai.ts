@@ -100,6 +100,14 @@ export class OpenAIProvider implements LLMProvider {
   readonly endpointUrl: string
   private readonly apiKey: string
   private readonly fetchImpl: typeof fetch
+  // Set to `true` once we observe an upstream that rejects native
+  // tool-use specs (vLLM without --enable-auto-tool-choice is the
+  // canonical case). Subsequent calls skip the tools[] field
+  // entirely so the loop falls back to the textual JSON-block tool
+  // protocol. Cached on the provider instance to avoid burning a
+  // round-trip per request once we know the server can't do
+  // native tool use.
+  private nativeToolsDisabled = false
 
   constructor(opts: OpenAIProviderOptions) {
     this.apiKey = opts.apiKey
@@ -137,7 +145,9 @@ export class OpenAIProvider implements LLMProvider {
     // shape; vendors that do NOT implement it (DeepSeek, xAI, local
     // Ollama) silently ignore the field. The agent loop's fenced-text
     // parser is the universal fallback.
-    if (request.tools && request.tools.length > 0) {
+    const wantsNativeTools =
+      !this.nativeToolsDisabled && request.tools !== undefined && request.tools.length > 0
+    if (wantsNativeTools && request.tools) {
       body.tools = request.tools.map<OpenAITool>((t) => ({
         type: 'function',
         function: {
@@ -149,23 +159,53 @@ export class OpenAIProvider implements LLMProvider {
       body.tool_choice = 'auto'
     }
 
-    let response: Response
-    try {
-      response = await this.fetchImpl(this.endpointUrl, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      })
-    } catch (err) {
-      throw new LlmError(
-        'NETWORK_ERROR',
-        `network error contacting ${this.name}: ${err instanceof Error ? err.message : String(err)}`,
-        this.name,
-        request.modelId,
-      )
+    const post = async (): Promise<Response> => {
+      try {
+        return await this.fetchImpl(this.endpointUrl, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${this.apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+      } catch (err) {
+        throw new LlmError(
+          'NETWORK_ERROR',
+          `network error contacting ${this.name}: ${err instanceof Error ? err.message : String(err)}`,
+          this.name,
+          request.modelId,
+        )
+      }
+    }
+
+    let response = await post()
+
+    // Native-tool-use fallback. Some OpenAI-compatible servers
+    // (vLLM without --enable-auto-tool-choice, llama.cpp without
+    // the chat-format flag, older Ollama builds) reject the
+    // tools / tool_choice fields with a 400. When we see that
+    // specific error, drop the native tool spec, retry, and cache
+    // the determination so we don't keep round-tripping. The
+    // agent loop's textual JSON-block parser then handles tool
+    // calls via the system-prompt protocol instead.
+    if (wantsNativeTools && response.status === 400 && !this.nativeToolsDisabled) {
+      const body400 = await safeReadText(response)
+      if (looksLikeNativeToolUseRejection(body400)) {
+        // Log a single warning so the operator knows we degraded.
+        process.stderr.write(
+          `[llm/${this.name}] upstream rejected native tool-use (${this.endpointUrl}); ` +
+            `falling back to textual tool protocol. Configure your server with ` +
+            `--enable-auto-tool-choice and --tool-call-parser to enable native tools. ` +
+            `Reason: ${body400.slice(0, 200)}\n`,
+        )
+        this.nativeToolsDisabled = true
+        delete body.tools
+        delete body.tool_choice
+        response = await post()
+      } else {
+        throw mapHttpError(this.name, request.modelId, response.status, body400)
+      }
     }
 
     if (!response.ok) {
@@ -343,6 +383,31 @@ function mapOpenAIFinishReason(reason: string | null): CompletionResponse['finis
     default:
       return 'stop'
   }
+}
+
+/**
+ * Heuristic: does a 400 response body look like an upstream's
+ * specific "native tool-use is disabled / not supported" rejection?
+ * We pattern-match on the canonical vLLM message (which is the
+ * server most likely to hit this in 2200 testing on homelab boxes)
+ * plus a couple of generic indicators. If yes, the OpenAIProvider
+ * caller retries the request without the tools / tool_choice fields
+ * and falls back to the textual JSON-block tool protocol.
+ *
+ * Examples we want to match:
+ *   - vLLM: `"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set`
+ *   - llama.cpp:  `tool_choice is not supported`
+ *   - generic: `tools are not supported`
+ */
+function looksLikeNativeToolUseRejection(bodyText: string): boolean {
+  const lower = bodyText.toLowerCase()
+  if (lower.includes('--enable-auto-tool-choice')) return true
+  if (lower.includes('--tool-call-parser')) return true
+  if (lower.includes('tool_choice') && lower.includes('not support')) return true
+  if (lower.includes('tools are not supported')) return true
+  if (lower.includes('tools" is not supported')) return true
+  if (lower.includes('"tools": not supported')) return true
+  return false
 }
 
 function mapHttpError(

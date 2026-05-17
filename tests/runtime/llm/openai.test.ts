@@ -18,6 +18,104 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+describe('OpenAIProvider native-tool-use fallback', () => {
+  it('retries without tools/tool_choice when upstream rejects with the vLLM message', async () => {
+    let attempt = 0
+    const seen: { body: unknown; hadTools: boolean }[] = []
+    const fetchImpl = mockFetch((_, init) => {
+      attempt += 1
+      const body = JSON.parse(init.body as string) as { tools?: unknown; tool_choice?: unknown }
+      seen.push({ body, hadTools: 'tools' in body })
+      if (attempt === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set',
+              type: 'BadRequestError',
+              code: 400,
+            },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({ apiKey: 'k', fetchImpl })
+    await provider.complete({
+      modelId: 'qwen3-30b',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 't', description: 'x', parametersJsonSchema: { type: 'object' } }],
+    })
+    expect(attempt).toBe(2)
+    expect(seen[0]?.hadTools).toBe(true)
+    expect(seen[1]?.hadTools).toBe(false)
+  })
+
+  it('does not retry on a non-tool-related 400', async () => {
+    let attempt = 0
+    const fetchImpl = mockFetch(() => {
+      attempt += 1
+      return new Response(
+        JSON.stringify({
+          error: { message: 'malformed messages', type: 'BadRequestError', code: 400 },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    const provider = new OpenAIProvider({ apiKey: 'k', fetchImpl })
+    await expect(
+      provider.complete({
+        modelId: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [{ name: 't', description: 'x', parametersJsonSchema: { type: 'object' } }],
+      }),
+    ).rejects.toThrow()
+    expect(attempt).toBe(1)
+  })
+
+  it('after the first rejection, subsequent calls skip tools[] without round-tripping', async () => {
+    let attempt = 0
+    const callsHadTools: boolean[] = []
+    const fetchImpl = mockFetch((_, init) => {
+      attempt += 1
+      const body = JSON.parse(init.body as string) as { tools?: unknown }
+      callsHadTools.push('tools' in body)
+      if (attempt === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: '"auto" tool choice requires --enable-auto-tool-choice',
+              code: 400,
+            },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({ apiKey: 'k', fetchImpl })
+    const args = {
+      modelId: 'm',
+      messages: [{ role: 'user' as const, content: 'hi' }],
+      tools: [{ name: 't', description: 'x', parametersJsonSchema: { type: 'object' } }],
+    }
+    await provider.complete(args)
+    await provider.complete(args)
+    // First call hit twice (rejection + retry); second call only once
+    // and never sent tools.
+    expect(callsHadTools).toEqual([true, false, false])
+  })
+})
+
 describe('OpenAIProvider baseUrl normalization', () => {
   it('appends /v1/chat/completions when baseUrl has no /v1 suffix', () => {
     const p = new OpenAIProvider({ apiKey: 'k', baseUrl: 'http://gb10:8000' })
