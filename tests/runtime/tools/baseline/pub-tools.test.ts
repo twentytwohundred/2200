@@ -207,6 +207,27 @@ describe('pub_react', () => {
     expect(result.ok).toBe(true)
     expect(result.message_id).toBe(sent.message_id)
     expect(result.emoji).toBe('👍')
+    expect(result.normalized).toBe(false)
+    expect(result.requested_emoji).toBe('👍')
+  })
+
+  it('normalizes bare check `✓` to whitelist-allowed `✅`', async () => {
+    const ctx = await setup('hobby')
+    const sent = await pubSend.execute({ content: 'hi' }, ctx)
+    const result = await pubReact.execute({ message_id: sent.message_id, emoji: '✓' }, ctx)
+    expect(result.ok).toBe(true)
+    expect(result.emoji).toBe('✅')
+    expect(result.requested_emoji).toBe('✓')
+    expect(result.normalized).toBe(true)
+  })
+
+  it('normalizes heart variants to whitelist-allowed `🔥`', async () => {
+    const ctx = await setup('hobby')
+    const sent = await pubSend.execute({ content: 'hi' }, ctx)
+    const result = await pubReact.execute({ message_id: sent.message_id, emoji: '❤️' }, ctx)
+    expect(result.ok).toBe(true)
+    expect(result.emoji).toBe('🔥')
+    expect(result.normalized).toBe(true)
   })
 })
 

@@ -229,10 +229,40 @@ const PubReactArgsSchema = z.object({
   emoji: z.string().min(1),
 })
 
+/**
+ * Normalize emoji input to the canonical Unicode form OpenPub's
+ * curated whitelist expects. Models routinely send the bare check
+ * `✓` U+2713 (taught by older versions of our prompt and common in
+ * training data) when OpenPub's whitelist has the heavier "white
+ * heavy check mark" `✅` U+2705; same shape for cross / heart /
+ * thumbs-down variants. Without this map, the model sees a server
+ * INVALID_REACTION error and spirals (observed 2026-05-17 with
+ * Simon + Hobby on Doug's "say hi to David" prompt).
+ *
+ * Substrate-side normalization is the safety net; the system prompt
+ * also teaches the canonical forms. OpenPub may relax this to a
+ * permissive any-emoji policy later, at which point this map
+ * becomes a no-op pass-through and can be deleted.
+ */
+const EMOJI_NORMALIZATION_MAP: Record<string, string> = {
+  '✓': '✅',
+  '☑': '✅',
+  '✔': '✅',
+  '✔️': '✅',
+  '✗': '❌',
+  '✘': '❌',
+  '❤': '🔥',
+  '❤️': '🔥',
+  '♥': '🔥',
+  '♥️': '🔥',
+}
+
 export const pubReact = defineTool({
   name: 'pub_react',
   description:
-    'Add a reaction to a message in a pub. Re-react with the same emoji is a server-side no-op; re-react with a different emoji replaces.',
+    'Add a reaction to a message in a pub. Re-react with the same emoji is a server-side no-op; re-react with a different emoji replaces. ' +
+    'OpenPub uses a curated whitelist: ✅ 👍 👎 🍺 🤔 ❌ 🔥 👀 💡 ⏳. Common variants are normalized server-side (✓→✅, ❤️→🔥). ' +
+    'If you get INVALID_REACTION back, do NOT retry with a different emoji ... switch to pub_send with a one-line text reply.',
   idempotency: 'checkpointed',
   argsSchema: PubReactArgsSchema,
   execute: async (args, ctx: ToolContext) => {
@@ -240,8 +270,16 @@ export const pubReact = defineTool({
       ? await resolvePub(ctx.home, args.pub_name)
       : await resolveDefaultPub(ctx.home)
     const client = await clientFor(ctx, pub)
-    await client.react(args.message_id, args.emoji)
-    return { pub_name: pub.name, message_id: args.message_id, emoji: args.emoji, ok: true }
+    const normalizedEmoji = EMOJI_NORMALIZATION_MAP[args.emoji] ?? args.emoji
+    await client.react(args.message_id, normalizedEmoji)
+    return {
+      pub_name: pub.name,
+      message_id: args.message_id,
+      emoji: normalizedEmoji,
+      requested_emoji: args.emoji,
+      normalized: normalizedEmoji !== args.emoji,
+      ok: true,
+    }
   },
 })
 

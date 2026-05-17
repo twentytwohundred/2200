@@ -1433,6 +1433,23 @@ export class AgentLoop {
         // Suppress eslint unused-expression by referencing the type guard.
         void ToolDeniedError
       }
+      // pub_react INVALID_REACTION: force the model to pivot to a
+      // text reply instead of retrying with a different emoji. Models
+      // observed on 2026-05-17 (Simon + Hobby on "say hi to David")
+      // kept retrying pub_react with cosmetic variants and ended the
+      // task with no real response. The forcing message tells the
+      // model unambiguously to use pub_send next. See: OpenPub
+      // whitelist in node_modules/@openpub-ai/pub-server/dist/relay/room-state.js.
+      if (call.tool === 'pub_react' && /INVALID_REACTION/i.test(dispatchError.message)) {
+        this.history.push({
+          role: 'tool',
+          content:
+            'FORCING DIRECTIVE: your pub_react call was rejected (INVALID_REACTION). ' +
+            'Do NOT retry pub_react with a different emoji. Switch to `pub_send` and ' +
+            'reply with one line of text to whoever woke you. The reaction whitelist is ' +
+            'curated by the pub server and is out of scope for this turn ... just send the text.',
+        })
+      }
     }
 
     return this.evaluate(task)
@@ -1659,7 +1676,7 @@ export class AgentLoop {
       '  1. A text reply via `pub_send` ... when you have something substantive to add (an answer, a proposal, a clarifying question, a delegation @-pinging a peer).',
       '  2. A reaction via `pub_react` ... when the message acknowledges, agrees, or otherwise signals something the room should know you saw. Reacting is the right ack; it does not wake other Agents and does not cascade. **If you woke at all, you must produce a reply or a reaction. Silence is not an option once the runtime has decided to wake you.**',
       '',
-      'Use a `pub_react` emoji that matches your intent: ✓ for acknowledgement, 👍 for agreement, 👀 for "I see this and will act", ❤️ for appreciation. Avoid sending text replies that just say "ok" / "got it" / "sounds good" / "no further action" ... react instead.',
+      'Use a `pub_react` emoji that matches your intent. OpenPub currently accepts a curated whitelist: `✅` (acknowledgement / done), `👍` (agreement), `👀` ("I see this and will act"), `🔥` (strong agreement / appreciation), `💡` (good idea), `🤔` (thinking / unsure), `⏳` (working on it), `👎` (disagree), `❌` (no / blocked), `🍺` (cheers). Avoid sending text replies that just say "ok" / "got it" / "sounds good" / "no further action" ... react instead. If your react somehow returns INVALID_REACTION, switch to `pub_send` with a one-line text reply instead of retrying with a different emoji.',
       '',
       'Examples of when to react instead of replying:',
       '  - A peer answers a question you @-mentioned them to ask: react ✓ to confirm you saw the answer.',
@@ -2074,7 +2091,7 @@ function composeWakeNudge(task: TaskRecord): string {
     '  - If you would react to ack the message: emit',
     '',
     '    ```tool',
-    `    { "tool": "pub_react", "args": { "message_id": "${messageId}", "emoji": "✓" }, "predicted_outcome": "reaction landed", "reason": "ack the message I was woken on" }`,
+    `    { "tool": "pub_react", "args": { "message_id": "${messageId}", "emoji": "✅" }, "predicted_outcome": "reaction landed", "reason": "ack the message I was woken on" }`,
     '    ```',
     '',
     '  - If you have a substantive text reply: emit',
