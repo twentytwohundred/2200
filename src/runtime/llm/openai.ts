@@ -104,7 +104,20 @@ export class OpenAIProvider implements LLMProvider {
   constructor(opts: OpenAIProviderOptions) {
     this.apiKey = opts.apiKey
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
-    this.endpointUrl = opts.endpointUrl ?? `${this.baseUrl}/v1/chat/completions`
+    // Handle the two conventional baseUrl shapes:
+    //   1. Without `/v1` suffix (legacy 2200 shape):
+    //        http://host:8000   -> http://host:8000/v1/chat/completions
+    //   2. With `/v1` suffix (standard OpenAI client shape that most
+    //      vLLM / Ollama / LM Studio docs print):
+    //        http://host:8000/v1 -> http://host:8000/v1/chat/completions
+    // Without this normalization, a baseUrl ending in `/v1` was
+    // producing `/v1/v1/chat/completions` and the upstream returned
+    // a confusing "model not found (404)" because the URL didn't
+    // route to the chat endpoint at all.
+    const base = this.baseUrl.replace(/\/+$/, '')
+    this.endpointUrl =
+      opts.endpointUrl ??
+      (base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`)
     this.name = opts.providerName ?? 'openai'
     this.fetchImpl = opts.fetchImpl ?? fetch
   }

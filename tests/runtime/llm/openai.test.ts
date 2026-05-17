@@ -18,6 +18,32 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+describe('OpenAIProvider baseUrl normalization', () => {
+  it('appends /v1/chat/completions when baseUrl has no /v1 suffix', () => {
+    const p = new OpenAIProvider({ apiKey: 'k', baseUrl: 'http://gb10:8000' })
+    expect(p.endpointUrl).toBe('http://gb10:8000/v1/chat/completions')
+  })
+
+  it('appends /chat/completions when baseUrl already ends in /v1 (vLLM, LM Studio shape)', () => {
+    const p = new OpenAIProvider({ apiKey: 'k', baseUrl: 'http://gb10:8000/v1' })
+    expect(p.endpointUrl).toBe('http://gb10:8000/v1/chat/completions')
+  })
+
+  it('tolerates a trailing slash on baseUrl', () => {
+    const p = new OpenAIProvider({ apiKey: 'k', baseUrl: 'http://gb10:8000/v1/' })
+    expect(p.endpointUrl).toBe('http://gb10:8000/v1/chat/completions')
+  })
+
+  it('respects an explicit endpointUrl override regardless of baseUrl shape', () => {
+    const p = new OpenAIProvider({
+      apiKey: 'k',
+      baseUrl: 'http://gb10:8000/v1',
+      endpointUrl: 'https://example.com/custom/chat',
+    })
+    expect(p.endpointUrl).toBe('https://example.com/custom/chat')
+  })
+})
+
 describe('OpenAIProvider request shape', () => {
   it('hits POST /v1/chat/completions with Bearer auth', async () => {
     let captured: { url: string; init: RequestInit } | undefined
