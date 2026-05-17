@@ -160,6 +160,21 @@ export function OnboardingScreen(): ReactElement {
     [pickableOptions, providerName],
   )
 
+  // Re-sync modelId when the selected option's model list lands
+  // asynchronously. Common case: operator picks a custom endpoint
+  // BEFORE the live /v1/models query has resolved (models[] is
+  // empty at click time, so modelId stays ''). The live query then
+  // resolves and the dropdown shows the served model, but the
+  // controlled value is stale at '' until we sync here. Without
+  // this effect, the operator sees the model "selected" visually
+  // but Begin stays disabled because modelId === ''.
+  useEffect(() => {
+    if (!selectedOption) return
+    if (selectedOption.models.length === 0) return
+    if (modelId !== '' && selectedOption.models.includes(modelId)) return
+    setModelId(selectedOption.models[0] ?? '')
+  }, [selectedOption, modelId])
+
   const handleSessionResponse = useCallback(
     (sessionId: string, transcript: OnboardingTranscriptEntry[], answer: string | null) =>
       (res: OnboardingSessionResponse): void => {
