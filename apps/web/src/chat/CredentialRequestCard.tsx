@@ -77,6 +77,45 @@ export function CredentialRequestCard({
     setResolved(liveEnvelope)
   }, [liveEnvelope])
 
+  // On mount, backfill the current server-side state. The chat-message
+  // body holds the envelope as written at request-creation time
+  // (state='pending'); without this fetch, a page reload after the
+  // operator already provided the credential renders the input form
+  // again as if the request were still open. WS events only push on
+  // STATE CHANGE, not snapshots, so the live router does not cover the
+  // fresh-load case. Bug observed 2026-05-17 with David's first
+  // credential_request.
+  useEffect(() => {
+    if (!parsed) return
+    if (resolved.state !== 'pending') return // already terminal
+    let cancelled = false
+    void api
+      .credentialRequestList(agent)
+      .then((res) => {
+        if (cancelled) return
+        const match = res.items.find((r) => r.id === parsed.request_id)
+        if (!match) return
+        if (match.state === 'pending') return // server agrees, leave input form
+        setResolved({
+          state: match.state,
+          ...(match.fulfilled_at ? { fulfilledAt: match.fulfilled_at } : {}),
+          ...(match.declined_at ? { declinedAt: match.declined_at } : {}),
+          ...(match.expired_at ? { expiredAt: match.expired_at } : {}),
+          declineReason: match.decline_reason,
+          expiredReason: match.expired_reason,
+        })
+      })
+      .catch(() => {
+        // Best effort: if the snapshot fetch fails, fall back to the
+        // embedded envelope state (which is what we had before this
+        // backfill). The WS layer will still update us when the next
+        // state-change event lands.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agent, parsed, resolved.state])
+
   // Tick `now` every second so the expires-in countdown stays fresh.
   useEffect(() => {
     if (resolved.state !== 'pending') return
