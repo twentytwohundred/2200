@@ -2,23 +2,26 @@
    page-body styles live here. */
 
 /* ── Bands ─────────────────────────────────────────────────────────── */
+/* Spacing per design-work/PATCH-screen-headers.md section 3 (2026-05-17).
+   Gap between consecutive sections tightened from 32px to 18px;
+   empty-state label tightened to match the reduced rhythm. */
 .bands {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-8);
+  gap: 18px;
 }
 
 .band {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-4);
+  gap: 8px;
 }
 
 .bandHead {
   display: flex;
   align-items: center;
   gap: var(--ds-3);
-  padding-bottom: var(--ds-2);
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -30,7 +33,7 @@
   margin: 0;
   padding: 0;
   color: var(--text-2);
-  font-size: 15px;
+  font-size: 13px;
 }
 
 /* ── AgentCard grid ────────────────────────────────────────────────── */

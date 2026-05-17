@@ -1,9 +1,13 @@
 /* ── Shell ─────────────────────────────────────────────────────────── */
+/* Spacing per design-work/PATCH-screen-headers.md (2026-05-17): the
+   header was eating ~⅓ of every screen. Tightened to 20px top /
+   32px sides / 28px bottom, raw values match the design-system
+   reference renders. */
 .shell {
   min-height: 100vh;
   max-width: 1240px;
   margin: 0 auto;
-  padding: var(--ds-12) var(--ds-10) var(--ds-20);
+  padding: 20px 32px 28px;
   background: var(--bg);
   color: var(--text);
   font-family: var(--ds-font-sans);
@@ -13,33 +17,35 @@
 }
 
 /* ── Header ────────────────────────────────────────────────────────── */
+/* Tight header. Children space themselves via explicit margins
+   rather than a flex `gap` so the spec values (6px crumb→title,
+   3px title→subtitle) are visible at the call site. */
 .header {
   display: flex;
   flex-direction: column;
-  /* Tight default; specific elements override via margin overrides. */
-  gap: var(--ds-2);
+  margin-bottom: 18px;
 }
 
 .title {
-  /* Pull closer to the breadcrumb above; subRow sits tight below. */
-  margin: var(--ds-4) 0 0;
-  font: 600 44px/1.05 var(--ds-font-sans);
-  letter-spacing: -0.025em;
+  margin: 6px 0 0;
+  font: 600 22px/1.15 var(--ds-font-sans);
+  letter-spacing: -0.02em;
   color: var(--text);
 }
 
 .subRow {
+  margin-top: 3px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ds-4);
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .lede {
   margin: 0;
-  color: var(--text-2);
-  font-size: 15px;
+  color: var(--text-3);
+  font-size: 13px;
   max-width: 64ch;
 }
 
