@@ -32,7 +32,6 @@ import {
   type OnboardingSessionResponse,
   type OnboardingToolSuggestion,
   type OnboardingTranscriptEntry,
-  type ProviderSettingsItem,
 } from '../../lib/api'
 import { Button, Card, Screen, ScreenNavLink, SectionHeader } from '../../primitives'
 import styles from './OnboardingScreen.module.css'
@@ -72,26 +71,62 @@ export function OnboardingScreen(): ReactElement {
     queryFn: () => api.settingsProvidersList(),
     staleTime: 30_000,
   })
+  const endpointsQuery = useQuery({
+    queryKey: ['settings', 'endpoints'],
+    queryFn: () => api.endpointsList(),
+    staleTime: 30_000,
+  })
 
-  const configuredProviders = useMemo<ProviderSettingsItem[]>(
-    () => (providersQuery.data?.items ?? []).filter((p) => p.key_set || p.keyOptional),
-    [providersQuery.data],
-  )
+  // Pickable options: built-in providers with a key configured PLUS
+  // custom endpoints (Settings -> Endpoints) that the operator has
+  // saved with at least one selected model. The runtime resolves the
+  // `endpoint:<id>` provider form to the matching endpoint's base_url
+  // + sealed api_key on the agent process side; the new Agent's
+  // identity binds via `provider: "endpoint:<id>"`.
+  interface PickableOption {
+    kind: 'provider' | 'endpoint'
+    name: string
+    label: string
+    models: string[]
+  }
+  const pickableOptions = useMemo<PickableOption[]>(() => {
+    const providers = (providersQuery.data?.items ?? [])
+      .filter((p) => p.key_set || p.keyOptional)
+      .map(
+        (p): PickableOption => ({
+          kind: 'provider',
+          name: p.name,
+          label: p.label,
+          models: p.suggested_models,
+        }),
+      )
+    const endpoints = (endpointsQuery.data?.items ?? [])
+      .filter((e) => e.models.length > 0)
+      .map(
+        (e): PickableOption => ({
+          kind: 'endpoint',
+          name: `endpoint:${e.id}`,
+          label: `${e.name} (custom)`,
+          models: e.models.map((m) => m.id),
+        }),
+      )
+    return [...providers, ...endpoints]
+  }, [providersQuery.data, endpointsQuery.data])
 
-  // Once providers load, auto-pick the first configured one and its
-  // first suggested model so the user can hit Begin without touching
-  // the dropdowns. They can override before clicking Begin.
+  // Auto-pick the first option's first model so the user can hit
+  // Begin without touching the dropdowns. They can override before
+  // clicking Begin.
   useEffect(() => {
-    if (providerName !== '' || configuredProviders.length === 0) return
-    const first = configuredProviders[0]
+    if (providerName !== '' || pickableOptions.length === 0) return
+    const first = pickableOptions[0]
     if (!first) return
     setProviderName(first.name)
-    setModelId(first.suggested_models[0] ?? '')
-  }, [configuredProviders, providerName])
+    setModelId(first.models[0] ?? '')
+  }, [pickableOptions, providerName])
 
-  const selectedProvider = useMemo(
-    () => configuredProviders.find((p) => p.name === providerName),
-    [configuredProviders, providerName],
+  const selectedOption = useMemo(
+    () => pickableOptions.find((p) => p.name === providerName),
+    [pickableOptions, providerName],
   )
 
   const handleSessionResponse = useCallback(
@@ -183,17 +218,17 @@ export function OnboardingScreen(): ReactElement {
                 The provider that runs the interview is also a strong default for the new Agent's
                 day-to-day model. You can change the Agent's model later from its Identity.
               </p>
-              {providersQuery.isLoading ? (
+              {providersQuery.isLoading || endpointsQuery.isLoading ? (
                 <div className={styles.pickerMeta}>Loading available providers...</div>
               ) : providersQuery.isError ? (
                 <div className={styles.errorMessage}>{formatError(providersQuery.error)}</div>
-              ) : configuredProviders.length === 0 ? (
+              ) : pickableOptions.length === 0 ? (
                 <div className={styles.errorMessage}>
-                  No LLM provider has an API key configured. Visit{' '}
+                  No LLM provider or custom endpoint is configured. Visit{' '}
                   <Link to="/settings" className={styles.tag}>
-                    Settings → Providers
+                    Settings
                   </Link>{' '}
-                  to add one before spawning.
+                  to add a provider key or register a custom endpoint before spawning.
                 </div>
               ) : (
                 <div className={styles.pickerRow}>
@@ -205,20 +240,37 @@ export function OnboardingScreen(): ReactElement {
                       onChange={(e) => {
                         const next = e.target.value
                         setProviderName(next)
-                        const p = configuredProviders.find((cp) => cp.name === next)
-                        setModelId(p?.suggested_models[0] ?? '')
+                        const p = pickableOptions.find((cp) => cp.name === next)
+                        setModelId(p?.models[0] ?? '')
                       }}
                     >
-                      {configuredProviders.map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.label}
-                        </option>
-                      ))}
+                      {pickableOptions.some((p) => p.kind === 'provider') && (
+                        <optgroup label="Providers">
+                          {pickableOptions
+                            .filter((p) => p.kind === 'provider')
+                            .map((p) => (
+                              <option key={p.name} value={p.name}>
+                                {p.label}
+                              </option>
+                            ))}
+                        </optgroup>
+                      )}
+                      {pickableOptions.some((p) => p.kind === 'endpoint') && (
+                        <optgroup label="Custom endpoints">
+                          {pickableOptions
+                            .filter((p) => p.kind === 'endpoint')
+                            .map((p) => (
+                              <option key={p.name} value={p.name}>
+                                {p.label}
+                              </option>
+                            ))}
+                        </optgroup>
+                      )}
                     </select>
                   </label>
                   <label className={styles.pickerField}>
                     <span className={styles.pickerFieldLabel}>MODEL</span>
-                    {selectedProvider && selectedProvider.suggested_models.length > 0 ? (
+                    {selectedOption && selectedOption.models.length > 0 ? (
                       <select
                         className={styles.pickerSelect}
                         value={modelId}
@@ -226,7 +278,7 @@ export function OnboardingScreen(): ReactElement {
                           setModelId(e.target.value)
                         }}
                       >
-                        {selectedProvider.suggested_models.map((m) => (
+                        {selectedOption.models.map((m) => (
                           <option key={m} value={m}>
                             {m}
                           </option>
