@@ -664,12 +664,37 @@ export interface OnboardingScheduleSuggestion {
   source_tag: string
 }
 
+/**
+ * One Capability suggestion ranked against the interview transcript
+ * (Phase F §2/§7). `default_on=true` entries were auto-applied into
+ * the handoff by the session; the wizard's picker lets the operator
+ * deselect them or opt-in to the speculative ones.
+ */
+export interface OnboardingCapabilitySuggestion {
+  capability: {
+    frontmatter: {
+      id: string
+      label: string
+      category: string
+      description: string
+      walkthrough?: { estimated_minutes?: number; difficulty?: string }
+      auth?: { name: string }[]
+      [k: string]: unknown
+    }
+  }
+  matched_tags: string[]
+  overlap_count: number
+  confidence: 'high' | 'speculative'
+  default_on: boolean
+}
+
 export interface OnboardingPreview {
   transcript: OnboardingTranscript
   /** Opaque to the web client; surfaced via summary + agent_name. */
   handoff: { frontmatter: { agent_name: string; [k: string]: unknown }; body: string }
   tools: OnboardingToolSuggestion[]
   schedules: OnboardingScheduleSuggestion[]
+  capabilities: OnboardingCapabilitySuggestion[]
   agent_name: string
 }
 
@@ -1189,9 +1214,10 @@ export const api = {
       method: 'POST',
       body: { answer },
     }),
-  onboardingConfirm: (id: string) =>
+  onboardingConfirm: (id: string, body?: { selected_capabilities?: string[] }) =>
     request<OnboardingConfirmResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}/confirm`, {
       method: 'POST',
+      body: body ?? {},
     }),
   onboardingCancel: (id: string) =>
     request<{ session_id: string; state: 'cancelled' }>(

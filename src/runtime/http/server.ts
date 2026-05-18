@@ -3438,88 +3438,122 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     },
   )
 
-  fastify.post<{ Params: { id: string } }>('/api/v1/onboarding/:id/confirm', async (req) => {
-    const session = sessions.touch(req.params.id)
-    if (!session) {
-      throw new ApiError(
-        404,
-        'onboarding_session_not_found',
-        `No onboarding session "${req.params.id}".`,
-      )
-    }
-    const preview = session.getPreview()
-    if (!preview) {
-      throw new ApiError(
-        409,
-        'onboarding_not_ready',
-        `Session "${req.params.id}" is in state "${session.getState()}"; finish the interview before confirming.`,
-      )
-    }
-    const { migrateFromHandoff } = await import('../migration/orchestrator.js')
-    const { saveTranscript } = await import('../onboarding/transcript-store.js')
-    const result = await migrateFromHandoff({
-      handoff: preview.handoff,
-      home,
-      supervisor,
-      today: new Date(),
-      seedFirstTask: true,
+  const ConfirmBodySchema = z
+    .object({
+      /**
+       * Operator-selected Capability ids to override the auto-applied
+       * defaults from `preview.capabilities`. When provided, every id
+       * must appear in the preview's suggestions (no arbitrary
+       * injection from the wire). When omitted, the auto-applied
+       * default_on set from the preview's handoff stays as-is.
+       */
+      selected_capabilities: z.array(z.string().min(1)).optional(),
     })
-    let transcriptPath: string | null = null
-    try {
-      transcriptPath = await saveTranscript({
+    .optional()
+
+  fastify.post<{ Params: { id: string }; Body: unknown }>(
+    '/api/v1/onboarding/:id/confirm',
+    async (req) => {
+      const session = sessions.touch(req.params.id)
+      if (!session) {
+        throw new ApiError(
+          404,
+          'onboarding_session_not_found',
+          `No onboarding session "${req.params.id}".`,
+        )
+      }
+      const preview = session.getPreview()
+      if (!preview) {
+        throw new ApiError(
+          409,
+          'onboarding_not_ready',
+          `Session "${req.params.id}" is in state "${session.getState()}"; finish the interview before confirming.`,
+        )
+      }
+      const body = ConfirmBodySchema.parse(req.body ?? {})
+      let handoff = preview.handoff
+      if (body?.selected_capabilities !== undefined) {
+        const { applyCapabilityOverride } = await import('../onboarding/capability-override.js')
+        const result = applyCapabilityOverride({
+          handoff: preview.handoff,
+          suggestions: preview.capabilities,
+          selected_ids: body.selected_capabilities,
+        })
+        if (!result.ok) {
+          throw new ApiError(
+            422,
+            'onboarding_invalid_capability_selection',
+            `selected_capabilities contains ids not in the session's suggestions: ${result.invalid_ids.join(', ')}`,
+          )
+        }
+        handoff = result.handoff
+      }
+      const { migrateFromHandoff } = await import('../migration/orchestrator.js')
+      const { saveTranscript } = await import('../onboarding/transcript-store.js')
+      const result = await migrateFromHandoff({
+        handoff,
         home,
-        agentName: result.agent_name,
-        transcript: preview.transcript,
+        supervisor,
+        today: new Date(),
+        seedFirstTask: true,
       })
-    } catch {
-      // Persistence failure is non-fatal ... the Agent is on disk.
-    }
-    // Auto-start the new Agent. Without this, the Agent record is on disk
-    // in `state: 'stopped'` and the seeded orientation task sits in the
-    // queue waiting indefinitely. v1 scope's Capability 1 onboarding
-    // expects "Agent is built ... reports ready" to happen from a single
-    // operator action; the start has to fire here, not via a follow-up
-    // CLI call. Failure to start is logged via notification but does not
-    // fail the confirm ... the operator can `2200 agent start <name>`
-    // if anything went sideways.
-    let autoStarted = false
-    let autoStartError: string | null = null
-    try {
-      await supervisor.startAgent(result.agent_name)
-      autoStarted = true
-    } catch (err) {
-      autoStartError = err instanceof Error ? err.message : String(err)
+      let transcriptPath: string | null = null
       try {
-        await emitNotification({
+        transcriptPath = await saveTranscript({
           home,
           agentName: result.agent_name,
-          tier: 'important',
-          kind: 'agent.auto_start_failed',
-          body:
-            `Agent **${result.agent_name}** was created from onboarding but auto-start failed: ${autoStartError}\n\n` +
-            `Run \`2200 agent start ${result.agent_name}\` once any underlying issue is addressed.`,
+          transcript: preview.transcript,
         })
       } catch {
-        // best-effort
+        // Persistence failure is non-fatal ... the Agent is on disk.
       }
-    }
-    session.markConfirmed()
-    sessions.delete(session.id)
-    return {
-      session_id: session.id,
-      agent_name: result.agent_name,
-      identity_path: result.identity_path,
-      continuity_note_slug: result.continuity_note_slug,
-      transcript_path: transcriptPath,
-      tools: preview.tools.map((t) => ({
-        server: t.server.name,
-        env_hint: t.env_hint,
-      })),
-      schedules: preview.schedules,
-      auto_started: autoStarted,
-      auto_start_error: autoStartError,
-    }
-  })
+      // Auto-start the new Agent. Without this, the Agent record is on disk
+      // in `state: 'stopped'` and the seeded orientation task sits in the
+      // queue waiting indefinitely. v1 scope's Capability 1 onboarding
+      // expects "Agent is built ... reports ready" to happen from a single
+      // operator action; the start has to fire here, not via a follow-up
+      // CLI call. Failure to start is logged via notification but does not
+      // fail the confirm ... the operator can `2200 agent start <name>`
+      // if anything went sideways.
+      let autoStarted = false
+      let autoStartError: string | null = null
+      try {
+        await supervisor.startAgent(result.agent_name)
+        autoStarted = true
+      } catch (err) {
+        autoStartError = err instanceof Error ? err.message : String(err)
+        try {
+          await emitNotification({
+            home,
+            agentName: result.agent_name,
+            tier: 'important',
+            kind: 'agent.auto_start_failed',
+            body:
+              `Agent **${result.agent_name}** was created from onboarding but auto-start failed: ${autoStartError}\n\n` +
+              `Run \`2200 agent start ${result.agent_name}\` once any underlying issue is addressed.`,
+          })
+        } catch {
+          // best-effort
+        }
+      }
+      session.markConfirmed()
+      sessions.delete(session.id)
+      return {
+        session_id: session.id,
+        agent_name: result.agent_name,
+        identity_path: result.identity_path,
+        continuity_note_slug: result.continuity_note_slug,
+        transcript_path: transcriptPath,
+        tools: preview.tools.map((t) => ({
+          server: t.server.name,
+          env_hint: t.env_hint,
+        })),
+        schedules: preview.schedules,
+        auto_started: autoStarted,
+        auto_start_error: autoStartError,
+      }
+    },
+  )
 
   fastify.delete<{ Params: { id: string } }>('/api/v1/onboarding/:id', (req) => {
     const session = sessions.peek(req.params.id)
