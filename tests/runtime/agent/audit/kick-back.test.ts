@@ -88,6 +88,7 @@ function fakeIdentity(): IdentityRecord {
       agent_role: 'test agent',
       model: { tier: 'frontier', provider: 'fake', model_id: 'frontier-1' },
       tools: [],
+      capabilities: [],
       project_dir: 'project',
       brain_dir: 'brain',
       created: '2026-05-14',

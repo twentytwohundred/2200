@@ -91,6 +91,7 @@ function fakeIdentity(): IdentityRecord {
         model_id: 'claude-opus-4-7',
       },
       tools: [],
+      capabilities: [],
       project_dir: '/unused-at-test',
       brain_dir: '/unused-at-test',
       created: '2026-04-26',
