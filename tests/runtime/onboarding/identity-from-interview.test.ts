@@ -156,4 +156,21 @@ describe('buildHandoffFromTranscript', () => {
     expect(handoff.frontmatter.mcp_servers).toHaveLength(1)
     expect(handoff.frontmatter.mcp_servers[0]?.name).toBe('github')
   })
+
+  it('defaults capabilities to empty when none provided', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({}),
+      sourceHost: 'test-host',
+    })
+    expect(handoff.frontmatter.capabilities).toEqual([])
+  })
+
+  it('passes through capabilities when provided (Phase F §8)', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({}),
+      sourceHost: 'test-host',
+      capabilities: ['google-workspace', 'slack'],
+    })
+    expect(handoff.frontmatter.capabilities).toEqual(['google-workspace', 'slack'])
+  })
 })

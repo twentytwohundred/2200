@@ -40,6 +40,8 @@ import { buildHandoffFromTranscript } from './identity-from-interview.js'
 import type { HandoffDocument } from '../migration/types.js'
 import { suggestTools, type ToolSuggestion } from './tool-suggestions.js'
 import { suggestSchedules, type ScheduleSuggestion } from './schedule-suggestions.js'
+import { loadCapabilities, resolveCatalogDir } from './capability-loader.js'
+import { suggestCapabilities, type CapabilitySuggestion } from './capability-suggest.js'
 import type { CompletionRequest } from '../llm/types.js'
 
 const DEFAULT_INTERVIEWER_PERSONA = `You are a hiring manager interviewing a stakeholder about the ideal employee they want to add to their team. You are running a short conversation that will build a new Agent inside 2200, an Agent runtime. Your job is to surface enough practical information about what the Agent will do that the platform can build an Identity, suggest tool integrations, and suggest schedules.
@@ -110,6 +112,15 @@ export interface SessionPreview {
   handoff: HandoffDocument
   tools: ToolSuggestion[]
   schedules: ScheduleSuggestion[]
+  /**
+   * Capability suggestions ranked by tag overlap with the interview.
+   * Every entry with `default_on === true` was auto-applied into the
+   * handoff's `capabilities[]`; the orchestrator's orientation pre-
+   * renderer will embed the walkthrough script for each on the
+   * Agent's first wake. Lower-confidence entries are surfaced for
+   * the web wizard's picker UI (operator opts in).
+   */
+  capabilities: CapabilitySuggestion[]
   /** The name the handoff builder normalized; what `confirm()` produces. */
   agent_name: string
 }
@@ -377,12 +388,21 @@ Produce the next JSON message now.`
     const agentName = dryHandoff.frontmatter.agent_name
     const tools = suggestTools(transcript, agentName)
     const schedules = suggestSchedules(transcript)
+    const capabilities = await suggestCapabilitiesFromTranscript(transcript)
+    // Auto-apply every high-confidence (default_on) suggestion. The
+    // suggester's threshold (>= 2 tag overlaps by default) is the
+    // filter; we trust it. Lower-confidence entries stay in the
+    // preview for the operator-override UI (follow-up).
+    const autoAppliedCapabilityIds = capabilities
+      .filter((c) => c.default_on)
+      .map((c) => c.capability.frontmatter.id)
     // The picker's chosen provider+model also becomes the new
     // Agent's day-to-day model (the intro card's stated promise).
     // Identity-from-handoff uses this when present.
     const handoff = buildHandoffFromTranscript({
       transcript,
       mcpServers: tools.map((t) => t.server),
+      capabilities: autoAppliedCapabilityIds,
       model: {
         provider: this.provider.name,
         model_id: this.modelId,
@@ -394,6 +414,7 @@ Produce the next JSON message now.`
       handoff,
       tools,
       schedules,
+      capabilities,
       agent_name: agentName,
     }
     this.state = 'done'
@@ -482,4 +503,32 @@ function tryParse(s: string): InterviewerDirective | null {
     }
   }
   return null
+}
+
+/**
+ * Load the catalog (if present) and rank Capabilities by overlap with
+ * the interview transcript's intent_tags. Returns [] when:
+ *   - The transcript carries no intent_tags (nothing to match against).
+ *   - The catalog dir cannot be resolved (e.g., fresh install, no
+ *     bundled wiki, no operator overrides).
+ *   - The loader throws (malformed catalog; logged separately by the
+ *     loader). Failure to suggest must not break onboarding ... the
+ *     Agent still gets built, just without auto-applied capabilities.
+ */
+async function suggestCapabilitiesFromTranscript(
+  transcript: InterviewTranscript,
+): Promise<CapabilitySuggestion[]> {
+  const tags = transcript.entries
+    .map((e) => e.intent_tag)
+    .filter((t): t is string => typeof t === 'string' && t.length > 0)
+  if (tags.length === 0) return []
+  const dir = resolveCatalogDir()
+  if (!dir) return []
+  try {
+    const catalog = await loadCapabilities({ firstPartyDir: dir })
+    if (catalog.length === 0) return []
+    return suggestCapabilities({ interview_tags: tags, capabilities: catalog })
+  } catch {
+    return []
+  }
 }

@@ -144,6 +144,50 @@ body
     expect(built.frontmatter.tools).toEqual(['gmail.*'])
   })
 
+  it('passes capabilities from handoff into the Identity (Phase F §8)', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: pilot
+agent_type: email_agent
+identity:
+  display_name: pilot
+budget:
+  daily_cap_usd: 25
+capabilities:
+  - google-workspace
+  - slack
+---
+body
+`
+    const handoff = parseHandoffString(text, null)
+    const built = buildIdentityFromHandoff({
+      handoff,
+      home: HOME,
+      today: FIXED_DATE,
+    })
+    expect(built.frontmatter.capabilities).toEqual(['google-workspace', 'slack'])
+  })
+
+  it('defaults Identity capabilities to [] when handoff omits the field', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: blank
+identity:
+  display_name: blank
+budget:
+  daily_cap_usd: 25
+---
+body
+`
+    const handoff = parseHandoffString(text, null)
+    const built = buildIdentityFromHandoff({
+      handoff,
+      home: HOME,
+      today: FIXED_DATE,
+    })
+    expect(built.frontmatter.capabilities).toEqual([])
+  })
+
   it('seeds tools with one wildcard per declared mcp_server', () => {
     const text = `---
 handoff_schema_version: 1

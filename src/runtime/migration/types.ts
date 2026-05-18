@@ -205,6 +205,22 @@ export const HandoffFrontmatterSchema = z.object({
    */
   mcp_servers: z.array(McpServerSpecSchema).default([]),
   /**
+   * Capability Catalog ids the new Agent should be wired with. The
+   * orchestrator propagates these to the resulting Identity's
+   * `capabilities[]`, where the orientation pre-renderer reads them
+   * and embeds the per-Capability walkthrough script in the seed
+   * task body (Phase F §8).
+   *
+   * Populated by the onboarding flow (`OnboardingSession` runs
+   * `suggestCapabilities` against the transcript and auto-applies
+   * every high-confidence default-on suggestion). Migration handoffs
+   * can also carry capabilities[] if the source 2200 instance
+   * exported them. Defaults to []; an empty array means no
+   * walkthrough fires on first wake and the operator wires
+   * capabilities later via direct Identity edit (or a future CLI).
+   */
+  capabilities: z.array(z.string().min(1)).default([]),
+  /**
    * Preferred LLM model for the new Agent's day-to-day work. The
    * onboarding flow populates this from the picker on the intro card
    * (the same provider+model that ran the interview). Identity-from-

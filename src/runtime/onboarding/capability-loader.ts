@@ -22,13 +22,46 @@
  * loader returning an empty array on a missing dir (rather than
  * throwing) means a fresh install with no catalog still boots cleanly.
  */
+import { existsSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { ZodError } from 'zod'
 import { CapabilityFrontmatterSchema, type CapabilityFrontmatter } from './capability-schema.js'
 import type { Logger } from '../util/logger.js'
 import { createLogger } from '../util/logger.js'
+
+/**
+ * Resolve the Capability catalog directory.
+ *
+ * Priority:
+ *   1. `_2200_CATALOG_DIR` env var (operator override).
+ *   2. Local-overrides dir at `~/.2200/catalog/capabilities/` (per
+ *      Phase F §1 spec; operator-authored entries).
+ *   3. First-party dir, guessed from a sibling-wiki layout relative
+ *      to the runtime install:
+ *      `<process.cwd()>/../wiki/catalog/capabilities/` (dev shape).
+ *
+ * Returns the FIRST existing directory found, or `null` if none
+ * exist. Callers (orientation walkthrough pre-renderer, onboarding
+ * session capability-suggest) skip gracefully on null.
+ *
+ * The local-overrides + first-party split that `loadCapabilities`
+ * supports via `{firstPartyDir, localDir}` is deferred until both
+ * dirs are reliably resolvable in production. v1 callers pass
+ * whichever dir is found as `firstPartyDir`; that's functionally
+ * equivalent for dev use today.
+ */
+export function resolveCatalogDir(): string | null {
+  const env = process.env['_2200_CATALOG_DIR']
+  if (env && existsSync(env)) return env
+  const localOverrides = join(homedir(), '.2200', 'catalog', 'capabilities')
+  if (existsSync(localOverrides)) return localOverrides
+  const devGuess = resolve(process.cwd(), '..', 'wiki', 'catalog', 'capabilities')
+  if (existsSync(devGuess)) return devGuess
+  return null
+}
 
 /**
  * A loaded Capability record. `frontmatter` is the validated metadata;
