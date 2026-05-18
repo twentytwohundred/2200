@@ -3328,6 +3328,131 @@ export function buildProgram(): Command {
       console.log("Agent's identity grants the tool (e.g. `tools: [discord_*]`).")
     })
 
+  // ---------------------------------------------------------------------------
+  // catalog group: gap tracker for now (Phase F §0a-2 follow-up). Tier-2
+  // batch lift prioritization is informed by real operator demand, not by
+  // guess. `catalog gap add` records a gap; `catalog gap list` shows them
+  // (filterable by status).
+  // ---------------------------------------------------------------------------
+
+  const catalog = program
+    .command('catalog')
+    .description('inspect the 2200 Capability Catalog and operator-filed gaps')
+
+  const catalogGap = catalog
+    .command('gap')
+    .description('record + list gaps in the Capability Catalog (off-catalog operator asks)')
+
+  catalogGap
+    .command('add <description...>')
+    .description('record an operator-filed gap (positional joins into the description)')
+    .option('--id <id>', 'explicit kebab-case id; auto-derived from description if omitted')
+    .option(
+      '--context <ctx>',
+      'where the gap surfaced: onboarding, runtime, or manual (default)',
+      'manual',
+    )
+    .option('--agent <name>', 'agent that surfaced the gap (for onboarding / runtime contexts)')
+    .option(
+      '--tag <tag>',
+      'related intent tag (repeatable)',
+      (val: string, prev: string[]) => {
+        prev.push(val)
+        return prev
+      },
+      [] as string[],
+    )
+    .option('--body <text>', 'optional longer markdown body to attach')
+    .action(
+      async (
+        descriptionParts: string[],
+        opts: {
+          id?: string
+          context: string
+          agent?: string
+          tag: string[]
+          body?: string
+        },
+      ) => {
+        const description = descriptionParts.join(' ').trim()
+        if (description.length === 0) {
+          console.error('error: a non-empty description is required')
+          process.exitCode = 2
+          return
+        }
+        const { recordCatalogGap, GAP_CONTEXT } =
+          await import('../runtime/onboarding/catalog-gap.js')
+        if (!(GAP_CONTEXT as readonly string[]).includes(opts.context)) {
+          console.error(`error: --context must be one of: ${GAP_CONTEXT.join(', ')}`)
+          process.exitCode = 2
+          return
+        }
+        try {
+          const rec = await recordCatalogGap({
+            operator_description: description,
+            ...(opts.id !== undefined ? { id: opts.id } : {}),
+            context: opts.context as 'onboarding' | 'runtime' | 'manual',
+            ...(opts.agent !== undefined ? { agent_name: opts.agent } : {}),
+            related_intent_tags: opts.tag,
+            ...(opts.body !== undefined ? { body: opts.body } : {}),
+          })
+          console.log(`# recorded gap: ${rec.frontmatter.id}`)
+          console.log(`  at: ${rec.source_path}`)
+          console.log(`  context: ${rec.frontmatter.context}`)
+          console.log(`  status: ${rec.frontmatter.status}`)
+        } catch (err) {
+          console.error(`error: ${err instanceof Error ? err.message : String(err)}`)
+          process.exitCode = 1
+        }
+      },
+    )
+
+  catalogGap
+    .command('list')
+    .description('list all recorded gaps (most recent first)')
+    .option(
+      '--status <status>',
+      'filter by status: open (default), in_progress, resolved, dropped, or all',
+    )
+    .action(async (opts: { status?: string }) => {
+      const { listCatalogGaps, GAP_STATUS, resolveGapsDir } =
+        await import('../runtime/onboarding/catalog-gap.js')
+      const filterArg = opts.status?.toLowerCase()
+      const filter =
+        filterArg && filterArg !== 'all' ? (filterArg as (typeof GAP_STATUS)[number]) : undefined
+      if (filter && !(GAP_STATUS as readonly string[]).includes(filter)) {
+        console.error(`error: --status must be one of: ${GAP_STATUS.join(', ')} (or 'all')`)
+        process.exitCode = 2
+        return
+      }
+      const records = await listCatalogGaps(filter ? { status: filter } : {})
+      const dir = resolveGapsDir()
+      if (records.length === 0) {
+        if (!dir) {
+          console.log(
+            '# no gaps recorded; the gaps dir does not exist yet (run `2200 catalog gap add ...` to file the first one)',
+          )
+        } else {
+          console.log(`# no gaps matching the filter in ${dir}`)
+        }
+        return
+      }
+      console.log(
+        `# ${String(records.length)} gap${records.length === 1 ? '' : 's'} in ${dir ?? '(no dir)'}`,
+      )
+      for (const r of records) {
+        const fm = r.frontmatter
+        const agent = fm.agent_name ? ` agent=${fm.agent_name}` : ''
+        const tags =
+          fm.related_intent_tags.length > 0 ? ` tags=${fm.related_intent_tags.join(',')}` : ''
+        console.log(
+          `${fm.id.padEnd(48)}  ${fm.status.padEnd(12)}  ${fm.recorded_at.slice(0, 10)}  ${fm.context}${agent}${tags}`,
+        )
+        console.log(`  ${fm.operator_description}`)
+        if (fm.resolution_note) console.log(`  resolution: ${fm.resolution_note}`)
+      }
+    })
+
   registerWebCommands(program)
 
   return program
