@@ -1231,6 +1231,31 @@ export class Supervisor {
   }
 
   /**
+   * Restart an Agent: stop the running process gracefully, then start
+   * a fresh one. Used by the `cli.agent.restart_self` RPC (the Agent-
+   * facing `restart_self` baseline tool) and any future operator-
+   * triggered restart flow.
+   *
+   * The intentionalStops flag set by `stopAgent` is cleared at the end
+   * so future auto-restart paths are not suppressed. If startAgent
+   * fails after stopAgent succeeded, the error propagates and the
+   * Agent is left in `stopped` state (operator can `2200 agent start
+   * <name>` to recover); same semantics as a stop+start CLI sequence.
+   */
+  async restartAgent(name: string, reason = 'restart_self'): Promise<void> {
+    if (!this.state.agents[name]) {
+      throw new Error(`no Agent record for ${name}`)
+    }
+    await this.stopAgent(name, reason)
+    // Brief settle so the process is fully gone before respawn.
+    // Mirrors the daemon restart path (200ms grace before the new
+    // process launches).
+    await new Promise<void>((resolve) => setTimeout(resolve, 200))
+    await this.startAgent(name)
+    this.log.info('Agent restarted', { name, reason })
+  }
+
+  /**
    * Remove an Agent: stop the running process if any, clear the
    * in-memory record, persist the state change, and delete the
    * on-disk per-Agent directory tree under `<home>/agents/<name>/`.
@@ -1957,6 +1982,38 @@ export class Supervisor {
         await this.updateAgent(params.name, { state: 'running' })
         this.log.info('Agent resumed', { name: params.name, resumed_task_id: resumedId })
         return { ok: true as const, resumed_task_id: resumedId }
+      },
+      'cli.agent.restart_self': (params) => {
+        // Agent-self-restart (from the `restart_self` baseline tool).
+        // Scheduled for next tick (500ms) so the calling tool's RPC
+        // response flushes back to the Agent's loop before the
+        // process is recycled. The RPC returns immediately with
+        // scheduled_at; the actual stop+start happens shortly after.
+        //
+        // Security note: the `name` param is locked to ctx.callingAgent
+        // by the calling tool (no caller-supplied target). Cross-Agent
+        // restart goes through the operator (cli.agent.stop +
+        // cli.agent.start), not through this RPC.
+        if (!this.state.agents[params.name]) {
+          throw new Error(`no Agent record for ${params.name}`)
+        }
+        const scheduledAt = new Date().toISOString()
+        setTimeout(() => {
+          void this.restartAgent(params.name, params.reason ?? 'restart_self').catch(
+            (err: unknown) => {
+              this.log.error('scheduled self-restart failed', {
+                name: params.name,
+                error: err instanceof Error ? err.message : String(err),
+              })
+            },
+          )
+        }, 500)
+        this.log.info('self-restart scheduled', {
+          name: params.name,
+          reason: params.reason ?? 'restart_self',
+          scheduled_at: scheduledAt,
+        })
+        return { ok: true as const, scheduled_at: scheduledAt }
       },
       'cli.task.submit': async (params) => {
         const record = this.state.agents[params.agent]

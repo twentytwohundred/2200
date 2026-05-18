@@ -54,7 +54,7 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 42 tools (41 prior + task_await_response)', () => {
+  it('exports exactly 43 tools (42 prior + restart_self)', () => {
     // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
     // 38 with `credential_has`, 39 with `http_request`. 2026-05-16
     // bumped to 40 with `whatsapp_send` and 41 with `discord_send`
@@ -63,10 +63,14 @@ describe('baseline tool registry', () => {
     // Bumped to 42 with `task_await_response` (decision
     // 2026-05-16-task-continuation-primitive): the multi-hop
     // primitive that parks a task on a wait_for block.
-    expect(BASELINE_TOOL_NAMES).toHaveLength(42)
+    // Bumped to 43 with `restart_self`: Agent-self process restart
+    // (no cross-Agent target; cross-Agent restart goes through the
+    // operator). Field-driven by Jodin's 2026-05-18 stuck-asking-
+    // operator-to-restart loop.
+    expect(BASELINE_TOOL_NAMES).toHaveLength(43)
   })
 
-  it('baselineServers() builds sixteen servers (adds whatsapp + discord)', () => {
+  it('baselineServers() builds seventeen servers (adds restart)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -78,6 +82,7 @@ describe('baseline tool registry', () => {
       'image',
       'notification',
       'pub',
+      'restart',
       'schedule',
       'shell',
       'system',

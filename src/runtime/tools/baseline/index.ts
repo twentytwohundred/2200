@@ -28,6 +28,7 @@ import { credentialTools } from './credential.js'
 import { httpTools } from './http.js'
 import { whatsappTools } from './whatsapp.js'
 import { discordTools } from './discord.js'
+import { agentControlTools } from './agent-control.js'
 import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 /**
@@ -95,6 +96,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'http_request',
   'whatsapp_send',
   'discord_send',
+  'restart_self',
 ]
 
 export interface BaselineServersOptions {
@@ -156,5 +158,7 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('http', httpTools),
     createInProcessServer('whatsapp', whatsappTools),
     createInProcessServer('discord', discordTools),
+    // server prefix matches the tool name's prefix (`restart_*`).
+    createInProcessServer('restart', agentControlTools(getSupervisorRpc)),
   ]
 }
