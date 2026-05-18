@@ -7,7 +7,10 @@
  * matching on systemPrompt content (the interviewer prompt always
  * contains the literal string "GOALS").
  */
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   OnboardingSession,
   OnboardingSessionError,
@@ -283,5 +286,128 @@ describe('OnboardingSession (v2)', () => {
     })
     const r = await session.submitAnswer('I want an Agent')
     expect(r.kind).toBe('done')
+  })
+})
+
+/**
+ * Wizard → capabilities[] wire-up (Phase F §8 closing-the-loop).
+ *
+ * Lives in its own describe block because it needs a temp catalog
+ * dir on disk to exercise the loader's real codepath. Confirms that
+ * an interview whose intent_tags overlap a catalog entry's tags ends
+ * up with that Capability's id auto-applied into the handoff (which
+ * the orchestrator then propagates to Identity, which the orientation
+ * pre-renderer reads to embed the walkthrough script).
+ */
+describe('OnboardingSession: capabilities suggest + auto-apply (Phase F §8)', () => {
+  let catalogDir: string
+  const TAGS_THAT_MATCH_SCRIPT_GOALS = ['purpose', 'agent_name', 'tools']
+
+  beforeEach(async () => {
+    catalogDir = await mkdtemp(join(tmpdir(), '2200-session-cap-'))
+    // Fixture with 3 tags that overlap every goal id in SCRIPT.
+    // Overlap of 3 >= high_confidence_threshold (2) → default_on.
+    const fixture = `---
+id: testbed
+label: Testbed
+category: dev-tooling
+description: Synthetic fixture for the session test.
+publisher: first-party
+auth:
+  - name: TESTBED_TOKEN
+    kind: api_key
+    env_var: TESTBED_TOKEN_REF
+    obtain_url: https://example.com/auth
+unlocks:
+  tools: []
+  skills: []
+  extensions: []
+  providers: []
+network_egress:
+  domains:
+    - example.com
+tags:
+${TAGS_THAT_MATCH_SCRIPT_GOALS.map((t) => `  - ${t}`).join('\n')}
+requires:
+  bins: []
+  os: []
+  capabilities: []
+walkthrough:
+  estimated_minutes: 5
+  difficulty: easy
+---
+
+# Setup walkthrough
+
+Body content.
+`
+    await writeFile(join(catalogDir, 'testbed.md'), fixture, 'utf-8')
+    process.env['_2200_CATALOG_DIR'] = catalogDir
+  })
+
+  afterEach(async () => {
+    delete process.env['_2200_CATALOG_DIR']
+    await rm(catalogDir, { recursive: true, force: true })
+  })
+
+  it("auto-applies high-confidence Capability suggestions into the handoff's capabilities[]", async () => {
+    const session = new OnboardingSession({
+      id: 'onb_cap_1',
+      script: SCRIPT,
+      provider: scriptedProvider({
+        directives: [
+          // Each LLM response carries a covering: tag that becomes
+          // the answer's intent_tag. With 3 overlapping tags, the
+          // suggester ranks 'testbed' as high-confidence (default_on).
+          '{"kind":"question","text":"Name?","covering":"agent_name"}',
+          '{"kind":"question","text":"Tools?","covering":"tools"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am a testbed Agent.',
+      }),
+      modelId: 'm',
+      now: () => FIXED,
+    })
+    await session.submitAnswer('handle some testbed tasks') // intent_tag=purpose (opening)
+    await session.submitAnswer('pilot') // intent_tag=agent_name
+    const r = await session.submitAnswer('whatever') // intent_tag=tools → done
+    if (r.kind !== 'done') throw new Error('expected done')
+
+    // Preview surfaces the ranked suggestions for the (future)
+    // operator-override UI.
+    expect(r.preview.capabilities).toHaveLength(1)
+    expect(r.preview.capabilities[0]?.capability.frontmatter.id).toBe('testbed')
+    expect(r.preview.capabilities[0]?.default_on).toBe(true)
+
+    // The load-bearing assertion: the auto-apply baked 'testbed' into
+    // the handoff. The orchestrator reads this on confirm → Identity
+    // gets capabilities=['testbed'] → orientation embeds the
+    // walkthrough script → Agent calls credential_request live.
+    expect(r.preview.handoff.frontmatter.capabilities).toEqual(['testbed'])
+  })
+
+  it('leaves handoff.capabilities empty when no transcript tag overlaps the catalog', async () => {
+    // Override the env to a different empty temp dir so the suggester
+    // gets [] back and bypasses auto-apply.
+    const emptyDir = await mkdtemp(join(tmpdir(), '2200-session-cap-empty-'))
+    process.env['_2200_CATALOG_DIR'] = emptyDir
+    try {
+      const session = new OnboardingSession({
+        id: 'onb_cap_2',
+        script: SCRIPT,
+        provider: scriptedProvider({
+          directives: ['{"kind":"done"}'],
+          summary: 'I am the Agent.',
+        }),
+        modelId: 'm',
+        now: () => FIXED,
+      })
+      const r = await session.submitAnswer('opening')
+      if (r.kind !== 'done') throw new Error('expected done')
+      expect(r.preview.capabilities).toEqual([])
+      expect(r.preview.handoff.frontmatter.capabilities).toEqual([])
+    } finally {
+      await rm(emptyDir, { recursive: true, force: true })
+    }
   })
 })

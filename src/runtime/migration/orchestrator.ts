@@ -49,14 +49,16 @@ import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { buildOrientationTaskBody } from '../onboarding/starter-pack.js'
-import { loadCapabilities, type CapabilityRecord } from '../onboarding/capability-loader.js'
+import {
+  loadCapabilities,
+  resolveCatalogDir,
+  type CapabilityRecord,
+} from '../onboarding/capability-loader.js'
 import {
   computeWalkthroughPlan,
   renderWalkthroughIntro,
   renderCapabilityWalkthrough,
 } from '../onboarding/walkthrough-runner.js'
-import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
 
 export interface MigrateArgs {
   handoff: HandoffDocument
@@ -377,37 +379,6 @@ function expandHomeTilde(path: string): string {
     return homedir()
   }
   return path
-}
-
-/**
- * Resolve the Capability catalog directory.
- *
- * Priority:
- *   1. `_2200_CATALOG_DIR` env var (operator override).
- *   2. Local-overrides dir at `~/.2200/catalog/capabilities/` (per
- *      Phase F §1 spec; operator-authored entries).
- *   3. First-party dir, guessed from a sibling-wiki layout relative
- *      to the runtime install:
- *      `<process.cwd()>/../wiki/catalog/capabilities/` (dev shape).
- *
- * Returns the FIRST existing directory found, or `null` if none
- * exist. Callers (the orientation walkthrough renderer) skip
- * gracefully on null.
- *
- * The local-overrides + first-party split that
- * `loadCapabilities({firstPartyDir, localDir})` expects is deferred
- * until both dirs are reliably resolvable in production. v1 just
- * passes whichever dir is found as `firstPartyDir`; that's
- * functionally equivalent for dev use today.
- */
-function resolveCatalogDir(): string | null {
-  const env = process.env['_2200_CATALOG_DIR']
-  if (env && existsSync(env)) return env
-  const localOverrides = join(homedir(), '.2200', 'catalog', 'capabilities')
-  if (existsSync(localOverrides)) return localOverrides
-  const devGuess = resolve(process.cwd(), '..', 'wiki', 'catalog', 'capabilities')
-  if (existsSync(devGuess)) return devGuess
-  return null
 }
 
 /**

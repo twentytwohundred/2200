@@ -120,6 +120,7 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
       tiers_allowed: fm.identity.notification_policy.tiers_allowed,
     },
     mcp_servers: declaredServers,
+    capabilities: fm.capabilities,
   }
 
   const validated = IdentityFrontmatterSchema.parse(candidate)

@@ -63,6 +63,16 @@ export interface BuildHandoffArgs {
    * are known.
    */
   model?: { tier?: 'frontier' | 'fast' | 'local'; provider: string; model_id: string }
+  /**
+   * Capability Catalog ids to wire onto the new Agent. The onboarding
+   * flow's session computes these by running `suggestCapabilities`
+   * against the transcript intent_tags and auto-applying every
+   * high-confidence (default_on) suggestion. The orchestrator's
+   * orientation pre-renderer reads them from the resulting Identity
+   * and embeds the per-Capability walkthrough script in the seed
+   * task body (Phase F §8). Empty/absent → no walkthrough fires.
+   */
+  capabilities?: readonly string[]
 }
 
 /**
@@ -122,6 +132,7 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
       },
       schedules: [],
       mcp_servers: args.mcpServers !== undefined ? [...args.mcpServers] : [],
+      capabilities: args.capabilities !== undefined ? [...args.capabilities] : [],
       ...(args.model !== undefined
         ? {
             model: {
