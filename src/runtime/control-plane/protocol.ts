@@ -340,6 +340,30 @@ export const CliAgentResumeResultSchema = z.object({
 })
 export type CliAgentResumeResult = z.infer<typeof CliAgentResumeResultSchema>
 
+/**
+ * C->S: an Agent requests a self-restart.
+ *
+ * The supervisor schedules the restart for the next tick (typically
+ * 500ms after the RPC returns) so the calling tool can flush its
+ * response back to the Agent's loop before the process is recycled.
+ * The `name` parameter MUST match the calling Agent's name; the only
+ * caller is the `restart_self` baseline tool, which locks the value
+ * to `ctx.callingAgent` (no caller can target another Agent). Cross-
+ * Agent restart goes through the operator (CLI `2200 agent stop` /
+ * `start` or web), not through this RPC.
+ */
+export const CliAgentRestartSelfParamsSchema = z.object({
+  name: z.string().min(1),
+  reason: z.string().optional(),
+})
+export type CliAgentRestartSelfParams = z.infer<typeof CliAgentRestartSelfParamsSchema>
+
+export const CliAgentRestartSelfResultSchema = z.object({
+  ok: z.literal(true),
+  scheduled_at: z.string(),
+})
+export type CliAgentRestartSelfResult = z.infer<typeof CliAgentRestartSelfResultSchema>
+
 /** C->S: submit a task to an Agent. */
 export const CliTaskSubmitParamsSchema = z.object({
   agent: z.string().min(1),
@@ -718,6 +742,10 @@ export const METHODS = {
   'cli.agent.resume': {
     params: CliAgentResumeParamsSchema,
     result: CliAgentResumeResultSchema,
+  },
+  'cli.agent.restart_self': {
+    params: CliAgentRestartSelfParamsSchema,
+    result: CliAgentRestartSelfResultSchema,
   },
   'cli.task.submit': {
     params: CliTaskSubmitParamsSchema,
