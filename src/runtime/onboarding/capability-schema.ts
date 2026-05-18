@@ -217,6 +217,17 @@ export const PublisherSchema = z.string().min(1).default('first-party')
  * Network egress declaration. v1 default `'unrestricted'` ... no
  * enforcement at v1; declared so the External-Publisher Epic's
  * runtime enforcement is additive, not retrofit.
+ *
+ * **`'unrestricted'` is a v1-only legacy state, not a permanent escape
+ * hatch.** When M3 enforcement ships in Epic 17 (External Capability
+ * Publishers), every first-party Capability migrates to a real domain
+ * list ... mostly knowable from the auth.obtain_url + the underlying
+ * API surface (the google-workspace seed already declares its eight
+ * googleapis.com subdomains correctly). External-publisher Capabilities
+ * ship M3-compliant or don't get installed. New Capabilities authored
+ * from this date forward SHOULD declare a real domain list at the
+ * start; 'unrestricted' is the migration affordance for entries that
+ * pre-date M3, not a default-permissive shape for new authoring.
  */
 export const NetworkEgressSchema = z.object({
   domains: z.union([z.literal('unrestricted'), z.array(z.string().min(1))]).default('unrestricted'),
@@ -261,13 +272,21 @@ export const WalkthroughMetaSchema = z.object({
 
 /**
  * Attribution + provenance. `attribution` names the source-of-record
- * for the entry's content. Each external source carries a path / URL
- * for audit (so we can re-trace what was lifted and from where).
+ * for the entry's prose content. Each external source carries a path
+ * / URL for audit (so we can re-trace what was lifted and from where).
+ *
+ * Capability catalog source field is for PROSE-LIFT attribution only.
+ * Pattern-borrows from Hermes Agent (e.g. the hardline-below-yolo
+ * framing, the smart-approvals judge prompt, the loop-as-recovery-
+ * engine principle) are attributed in code comments and decision
+ * docs ... not in catalog entries. This preserves the "different
+ * tradeoff, not better" framing from the Hermes deep dive (see
+ * wiki/research/2026-05-18-hermes-deep-dive.md §6b.i). Hence no
+ * 'hermes' value in the attribution enum.
  */
 export const SourceSchema = z.object({
-  attribution: z.enum(['original', 'openclaw', 'hermes', 'other']).default('original'),
+  attribution: z.enum(['original', 'openclaw', 'other']).default('original'),
   openclaw_path: z.string().optional(),
-  hermes_path: z.string().optional(),
   other_url: z.url().optional(),
   notes: z.string().optional(),
 })
