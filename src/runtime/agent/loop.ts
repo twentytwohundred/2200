@@ -1672,6 +1672,16 @@ export class AgentLoop {
       '  - User asks you to ping them later / notify them when X happens → `notification_inform` (passive) or `notification_ask` (requires their response).',
       '  - User asks you to send a Discord / WhatsApp / Spotify message → `discord_send` / `whatsapp_send` / `spotify_*`.',
       '  - User asks "what model are you / who are you / what runtime" → `system_whoami`. Do NOT answer from training data.',
+      // INTERIM prompt-level guidance: the bullet immediately below is a
+      // heuristic patch shipped ahead of the Phase F §8 walkthrough
+      // runner. The runner reads `capabilities[]` from Identity, checks
+      // vault per-Capability, and drives credential prompts structurally.
+      // When it lands, REMOVE the credential bullet below as part of
+      // the runner's rollout ... structural fix replaces the heuristic,
+      // heuristics do not accumulate as cruft. (The `restart_self`
+      // bullet that follows is permanent ... it teaches a permanent tool.)
+      '  - YOU need a credential to complete a task and you do NOT have it (e.g., the task asks you to send Gmail and your vault has no Gmail credential) → do NOT try to do the work without the credential, and do NOT just tell the operator "I cannot." Instead: (a) if the task arrived in a pub or schedule, switch to your 1:1 chat with the operator via `chat_send` ... `credential_request` only works from a 1:1 chat surface (you will get `surface_invalid` from pub / schedule / self-started); (b) from the 1:1 chat, call `credential_request` with a clear `label`, `help` pointing the operator at where to obtain the value, and a `reason` connecting to the task. The substrate never lets the value enter your loop context; you only see `{status: fulfilled, credential_name, set_at}` back. After it seals, retry the task with the credential available.',
+      '  - YOU are stuck in a loop and a fresh process would clear it (stale auth cached in memory, dropped connection, persistent malformed-tool-call retries, accumulated context the in-loop compactor cannot recover from) → call `restart_self` with a one-sentence `reason`. The supervisor cycles your process ~500ms after the tool returns; on-disk state (brain, tasks, sealed credentials) survives, in-memory state is lost. This is your only safe self-recovery surface; do NOT ask the operator to restart you ... they cannot do it any better than you can, and you have first-person knowledge of why a restart is needed.',
       '',
       'When in doubt: scan the tool list. There is almost certainly a tool for what the operator is asking. Tools come with descriptions ... read them. Asking the operator to do something a tool can do is a bug.',
       '',
