@@ -49,6 +49,14 @@ import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { buildOrientationTaskBody } from '../onboarding/starter-pack.js'
+import { loadCapabilities, type CapabilityRecord } from '../onboarding/capability-loader.js'
+import {
+  computeWalkthroughPlan,
+  renderWalkthroughIntro,
+  renderCapabilityWalkthrough,
+} from '../onboarding/walkthrough-runner.js'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 export interface MigrateArgs {
   handoff: HandoffDocument
@@ -264,10 +272,18 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
     try {
       const role = built.frontmatter.agent_role
       const taskStore = new TaskStore(args.home, agentName)
+      // Pre-render the walkthrough script if the Agent has
+      // capabilities[] declared in Identity AND we can find the
+      // catalog. Skip gracefully on either missing.
+      const walkthroughRender = await renderWalkthroughForOrientation({
+        agentName,
+        capabilityIds: built.frontmatter.capabilities,
+      })
       const taskBody = buildOrientationTaskBody({
         agentName,
         agentRole: role,
         operatorAddressing: args.operatorAddressing ?? 'the operator',
+        ...(walkthroughRender ? { walkthroughRender } : {}),
       })
       const orientationTask = newPendingTask({
         id: newTaskId(),
@@ -361,4 +377,90 @@ function expandHomeTilde(path: string): string {
     return homedir()
   }
   return path
+}
+
+/**
+ * Resolve the Capability catalog directory.
+ *
+ * Priority:
+ *   1. `_2200_CATALOG_DIR` env var (operator override).
+ *   2. Local-overrides dir at `~/.2200/catalog/capabilities/` (per
+ *      Phase F §1 spec; operator-authored entries).
+ *   3. First-party dir, guessed from a sibling-wiki layout relative
+ *      to the runtime install:
+ *      `<process.cwd()>/../wiki/catalog/capabilities/` (dev shape).
+ *
+ * Returns the FIRST existing directory found, or `null` if none
+ * exist. Callers (the orientation walkthrough renderer) skip
+ * gracefully on null.
+ *
+ * The local-overrides + first-party split that
+ * `loadCapabilities({firstPartyDir, localDir})` expects is deferred
+ * until both dirs are reliably resolvable in production. v1 just
+ * passes whichever dir is found as `firstPartyDir`; that's
+ * functionally equivalent for dev use today.
+ */
+function resolveCatalogDir(): string | null {
+  const env = process.env['_2200_CATALOG_DIR']
+  if (env && existsSync(env)) return env
+  const localOverrides = join(homedir(), '.2200', 'catalog', 'capabilities')
+  if (existsSync(localOverrides)) return localOverrides
+  const devGuess = resolve(process.cwd(), '..', 'wiki', 'catalog', 'capabilities')
+  if (existsSync(devGuess)) return devGuess
+  return null
+}
+
+/**
+ * Compose the pre-rendered walkthrough script for the orientation
+ * task body. Loads the catalog, looks up each declared capability
+ * id, renders an introduction paragraph plus one section per
+ * Capability (separated by `---`).
+ *
+ * At build time the vault is empty (no credentials sealed yet), so
+ * the "compute" step is degenerate: every declared Capability needs
+ * a walkthrough. We synthesize the plan directly from the catalog
+ * lookups instead of round-tripping through `computeWalkthroughPlan`
+ * with a stub vault; the result is the same shape.
+ *
+ * Returns `null` when:
+ *   - The Agent has no declared capabilities (nothing to walk).
+ *   - The catalog dir cannot be resolved.
+ *   - Zero of the declared capability ids resolve to catalog entries.
+ *
+ * Returns the rendered string when at least one Capability resolves.
+ * Unknown ids are dropped silently (the Agent's task body would have
+ * nothing useful to show for them).
+ */
+async function renderWalkthroughForOrientation(args: {
+  agentName: string
+  capabilityIds: string[]
+}): Promise<string | null> {
+  if (args.capabilityIds.length === 0) return null
+  const dir = resolveCatalogDir()
+  if (!dir) return null
+
+  let catalog: CapabilityRecord[]
+  try {
+    catalog = await loadCapabilities({ firstPartyDir: dir })
+  } catch {
+    return null
+  }
+  if (catalog.length === 0) return null
+
+  // At build time, the vault is empty. Synthesize an "always unsealed"
+  // checker so every declared Capability lands in needs_walkthrough.
+  const plan = await computeWalkthroughPlan({
+    agentName: args.agentName,
+    capabilityIds: args.capabilityIds,
+    catalog,
+    vault: { has: () => Promise.resolve(false) },
+  })
+
+  if (plan.needs_walkthrough.length === 0) return null
+
+  const intro = renderWalkthroughIntro(plan)
+  const slots = plan.needs_walkthrough
+    .map((s) => renderCapabilityWalkthrough(s))
+    .join('\n\n---\n\n')
+  return `${intro}\n\n---\n\n${slots}`
 }

@@ -1402,19 +1402,79 @@ export function buildOrientationTaskBody(args: {
   agentName: string
   agentRole: string
   operatorAddressing: string
+  /**
+   * Pre-rendered Phase 4 walkthrough content. When non-empty, slotted
+   * verbatim into Phase 4 below; the Agent posts the content to chat
+   * and drives `credential_request` per Capability per the embedded
+   * instructions. When empty / undefined (Agent has no `capabilities[]`
+   * in Identity, OR the catalog couldn't be loaded), Phase 4 is
+   * skipped entirely and Phase 5 (report ready) becomes Phase 4.
+   *
+   * Produced by the migration orchestrator from
+   * `walkthrough-runner.ts`'s `renderWalkthroughIntro` +
+   * `renderCapabilityWalkthrough` per-Capability composition.
+   *
+   * Per the discipline note in
+   * [[../../wiki/decisions/2026-05-18-hermes-deep-dive]] §6a (interim
+   * patches don't accumulate as cruft): this PR's integration with
+   * `walkthrough-runner.ts` REPLACES the prompt-only Phase 4 that
+   * shipped in PR #207 as an interim. The interim comment block has
+   * been removed; the YOU-need-a-credential bullet in
+   * `loop.ts`'s `buildSystemPrompt` was removed in the same commit.
+   */
+  walkthroughRender?: string
 }): string {
-  // INTERIM prompt-level guidance until Phase F §8 walkthrough runner
-  // ships. Phase 4 below teaches new Agents to proactively
-  // `credential_request` the credentials their declared lane requires.
-  // When the walkthrough runner lands (reads `capabilities[]` from
-  // Identity, checks vault per-Capability, drives credential prompts
-  // structurally), this Phase should be REMOVED as part of the runner's
-  // rollout ... structural fix replaces the heuristic, heuristics do not
-  // accumulate as cruft.
+  const wt = args.walkthroughRender?.trim() ?? ''
+  const hasWalkthrough = wt.length > 0
+  const phaseCountWord = hasWalkthrough ? 'five' : 'four'
+
+  const phase4Walkthrough = hasWalkthrough
+    ? `## Phase 4 ... walk the operator through the credentials you need
+
+Below this paragraph is your pre-computed walkthrough script. It contains:
+  - An introduction paragraph for ${args.operatorAddressing} (open with this).
+  - One section per Capability your lane needs credentials for, separated by \`---\`.
+  - Each section has the Capability's label + the credential name (\`<NAME>_REF\` style) you will request + the operator-facing setup walkthrough prose.
+
+Execute in order:
+
+9. \`chat_send\` to ${args.operatorAddressing} with the introduction paragraph (first chunk above the first \`---\`).
+10. For each Capability section in turn (between dividers):
+    a. \`chat_send\` the section's content to the same 1:1 chat (the operator reads it inline).
+    b. Call \`credential_request\` with: \`credential_name\` matching the section's listed credential name, \`label\` matching the Capability label, \`help\` summarizing what to provide (link to obtain_url is in the section body), \`reason\` connecting to your lane.
+    c. Wait for the substrate's response. If \`fulfilled\`: \`chat_send\` a one-line ack and proceed to the next section. If \`declined\` or \`expired\`: \`chat_send\` a one-line "skipping for now ... ping me when you're ready" and proceed.
+11. After all Capability sections complete (or skipped), continue to Phase 5.
+
+**Pre-computed walkthrough script:**
+
+---
+
+${wt}
+
+---
+
+`
+    : ''
+
+  const reportPhaseNum = hasWalkthrough ? 5 : 4
+  const reportPhase = `## Phase ${String(reportPhaseNum)} ... report ready to the operator
+
+${String(hasWalkthrough ? 12 : 9)}. \`chat_send\` to ${args.operatorAddressing} with a short brief.
+    Four lines:
+    - What 2200 is (one sentence, your own words).
+    - Who is on the team and who you'll work with.
+    - First move on your lane (${args.agentRole}). Concrete, not
+      aspirational.
+    - "I've introduced myself in the Studio${hasWalkthrough ? ', written my intro-snapshot brain note, and walked through the credentials I needed' : ' and written my intro-snapshot brain note'}. Ready when you are."
+
+End the task after \`chat_send\` returns. Do not continue working
+on the lane until ${args.operatorAddressing} replies. The
+operator's reply is your green light.`
+
   return `Welcome. You were just created. Before doing anything else, take a
 moment to orient yourself and arrive properly.
 
-This task has five phases. Run them in order. Do not skip the
+This task has ${phaseCountWord} phases. Run them in order. Do not skip the
 Studio introduction in phase 3 ... your peers learn you exist from
 that post, not from the task store.
 
@@ -1458,54 +1518,5 @@ that post, not from the task store.
    Keep it under 4 sentences. Do not tag everyone; pick the
    peers from the team note whose work intersects yours.
 
-## Phase 4 ... ask for the credentials your lane needs
-
-Review your continuity-from-onboarding note (read in Phase 1). Your
-declared lane (${args.agentRole}) almost certainly requires
-integrations you do not yet have credentials for: email/calendar
-accounts, chat platforms, code repos, third-party APIs, payment
-processors, etc.
-
-9. Identify the credentials you will need before you can do real
-   work. Look at the integrations named (or implied) by your
-   continuity note + your declared lane. Make a short list.
-
-10. For each credential, open (or continue) your 1:1 chat with
-    ${args.operatorAddressing} ... \`chat_send\` to start the
-    thread if it does not exist yet ... and call
-    \`credential_request\` from there. ONE \`credential_request\`
-    per missing credential, with a clear \`label\`, \`help\` text
-    pointing to where the operator can obtain the value, and a
-    \`reason\` that connects to your lane.
-
-    \`credential_request\` only works from a 1:1 chat surface
-    (surface_invalid from pub / schedule / self-started). The
-    substrate guarantees the value never enters your loop context;
-    you only ever see \`{status: fulfilled, credential_name, set_at}\`
-    back.
-
-    If you are not sure whether the operator has a particular
-    integration set up yet, ASK BEFORE REQUESTING ... the credential
-    paste card is friction. A short "do you have a Gmail account
-    you'd like me to use, or should I work in a different way?" in
-    chat first, then \`credential_request\` once they confirm.
-
-11. After all requested credentials are sealed (or the operator has
-    skipped/deferred specific ones), continue to Phase 5.
-
-## Phase 5 ... report ready to the operator
-
-12. \`chat_send\` to ${args.operatorAddressing} with a short brief.
-    Four lines:
-    - What 2200 is (one sentence, your own words).
-    - Who is on the team and who you'll work with.
-    - First move on your lane (${args.agentRole}). Concrete, not
-      aspirational.
-    - "I've introduced myself in the Studio, written my
-      intro-snapshot brain note, and requested the credentials
-      I'll need. Ready when you are."
-
-End the task after \`chat_send\` returns. Do not continue working
-on the lane until ${args.operatorAddressing} replies. The
-operator's reply is your green light.`
+${phase4Walkthrough}${reportPhase}`
 }

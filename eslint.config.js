@@ -28,7 +28,7 @@ export default tseslint.config(
           // tsconfig discovery the project service does for src/tests.
           // Keeps them lintable without forcing every smoke into the
           // build graph.
-          allowDefaultProject: ['scripts/*.ts'],
+          allowDefaultProject: ['scripts/*.ts', 'scripts/smoke/*.ts'],
         },
         tsconfigRootDir: import.meta.dirname,
       },
