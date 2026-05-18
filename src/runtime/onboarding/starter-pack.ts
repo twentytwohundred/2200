@@ -1403,10 +1403,18 @@ export function buildOrientationTaskBody(args: {
   agentRole: string
   operatorAddressing: string
 }): string {
+  // INTERIM prompt-level guidance until Phase F §8 walkthrough runner
+  // ships. Phase 4 below teaches new Agents to proactively
+  // `credential_request` the credentials their declared lane requires.
+  // When the walkthrough runner lands (reads `capabilities[]` from
+  // Identity, checks vault per-Capability, drives credential prompts
+  // structurally), this Phase should be REMOVED as part of the runner's
+  // rollout ... structural fix replaces the heuristic, heuristics do not
+  // accumulate as cruft.
   return `Welcome. You were just created. Before doing anything else, take a
 moment to orient yourself and arrive properly.
 
-This task has four phases. Run them in order. Do not skip the
+This task has five phases. Run them in order. Do not skip the
 Studio introduction in phase 3 ... your peers learn you exist from
 that post, not from the task store.
 
@@ -1450,16 +1458,52 @@ that post, not from the task store.
    Keep it under 4 sentences. Do not tag everyone; pick the
    peers from the team note whose work intersects yours.
 
-## Phase 4 ... report ready to the operator
+## Phase 4 ... ask for the credentials your lane needs
 
-9. \`chat_send\` to ${args.operatorAddressing} with a short brief.
-   Four lines:
-   - What 2200 is (one sentence, your own words).
-   - Who is on the team and who you'll work with.
-   - First move on your lane (${args.agentRole}). Concrete, not
-     aspirational.
-   - "I've introduced myself in the Studio and written my
-     intro-snapshot brain note. Ready when you are."
+Review your continuity-from-onboarding note (read in Phase 1). Your
+declared lane (${args.agentRole}) almost certainly requires
+integrations you do not yet have credentials for: email/calendar
+accounts, chat platforms, code repos, third-party APIs, payment
+processors, etc.
+
+9. Identify the credentials you will need before you can do real
+   work. Look at the integrations named (or implied) by your
+   continuity note + your declared lane. Make a short list.
+
+10. For each credential, open (or continue) your 1:1 chat with
+    ${args.operatorAddressing} ... \`chat_send\` to start the
+    thread if it does not exist yet ... and call
+    \`credential_request\` from there. ONE \`credential_request\`
+    per missing credential, with a clear \`label\`, \`help\` text
+    pointing to where the operator can obtain the value, and a
+    \`reason\` that connects to your lane.
+
+    \`credential_request\` only works from a 1:1 chat surface
+    (surface_invalid from pub / schedule / self-started). The
+    substrate guarantees the value never enters your loop context;
+    you only ever see \`{status: fulfilled, credential_name, set_at}\`
+    back.
+
+    If you are not sure whether the operator has a particular
+    integration set up yet, ASK BEFORE REQUESTING ... the credential
+    paste card is friction. A short "do you have a Gmail account
+    you'd like me to use, or should I work in a different way?" in
+    chat first, then \`credential_request\` once they confirm.
+
+11. After all requested credentials are sealed (or the operator has
+    skipped/deferred specific ones), continue to Phase 5.
+
+## Phase 5 ... report ready to the operator
+
+12. \`chat_send\` to ${args.operatorAddressing} with a short brief.
+    Four lines:
+    - What 2200 is (one sentence, your own words).
+    - Who is on the team and who you'll work with.
+    - First move on your lane (${args.agentRole}). Concrete, not
+      aspirational.
+    - "I've introduced myself in the Studio, written my
+      intro-snapshot brain note, and requested the credentials
+      I'll need. Ready when you are."
 
 End the task after \`chat_send\` returns. Do not continue working
 on the lane until ${args.operatorAddressing} replies. The
