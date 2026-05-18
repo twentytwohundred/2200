@@ -492,6 +492,20 @@ export const IdentityFrontmatterSchema = z.object({
   avatar: z.string().max(8).optional(),
   model: ModelBindingSchema,
   tools: z.array(ToolNameSchema).default([]),
+  /**
+   * Capability ids selected for this Agent during onboarding (Phase F).
+   * Each entry is the slug of a `wiki/catalog/capabilities/<id>.md`
+   * file. Empty default means the Agent was built before the Capability
+   * Catalog landed (or the operator selected no capabilities). The
+   * walkthrough runner (Phase F §8) reads this list on first-chat-open,
+   * checks vault per-Capability, and drives credential prompts for any
+   * unsealed entries.
+   *
+   * Additive field with empty default; no schema bump needed (existing
+   * Identity files parse cleanly with `capabilities: []` after Zod
+   * applies the default).
+   */
+  capabilities: z.array(z.string().min(1)).default([]),
   project_dir: z.string().min(1),
   brain_dir: z.string().min(1),
   created: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, {
