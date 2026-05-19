@@ -232,37 +232,256 @@
   line-height: 1.5;
 }
 
-.capabilityRow {
+.capabilityStack {
   display: grid;
-  grid-template-columns: auto 1fr;
   gap: var(--ds-3);
-  align-items: start;
-  padding: var(--ds-3);
+}
+
+.capabilityCard {
+  position: relative;
+  display: block;
+  padding: var(--ds-4);
   background: var(--bg-elev);
-  border-radius: var(--ds-r-1);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
   cursor: pointer;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    box-shadow var(--ds-dur-fast) var(--ds-ease),
+    transform var(--ds-dur-fast) var(--ds-ease);
 }
 
-.capabilityRow input[type='checkbox'] {
-  margin-top: 3px;
-  cursor: pointer;
+.capabilityCard:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-1);
+  transform: translateY(-1px);
 }
 
-.capabilityRow:has(input:disabled) {
+.capabilityCardSelected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.capabilityCardSelected:hover {
+  border-color: var(--accent);
+}
+
+.capabilityCardDeselected {
+  background: var(--bg-elev);
+  border-style: dashed;
+}
+
+.capabilityCardSpeculative {
+  background: var(--bg-elev);
+  opacity: 0.72;
+}
+
+.capabilityCardSpeculative:hover {
+  opacity: 1;
+}
+
+.capabilityCard[data-disabled='true'] {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.5;
+  pointer-events: none;
 }
 
-.capabilityRowBody {
+/* Visually hide the checkbox but keep it in the focus order for
+   keyboard + screen-reader access. The whole card is the click target
+   via the surrounding <label>. */
+.capabilityCheckbox {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.capabilityCheckbox:focus-visible + .capabilityCardInner {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--ds-r-1);
+}
+
+.capabilityCardInner {
   display: grid;
+  gap: var(--ds-2);
+}
+
+.capabilityHeader {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.capabilitySelectBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--ds-r-pill);
+  background: var(--bg);
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: transparent;
+  line-height: 1;
+  transition:
+    background var(--ds-dur-fast) var(--ds-ease),
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.capabilityCardSelected .capabilitySelectBadge {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.capabilityLabel {
+  font-family: var(--ds-font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.capabilityHeaderRight {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.capabilityDescription {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.capabilityMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-3);
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.capabilityMatched {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-2);
+  margin-top: var(--ds-1);
+}
+
+.capabilityMatchedLabel {
+  font-family: var(--ds-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.capabilityMatchedTags {
+  display: inline-flex;
+  flex-wrap: wrap;
   gap: var(--ds-1);
 }
 
-.capabilityConfidence {
+.capabilityMatchedTag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-pill);
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.capabilityCardSelected .capabilityMatchedTag {
+  background: var(--bg);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.whyMatchedTrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-left: var(--ds-1);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-pill);
+  font-family: var(--ds-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  cursor: help;
+  position: relative;
+  transition:
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    color var(--ds-dur-fast) var(--ds-ease);
+}
+
+.whyMatchedTrigger:hover,
+.whyMatchedTrigger:focus-visible {
+  outline: none;
+  border-color: var(--text-3);
+  color: var(--text);
+}
+
+.whyMatchedTrigger::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  width: max-content;
+  max-width: 240px;
+  padding: var(--ds-2) var(--ds-3);
+  background: var(--text);
+  color: var(--bg);
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 400;
-  color: var(--text-3);
-  letter-spacing: 0.04em;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  text-align: left;
+  text-transform: none;
+  border-radius: var(--ds-r-1);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--ds-dur-fast) var(--ds-ease),
+    transform var(--ds-dur-fast) var(--ds-ease);
+  z-index: 1;
+  white-space: normal;
+}
+
+.whyMatchedTrigger:hover::after,
+.whyMatchedTrigger:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .confirmActions {
