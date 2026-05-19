@@ -19,7 +19,7 @@ What other approaches did you consider, and why did you land on this one?
 
 ## Epic alignment
 
-Which epic in [the epic map](https://github.com/twentytwohundred/2200/wiki/03-epic-map) does this fit under? If it does not fit any existing epic, propose where it could land or whether it is its own epic.
+Which epic in [the epic map](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md) does this fit under? If it does not fit any existing epic, propose where it could land or whether it is its own epic.
 
 ## Decision-record-worthy
 

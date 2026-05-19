@@ -18,7 +18,7 @@
 
 ## Upgrade-readiness check
 
-For changes touching persisted state, runtime processes, Extensions, credentials, internal APIs, or task handling, confirm the relevant disciplines from the [upgrade-readiness convention](https://github.com/twentytwohundred/2200/wiki/upgrade-readiness):
+For changes touching persisted state, runtime processes, Extensions, credentials, internal APIs, or task handling, confirm the relevant disciplines from the [upgrade-readiness convention](https://github.com/twentytwohundred/wiki/blob/main/conventions/upgrade-readiness.md):
 
 - [ ] Schema versioning applied to any new persisted artifact
 - [ ] State-on-disk discipline preserved
