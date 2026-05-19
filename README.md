@@ -61,20 +61,20 @@ The daily handoffs at [`wiki/handoffs/hobby/`](https://github.com/twentytwohundr
 
 ## Repository contents
 
-| Path                     | Purpose                                                          |
-| ------------------------ | ---------------------------------------------------------------- |
-| `LICENSE`                | Elastic License v2                                               |
-| `README.md`              | this file                                                        |
-| `AGENTS.md`              | conventions for Agents working in this repository                |
-| `SECURITY.md`            | responsible disclosure                                           |
-| `CONTRIBUTING.md`        | contribution model (seed-team-closed during the build phase)     |
-| `CHANGELOG.md`           | release notes (populated when versioned releases start)          |
-| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                                   |
-| `.github/`               | issue templates, PR template, CI workflows                       |
-| `src/`                   | runtime code (224 TypeScript modules)                            |
-| `tests/`                 | test code (142 test files, 1754 runtime tests)                   |
-| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware                  |
-| `scripts/`               | build, deploy, sync, and ops scripts                             |
+| Path                     | Purpose                                                      |
+| ------------------------ | ------------------------------------------------------------ |
+| `LICENSE`                | Elastic License v2                                           |
+| `README.md`              | this file                                                    |
+| `AGENTS.md`              | conventions for Agents working in this repository            |
+| `SECURITY.md`            | responsible disclosure                                       |
+| `CONTRIBUTING.md`        | contribution model (seed-team-closed during the build phase) |
+| `CHANGELOG.md`           | release notes (populated when versioned releases start)      |
+| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                               |
+| `.github/`               | issue templates, PR template, CI workflows                   |
+| `src/`                   | runtime code (224 TypeScript modules)                        |
+| `tests/`                 | test code (142 test files, 1754 runtime tests)               |
+| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware              |
+| `scripts/`               | build, deploy, sync, and ops scripts                         |
 
 ## Development
 
@@ -164,4 +164,4 @@ The seed team is closed during the build phase. After launch, see [CONTRIBUTING.
 
 ---
 
-*Built in public. Ship when ready.*
+_Built in public. Ship when ready._

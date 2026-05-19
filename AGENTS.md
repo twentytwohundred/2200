@@ -6,15 +6,15 @@ This file is the per-repo briefing. It assumes you have already read your own Id
 
 ## What this repo is
 
-`twentytwohundred/2200` is the runtime kernel for 2200. The project knowledge base lives in the org-wide [public wiki](https://github.com/twentytwohundred/.github/wiki); the canonical Brain-format source for that wiki lives in the [`twentytwohundred/wiki`](https://github.com/twentytwohundred/wiki) repo (private) and is published via `scripts/publish-wiki.sh` in that repo.
+`twentytwohundred/2200` is the runtime kernel for 2200. The project knowledge base lives in the public [`twentytwohundred/wiki`](https://github.com/twentytwohundred/wiki) repo ... vision, architecture, decisions, conventions, per-epic specs, prior-art analysis, and daily handoffs.
 
 ## What you should know before doing work here
 
 Required reading before your first commit:
 
-1. The wiki, beginning with the four seed docs ([Vision](https://github.com/twentytwohundred/.github/wiki/01-vision), [Architecture](https://github.com/twentytwohundred/.github/wiki/02-architecture), [Epic map](https://github.com/twentytwohundred/.github/wiki/03-epic-map), [Seed team](https://github.com/twentytwohundred/.github/wiki/04-seed-team)).
-2. All locked decision records in the wiki's `decisions/` directory.
-3. The conventions in the wiki's `conventions/` directory, especially [brain-format](https://github.com/twentytwohundred/.github/wiki/brain-format), [handoff-format](https://github.com/twentytwohundred/.github/wiki/handoff-format), [upgrade-readiness](https://github.com/twentytwohundred/.github/wiki/upgrade-readiness), and [voice-and-framing](https://github.com/twentytwohundred/.github/wiki/voice-and-framing).
+1. The wiki, beginning with the four seed docs ([Vision](https://github.com/twentytwohundred/wiki/blob/main/01-vision.md), [Architecture](https://github.com/twentytwohundred/wiki/blob/main/02-architecture.md), [Epic map](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md), [Seed team](https://github.com/twentytwohundred/wiki/blob/main/04-seed-team.md)).
+2. All locked decision records in the wiki's [`decisions/`](https://github.com/twentytwohundred/wiki/tree/main/decisions) directory.
+3. The conventions in the wiki's [`conventions/`](https://github.com/twentytwohundred/wiki/tree/main/conventions) directory, especially [brain-format](https://github.com/twentytwohundred/wiki/blob/main/conventions/brain-format.md), [handoff-format](https://github.com/twentytwohundred/wiki/blob/main/conventions/handoff-format.md), [upgrade-readiness](https://github.com/twentytwohundred/wiki/blob/main/conventions/upgrade-readiness.md), and [voice-and-framing](https://github.com/twentytwohundred/wiki/blob/main/conventions/voice-and-framing.md).
 4. The detailed spec for the epic you are working on.
 
 ## Conventions
@@ -32,7 +32,7 @@ Required reading before your first commit:
 - **Small focused commits.** Commit history is the project's audit trail.
 - **Schema versioning everywhere.** Per the upgrade-readiness convention, every persisted artifact carries a `schema_version` field.
 - **State on disk, not in memory.** Per upgrade-readiness discipline 2.
-- **Plan/run/perm wrapping on every tool call.** Per the [tool baseline decision](https://github.com/twentytwohundred/.github/wiki/2026-04-25-tool-baseline). No fast path skips it.
+- **Plan/run/perm wrapping on every tool call.** Per the [tool baseline decision](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-04-25-tool-baseline.md). No fast path skips it.
 
 ### License posture
 
@@ -73,7 +73,7 @@ OpenClaw is MIT (Copyright 2025 Peter Steinberger). Most other prior-art sources
 └── examples/                runnable usage examples
 ```
 
-The wiki at `https://github.com/twentytwohundred/.github/wiki` is the project knowledge base. It is published from the canonical Brain-format tree in [`twentytwohundred/wiki`](https://github.com/twentytwohundred/wiki) via that repo's `scripts/publish-wiki.sh`.
+The wiki at [`twentytwohundred/wiki`](https://github.com/twentytwohundred/wiki) is the project knowledge base. Markdown source on `main`; mirrored from the canonical Brain-format tree in Doug's Dropbox.
 
 ## Toolchain
 
@@ -139,9 +139,9 @@ Default to deciding and reporting in the handoff rather than flagging each choic
 
 ## Cross-references
 
-- [Wiki home](https://github.com/twentytwohundred/.github/wiki)
-- [Vision](https://github.com/twentytwohundred/.github/wiki/01-vision)
-- [Architecture](https://github.com/twentytwohundred/.github/wiki/02-architecture)
-- [Epic map](https://github.com/twentytwohundred/.github/wiki/03-epic-map)
-- [Seed team](https://github.com/twentytwohundred/.github/wiki/04-seed-team)
-- [All decision records](https://github.com/twentytwohundred/.github/wiki/_Sidebar)
+- [Wiki home](https://github.com/twentytwohundred/wiki)
+- [Vision](https://github.com/twentytwohundred/wiki/blob/main/01-vision.md)
+- [Architecture](https://github.com/twentytwohundred/wiki/blob/main/02-architecture.md)
+- [Epic map](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md)
+- [Seed team](https://github.com/twentytwohundred/wiki/blob/main/04-seed-team.md)
+- [All decision records](https://github.com/twentytwohundred/wiki/tree/main/decisions)
