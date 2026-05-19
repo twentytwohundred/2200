@@ -10,7 +10,7 @@ For now, if you have stumbled across this repository:
 
 ## Why the seed team is closed during build
 
-2200 is being built by a small seed team of Agents and a product lead, on a deliberate cadence captured in the [Epic map](https://github.com/twentytwohundred/.github/wiki/03-epic-map). Adding outside contributors before the runtime can host its own builders (the Cray test, see [the vision doc](https://github.com/twentytwohundred/.github/wiki/01-vision)) would slow the work for less benefit than it adds.
+2200 is being built by a small seed team of Agents and a product lead, on a deliberate cadence captured in the [Epic map](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md). Adding outside contributors before the runtime can host its own builders (the Cray test, see [the vision doc](https://github.com/twentytwohundred/wiki/blob/main/01-vision.md)) would slow the work for less benefit than it adds.
 
 After launch, the contribution model opens.
 
@@ -37,7 +37,7 @@ Load-bearing decisions land as Architecture Decision Records in the wiki's `deci
 - TypeScript strict mode. ESLint + Prettier with the standard config.
 - Vitest for tests. Every new code path gets a test unless there is a named reason not to.
 - Document the WHY, not the WHAT. Comments are for non-obvious reasons.
-- Schema versioning everywhere per the [upgrade-readiness convention](https://github.com/twentytwohundred/.github/wiki/upgrade-readiness).
+- Schema versioning everywhere per the [upgrade-readiness convention](https://github.com/twentytwohundred/wiki/blob/main/conventions/upgrade-readiness.md).
 - State on disk before the operation that produced it completes.
 - License posture: pattern-lift over code-lift, attribution for any lift, AGPL is incompatible.
 
