@@ -411,3 +411,163 @@ Body content.
     }
   })
 })
+
+/**
+ * Catalog-gap auto-file from the suggest path (Phase F §0a-2 follow-up).
+ *
+ * Mirrors the catalog fixture from the suggest+auto-apply test above,
+ * but routes the suggester through SCRIPT goals whose intent_tags will
+ * NOT appear in the catalog's tags[]. Confirms a single gap entry
+ * lands in the gaps dir, with the orphan tags surfaced in
+ * `related_intent_tags` for tier-2 prioritization. Idempotency on
+ * repeat sessions with the same orphan set is also covered.
+ */
+describe('OnboardingSession: catalog-gap auto-file on unsatisfied suggest', () => {
+  let catalogDir: string
+  let gapsDir: string
+
+  beforeEach(async () => {
+    catalogDir = await mkdtemp(join(tmpdir(), '2200-session-gap-cat-'))
+    gapsDir = await mkdtemp(join(tmpdir(), '2200-session-gap-gaps-'))
+    // Catalog has one Capability with tags that will NOT overlap the
+    // script's goal ids (purpose, agent_name, tools).
+    const fixture = `---
+id: irrelevant
+label: Irrelevant
+category: misc
+description: A Capability whose tags do not overlap the interview.
+publisher: first-party
+auth: []
+unlocks:
+  tools: []
+  skills: []
+  extensions: []
+  providers: []
+network_egress:
+  domains:
+    - example.com
+tags:
+  - far
+  - away
+requires:
+  bins: []
+  os: []
+  capabilities: []
+walkthrough:
+  estimated_minutes: 1
+---
+
+# walkthrough
+`
+    await writeFile(join(catalogDir, 'irrelevant.md'), fixture, 'utf-8')
+    process.env['_2200_CATALOG_DIR'] = catalogDir
+    process.env['_2200_GAPS_DIR'] = gapsDir
+  })
+
+  afterEach(async () => {
+    delete process.env['_2200_CATALOG_DIR']
+    delete process.env['_2200_GAPS_DIR']
+    await rm(catalogDir, { recursive: true, force: true })
+    await rm(gapsDir, { recursive: true, force: true })
+  })
+
+  it('files one gap entry covering all unmatched intent_tags when the suggest returns no satisfying Capability', async () => {
+    const { listCatalogGaps } = await import('../../../src/runtime/onboarding/catalog-gap.js')
+
+    const session = new OnboardingSession({
+      id: 'onb_gap_1',
+      script: SCRIPT,
+      provider: scriptedProvider({
+        directives: [
+          '{"kind":"question","text":"Name?","covering":"agent_name"}',
+          '{"kind":"question","text":"Tools?","covering":"tools"}',
+          '{"kind":"done"}',
+        ],
+        summary: 'I am the Agent.',
+      }),
+      modelId: 'm',
+      now: () => FIXED,
+    })
+    await session.submitAnswer('handle some tasks') // intent_tag=purpose
+    await session.submitAnswer('pilot') // intent_tag=agent_name
+    const r = await session.submitAnswer('spotify and feedburner') // intent_tag=tools → done
+    if (r.kind !== 'done') throw new Error('expected done')
+
+    // None of the catalog's tags (far, away) overlap the script's
+    // goal ids ... preview surfaces no suggestion and no auto-apply.
+    expect(r.preview.capabilities).toEqual([])
+    expect(r.preview.handoff.frontmatter.capabilities).toEqual([])
+
+    // The auto-file path records exactly one gap with the orphan tags.
+    const gaps = await listCatalogGaps({ dir: gapsDir })
+    expect(gaps).toHaveLength(1)
+    const gap = gaps[0]
+    if (!gap) throw new Error('expected one gap')
+    expect(gap.frontmatter.context).toBe('onboarding')
+    expect(gap.frontmatter.status).toBe('open')
+    expect(gap.frontmatter.related_intent_tags).toEqual(['agent_name', 'purpose', 'tools'])
+    expect(gap.frontmatter.operator_description).toContain('agent_name')
+    expect(gap.frontmatter.operator_description).toContain('purpose')
+    expect(gap.frontmatter.operator_description).toContain('tools')
+  })
+
+  it('does not double-file when a second session surfaces the same orphan tag-set', async () => {
+    const { listCatalogGaps } = await import('../../../src/runtime/onboarding/catalog-gap.js')
+    for (const id of ['onb_gap_dup_1', 'onb_gap_dup_2']) {
+      const session = new OnboardingSession({
+        id,
+        script: SCRIPT,
+        provider: scriptedProvider({
+          directives: [
+            '{"kind":"question","text":"Name?","covering":"agent_name"}',
+            '{"kind":"question","text":"Tools?","covering":"tools"}',
+            '{"kind":"done"}',
+          ],
+          summary: 'I am the Agent.',
+        }),
+        modelId: 'm',
+        now: () => FIXED,
+      })
+      await session.submitAnswer('handle some tasks')
+      await session.submitAnswer('pilot')
+      const r = await session.submitAnswer('whatever')
+      if (r.kind !== 'done') throw new Error('expected done')
+    }
+
+    // Both sessions had the same orphan tag-set. Idempotency kicked in
+    // via if_exists: 'skip' ... only one gap on disk.
+    const gaps = await listCatalogGaps({ dir: gapsDir })
+    expect(gaps).toHaveLength(1)
+  })
+
+  it('does not file a gap when no intent_tags surface (nothing to record)', async () => {
+    const { listCatalogGaps } = await import('../../../src/runtime/onboarding/catalog-gap.js')
+    // The opening is the only directive; its intent_tag is 'purpose'.
+    // Without any further LLM-driven follow-ups, the transcript has
+    // exactly one tag. Even one orphan tag still files a gap ... so
+    // for the "no gap" case we need an interview that produces ZERO
+    // intent_tags. The cleanest path is a script whose opening has
+    // no intent_tag.
+    const noTagScript: QuestionScript = {
+      ...SCRIPT,
+      opening: {
+        ...SCRIPT.opening,
+        intent_tag: undefined,
+      },
+    }
+    const session = new OnboardingSession({
+      id: 'onb_gap_zero_tags',
+      script: noTagScript,
+      provider: scriptedProvider({
+        directives: ['{"kind":"done"}'],
+        summary: 'I am the Agent.',
+      }),
+      modelId: 'm',
+      now: () => FIXED,
+    })
+    const r = await session.submitAnswer('something untagged')
+    if (r.kind !== 'done') throw new Error('expected done')
+    const gaps = await listCatalogGaps({ dir: gapsDir })
+    expect(gaps).toHaveLength(0)
+  })
+})

@@ -96,3 +96,39 @@ export function suggestCapabilities(opts: SuggestCapabilitiesOptions): Capabilit
 
   return suggestions
 }
+
+/**
+ * Return the interview tags that did NOT appear in ANY Capability's
+ * `tags[]` field. These are the orphan tags ... demand signals that the
+ * catalog can't satisfy yet, suitable for the catalog-gap tracker
+ * (Phase F §0a-2 follow-up).
+ *
+ * Comparison is case-insensitive (mirrors `suggestCapabilities`).
+ *
+ * Returns a sorted, de-duplicated array of the tags in their ORIGINAL
+ * (interview) casing, so the gap entry shows the operator-side spelling
+ * rather than a normalized lowercase form.
+ */
+export function findUnmatchedTags(opts: {
+  interview_tags: readonly string[]
+  capabilities: readonly CapabilityRecord[]
+}): string[] {
+  if (opts.interview_tags.length === 0) return []
+  const catalogLower = new Set<string>()
+  for (const cap of opts.capabilities) {
+    for (const tag of cap.frontmatter.tags) {
+      catalogLower.add(tag.toLowerCase())
+    }
+  }
+  const seenLower = new Set<string>()
+  const unmatched: string[] = []
+  for (const tag of opts.interview_tags) {
+    const lower = tag.toLowerCase()
+    if (catalogLower.has(lower)) continue
+    if (seenLower.has(lower)) continue
+    seenLower.add(lower)
+    unmatched.push(tag)
+  }
+  unmatched.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+  return unmatched
+}

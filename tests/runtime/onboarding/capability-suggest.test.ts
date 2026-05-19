@@ -2,7 +2,10 @@
  * Capability suggestion tests (Phase F §2 + §7).
  */
 import { describe, expect, it } from 'vitest'
-import { suggestCapabilities } from '../../../src/runtime/onboarding/capability-suggest.js'
+import {
+  findUnmatchedTags,
+  suggestCapabilities,
+} from '../../../src/runtime/onboarding/capability-suggest.js'
 import type { CapabilityRecord } from '../../../src/runtime/onboarding/capability-loader.js'
 import type { CapabilityFrontmatter } from '../../../src/runtime/onboarding/capability-schema.js'
 
@@ -142,5 +145,66 @@ describe('suggestCapabilities: matched_tags reporting', () => {
     const caps = [makeRecord({ id: 'gmail', tags: ['Email', 'Inbox'] })]
     const out = suggestCapabilities({ interview_tags: ['email', 'inbox'], capabilities: caps })
     expect(out[0]?.matched_tags).toEqual(['Email', 'Inbox'])
+  })
+})
+
+describe('findUnmatchedTags', () => {
+  it('returns [] when interview_tags is empty', () => {
+    const caps = [makeRecord({ id: 'gmail', tags: ['email'] })]
+    expect(findUnmatchedTags({ interview_tags: [], capabilities: caps })).toEqual([])
+  })
+
+  it('returns [] when every interview tag matches some Capability', () => {
+    const caps = [
+      makeRecord({ id: 'gmail', tags: ['email', 'inbox'] }),
+      makeRecord({ id: 'slack', tags: ['chat'] }),
+    ]
+    expect(findUnmatchedTags({ interview_tags: ['email', 'chat'], capabilities: caps })).toEqual([])
+  })
+
+  it('returns ONLY the orphan tags when partial overlap exists', () => {
+    const caps = [makeRecord({ id: 'gmail', tags: ['email', 'inbox'] })]
+    const out = findUnmatchedTags({
+      interview_tags: ['email', 'spotify', 'feedburner'],
+      capabilities: caps,
+    })
+    expect(out).toEqual(['feedburner', 'spotify'])
+  })
+
+  it('returns all interview tags when the catalog has zero entries', () => {
+    expect(findUnmatchedTags({ interview_tags: ['music', 'podcasts'], capabilities: [] })).toEqual([
+      'music',
+      'podcasts',
+    ])
+  })
+
+  it('matches case-insensitively (Email matches email)', () => {
+    const caps = [makeRecord({ id: 'gmail', tags: ['email'] })]
+    expect(findUnmatchedTags({ interview_tags: ['Email'], capabilities: caps })).toEqual([])
+  })
+
+  it('dedupes orphan tags differing only by case', () => {
+    const caps = [makeRecord({ id: 'gmail', tags: ['email'] })]
+    const out = findUnmatchedTags({
+      interview_tags: ['Spotify', 'spotify', 'SPOTIFY'],
+      capabilities: caps,
+    })
+    expect(out).toEqual(['Spotify'])
+  })
+
+  it('returns orphans sorted (case-insensitive) for deterministic gap ids', () => {
+    const out = findUnmatchedTags({
+      interview_tags: ['Charlie', 'alpha', 'Bravo'],
+      capabilities: [],
+    })
+    expect(out).toEqual(['alpha', 'Bravo', 'Charlie'])
+  })
+
+  it('preserves the original interview-side casing in the output', () => {
+    const out = findUnmatchedTags({
+      interview_tags: ['Spotify', 'Feedburner'],
+      capabilities: [makeRecord({ id: 'gmail', tags: ['email'] })],
+    })
+    expect(out).toEqual(['Feedburner', 'Spotify'])
   })
 })
