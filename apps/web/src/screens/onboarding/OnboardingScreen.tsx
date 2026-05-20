@@ -25,6 +25,7 @@ import {
   ApiError,
   NetworkError,
   api,
+  type OnboardingCapabilitySuggestion,
   type OnboardingConfirmResponse,
   type OnboardingPreview,
   type OnboardingQuestion,
@@ -33,7 +34,7 @@ import {
   type OnboardingToolSuggestion,
   type OnboardingTranscriptEntry,
 } from '../../lib/api'
-import { Button, Card, Screen, ScreenNavLink, SectionHeader } from '../../primitives'
+import { Button, Card, Pill, Screen, ScreenNavLink, SectionHeader, cx } from '../../primitives'
 import styles from './OnboardingScreen.module.css'
 
 type Phase =
@@ -511,6 +512,107 @@ export function OnboardingScreen(): ReactElement {
   )
 }
 
+interface CapabilityCardProps {
+  suggestion: OnboardingCapabilitySuggestion
+  checked: boolean
+  onToggle: () => void
+  disabled: boolean
+}
+
+function CapabilityCard({
+  suggestion,
+  checked,
+  onToggle,
+  disabled,
+}: CapabilityCardProps): ReactElement {
+  const fm = suggestion.capability.frontmatter
+  const minutes = fm.walkthrough?.estimated_minutes
+  const authCount = fm.auth?.length ?? 0
+  const isSpeculative = suggestion.confidence === 'speculative'
+  const tooltipText = isSpeculative
+    ? `Weak match (${String(suggestion.overlap_count)} tag). Off by default ... opt in if it looks right.`
+    : `Strong match (${String(suggestion.overlap_count)} tags). On by default; uncheck to skip its walkthrough.`
+  const stateClass = checked
+    ? styles.capabilityCardSelected
+    : isSpeculative
+      ? styles.capabilityCardSpeculative
+      : styles.capabilityCardDeselected
+
+  return (
+    <label
+      className={cx(styles.capabilityCard, stateClass)}
+      data-disabled={disabled ? 'true' : undefined}
+    >
+      <input
+        type="checkbox"
+        className={styles.capabilityCheckbox}
+        checked={checked}
+        onChange={onToggle}
+        disabled={disabled}
+      />
+      <div className={styles.capabilityCardInner}>
+        <div className={styles.capabilityHeader}>
+          <span className={styles.capabilitySelectBadge} aria-hidden="true">
+            {checked ? '✓' : ''}
+          </span>
+          <span className={styles.capabilityLabel}>{fm.label}</span>
+          <span className={styles.capabilityHeaderRight}>
+            <Pill variant={isSpeculative ? 'draft' : 'info'} size="xs" dot={false}>
+              {isSpeculative ? 'speculative' : 'high'}
+            </Pill>
+          </span>
+        </div>
+        <div className={styles.capabilityDescription}>{fm.description}</div>
+        <div className={styles.capabilityMeta}>
+          <span>
+            {authCount > 0
+              ? `${String(authCount)} credential${authCount === 1 ? '' : 's'}`
+              : 'no credentials'}
+          </span>
+          {typeof minutes === 'number' ? <span>~{String(minutes)} min setup</span> : null}
+        </div>
+        {suggestion.matched_tags.length > 0 ? (
+          <div className={styles.capabilityMatched}>
+            <span className={styles.capabilityMatchedLabel}>matched</span>
+            <span className={styles.capabilityMatchedTags}>
+              {suggestion.matched_tags.map((tag) => (
+                <span key={tag} className={styles.capabilityMatchedTag}>
+                  {tag}
+                </span>
+              ))}
+            </span>
+            <WhyMatchedTrigger text={tooltipText} />
+          </div>
+        ) : null}
+      </div>
+    </label>
+  )
+}
+
+interface WhyMatchedTriggerProps {
+  text: string
+}
+
+function WhyMatchedTrigger({ text }: WhyMatchedTriggerProps): ReactElement {
+  return (
+    <button
+      type="button"
+      className={styles.whyMatchedTrigger}
+      aria-label="Why matched?"
+      data-tooltip={text}
+      onClick={(e) => {
+        // Don't toggle the surrounding label/checkbox when the operator
+        // clicks the tooltip trigger ... the trigger is a sibling
+        // interaction, not selection.
+        e.preventDefault()
+        e.stopPropagation()
+      }}
+    >
+      ?
+    </button>
+  )
+}
+
 function appendAnswer(
   prev: OnboardingTranscriptEntry[],
   answer: string,
@@ -601,43 +703,18 @@ function PreviewView({
                 Checked Capabilities get a setup walkthrough on the Agent's first wake. High-
                 confidence matches are checked by default; toggle any to override.
               </p>
-              <div className={styles.suggestionList}>
-                {preview.capabilities.map((c) => {
-                  const id = c.capability.frontmatter.id
-                  const checked = selectedCapabilityIds.has(id)
-                  const minutes = c.capability.frontmatter.walkthrough?.estimated_minutes
-                  const authCount = c.capability.frontmatter.auth?.length ?? 0
-                  return (
-                    <label key={id} className={styles.capabilityRow}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          toggleCapability(id)
-                        }}
-                        disabled={confirmDisabled}
-                      />
-                      <div className={styles.capabilityRowBody}>
-                        <div className={styles.suggestionTitle}>
-                          {c.capability.frontmatter.label}
-                          <span className={styles.capabilityConfidence}> · {c.confidence}</span>
-                        </div>
-                        <div className={styles.suggestionMeta}>
-                          {c.capability.frontmatter.description}
-                        </div>
-                        <div className={styles.suggestionRationale}>
-                          {authCount > 0
-                            ? `${String(authCount)} credential${authCount === 1 ? '' : 's'} required`
-                            : 'no credentials required'}
-                          {typeof minutes === 'number' ? ` · ~${String(minutes)} min setup` : ''}
-                          {c.matched_tags.length > 0
-                            ? ` · matched: ${c.matched_tags.join(', ')}`
-                            : ''}
-                        </div>
-                      </div>
-                    </label>
-                  )
-                })}
+              <div className={styles.capabilityStack}>
+                {preview.capabilities.map((c) => (
+                  <CapabilityCard
+                    key={c.capability.frontmatter.id}
+                    suggestion={c}
+                    checked={selectedCapabilityIds.has(c.capability.frontmatter.id)}
+                    onToggle={() => {
+                      toggleCapability(c.capability.frontmatter.id)
+                    }}
+                    disabled={confirmDisabled}
+                  />
+                ))}
               </div>
             </>
           )}

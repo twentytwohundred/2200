@@ -1538,6 +1538,63 @@ export interface DoctorIssue {
   fix_label?: string
 }
 
+/**
+ * `/api/v1/system/*` ... self-upgrade surface.
+ *
+ * `version` reports the current bundle version + the latest published
+ * version on the npm registry; `update` triggers a detached upgrade
+ * helper (the daemon shuts itself down within ~500ms, the helper
+ * waits for it to exit, runs `npm install -g`, restarts the daemon);
+ * `upgradeStatus` is what the web app polls during/after the
+ * upgrade to surface progress and the final outcome.
+ */
+export type SystemVersionStatus = 'up-to-date' | 'update-available' | 'ahead' | 'registry-error'
+
+export interface SystemVersion {
+  current: string
+  latest: string | null
+  status: SystemVersionStatus
+  install_source: 'npm-global' | 'source-checkout'
+  registry_error: string | null
+}
+
+export type UpgradeStage =
+  | 'pending'
+  | 'stopping_daemon'
+  | 'installing'
+  | 'restarting'
+  | 'completed'
+  | 'failed'
+
+export interface UpgradeStatus {
+  schema_version: 1
+  stage: UpgradeStage
+  version_from: string
+  version_to: string
+  triggered_at: string
+  updated_at: string
+  finished_at: string | null
+  error: string | null
+}
+
+export interface UpgradeStartResult {
+  kind: 'started'
+  current: string
+  target: string
+  daemon_pid: number
+  helper_pid: number
+}
+
+export const apiSystem = {
+  version: () => request<SystemVersion>('/api/v1/system/version'),
+  update: (body?: { target_version?: string }) =>
+    request<UpgradeStartResult>('/api/v1/system/update', {
+      method: 'POST',
+      body: body ?? {},
+    }),
+  upgradeStatus: () => request<{ status: UpgradeStatus | null }>('/api/v1/system/upgrade-status'),
+}
+
 export const apiDoctor = {
   diagnose: () =>
     request<{ items: DoctorIssue[]; generated_at: string }>('/api/v1/doctor/diagnose'),

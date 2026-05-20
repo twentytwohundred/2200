@@ -1,0 +1,157 @@
+name: Release
+
+# Triggered manually OR by pushing a tag matching `v*.*.*`. The
+# manual `workflow_dispatch` form supports a `dry_run` input so the
+# pipeline can be exercised end-to-end before a real publish.
+#
+# What this workflow does:
+#   1. Checks out at the tagged commit.
+#   2. Installs deps, type-checks, lints, format-checks, tests, builds.
+#      (`pnpm verify` runs the same gates locally.)
+#   3. Verifies `package.json#version` matches the tag (e.g., `v0.1.0`
+#      requires `"version": "0.1.0"`). Refuses to publish on drift.
+#   4. Creates a GitHub Release with `install.sh` attached and the
+#      relevant CHANGELOG slice as the body.
+#   5. Publishes to npm with provenance if `NPM_TOKEN` is set in the
+#      repo secrets. The Elastic License v2 is permissive enough that
+#      the registry classifies the package as `public`; `publishConfig`
+#      pins this explicitly.
+#
+# The publish step is gated on `dry_run=false`. Default for a tag push
+# is a real publish; default for a manual dispatch is dry-run.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip the npm publish + GitHub Release creation (test the pipeline only).'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write # for creating the GitHub Release
+  id-token: write # for npm provenance
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history so we can derive changelog deltas
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify (typecheck, lint, format, test, build)
+        run: pnpm verify
+
+      - name: Resolve tag and assert version match
+        id: meta
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF##*/}"
+          else
+            TAG="manual-dispatch"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            EXPECTED="v$PKG_VERSION"
+            if [ "$TAG" != "$EXPECTED" ]; then
+              echo "::error::Tag ($TAG) does not match package.json version (expected $EXPECTED)."
+              exit 1
+            fi
+          fi
+
+      - name: Pack the tarball (for the Release asset)
+        run: pnpm pack
+
+      - name: Locate built tarball
+        id: tarball
+        run: |
+          # `pnpm pack` writes a tarball whose name is derived from
+          # the package name with @ stripped and / replaced by -.
+          # Find it deterministically.
+          TARBALL=$(ls twentytwohundred-2200-*.tgz | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "::error::pnpm pack did not produce a tarball."
+            exit 1
+          fi
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve changelog slice
+        id: changelog
+        run: |
+          # Pull the section for the current version out of CHANGELOG.md
+          # so the Release body matches the published notes.
+          VERSION="${{ steps.meta.outputs.version }}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { capture = 1; print; next }
+            capture && $0 ~ "^## " { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No section for $VERSION in CHANGELOG.md ... defaulting to a short summary." > release-notes.md
+            echo "" >> release-notes.md
+            echo "See CHANGELOG.md for details." >> release-notes.md
+          fi
+          echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          body_path: ${{ steps.changelog.outputs.path }}
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
+          files: |
+            install.sh
+            ${{ steps.tarball.outputs.tarball }}
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::warning::NPM_TOKEN secret is not set. Skipping npm publish; create the release manually with: npm publish --access public --provenance"
+            exit 0
+          fi
+          npm publish --access public --provenance
+
+      - name: Dry-run summary
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
+        run: |
+          echo "Dry run completed. Pipeline produced:"
+          echo "  - ${{ steps.tarball.outputs.tarball }}"
+          echo "  - release-notes.md"
+          echo "No GitHub Release was created and no npm publish was attempted."

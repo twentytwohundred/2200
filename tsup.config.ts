@@ -8,6 +8,11 @@ export default defineConfig({
     'cli/main': 'src/cli/main.ts',
     'runtime/agent/bootstrap': 'src/runtime/agent/bootstrap.ts',
     'runtime/supervisor/bootstrap': 'src/runtime/supervisor/bootstrap.ts',
+    // The self-upgrade helper runs as a detached child of the daemon
+    // (see runtime/install/upgrade-trigger.ts). It needs to be a
+    // standalone bundled entry so the spawned process can be invoked
+    // by absolute path without depending on the rest of the bundle.
+    'runtime/install/upgrade-runner': 'src/runtime/install/upgrade-runner.ts',
   },
   format: ['esm'],
   dts: { entry: { index: 'src/index.ts' } },

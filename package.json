@@ -1,7 +1,6 @@
 {
-  "name": "@twentytwohundred/runtime",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@twentytwohundred/2200",
+  "version": "0.1.0",
   "description": "A platform for hosting your fleet of always-on Agents.",
   "author": {
     "name": "TWENTYTWOHUNDRED LLC",
@@ -12,6 +11,19 @@
     "type": "git",
     "url": "git+https://github.com/twentytwohundred/2200.git"
   },
+  "bugs": {
+    "url": "https://github.com/twentytwohundred/2200/issues"
+  },
+  "keywords": [
+    "agent",
+    "agents",
+    "ai",
+    "llm",
+    "fleet",
+    "runtime",
+    "scut",
+    "openpub"
+  ],
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "engines": {
@@ -27,8 +39,14 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsup",
     "cli": "node ./dist/cli/main.js",
@@ -42,7 +60,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build",
-    "verify:all": "pnpm verify && pnpm --filter @twentytwohundred/web verify"
+    "verify:all": "pnpm verify && pnpm --filter @twentytwohundred/web verify",
+    "prepack": "pnpm build"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
