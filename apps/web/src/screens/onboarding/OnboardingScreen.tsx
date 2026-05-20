@@ -17,7 +17,14 @@
  * is intentional v1 per the API design); it can be added later via
  * URL fragment or storage if the UX warrants it.
  */
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactElement } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type SyntheticEvent,
+  type ReactElement,
+} from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 // Link kept for inline Settings link inside the body; header back-link uses ScreenNavLink.
 import { useMutation, useQueries, useQuery } from '@tanstack/react-query'
@@ -234,7 +241,7 @@ export function OnboardingScreen(): ReactElement {
   })
 
   const submitAnswer = useCallback(
-    (e: FormEvent<HTMLFormElement>): void => {
+    (e: SyntheticEvent<HTMLFormElement>): void => {
       e.preventDefault()
       if (phase.kind !== 'interview') return
       const answer = draft.trim()

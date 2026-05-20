@@ -10,7 +10,7 @@
  * and also invalidates on every WS pulse.changed event for the agent
  * so live transitions surface fast.
  */
-import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type SyntheticEvent, type ReactElement } from 'react'
 import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api, type ChatMessage } from '../../lib/api'
@@ -105,7 +105,7 @@ export function ChatScreen(): ReactElement {
     },
   })
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = (e: SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
     const content = draft.trim()
     if (content.length === 0) return

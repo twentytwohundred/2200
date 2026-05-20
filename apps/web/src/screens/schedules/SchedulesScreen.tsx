@@ -4,7 +4,7 @@
  * Body extracted to <SchedulesBody> so the same surface can render
  * either standalone here OR inside the Agent screen's Schedules tab.
  */
-import { useCallback, useState, type FormEvent, type ReactElement } from 'react'
+import { useCallback, useState, type SyntheticEvent, type ReactElement } from 'react'
 import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -226,7 +226,7 @@ function CreateForm({ disabled, error, success, onSubmit }: CreateFormProps): Re
   const [intervalSeconds, setIntervalSeconds] = useState('300')
 
   const handleSubmit = useCallback(
-    (e: FormEvent<HTMLFormElement>): void => {
+    (e: SyntheticEvent<HTMLFormElement>): void => {
       e.preventDefault()
       const trimmedPrompt = prompt.trim()
       if (!trimmedPrompt) return
