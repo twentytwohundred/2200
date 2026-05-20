@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Bare `2200` first-run.** When the CLI is invoked with no subcommand and no prior install state, it walks the user through a guided setup: choose `2200_HOME`, initialize the directory layout, start the supervisor daemon, mint the user identity, point at `2200 agent build` for the first Agent. All input is collected before any side effect, so a `ctrl-C` at any prompt is safe.
 - **`2200 update`.** Top-level self-upgrade. Checks the npm registry for the latest published version, prompts (or `--yes`), stops the daemon, installs the new package globally, restarts the daemon. `--check` reports availability without installing. Refuses to auto-upgrade a source checkout.
 - **`2200 --version`** now reads from `package.json` at runtime, so `npm version <bump>` is the single source of truth for the installed CLI version.
+- **Web upgrade button.** Settings → System tile shows current vs. latest version. Click → 2-step inline confirm → the daemon writes `<home>/state/upgrade-status.json`, spawns a detached helper, and shuts itself down. The helper waits for the daemon to exit, runs `npm install -g`, and starts the new daemon. The web UI polls the status throughout, absorbing the brief mid-upgrade outage, and surfaces the per-stage progress.
+- **System HTTP endpoints**: `GET /api/v1/system/version`, `POST /api/v1/system/update`, `GET /api/v1/system/upgrade-status`.
 
 ### Notes
 
