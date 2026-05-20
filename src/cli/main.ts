@@ -217,6 +217,118 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
+  // Top-level: update (self-upgrade via the npm registry)
+  // ---------------------------------------------------------------------------
+
+  program
+    .command('update')
+    .description('check for and install a newer version of the 2200 CLI from the npm registry')
+    .option('--check', 'only check; do not install')
+    .option('--yes', 'do not prompt before installing')
+    .action(async (opts: { check?: boolean; yes?: boolean }) => {
+      const { VERSION } = await import('../index.js')
+      const {
+        PACKAGE_NAME,
+        checkLatestVersion,
+        detectInstallSource,
+        currentModulePath,
+        runNpmGlobalInstall,
+      } = await import('../runtime/install/update.js')
+
+      const source = detectInstallSource(currentModulePath(import.meta))
+      const check = await checkLatestVersion(VERSION)
+
+      console.log(`current: ${check.current}`)
+      if (check.kind === 'registry-error') {
+        console.error(`could not query npm registry: ${check.message}`)
+        process.exit(1)
+      }
+      console.log(`latest:  ${check.latest}`)
+
+      if (check.kind === 'up-to-date') {
+        console.log('Already on the latest version.')
+        return
+      }
+      if (check.kind === 'ahead') {
+        console.log(
+          'Your installed version is newer than the published `latest`. This is normal for a',
+        )
+        console.log('source checkout or a pre-publish build; nothing to do.')
+        return
+      }
+
+      // update-available
+      console.log('')
+      if (source.kind === 'source-checkout') {
+        console.error(
+          `Cannot self-upgrade a source checkout (this CLI is loaded from ${source.path}).`,
+        )
+        console.error(
+          'Run `git pull && pnpm build` from the repo to upgrade, or install the published',
+        )
+        console.error(`package with: npm install -g ${PACKAGE_NAME}@${check.latest}`)
+        process.exit(1)
+      }
+
+      if (opts.check === true) {
+        console.log(`A newer version is available. Run \`2200 update\` to install it.`)
+        process.exit(1)
+      }
+
+      const home = await resolveHomeFromOpts(program)
+
+      if (opts.yes !== true) {
+        if (!process.stdin.isTTY) {
+          console.error(
+            'Refusing to install non-interactively without --yes. Re-run with --yes to confirm.',
+          )
+          process.exit(1)
+        }
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(
+            `Install ${PACKAGE_NAME}@${check.latest} and restart the daemon? [y/N] `,
+            (a) => {
+              resolve(a.trim().toLowerCase())
+            },
+          )
+        })
+        rl.close()
+        if (answer !== 'y' && answer !== 'yes') {
+          console.log('Cancelled.')
+          return
+        }
+      }
+
+      // Stop the daemon (if running) so the upgrade does not race the
+      // running binary. `~/.2200/` state is unaffected; we restart
+      // after the install completes.
+      const stoppedDaemon = await killDaemon(home)
+      if (stoppedDaemon) {
+        console.log('Stopped supervisor daemon for upgrade.')
+      }
+
+      const exitCode = await runNpmGlobalInstall({
+        packageName: PACKAGE_NAME,
+        version: check.latest,
+      })
+      if (exitCode !== 0) {
+        console.error(`npm install exited ${String(exitCode)}.`)
+        if (stoppedDaemon) {
+          console.error('Restarting daemon on the prior version so the fleet is not left down.')
+          await startDaemon({ home })
+        }
+        process.exit(exitCode)
+      }
+
+      if (stoppedDaemon) {
+        const pid = await startDaemon({ home })
+        console.log(`Restarted supervisor daemon (pid ${String(pid)}).`)
+      }
+      console.log(`Upgraded to ${PACKAGE_NAME}@${check.latest}.`)
+    })
+
+  // ---------------------------------------------------------------------------
   // 2200 daemon <subcommand>
   // ---------------------------------------------------------------------------
 
@@ -3454,6 +3566,87 @@ export function buildProgram(): Command {
     })
 
   registerWebCommands(program)
+
+  // ---------------------------------------------------------------------------
+  // Top-level: bare `2200` invocation.
+  //
+  // When the user runs `2200` with no subcommand:
+  //   - If they have no prior install state (no user config file) AND
+  //     they did not override `--home`, run the guided first-run.
+  //   - Otherwise, show the help text (commander's default).
+  //
+  // `--home <path>` is an explicit "I know what I'm doing" signal, so
+  // we never auto-trigger first-run in that case.
+  // ---------------------------------------------------------------------------
+  program.action(async () => {
+    const topOpts = program.opts<TopLevelOpts>()
+    if (topOpts.home !== undefined && topOpts.home.length > 0) {
+      program.outputHelp()
+      return
+    }
+    const { shouldRunFirstRun, runFirstRun } = await import('../runtime/install/first-run.js')
+    if (!(await shouldRunFirstRun())) {
+      program.outputHelp()
+      return
+    }
+
+    // Wire stdin via a line-buffer so the same code path works for
+    // both interactive TTY use and piped input. `rl.question` alone
+    // fails on the second sequential call when stdin is a pipe (it
+    // does not drain already-buffered lines); the buffer below
+    // listens for every 'line' event and serves them in order.
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+    const buffered: string[] = []
+    const waiters: ((line: string) => void)[] = []
+    let stdinClosed = false
+    rl.on('line', (line) => {
+      const waiter = waiters.shift()
+      if (waiter) waiter(line)
+      else buffered.push(line)
+    })
+    rl.on('close', () => {
+      stdinClosed = true
+      while (waiters.length > 0) {
+        const w = waiters.shift()
+        if (w) w('')
+      }
+    })
+
+    const io = {
+      ask: (prompt: string): Promise<string> => {
+        process.stdout.write(prompt)
+        if (buffered.length > 0) {
+          const line = buffered.shift() ?? ''
+          return Promise.resolve(line)
+        }
+        if (stdinClosed) return Promise.resolve('')
+        return new Promise<string>((resolve) => {
+          waiters.push(resolve)
+        })
+      },
+      info: (line: string): void => {
+        console.log(line)
+      },
+      success: (line: string): void => {
+        // `[✓]` is a check mark; safe on UTF-8 terminals (macOS,
+        // modern Linux). Non-coloured so logs do not get ANSI debris.
+        console.log(`✓ ${line}`)
+      },
+      warn: (line: string): void => {
+        console.warn(line)
+      },
+    }
+    try {
+      const result = await runFirstRun(io)
+      if (result.status === 'aborted') {
+        console.log('')
+        console.log(`First-run setup aborted (${result.reason}).`)
+        console.log('Run `2200` again to retry, or `2200 --help` for individual commands.')
+      }
+    } finally {
+      rl.close()
+    }
+  })
 
   return program
 }

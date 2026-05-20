@@ -363,6 +363,71 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     runtime: VERSION,
   }))
 
+  // --------------------------------------------------------------
+  // System: self-upgrade endpoints.
+  // --------------------------------------------------------------
+  fastify.get('/api/v1/system/version', async () => {
+    const { VERSION: PKG_VERSION } = await import('../../index.js')
+    const { checkLatestVersion, detectInstallSource } = await import('../install/update.js')
+    const source = detectInstallSource(fileURLToPath(import.meta.url))
+    const check = await checkLatestVersion(PKG_VERSION)
+    return {
+      current: check.current,
+      latest: check.kind === 'registry-error' ? null : check.latest,
+      status: check.kind,
+      install_source: source.kind,
+      registry_error: check.kind === 'registry-error' ? check.message : null,
+    }
+  })
+
+  fastify.post<{ Body: { target_version?: string } | undefined }>(
+    '/api/v1/system/update',
+    async (req, reply) => {
+      const { triggerUpgrade } = await import('../install/upgrade-trigger.js')
+      const body = req.body ?? {}
+      const result = await triggerUpgrade({
+        home: options.home,
+        ...(body.target_version !== undefined ? { targetVersion: body.target_version } : {}),
+      })
+
+      // Map trigger outcomes to HTTP status codes.
+      switch (result.kind) {
+        case 'started': {
+          // Schedule the daemon's own exit AFTER the response has
+          // had a chance to flush. The detached helper is already
+          // waiting for our PID to clear.
+          //
+          // 500ms is enough for the response to land at the
+          // browser; longer is just dead-air. The helper polls
+          // every 250ms, so it picks up the exit promptly.
+          setTimeout(() => {
+            process.kill(process.pid, 'SIGTERM')
+          }, 500).unref()
+          await reply.code(202).send(result)
+          return
+        }
+        case 'up-to-date':
+          await reply.code(409).send({ error: 'up-to-date', ...result })
+          return
+        case 'ahead':
+          await reply.code(409).send({ error: 'ahead', ...result })
+          return
+        case 'source-checkout':
+          await reply.code(409).send({ error: 'source-checkout', ...result })
+          return
+        case 'registry-error':
+          await reply.code(502).send({ error: 'registry-error', ...result })
+          return
+      }
+    },
+  )
+
+  fastify.get('/api/v1/system/upgrade-status', async () => {
+    const { readUpgradeStatus } = await import('../install/upgrade-status.js')
+    const status = await readUpgradeStatus(options.home)
+    return { status }
+  })
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,
@@ -372,6 +437,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/me' },
       { method: 'GET', path: '/api/v1/runtime/health' },
       { method: 'GET', path: '/api/v1/runtime/version' },
+      { method: 'GET', path: '/api/v1/system/version' },
+      { method: 'POST', path: '/api/v1/system/update' },
+      { method: 'GET', path: '/api/v1/system/upgrade-status' },
       { method: 'GET', path: '/api/v1/agents' },
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
