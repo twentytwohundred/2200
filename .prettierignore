@@ -6,3 +6,8 @@ pnpm-lock.yaml
 *.log
 # Workspace members own their own prettier config + verify pipeline.
 apps/
+# Legal documents: keep the source verbatim so paper-signature blanks and
+# legal whitespace are not reformatted into escape-sequence noise.
+CLA.md
+LICENSE
+NOTICE
