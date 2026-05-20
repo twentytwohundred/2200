@@ -8,6 +8,20 @@ For now, if you have stumbled across this repository:
 - **GitHub Discussions** for broader questions and ideas (when enabled, post-launch).
 - **doug@mrdoug.com** for security reports (see [SECURITY.md](SECURITY.md)).
 
+## Contributor License Agreement
+
+All contributions to 2200 require signing the project's Contributor License Agreement. The CLA grants TWENTYTWOHUNDRED LLC the rights it needs to incorporate your contribution into the codebase and to license it onward; you keep the right to use your own work for any other purpose.
+
+The CLA itself: [`CLA.md`](CLA.md).
+
+**How to sign**: the process is automated on pull requests. When you open a PR against this repo from outside the seed team, an automated comment will appear linking to the CLA. Reply to that comment with the exact phrase:
+
+> I have read the CLA Document and I hereby sign the CLA
+
+Your reply counts as your signature. It is recorded in a JSON file on the `cla-signatures` branch of this repo, so the record lives entirely in our own infrastructure (no third-party service). You sign once per repo; subsequent PRs from the same GitHub identity do not need to re-sign.
+
+The project owner and approved bot accounts are allowlisted from the check.
+
 ## Why the seed team is closed during build
 
 2200 is being built by a small seed team of Agents and a product lead, on a deliberate cadence captured in the [Epic map](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md). Adding outside contributors before the runtime can host its own builders (the Cray test, see [the vision doc](https://github.com/twentytwohundred/wiki/blob/main/01-vision.md)) would slow the work for less benefit than it adds.

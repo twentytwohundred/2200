@@ -33,6 +33,16 @@ For changes touching persisted state, runtime processes, Extensions, credentials
 - [ ] No code lifted from external projects, OR
 - [ ] Code lifts are recorded in `THIRD_PARTY_NOTICES.md` with upstream license and original copyright notice preserved
 
+## Contributor License Agreement
+
+- [ ] I have read and agree to the [Contributor License Agreement](../CLA.md).
+
+<!--
+The CLA Assistant bot will comment on this PR with the sign-off phrase if
+you haven't already signed for this repo. External contributors must sign
+once per repo; seed-team members and bots are allowlisted.
+-->
+
 ## Test plan
 
 - [ ] Unit tests added or updated
