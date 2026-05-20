@@ -161,6 +161,43 @@ describe('recordCatalogGap + listCatalogGaps', () => {
     ).rejects.toThrow(/already exists/)
   })
 
+  it('with if_exists="skip", returns the existing record unchanged', async () => {
+    const first = await recordCatalogGap({
+      operator_description: 'first description',
+      id: 'idempotent',
+      dir: gapsDir,
+      now: () => new Date('2026-05-18T12:00:00.000Z'),
+    })
+    const second = await recordCatalogGap({
+      operator_description: 'different description on the second call',
+      id: 'idempotent',
+      dir: gapsDir,
+      now: () => new Date('2026-05-18T13:00:00.000Z'),
+      if_exists: 'skip',
+    })
+    expect(second.frontmatter.id).toBe('idempotent')
+    expect(second.frontmatter.recorded_at).toBe(first.frontmatter.recorded_at)
+    expect(second.frontmatter.operator_description).toBe('first description')
+  })
+
+  it('with if_exists="fail" explicitly (matches default), still throws', async () => {
+    await recordCatalogGap({
+      operator_description: 'first',
+      id: 'explicit-fail',
+      dir: gapsDir,
+      now: () => new Date('2026-05-18T12:00:00.000Z'),
+    })
+    await expect(
+      recordCatalogGap({
+        operator_description: 'second',
+        id: 'explicit-fail',
+        dir: gapsDir,
+        now: () => new Date('2026-05-18T12:00:01.000Z'),
+        if_exists: 'fail',
+      }),
+    ).rejects.toThrow(/already exists/)
+  })
+
   it('lists recorded gaps sorted by recorded_at descending', async () => {
     await recordCatalogGap({
       operator_description: 'older',

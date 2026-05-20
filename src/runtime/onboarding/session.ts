@@ -41,8 +41,14 @@ import type { HandoffDocument } from '../migration/types.js'
 import { suggestTools, type ToolSuggestion } from './tool-suggestions.js'
 import { suggestSchedules, type ScheduleSuggestion } from './schedule-suggestions.js'
 import { loadCapabilities, resolveCatalogDir } from './capability-loader.js'
-import { suggestCapabilities, type CapabilitySuggestion } from './capability-suggest.js'
+import {
+  findUnmatchedTags,
+  suggestCapabilities,
+  type CapabilitySuggestion,
+} from './capability-suggest.js'
+import { recordCatalogGap, slugifyGapId } from './catalog-gap.js'
 import type { CompletionRequest } from '../llm/types.js'
+import { createLogger } from '../util/logger.js'
 
 const DEFAULT_INTERVIEWER_PERSONA = `You are a hiring manager interviewing a stakeholder about the ideal employee they want to add to their team. You are running a short conversation that will build a new Agent inside 2200, an Agent runtime. Your job is to surface enough practical information about what the Agent will do that the platform can build an Identity, suggest tool integrations, and suggest schedules.
 
@@ -388,7 +394,7 @@ Produce the next JSON message now.`
     const agentName = dryHandoff.frontmatter.agent_name
     const tools = suggestTools(transcript, agentName)
     const schedules = suggestSchedules(transcript)
-    const capabilities = await suggestCapabilitiesFromTranscript(transcript)
+    const capabilities = await this.suggestCapabilitiesFromTranscript(transcript)
     // Auto-apply every high-confidence (default_on) suggestion. The
     // suggester's threshold (>= 2 tag overlaps by default) is the
     // filter; we trust it. Lower-confidence entries stay in the
@@ -419,6 +425,95 @@ Produce the next JSON message now.`
     }
     this.state = 'done'
     return { kind: 'done', preview: this.preview }
+  }
+
+  /**
+   * Load the catalog (if present), rank Capabilities by overlap with
+   * the interview transcript's intent_tags, and (Phase F §0a-2
+   * follow-up) auto-file a catalog-gap entry for any intent_tags the
+   * catalog couldn't cover.
+   *
+   * Returns [] when:
+   *   - The transcript carries no intent_tags (nothing to match
+   *     against; nothing to file as a gap either).
+   *   - The catalog dir cannot be resolved (fresh install). No gap
+   *     filed because the catalog itself is missing ... that's a
+   *     packaging issue, not a demand signal.
+   *   - The loader throws (malformed catalog; logged separately).
+   *
+   * Failure of the gap auto-file path is logged and SWALLOWED ... the
+   * onboarding preview must never break because a gap couldn't be
+   * written.
+   */
+  private async suggestCapabilitiesFromTranscript(
+    transcript: InterviewTranscript,
+  ): Promise<CapabilitySuggestion[]> {
+    const tags = transcript.entries
+      .map((e) => e.intent_tag)
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+    if (tags.length === 0) return []
+    const dir = resolveCatalogDir()
+    if (!dir) return []
+    let catalog
+    try {
+      catalog = await loadCapabilities({ firstPartyDir: dir })
+    } catch {
+      return []
+    }
+    if (catalog.length === 0) return []
+
+    const suggestions = suggestCapabilities({
+      interview_tags: tags,
+      capabilities: catalog,
+    })
+
+    const unmatched = findUnmatchedTags({
+      interview_tags: tags,
+      capabilities: catalog,
+    })
+    if (unmatched.length > 0) {
+      await this.fileCatalogGapForUnmatchedTags(unmatched)
+    }
+
+    return suggestions
+  }
+
+  /**
+   * Record a single catalog-gap entry covering the orphan tag-set.
+   * One gap per session, idempotent on the sorted tag-set ... a repeat
+   * onboarding with the same orphan tag-set short-circuits via
+   * `if_exists: 'skip'` and does not duplicate.
+   */
+  private async fileCatalogGapForUnmatchedTags(unmatched_tags: readonly string[]): Promise<void> {
+    const log = createLogger('onboarding.catalog-gap')
+    const sorted = [...unmatched_tags].sort((a, b) => a.localeCompare(b))
+    const tagList = sorted.join(', ')
+    const id = slugifyGapId(`onboarding ${sorted.join(' ')}`, this.nowFn())
+    const description = `Onboarding interview produced no Capability match for intent_tag${
+      sorted.length === 1 ? '' : 's'
+    }: ${tagList}. Consider adding a Capability that handles ${
+      sorted.length === 1 ? 'it' : 'them'
+    }.`
+    try {
+      const rec = await recordCatalogGap({
+        operator_description: description,
+        id,
+        context: 'onboarding',
+        related_intent_tags: sorted,
+        now: this.nowFn,
+        if_exists: 'skip',
+      })
+      log.info('catalog-gap auto-filed from onboarding suggest', {
+        id: rec.frontmatter.id,
+        unmatched_tags: sorted,
+      })
+    } catch (err) {
+      log.warn('catalog-gap auto-file failed (swallowed)', {
+        id,
+        unmatched_tags: sorted,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 }
 
@@ -505,30 +600,7 @@ function tryParse(s: string): InterviewerDirective | null {
   return null
 }
 
-/**
- * Load the catalog (if present) and rank Capabilities by overlap with
- * the interview transcript's intent_tags. Returns [] when:
- *   - The transcript carries no intent_tags (nothing to match against).
- *   - The catalog dir cannot be resolved (e.g., fresh install, no
- *     bundled wiki, no operator overrides).
- *   - The loader throws (malformed catalog; logged separately by the
- *     loader). Failure to suggest must not break onboarding ... the
- *     Agent still gets built, just without auto-applied capabilities.
- */
-async function suggestCapabilitiesFromTranscript(
-  transcript: InterviewTranscript,
-): Promise<CapabilitySuggestion[]> {
-  const tags = transcript.entries
-    .map((e) => e.intent_tag)
-    .filter((t): t is string => typeof t === 'string' && t.length > 0)
-  if (tags.length === 0) return []
-  const dir = resolveCatalogDir()
-  if (!dir) return []
-  try {
-    const catalog = await loadCapabilities({ firstPartyDir: dir })
-    if (catalog.length === 0) return []
-    return suggestCapabilities({ interview_tags: tags, capabilities: catalog })
-  } catch {
-    return []
-  }
-}
+// `suggestCapabilitiesFromTranscript` is a method on OnboardingSession
+// (see above). It used to be a module-level helper but needs
+// per-session access to the catalog dir override and gaps dir override
+// for the auto-file path (Phase F §0a-2 follow-up).

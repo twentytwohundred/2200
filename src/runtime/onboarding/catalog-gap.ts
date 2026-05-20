@@ -98,6 +98,15 @@ export interface RecordGapArgs {
   dir?: string
   /** Test injection. Defaults to () => new Date(). */
   now?: () => Date
+  /**
+   * What to do when a gap with the same id already exists.
+   * - `'fail'` (default, CLI semantic): throw a collision error so the
+   *   operator picks a new id.
+   * - `'skip'`: return the existing record unchanged. Auto-file paths
+   *   (onboarding suggest, runtime tool) use this for idempotency ...
+   *   the same orphan tag-set surfacing twice should NOT duplicate.
+   */
+  if_exists?: 'fail' | 'skip'
 }
 
 export interface ListGapsArgs {
@@ -191,6 +200,10 @@ export async function recordCatalogGap(args: RecordGapArgs): Promise<CatalogGapR
   const body = args.body ?? ''
   const path = join(dir, `${id}.md`)
   if (existsSync(path)) {
+    if (args.if_exists === 'skip') {
+      const existing = await readFile(path, 'utf-8')
+      return parseGapFile(existing, path)
+    }
     throw new Error(
       `catalog gap "${id}" already exists at ${path}; pass a different --id or edit the file directly`,
     )
