@@ -39,6 +39,7 @@ import { useLiveSignal } from '../../ws/useLiveSignal'
 import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
 import { SkillsSection } from './SkillsSection'
+import { SystemUpdateSection } from './SystemUpdateSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
@@ -173,6 +174,13 @@ export function SettingsScreen(): ReactElement {
               </div>
             </Card>
           )}
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>system · self-upgrade</Meta>
+        <div className={styles.blockBody}>
+          <SystemUpdateSection />
         </div>
       </section>
 
