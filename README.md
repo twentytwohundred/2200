@@ -165,3 +165,5 @@ The seed team is closed during the build phase. After launch, see [CONTRIBUTING.
 ---
 
 _Built in public. Ship when ready._
+
+2200 is developed by TWENTYTWOHUNDRED LLC. Licensed under the Elastic License v2.0.
