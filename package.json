@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "description": "A platform for hosting your fleet of always-on Agents.",
+  "author": {
+    "name": "TWENTYTWOHUNDRED LLC",
+    "url": "https://2200.ai"
+  },
   "homepage": "https://github.com/twentytwohundred/2200",
   "repository": {
     "type": "git",
