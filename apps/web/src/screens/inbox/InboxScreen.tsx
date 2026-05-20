@@ -26,7 +26,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type FormEvent,
+  type SyntheticEvent,
   type ReactElement,
 } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -253,7 +253,7 @@ export function InboxScreen(): ReactElement {
   }, [items.length, focusInput, dismissFocused])
 
   const onSubmit = useCallback(
-    (e: FormEvent<HTMLFormElement>) => {
+    (e: SyntheticEvent<HTMLFormElement>) => {
       e.preventDefault()
       submitResponse(draft)
     },

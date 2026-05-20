@@ -15,7 +15,7 @@
  * checklist is large enough that a modal would clip the live
  * fleet on smaller windows.
  */
-import { useMemo, useState, type FormEvent, type ReactElement } from 'react'
+import { useMemo, useState, type SyntheticEvent, type ReactElement } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, api } from '../../lib/api'
@@ -82,7 +82,7 @@ export function NewRoomForm({ onClose }: NewRoomFormProps): ReactElement {
     })
   }
 
-  const onSubmit = (e: FormEvent<HTMLFormElement>): void => {
+  const onSubmit = (e: SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
     if (!slugValid || selected.size === 0 || mutation.isPending) return
     mutation.mutate()

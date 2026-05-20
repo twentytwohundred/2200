@@ -28,7 +28,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type FormEvent,
+  type SyntheticEvent,
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
@@ -449,7 +449,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     }, 0)
   }
 
-  const handleSubmit = (e?: FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = (e?: SyntheticEvent<HTMLFormElement>): void => {
     e?.preventDefault()
     const content = draft.trim()
     if (content.length === 0 || sendMutation.isPending) return
