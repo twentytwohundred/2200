@@ -217,7 +217,8 @@ export function OnboardingScreen(): ReactElement {
   })
 
   const confirmMutation = useMutation({
-    mutationFn: (id: string) => api.onboardingConfirm(id),
+    mutationFn: ({ id, selected_capabilities }: { id: string; selected_capabilities: string[] }) =>
+      api.onboardingConfirm(id, { selected_capabilities }),
     onSuccess: (result: OnboardingConfirmResponse): void => {
       setPhase({ kind: 'confirmed', result })
     },
@@ -443,8 +444,8 @@ export function OnboardingScreen(): ReactElement {
       {phase.kind === 'preview' ? (
         <PreviewView
           preview={phase.preview}
-          onConfirm={() => {
-            confirmMutation.mutate(phase.sessionId)
+          onConfirm={(selected_capabilities) => {
+            confirmMutation.mutate({ id: phase.sessionId, selected_capabilities })
           }}
           onCancel={() => {
             cancelMutation.mutate(phase.sessionId)
@@ -531,7 +532,8 @@ function appendAnswer(
 
 interface PreviewViewProps {
   preview: OnboardingPreview
-  onConfirm: () => void
+  /** Called with the operator-curated capability id set on confirm. */
+  onConfirm: (selected_capabilities: string[]) => void
   onCancel: () => void
   confirmDisabled: boolean
   confirmPending: boolean
@@ -546,6 +548,26 @@ function PreviewView({
   confirmPending,
   error,
 }: PreviewViewProps): ReactElement {
+  // Initial selection: every suggestion that came back default_on (the
+  // suggester's high-confidence threshold already filtered them). The
+  // operator can deselect any of these or opt-in to the speculative
+  // ones below.
+  const [selectedCapabilityIds, setSelectedCapabilityIds] = useState<Set<string>>(
+    () =>
+      new Set(
+        preview.capabilities.filter((c) => c.default_on).map((c) => c.capability.frontmatter.id),
+      ),
+  )
+
+  const toggleCapability = (id: string): void => {
+    setSelectedCapabilityIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   return (
     <>
       <section>
@@ -562,6 +584,63 @@ function PreviewView({
         <SectionHeader title="SUMMARY" />
         <Card padding={20}>
           <div className={styles.summary}>{preview.transcript.summary}</div>
+        </Card>
+      </section>
+
+      <section>
+        <SectionHeader title={`SUGGESTED CAPABILITIES · ${String(preview.capabilities.length)}`} />
+        <Card padding={20}>
+          {preview.capabilities.length === 0 ? (
+            <div className={styles.suggestionMeta}>
+              No Capabilities matched the interview tags. The Agent will be built without a
+              walkthrough; you can wire integrations later via direct Identity edit.
+            </div>
+          ) : (
+            <>
+              <p className={styles.suggestionMeta}>
+                Checked Capabilities get a setup walkthrough on the Agent's first wake. High-
+                confidence matches are checked by default; toggle any to override.
+              </p>
+              <div className={styles.suggestionList}>
+                {preview.capabilities.map((c) => {
+                  const id = c.capability.frontmatter.id
+                  const checked = selectedCapabilityIds.has(id)
+                  const minutes = c.capability.frontmatter.walkthrough?.estimated_minutes
+                  const authCount = c.capability.frontmatter.auth?.length ?? 0
+                  return (
+                    <label key={id} className={styles.capabilityRow}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          toggleCapability(id)
+                        }}
+                        disabled={confirmDisabled}
+                      />
+                      <div className={styles.capabilityRowBody}>
+                        <div className={styles.suggestionTitle}>
+                          {c.capability.frontmatter.label}
+                          <span className={styles.capabilityConfidence}> · {c.confidence}</span>
+                        </div>
+                        <div className={styles.suggestionMeta}>
+                          {c.capability.frontmatter.description}
+                        </div>
+                        <div className={styles.suggestionRationale}>
+                          {authCount > 0
+                            ? `${String(authCount)} credential${authCount === 1 ? '' : 's'} required`
+                            : 'no credentials required'}
+                          {typeof minutes === 'number' ? ` · ~${String(minutes)} min setup` : ''}
+                          {c.matched_tags.length > 0
+                            ? ` · matched: ${c.matched_tags.join(', ')}`
+                            : ''}
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            </>
+          )}
         </Card>
       </section>
 
@@ -619,7 +698,13 @@ function PreviewView({
         <Button variant="ghost" onClick={onCancel} disabled={confirmDisabled}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={onConfirm} disabled={confirmDisabled}>
+        <Button
+          variant="primary"
+          onClick={() => {
+            onConfirm([...selectedCapabilityIds])
+          }}
+          disabled={confirmDisabled}
+        >
           {confirmPending ? 'Building...' : 'Confirm + build'}
         </Button>
       </div>
