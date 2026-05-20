@@ -6,7 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0] ... 2026-05-20
+
 ### Added
+
+- **First installable release.** Package published as `@twentytwohundred/2200` on the npm registry.
+- **Shell installer** at `install.sh`. One-liner for any macOS or Linux box with Node 22+: `curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh`. Detects Node version, refuses to silently elevate via sudo, and installs the latest published version via the user's `npm`.
+- **Bare `2200` first-run.** When the CLI is invoked with no subcommand and no prior install state, it walks the user through a guided setup: choose `2200_HOME`, initialize the directory layout, start the supervisor daemon, mint the user identity, point at `2200 agent build` for the first Agent. All input is collected before any side effect, so a `ctrl-C` at any prompt is safe.
+- **`2200 update`.** Top-level self-upgrade. Checks the npm registry for the latest published version, prompts (or `--yes`), stops the daemon, installs the new package globally, restarts the daemon. `--check` reports availability without installing. Refuses to auto-upgrade a source checkout.
+- **`2200 --version`** now reads from `package.json` at runtime, so `npm version <bump>` is the single source of truth for the installed CLI version.
+
+### Notes
+
+- 2200_HOME state (under `~/.local/share/2200/` by default, or whatever you chose at first-run) is never touched by `2200 update`. Upgrades only replace the global package binary.
+- Native dependencies (`better-sqlite3`, `sharp`) ship prebuilds for macOS arm64/x86_64 and Linux arm64/x86_64. Other platforms fall through to a build-from-source path that requires a C++ toolchain.
+- Windows is not supported on this release. Use WSL2.
+
+### Added (prior to 0.1.0)
 
 - Repository scaffolding: LICENSE, README, AGENTS.md, SECURITY.md, CONTRIBUTING.md, CHANGELOG.md, THIRD_PARTY_NOTICES.md, `.github/` templates and CI workflow.
 - Public wiki at [`twentytwohundred/wiki`](https://github.com/twentytwohundred/wiki), mirrored from the canonical Brain-format tree.
@@ -24,4 +40,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - No tagged releases yet. Versioning begins when the runtime is feature-complete enough for the first public preview.
 - The `wiki/` feature on this repo is disabled; the project knowledge base lives at [twentytwohundred/wiki](https://github.com/twentytwohundred/wiki) (public, markdown on `main`).
 
-[Unreleased]: https://github.com/twentytwohundred/2200/commits/main
+[Unreleased]: https://github.com/twentytwohundred/2200/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/twentytwohundred/2200/releases/tag/v0.1.0

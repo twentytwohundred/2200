@@ -14,6 +14,49 @@ This is "fleet operations, not chat."
 
 This repository holds the runtime code. The full project knowledge base ... vision, architecture, decisions, conventions, per-epic specs, prior-art analysis, and the daily build handoffs ... lives in the public **[wiki repo](https://github.com/twentytwohundred/wiki)**.
 
+## Install
+
+2200 ships as a single CLI binary. macOS (arm64 / x86_64) and Linux (arm64 / x86_64), Node 22 or newer.
+
+```bash
+# Shell installer (recommended for cold visitors):
+curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh
+
+# npm directly (if you already have Node):
+npm install -g @twentytwohundred/2200
+```
+
+Then run:
+
+```bash
+2200
+```
+
+The bare `2200` invocation drops a fresh installation into a guided one-time setup: it initializes `2200_HOME` (default: `~/.local/share/2200/`), starts the supervisor daemon, mints your user identity, and points you at `2200 agent build` to create your first Agent. The Agent wizard will ask for an LLM provider key (Anthropic, OpenAI, xAI, DeepSeek, OpenRouter, Gemini, Kimi, or a local endpoint).
+
+### Update
+
+```bash
+2200 update           # check the registry, prompt, install, restart the daemon
+2200 update --check   # just report whether a newer version is available
+2200 update --yes     # install without the confirm prompt (for scripted updates)
+```
+
+`2200 update` only replaces the global package binary; your 2200_HOME state is never touched.
+
+### Uninstall
+
+```bash
+npm uninstall -g @twentytwohundred/2200
+rm -rf ~/.local/share/2200/ ~/.config/2200/
+```
+
+Doing the npm uninstall without the `rm` lines is safe ... your fleet data remains on disk and a reinstall picks it up.
+
+### Windows
+
+Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install). Native Windows is not on the v0.1 support matrix.
+
 ## Where to start
 
 If you are new, read these in the wiki, in order:
