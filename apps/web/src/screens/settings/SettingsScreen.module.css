@@ -209,6 +209,82 @@
   color: var(--danger);
 }
 
+/* System Update tile -------------------------------------------------- */
+.systemNote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+  margin-top: var(--ds-3);
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.systemNote code {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: var(--ds-r-1);
+  border: 1px solid var(--line-soft);
+}
+
+.systemNote button {
+  align-self: flex-start;
+}
+
+.systemStages {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--ds-1);
+}
+
+.systemStage {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  padding-left: var(--ds-3);
+  position: relative;
+}
+
+.systemStage::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--text-3);
+}
+
+.systemStagePast {
+  color: var(--text-2);
+}
+
+.systemStagePast::before {
+  content: '✓';
+  color: var(--accent);
+}
+
+.systemStageCurrent {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.systemStageCurrent::before {
+  content: '→';
+  color: var(--accent);
+}
+
+.systemStageFailed {
+  color: var(--danger);
+}
+
+.systemStageFailed::before {
+  content: '✗';
+  color: var(--danger);
+}
+
 .providerSuggestions {
   display: flex;
   gap: var(--ds-1);
