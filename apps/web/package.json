@@ -27,12 +27,12 @@
     "verify": "pnpm generate:tokens && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.100.9",
+    "@tanstack/react-query": "^5.100.11",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-easy-crop": "^5.5.7",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.15.0",
+    "react-router-dom": "^7.15.1",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
@@ -45,9 +45,9 @@
     "eslint": "^9.18.0",
     "jsdom": "^25.0.1",
     "prettier": "^3.4.2",
-    "tsx": "^4.19.2",
+    "tsx": "^4.22.3",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.59.2",
+    "typescript-eslint": "^8.59.4",
     "vite": "^5.4.10",
     "vitest": "^2.1.8"
   }
