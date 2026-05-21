@@ -3375,6 +3375,157 @@ export function buildProgram(): Command {
       )
     })
 
+  // ---------------------------------------------------------------------------
+  // 2200 oauth xai <login|status|logout>
+  //
+  // Fleet-scoped device-code OAuth for xAI / Grok via SuperGrok or
+  // X Premium+ subscription. Distinct from the per-Agent `oauth login`
+  // path above:
+  //   - device code flow (no localhost callback), so works headless / over SSH
+  //   - public client (no client secret to configure)
+  //   - bearer + refresh stored in <home>/state/oauth-tokens/xai-oauth.json,
+  //     not in any one Agent's vault (one subscription, whole fleet)
+  // ---------------------------------------------------------------------------
+  const oauthXai = oauth
+    .command('xai')
+    .description(
+      'manage the fleet-wide xAI / Grok OAuth subscription credential (alternative to XAI_API_KEY)',
+    )
+
+  oauthXai
+    .command('login')
+    .description(
+      'sign in with X / SuperGrok via device-code flow; stores the OAuth bearer + refresh fleet-wide',
+    )
+    .option('--timeout <seconds>', 'override the overall device-flow timeout', (v) =>
+      parseInt(v, 10),
+    )
+    .action(async (opts: { timeout?: number }) => {
+      const home = await resolveHomeFromOpts(program)
+      const {
+        fetchXaiDiscovery,
+        xaiDeviceFlowProvider,
+        XAI_OAUTH_REFRESH_SKEW_SECONDS: _skew,
+      } = await import('../runtime/oauth/xai-config.js')
+      const { runDeviceFlow } = await import('../runtime/oauth/device-flow.js')
+      const { saveOAuthToken } = await import('../runtime/oauth/token-store.js')
+
+      console.log('Fetching xAI OIDC discovery document...')
+      const discovery = await fetchXaiDiscovery().catch((err: unknown) => {
+        console.error(
+          `Could not fetch xAI discovery: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        process.exit(1)
+      })
+      const provider = xaiDeviceFlowProvider(discovery)
+
+      console.log('Requesting a device code from xAI...')
+      const tokenResponse = await runDeviceFlow({
+        provider,
+        ...(opts.timeout !== undefined ? { timeoutSeconds: opts.timeout } : {}),
+        onPrompt: (prompt) => {
+          console.log('')
+          console.log('To sign in with your SuperGrok / X Premium+ account:')
+          console.log('')
+          console.log(`  1. Open this URL in any browser:  ${prompt.verificationUri}`)
+          if (
+            prompt.verificationUriComplete &&
+            prompt.verificationUriComplete !== prompt.verificationUri
+          ) {
+            console.log(
+              `     (or scan the convenience URL with the code pre-filled: ${prompt.verificationUriComplete})`,
+            )
+          }
+          console.log(`  2. When prompted, enter this code:  ${prompt.userCode}`)
+          console.log('')
+          console.log(
+            'xAI labels the consent screen "Grok Build" because integrators share xAI\'s CLI OAuth client.',
+          )
+          console.log('That is expected; you are not installing a new app.')
+          console.log('')
+          console.log(
+            `Waiting for you to confirm... (expires at ${prompt.expiresAt.toISOString()})`,
+          )
+        },
+      }).catch((err: unknown) => {
+        console.error('')
+        console.error(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      })
+
+      if (!tokenResponse.refresh_token) {
+        console.error('xAI did not return a refresh token; cannot persist subscription credential.')
+        console.error('Double-check that the `offline_access` scope was granted at consent time.')
+        process.exit(1)
+      }
+
+      const now = Date.now()
+      const expiresAtMs =
+        tokenResponse.expires_in !== undefined
+          ? now + tokenResponse.expires_in * 1000
+          : now + 3600 * 1000
+      await saveOAuthToken(home, {
+        provider: 'xai-oauth',
+        bearer: tokenResponse.access_token,
+        refreshToken: tokenResponse.refresh_token,
+        metadata: {
+          granted_scopes: tokenResponse.scope ? tokenResponse.scope.split(/\s+/) : [],
+          expires_at_ms: expiresAtMs,
+          created_at: new Date(now).toISOString(),
+        },
+      })
+
+      console.log('')
+      console.log('✓ Signed in. Subscription credential sealed to disk.')
+      console.log(`  expires:  ${new Date(expiresAtMs).toISOString()}`)
+      console.log('  next:     restart Agents to pick up the new credential.')
+      console.log('')
+      console.log(
+        'Tip: this credential is fleet-wide. Any Agent whose model.provider is "xai" will',
+      )
+      console.log('use the subscription bearer; the legacy XAI_API_KEY remains as a fallback.')
+    })
+
+  oauthXai
+    .command('status')
+    .description('show whether a fleet-wide xAI subscription credential is configured')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { readOAuthToken } = await import('../runtime/oauth/token-store.js')
+      const token = await readOAuthToken(home, 'xai-oauth')
+      if (!token) {
+        console.log('xAI OAuth: not configured.')
+        console.log('Sign in with: 2200 oauth xai login')
+        process.exit(1)
+      }
+      const expires = new Date(token.metadata.expires_at_ms)
+      const ttlSec = Math.round((expires.getTime() - Date.now()) / 1000)
+      console.log('xAI OAuth: configured')
+      console.log(`  provider:       ${token.provider}`)
+      console.log(`  scopes:         ${token.metadata.granted_scopes.join(' ')}`)
+      console.log(
+        `  expires:        ${expires.toISOString()}  (${ttlSec > 0 ? `in ${String(ttlSec)}s` : 'EXPIRED'})`,
+      )
+      console.log(`  created:        ${token.metadata.created_at}`)
+      if (token.metadata.refreshed_at) {
+        console.log(`  last refresh:   ${token.metadata.refreshed_at}`)
+      }
+    })
+
+  oauthXai
+    .command('logout')
+    .description('delete the fleet-wide xAI OAuth credential (does not revoke at xAI)')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { deleteOAuthToken } = await import('../runtime/oauth/token-store.js')
+      const removed = await deleteOAuthToken(home, 'xai-oauth')
+      if (removed) {
+        console.log('xAI OAuth credential deleted. Agents will fall back to XAI_API_KEY.')
+      } else {
+        console.log('No xAI OAuth credential to delete.')
+      }
+    })
+
   const platform = program
     .command('platform')
     .description('check status of platform-tool credentials (Discord, Slack, Spotify)')

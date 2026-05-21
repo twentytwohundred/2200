@@ -139,6 +139,27 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
     })
   }
 
+  // xAI OAuth subscription credential takes priority over the env API
+  // key when present. Fleet-wide: one signed-in subscription serves
+  // every Agent whose model.provider is "xai". The bearer is read
+  // lazily so it picks up refreshes the refresh-service made without
+  // requiring an Agent restart on every token rotation.
+  if (opts.providerName === 'xai' && opts.secret === undefined && opts.home) {
+    const { readOAuthToken } = await import('../oauth/token-store.js')
+    const token = await readOAuthToken(opts.home, 'xai-oauth').catch(() => null)
+    if (token && token.metadata.expires_at_ms > Date.now()) {
+      const vendor = OPENAI_COMPATIBLE_VENDORS['xai']
+      if (vendor) {
+        return new OpenAIProvider({
+          apiKey: token.bearer,
+          baseUrl: vendor.baseUrl,
+          providerName: 'xai',
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+        })
+      }
+    }
+  }
+
   const secretRef = opts.secret ?? defaultSecretFor(opts.providerName)
   const apiKey = await resolveSecret(secretRef)
 
