@@ -32,6 +32,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homePaths } from '../storage/layout.js'
 import { advanceUpgradeStage, readUpgradeStatus, writeUpgradeStatus } from './upgrade-status.js'
+import { isPidAlive, pidFilePath } from '../supervisor/pidfile.js'
+import { isLockHeld } from '../supervisor/process-lock.js'
 
 const POLL_INTERVAL_MS = 250
 const DAEMON_SHUTDOWN_TIMEOUT_MS = 60_000
@@ -50,7 +52,7 @@ async function main(): Promise<void> {
 
   // Stage 1: wait for the daemon to exit.
   await advanceUpgradeStage(cfg.home, 'stopping_daemon')
-  const daemonStopped = await waitForPidExit(cfg.daemonPid, DAEMON_SHUTDOWN_TIMEOUT_MS)
+  const daemonStopped = await waitForDaemonExit(cfg.home, cfg.daemonPid, DAEMON_SHUTDOWN_TIMEOUT_MS)
   if (!daemonStopped) {
     await fail(
       cfg,
@@ -108,33 +110,26 @@ function requireEnv(name: string): string {
 }
 
 /**
- * Poll `kill(pid, 0)` (a no-op signal that throws ESRCH when the
- * process does not exist). Returns true when the process is gone,
- * false on timeout.
+ * Wait for the daemon to exit. Returns true when it is gone, false on
+ * timeout.
+ *
+ * The daemon is considered gone when EITHER:
+ *   - its supervisor lock is released (graceful shutdown removes the
+ *     lockfile; this is the fast path), OR
+ *   - the PID is no longer alive per `kill(0)` (catches SIGKILL /
+ *     crash faster than the lockfile staleness window, and is the
+ *     only signal available for legacy pre-lock daemons during the
+ *     migration window).
  */
-async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+async function waitForDaemonExit(home: string, pid: number, timeoutMs: number): Promise<boolean> {
+  const lockPath = pidFilePath(home)
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    if (!(await isLockHeld(lockPath))) return true
     if (!isPidAlive(pid)) return true
     await sleep(POLL_INTERVAL_MS)
   }
   return false
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // ESRCH = no such process. EPERM means the process exists but
-    // we lack permission to signal it; treat that as alive (a
-    // foreign process on the same PID is a bigger concern than this
-    // helper).
-    if (typeof err === 'object' && err !== null && 'code' in err) {
-      if (err.code === 'ESRCH') return false
-    }
-    return true
-  }
 }
 
 /**

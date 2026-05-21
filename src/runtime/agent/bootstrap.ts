@@ -11,6 +11,8 @@
  */
 import { AgentProcess } from './process.js'
 import { createLogger } from '../util/logger.js'
+import { agentPaths } from '../storage/layout.js'
+import { acquireProcessLock, type ProcessLock } from '../supervisor/process-lock.js'
 
 /**
  * Swallow EPIPE on stdout/stderr so a broken pipe (typical cause:
@@ -70,6 +72,23 @@ async function main(): Promise<void> {
     process.exit(64) // EX_USAGE
   }
 
+  // Acquire the Agent's process lock. The supervisor (and any future
+  // cross-process liveness query) checks lock holdership on this file
+  // to decide whether the Agent is alive ... hazard-free vs.
+  // kill(pid, 0) on a recycled PID.
+  const pidPath = agentPaths(home, name).pidFile
+  let agentLock: ProcessLock
+  try {
+    agentLock = await acquireProcessLock(pidPath, `${String(process.pid)}\n`)
+  } catch (err) {
+    const log = createLogger('agent/bootstrap')
+    log.error('failed to acquire Agent lock', {
+      name,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    process.exit(75) // EX_TEMPFAIL
+  }
+
   const agent = new AgentProcess({
     name,
     identityPath,
@@ -78,9 +97,15 @@ async function main(): Promise<void> {
   })
 
   const onShutdown = (signal: string): void => {
-    void agent.shutdown(`signal:${signal}`).then(() => {
-      process.exit(0)
-    })
+    void agent
+      .shutdown(`signal:${signal}`)
+      .then(async () => {
+        await agentLock.release()
+        process.exit(0)
+      })
+      .catch(() => {
+        process.exit(1)
+      })
   }
   process.on('SIGTERM', () => {
     onShutdown('SIGTERM')

@@ -121,6 +121,14 @@ export interface AgentPaths {
   readonly chatsDir: string
   /** Per-Agent chat index.json (chat metadata: id, title, created_at, updated_at, unread, archived). */
   readonly chatsIndex: string
+  /**
+   * Per-Agent PID file + lock. Holds the Agent process's PID; the
+   * Agent process acquires a `proper-lockfile` lock on it for its
+   * lifetime so the supervisor's liveness checks consult the lock
+   * (hazard-free) rather than `kill(pid, 0)` (stranger-PID hazard).
+   * See decisions/2026-05-21-pid-file-liveness-via-lockfiles.md.
+   */
+  readonly pidFile: string
 }
 
 export function agentPaths(home: string, agentName: string): AgentPaths {
@@ -138,6 +146,7 @@ export function agentPaths(home: string, agentName: string): AgentPaths {
     chatsIndex: join(chatsDir, 'index.json'),
     avatarImage: join(root, 'avatar.webp'),
     pubsFile: join(root, 'pubs.md'),
+    pidFile: join(root, 'agent.pid'),
   }
 }
 

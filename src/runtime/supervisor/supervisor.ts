@@ -31,6 +31,7 @@ import {
   type TrackedAgent,
   type StartAgentOptions,
 } from './lifecycle.js'
+import { isLockHeld } from './process-lock.js'
 import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock } from '../identity/types.js'
@@ -364,7 +365,10 @@ export class Supervisor {
     for (const [name, record] of Object.entries(this.state.agents)) {
       if (record.state !== 'running' && record.state !== 'waiting') continue
       if (record.pid === null) continue
-      if (isPidAlive(record.pid)) continue
+      // Lock-based liveness check on the Agent's PID file.
+      // Hazard-free: a recycled PID owned by an unrelated process
+      // cannot fake holdership of our lockfile.
+      if (await isLockHeld(agentPaths(this.state.home, name).pidFile)) continue
       this.log.warn('agent process is dead but state says running; transitioning to errored', {
         name,
         pid: record.pid,
@@ -678,7 +682,9 @@ export class Supervisor {
     ]
     for (const [name, record] of Object.entries(this.state.agents)) {
       if (!reviveStates.includes(record.state)) continue
-      if (record.pid !== null && isPidAlive(record.pid)) {
+      const agentLockPath = agentPaths(this.state.home, name).pidFile
+      const agentAlive = record.pid !== null && (await isLockHeld(agentLockPath))
+      if (agentAlive && record.pid !== null) {
         // Adopt-time validation: confirm the surviving process is running
         // the currently-deployed bootstrap. If the dist was rebuilt while
         // the Agent was alive, the process holds stale code in memory and
@@ -691,7 +697,7 @@ export class Supervisor {
             name,
             pid: record.pid,
           })
-          const tracked = adoptAgent(name, record.pid, this.log.child('lifecycle'))
+          const tracked = adoptAgent(name, record.pid, this.state.home, this.log.child('lifecycle'))
           this.tracked.set(name, tracked)
           void tracked.exited.then(({ code, signal }) => {
             void this.handleAgentExit(name, code, signal)
@@ -706,7 +712,7 @@ export class Supervisor {
           expected_bootstrap: expectedBootstrap,
         })
         try {
-          const stale = adoptAgent(name, record.pid, this.log.child('lifecycle'))
+          const stale = adoptAgent(name, record.pid, this.state.home, this.log.child('lifecycle'))
           await stale.stop(5000)
         } catch (err) {
           this.log.warn('boot: failed to kill stale process; will restart anyway', {

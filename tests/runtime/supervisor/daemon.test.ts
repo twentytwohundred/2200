@@ -50,6 +50,7 @@ describe('startDaemon precondition', () => {
     const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+      waitForReady: false,
     })
     expect(typeof result).toBe('number')
     expect(result).toBeGreaterThan(0)
@@ -62,6 +63,7 @@ describe('runtime-env loading on start', () => {
     const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+      waitForReady: false,
       runtimeEnvPath: join(home, 'no-such-runtime-env.env'),
     })
     expect(result).toBeGreaterThan(0)
@@ -72,6 +74,7 @@ describe('runtime-env loading on start', () => {
     const result = await startDaemon({
       home,
       bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+      waitForReady: false,
       runtimeEnvPath: null,
     })
     expect(result).toBeGreaterThan(0)
@@ -86,6 +89,7 @@ describe('runtime-env loading on start', () => {
       startDaemon({
         home,
         bootstrapPath: '/nonexistent/path/that/will/error/in/the/child',
+        waitForReady: false,
         runtimeEnvPath: badPath,
       }),
     ).rejects.toThrowError(/runtime\.env parse error/)
