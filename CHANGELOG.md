@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Grok-First: SuperGrok / X Premium+ subscription auth (no API key).** Sign in to your existing xAI Grok subscription and every Agent set to the new `xai-subscription` provider uses the subscription bearer ... no `XAI_API_KEY` needed. The API-key path remains as a separate, parallel provider (`xai`).
+  - Settings page: prominent "Sign in with X / SuperGrok" tile at the top, with the official Grok logo. Inline device-code flow with a phone-friendly URL + code; auto-polling status until completion. (`#237`)
+  - Model picker: new "Subscriptions" optgroup pinned at the top of the dropdown. `xAI / Grok (SuperGrok subscription)` is a selectable provider distinct from the API-key sibling, so the credential choice is visible in the Agent's Identity. (`#238`, `#239`)
+  - Auto-restart on model switch: changing an Agent's model from the picker now stops + restarts the Agent so the new credential / provider binding is what serves the next request. Inline spinner during the swap; clear error surface if restart fails. (`#240`)
+  - First-run installer: the bare-`2200` wizard now offers Grok subscription sign-in inline (default yes) after user-identity mint, so a new install can leave setup with a working Grok credential without ever pasting an API key. (`#237`)
+  - CLI: `2200 oauth xai login | status | logout` for headless / scripted setup. Device-code flow with PKCE S256, public-client OAuth. (`#236`)
+- **Generic device-code OAuth substrate** (`src/runtime/oauth/device-flow.ts`). RFC 8628 with PKCE S256; reusable for any future public-client provider. Handles `authorization_pending`, RFC-spec `slow_down`, `expired_token`, `access_denied`. (`#236`)
+- **Fleet-scoped sealed OAuth token store** at `<home>/state/oauth-tokens/`. AES-256-GCM + HKDF over the per-instance master key with a fleet-scoped HKDF info string. Separate namespace from the per-Agent credential vault. (`#236`)
+- **Background OAuth refresh service.** `TokenRefreshService.tick()` now also scans the fleet OAuth store and refreshes within 120s of expiry using `grant_type=refresh_token`. Same failure-cooldown logic as the existing per-Agent path. (`#236`)
+- **Daemon HTTP endpoints**: `POST /api/v1/oauth/xai/login/start`, `GET /api/v1/oauth/xai/login/status?session=<id>`, `GET /api/v1/oauth/xai/status`, `POST /api/v1/oauth/xai/logout`. Browser-driven device-code flow without leaking PKCE state across requests. (`#237`)
+- **`install.sh` auto-configures `~/.npm-global` on non-writable npm prefix.** Detects the typical Ubuntu/Debian footgun (system `npm` at `/usr` requires sudo), explains the situation in plain language, and auto-fixes it without admin access. Shell-aware (bash / zsh / fish). Idempotent on re-runs. (`#233`)
+
+### Changed
+
+- **Chaos test stability**: eliminated the `supervisor-bounce-survival` flake by waiting for the heartbeat loop to cycle before bouncing the supervisor in-test. Root-cause fix, not a retry config. (`#234`)
+- **Adopted `@eslint/js` v10**: bumped from 9.39.4 and adopted the two new rules `preserve-caught-error` and `no-useless-assignment`. 26 violations fixed across the codebase ... most now add `{ cause: err }` chains to thrown errors inside `catch` blocks, so debug sessions see both the symptom and the underlying error. (`#235`)
+- **Lock-based PID liveness** for the supervisor and every Agent. Replaced the historical `kill(pid, 0)` liveness check with `proper-lockfile` lock holdership. Eliminates the stranger-PID hazard (recycled OS PIDs falsely reporting our processes as alive). Migration is operator-walkable: a daemon from a pre-lock release is detected and reported with a clear recovery message. (`#230`)
+
 ## [0.1.0] ... 2026-05-20
 
 ### Added
