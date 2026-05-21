@@ -42,6 +42,12 @@ updates:
       - dependency-name: '@vitejs/plugin-react'
         update-types:
           - 'version-update:semver-major'
+      # Vite itself ... same constraint: vite 6/7/8 plus @vitejs/plugin-react
+      # 4.x is unsupported. Pin to v5 until the planned vite ecosystem
+      # migration; lift this entry as part of that epic.
+      - dependency-name: 'vite'
+        update-types:
+          - 'version-update:semver-major'
 
   # GitHub Actions in workflow files
   - package-ecosystem: 'github-actions'
