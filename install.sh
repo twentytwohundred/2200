@@ -7,9 +7,9 @@
 # both arm64 and x86_64. Requires Node.js 22 or newer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh -s -- --version 0.1.0
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh -s -- --dry-run
+#   curl -fsSL https://2200.ai/install.sh | sh
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 0.1.0
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
 # Flags:
 #   --version <v>    install a specific version (default: latest)

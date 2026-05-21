@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **First installable release.** Package published as `@twentytwohundred/2200` on the npm registry.
-- **Shell installer** at `install.sh`. One-liner for any macOS or Linux box with Node 22+: `curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh`. Detects Node version, refuses to silently elevate via sudo, and installs the latest published version via the user's `npm`.
+- **Shell installer** at `install.sh`. One-liner for any macOS or Linux box with Node 22+: `curl -fsSL https://2200.ai/install.sh | sh`. The 2200.ai URL is an nginx reverse-proxy to the script in this repo, so the install script remains a single source of truth in the repo. Detects Node version, refuses to silently elevate via sudo, and installs the latest published version via the user's `npm`.
 - **Bare `2200` first-run.** When the CLI is invoked with no subcommand and no prior install state, it walks the user through a guided setup: choose `2200_HOME`, initialize the directory layout, start the supervisor daemon, mint the user identity, point at `2200 agent build` for the first Agent. All input is collected before any side effect, so a `ctrl-C` at any prompt is safe.
 - **`2200 update`.** Top-level self-upgrade. Checks the npm registry for the latest published version, prompts (or `--yes`), stops the daemon, installs the new package globally, restarts the daemon. `--check` reports availability without installing. Refuses to auto-upgrade a source checkout.
 - **`2200 --version`** now reads from `package.json` at runtime, so `npm version <bump>` is the single source of truth for the installed CLI version.
