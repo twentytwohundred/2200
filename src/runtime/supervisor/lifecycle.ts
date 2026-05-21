@@ -31,6 +31,8 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createLogger, type Logger } from '../util/logger.js'
+import { isPidAlive } from './pidfile.js'
+export { isPidAlive }
 
 export interface TrackedAgent {
   /** The Agent's name (matches its record key in supervisor.json). */
@@ -176,15 +178,9 @@ class AdoptedAgentImpl implements TrackedAgent {
   }
 }
 
-/** Check whether a PID is alive on this machine. Returns false on ESRCH. */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ESRCH'
-  }
-}
+// isPidAlive is now the single canonical implementation in pidfile.ts (with
+// the full hazard documentation). Re-export for local call sites that
+// previously defined their own copy.
 
 /**
  * Read a process's command-line argv via `ps`. Returns null if the process

@@ -54,21 +54,34 @@ export async function removePidFile(home: string): Promise<void> {
 }
 
 /**
- * Check whether `pid` refers to a currently-live process. Uses kill(pid, 0)
- * which sends no signal but checks existence and signal-permission.
+ * Check whether `pid` refers to a currently-live process we can account for.
+ * Uses `kill(pid, 0)` (no-op signal).
  *
- * Returns false for any error (process gone, permission denied to signal,
- * pid invalid). Returns true only when we can confirm the process exists.
+ * Returns true only on positive confirmation (kill succeeds).
+ * Returns false only on ESRCH (definitively gone).
+ * Any other error (EPERM, EACCES, etc.) returns true: we cannot prove the
+ * slot is free, so we treat it as occupied. This is the explicit policy for
+ * PID-file liveness in the presence of recycled PIDs or cross-UID processes.
+ *
+ * See the hazard note in lifecycle.ts and upgrade-runner.ts. A stronger
+ * identity (nonce written at daemon/Agent start and verified on every check,
+ * or holding an fcntl lock for the PID's lifetime) would eliminate the
+ * stranger-PID window; the current design accepts it as low-probability.
  */
-export function isProcessAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
-  } catch {
-    return false
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code
+    if (code === 'ESRCH') return false
+    return true
   }
 }
+
+/** Back-compat alias used by daemon.ts callers via readLivePid. */
+export const isProcessAlive = isPidAlive
 
 /**
  * Read the PID file and check liveness. Returns the live PID if present
