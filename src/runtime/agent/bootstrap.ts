@@ -89,11 +89,23 @@ async function main(): Promise<void> {
     process.exit(75) // EX_TEMPFAIL
   }
 
+  // Tests can shorten the heartbeat interval via env to make
+  // "is the Agent in steady state?" assertions tractable without
+  // adding default-10s waits. Production callers leave it unset.
+  const heartbeatRaw = process.env['TWENTYTWOHUNDRED_HEARTBEAT_INTERVAL_MS']
+  const heartbeatIntervalMs =
+    heartbeatRaw !== undefined && heartbeatRaw.length > 0
+      ? Number.parseInt(heartbeatRaw, 10)
+      : undefined
+
   const agent = new AgentProcess({
     name,
     identityPath,
     socketPath,
     home,
+    ...(heartbeatIntervalMs !== undefined && Number.isFinite(heartbeatIntervalMs)
+      ? { heartbeatIntervalMs }
+      : {}),
   })
 
   const onShutdown = (signal: string): void => {
