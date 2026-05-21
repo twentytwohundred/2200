@@ -1019,6 +1019,7 @@ export class Supervisor {
       } catch (err) {
         throw new Error(
           `Agent "${agentName}" Identity declares pub.identity="${pubBlock.identity}" but credential file is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
       return

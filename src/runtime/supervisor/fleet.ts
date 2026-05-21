@@ -191,7 +191,7 @@ export async function regenerateFleet(args: {
   const path = fleetPath(args.home)
   const next = renderFleetMarkdown(data)
   const nextStable = stripGeneratedAt(next)
-  let prev: string | null = null
+  let prev: string | null
   try {
     prev = await readFile(path, 'utf8')
   } catch {

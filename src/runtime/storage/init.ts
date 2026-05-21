@@ -92,6 +92,7 @@ export async function initPubDirs(
     if (e.code === 'EEXIST') {
       throw new Error(
         `pub "${pubName}" already exists at ${paths.pubMd}; delete it first or pick a different name`,
+        { cause: err },
       )
     }
     throw err

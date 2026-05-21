@@ -272,6 +272,7 @@ export function makeSpotifyTools(deps: SpotifyToolDeps = {}): ToolDefinition[] {
           throw new Error(
             `cover image not found at "${args.image_path}". image_path must be a 2200 virtual path (e.g. /project/covers/cover.jpg). ` +
               `Save the image under /project, /shared, /brain, or /commons before calling this tool.`,
+            { cause: err },
           )
         }
         throw err

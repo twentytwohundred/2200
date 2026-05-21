@@ -94,6 +94,7 @@ export async function readPubSecrets(paths: {
   } catch (err) {
     throw new Error(
       `pub signing key at ${paths.signingKey} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
   const s = (signing as Record<string, unknown> | null) ?? {}

@@ -119,6 +119,7 @@ export const httpRequest = defineTool({
         if (err instanceof CredentialVaultError && err.code === 'NOT_FOUND') {
           throw new Error(
             `bearer_credential '${args.bearer_credential}' is not in vault; call credential_has first or credential_request to ask the operator for it`,
+            { cause: err },
           )
         }
         throw err
@@ -134,6 +135,7 @@ export const httpRequest = defineTool({
         if (err instanceof CredentialVaultError && err.code === 'NOT_FOUND') {
           throw new Error(
             `credential_header.credential_name '${args.credential_header.credential_name}' is not in vault; call credential_has first or credential_request to ask the operator for it`,
+            { cause: err },
           )
         }
         throw err

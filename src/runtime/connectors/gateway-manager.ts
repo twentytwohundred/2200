@@ -250,6 +250,7 @@ export class GatewayManager {
       } catch (err) {
         throw new Error(
           `failed to read vault credential "${credentialName}" for agent "${agentName}": ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
     }

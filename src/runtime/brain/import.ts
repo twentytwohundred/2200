@@ -118,7 +118,9 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
   try {
     entries = await readdir(dir)
   } catch (err) {
-    throw new Error(`could not read source dir "${dir}": ${(err as Error).message}`)
+    throw new Error(`could not read source dir "${dir}": ${(err as Error).message}`, {
+      cause: err,
+    })
   }
   const out: string[] = []
   for (const name of entries) {

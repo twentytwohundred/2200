@@ -173,7 +173,10 @@ export function makeDiscordTools(_client: DiscordClient, deps?: DiscordToolDeps)
       try {
         response = await fetcher(fullUrl, init)
       } catch (err) {
-        throw new Error(`Discord fetch failed: ${err instanceof Error ? err.message : String(err)}`)
+        throw new Error(
+          `Discord fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        )
       }
       // 204 No Content (e.g., for reaction add). Return ok marker.
       if (response.status === 204) {
@@ -185,6 +188,7 @@ export function makeDiscordTools(_client: DiscordClient, deps?: DiscordToolDeps)
       } catch (err) {
         throw new Error(
           `Discord response read failed: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
       let parsed: unknown = null

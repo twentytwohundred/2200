@@ -74,6 +74,7 @@ export async function readBrainPermissions(
   } catch (err) {
     throw new Error(
       `${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
   return BrainPermissionsSchema.parse(parsed)

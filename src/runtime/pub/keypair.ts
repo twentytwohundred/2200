@@ -132,7 +132,9 @@ export async function readCredentialFile(path: string): Promise<PubCredential> {
   try {
     raw = await readFile(path, 'utf8')
   } catch (err) {
-    throw new Error(`cannot read pub credential file at ${path}: ${describeError(err)}`)
+    throw new Error(`cannot read pub credential file at ${path}: ${describeError(err)}`, {
+      cause: err,
+    })
   }
   let parsed: unknown
   try {
@@ -140,7 +142,9 @@ export async function readCredentialFile(path: string): Promise<PubCredential> {
   } catch (err) {
     // Deliberately do NOT include `raw` in the error message; raw
     // contains the private key.
-    throw new Error(`pub credential file at ${path} is not valid JSON: ${describeError(err)}`)
+    throw new Error(`pub credential file at ${path} is not valid JSON: ${describeError(err)}`, {
+      cause: err,
+    })
   }
   // Shape check, deliberately terse. Same redaction discipline:
   // failures name fields, never values.

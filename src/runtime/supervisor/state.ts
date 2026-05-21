@@ -42,7 +42,9 @@ export async function loadState(home: string): Promise<SupervisorState> {
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    throw new Error(`supervisor.json is not valid JSON at ${path}: ${stringifyErr(err)}`)
+    throw new Error(`supervisor.json is not valid JSON at ${path}: ${stringifyErr(err)}`, {
+      cause: err,
+    })
   }
 
   const result = StateSnapshotResultSchema.safeParse(parsed)
