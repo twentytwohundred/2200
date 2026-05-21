@@ -7,9 +7,9 @@
 # both arm64 and x86_64. Requires Node.js 22 or newer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh -s -- --version 0.1.0
-#   curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh -s -- --dry-run
+#   curl -fsSL https://2200.ai/install.sh | sh
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 0.1.0
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
 # Flags:
 #   --version <v>    install a specific version (default: latest)
@@ -35,13 +35,22 @@ DRY_RUN=0
 NO_BANNER=0
 
 while [ "$#" -gt 0 ]; do
-  case "$1" in
+  arg="$1"
+  shift
+  case "$arg" in
     --version)
-      shift
-      PACKAGE_VERSION="${1:-latest}"
+      # Take the next arg as the value only if it exists AND does not
+      # itself look like a flag. Without the leading-dash guard,
+      # `--version --dry-run` would install version `--dry-run`.
+      if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+        PACKAGE_VERSION="$1"
+        shift
+      else
+        PACKAGE_VERSION="latest"
+      fi
       ;;
     --version=*)
-      PACKAGE_VERSION="${1#--version=}"
+      PACKAGE_VERSION="${arg#--version=}"
       ;;
     --dry-run)
       DRY_RUN=1
@@ -50,15 +59,14 @@ while [ "$#" -gt 0 ]; do
       NO_BANNER=1
       ;;
     -h|--help)
-      sed -n '2,30p' "$0" | sed 's/^# *//'
+      sed -n '2,/^set -eu/p' "$0" | sed 's/^# *//' | sed '/^set -eu/d'
       exit 0
       ;;
     *)
-      printf 'unknown flag: %s\n' "$1" >&2
+      printf 'unknown flag: %s\n' "$arg" >&2
       exit 1
       ;;
   esac
-  shift
 done
 
 # -----------------------------------------------------------------------------
