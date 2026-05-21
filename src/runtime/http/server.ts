@@ -840,18 +840,38 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
     }
 
+    // Subscription providers (xai-subscription) get their "configured"
+    // signal from the fleet OAuth token store, not from runtime.env.
+    // Read once here so each provider in the loop below can check.
+    const xaiSubscriptionConfigured = await (async () => {
+      try {
+        const { readOAuthToken } = await import('../oauth/token-store.js')
+        const tok = await readOAuthToken(home, 'xai-oauth')
+        return tok !== null && tok.metadata.expires_at_ms > Date.now()
+      } catch {
+        return false
+      }
+    })()
+
     const items = listKnownProviders().map((cat) => {
       const value = env[cat.defaultEnvKey] ?? ''
-      const keySet = value.length > 0
+      // Subscription providers don't read runtime.env; their `key_set`
+      // is whether the OAuth token is present and unexpired.
+      const keySet = cat.category === 'subscription' ? xaiSubscriptionConfigured : value.length > 0
+      // xai-subscription shares grok-* models with the API-key xai
+      // provider, but pricing.json keys those under "xai/...". Copy
+      // the suggestions over so the picker shows the same model list
+      // under the Subscriptions optgroup.
+      const suggestedKey = cat.name === 'xai-subscription' ? 'xai' : cat.name
       return {
         ...cat,
         // Reflect the live env value for the local provider's URL,
         // since the catalog snapshot reads it once at module load.
         baseUrl: cat.name === 'local' ? (env['LOCAL_BASE_URL'] ?? cat.baseUrl) : cat.baseUrl,
         key_set: keySet,
-        key_masked: keySet ? maskKey(value) : null,
+        key_masked: keySet && cat.category !== 'subscription' ? maskKey(value) : null,
         agents_using: (agentsByProvider[cat.name] ?? []).sort(),
-        suggested_models: (modelsByProvider[cat.name] ?? []).sort(),
+        suggested_models: (modelsByProvider[suggestedKey] ?? []).sort(),
       }
     })
     return { runtime_env_path: envPath, items }

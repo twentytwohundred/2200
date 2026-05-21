@@ -66,13 +66,22 @@ export function ModelPicker({
   })
 
   const groups = useMemo<ModelGroup[]>(() => {
+    // Order subscriptions first so they sit at the top of the picker.
+    // Within each category, providers appear in their catalog order
+    // (the runtime returns them with subscriptions sorted naturally
+    // first inside OPENAI_COMPATIBLE_VENDORS).
     const out: ModelGroup[] = []
     const builtins = providers.data?.items ?? []
-    for (const p of builtins) {
-      if (p.suggested_models.length === 0) continue
-      if (!p.key_set && !p.keyOptional) continue
+    const subs = builtins.filter((p) => p.category === 'subscription')
+    const apiKey = builtins.filter((p) => p.category === 'api-key')
+    const local = builtins.filter((p) => p.category === 'local')
+
+    const pushProvider = (p: (typeof builtins)[number], categoryPrefix?: string): void => {
+      if (p.suggested_models.length === 0) return
+      if (!p.key_set && !p.keyOptional) return
+      const label = categoryPrefix !== undefined ? `${categoryPrefix} › ${p.label}` : p.label
       out.push({
-        label: p.label,
+        label,
         options: p.suggested_models.map((id) => ({
           value: encodePair(p.name, id),
           label: id,
@@ -81,11 +90,16 @@ export function ModelPicker({
         })),
       })
     }
+
+    for (const p of subs) pushProvider(p, 'Subscriptions')
+    for (const p of apiKey) pushProvider(p)
+    for (const p of local) pushProvider(p)
+
     const items = endpoints.data?.items ?? []
     for (const e of items) {
       if (e.models.length === 0) continue
       out.push({
-        label: e.name,
+        label: `Custom endpoints › ${e.name}`,
         options: e.models.map((m) => ({
           value: encodePair(`endpoint:${e.id}`, m.id),
           label: m.label ?? m.id,

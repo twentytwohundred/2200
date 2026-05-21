@@ -67,6 +67,13 @@ const OPENAI_COMPATIBLE_VENDORS: Record<string, OpenAICompatibleConfig> = {
   kimi: { baseUrl: 'https://api.moonshot.ai' },
   openrouter: { baseUrl: 'https://openrouter.ai/api' },
   xai: { baseUrl: 'https://api.x.ai' },
+  // Subscription-credentialed sibling of xai. Same transport (OpenAI-
+  // compatible chat-completions against api.x.ai), different credential
+  // source (OAuth bearer from the fleet token store, NOT XAI_API_KEY).
+  // Operators pick this provider explicitly from the Subscriptions
+  // category in the model picker; auto-fallback to the API-key path
+  // would hide the choice and is deliberately not wired.
+  'xai-subscription': { baseUrl: 'https://api.x.ai' },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com',
     endpointUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
@@ -139,25 +146,51 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
     })
   }
 
-  // xAI OAuth subscription credential takes priority over the env API
-  // key when present. Fleet-wide: one signed-in subscription serves
-  // every Agent whose model.provider is "xai". The bearer is read
-  // lazily so it picks up refreshes the refresh-service made without
-  // requiring an Agent restart on every token rotation.
-  if (opts.providerName === 'xai' && opts.secret === undefined && opts.home) {
+  // xAI subscription credential. Operators pick `xai-subscription`
+  // explicitly from the Subscriptions category in the model picker;
+  // distinct from the API-key `xai` provider so the choice is visible
+  // in the Agent's Identity. Fails loud if not signed in ... the
+  // operator picked subscription and the cure is to sign in via
+  // Settings ▸ "Sign in with X / SuperGrok", not to silently fall
+  // back to a different credential.
+  if (opts.providerName === 'xai-subscription') {
+    if (!opts.home) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        'xai-subscription requires a 2200 home directory; provide opts.home when resolving',
+        opts.providerName,
+      )
+    }
     const { readOAuthToken } = await import('../oauth/token-store.js')
     const token = await readOAuthToken(opts.home, 'xai-oauth').catch(() => null)
-    if (token && token.metadata.expires_at_ms > Date.now()) {
-      const vendor = OPENAI_COMPATIBLE_VENDORS['xai']
-      if (vendor) {
-        return new OpenAIProvider({
-          apiKey: token.bearer,
-          baseUrl: vendor.baseUrl,
-          providerName: 'xai',
-          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-        })
-      }
+    if (!token) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        'xai-subscription is not signed in. Open Settings and click "Sign in with X / SuperGrok" (or run `2200 oauth xai login`).',
+        opts.providerName,
+      )
     }
+    if (token.metadata.expires_at_ms <= Date.now()) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        'xai-subscription token is expired and the background refresh has not landed a fresh one yet. Try again in ~60s, or re-sign-in from Settings.',
+        opts.providerName,
+      )
+    }
+    const vendor = OPENAI_COMPATIBLE_VENDORS['xai-subscription']
+    if (!vendor) {
+      throw new LlmError(
+        'CONFIG_ERROR',
+        'internal: xai-subscription vendor config missing',
+        opts.providerName,
+      )
+    }
+    return new OpenAIProvider({
+      apiKey: token.bearer,
+      baseUrl: vendor.baseUrl,
+      providerName: 'xai-subscription',
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    })
   }
 
   const secretRef = opts.secret ?? defaultSecretFor(opts.providerName)
@@ -214,6 +247,19 @@ export interface ProviderCatalogEntry {
   baseUrlEnvKey: string
   /** True when the API key is optional (e.g. local Ollama). */
   keyOptional: boolean
+  /**
+   * Settings-UI category. Drives optgroup placement in the model picker
+   * and section grouping in Settings ▸ Models & API Keys.
+   *
+   *   - 'subscription': Sign-in-with-subscription (xAI / SuperGrok).
+   *     Credential lives in the fleet OAuth token store.
+   *   - 'api-key':      Paste-an-API-key providers (anthropic, openai,
+   *                     deepseek, xai, ...). Credential lives in
+   *                     runtime.env or per-Agent vault.
+   *   - 'local':        Self-hosted (Ollama / LM Studio / vLLM). No
+   *                     credential typically required.
+   */
+  category: 'subscription' | 'api-key' | 'local'
 }
 
 /**
@@ -232,6 +278,7 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
       baseUrlEditable: false,
       baseUrlEnvKey: '',
       keyOptional: false,
+      category: 'api-key',
     },
   ]
   for (const [name, cfg] of Object.entries(OPENAI_COMPATIBLE_VENDORS)) {
@@ -244,6 +291,7 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
       baseUrlEditable: false,
       baseUrlEnvKey: '',
       keyOptional: false,
+      category: name === 'xai-subscription' ? 'subscription' : 'api-key',
     })
   }
   out.push({
@@ -255,6 +303,7 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
     baseUrlEditable: true,
     baseUrlEnvKey: 'LOCAL_BASE_URL',
     keyOptional: true,
+    category: 'local',
   })
   return out
 }
@@ -265,7 +314,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek',
   kimi: 'Moonshot Kimi',
   openrouter: 'OpenRouter',
-  xai: 'xAI (Grok)',
+  xai: 'xAI (Grok, API key)',
+  'xai-subscription': 'xAI / Grok (SuperGrok subscription)',
   gemini: 'Google Gemini',
 }
 
@@ -283,6 +333,14 @@ function defaultSecretFor(providerName: string): SecretRef {
     case 'openrouter':
       return { source: 'env', id: 'OPENROUTER_API_KEY' }
     case 'xai':
+      return { source: 'env', id: 'XAI_API_KEY' }
+    case 'xai-subscription':
+      // The xai-subscription provider does NOT read this; its
+      // credential comes from the fleet OAuth token store. The entry
+      // exists only so listKnownProviders has something non-empty to
+      // hand to the Settings UI, which displays it (and the UI uses
+      // the category field to decide that this is an OAuth provider,
+      // not a paste-a-key one).
       return { source: 'env', id: 'XAI_API_KEY' }
     case 'gemini':
       return { source: 'env', id: 'GEMINI_API_KEY' }
