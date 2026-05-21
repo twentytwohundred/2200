@@ -428,6 +428,252 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { status }
   })
 
+  // --------------------------------------------------------------
+  // OAuth: xAI / Grok device-code sign-in (browser-driven).
+  //
+  // Mirrors the CLI flow (`2200 oauth xai login`) over HTTP so the
+  // Settings page can drive the sign-in inline. The flow is stateful
+  // across two requests:
+  //
+  //   1. POST  /api/v1/oauth/xai/login/start
+  //        → daemon calls device-authorization endpoint, returns
+  //          { session_id, user_code, verification_uri, ... }
+  //   2. GET   /api/v1/oauth/xai/login/status?session=<id>
+  //        → daemon does ONE token-endpoint poll, returns
+  //          { status: 'pending' | 'completed' | 'failed', ... }.
+  //          Browser polls at its own cadence.
+  //   3. GET   /api/v1/oauth/xai/status
+  //        → reads the sealed token (if any) and returns
+  //          configured/expires/scopes (no secrets).
+  //   4. POST  /api/v1/oauth/xai/logout
+  //        → deletes the sealed token from disk.
+  //
+  // The session manager is in-process and dies with the daemon.
+  // A daemon restart during a sign-in just means the user clicks
+  // "Sign in" again ... no persistence of in-flight secrets.
+  // --------------------------------------------------------------
+  const { DeviceFlowSessionManager } = await import('../oauth/device-flow-session.js')
+  const oauthSessions = new DeviceFlowSessionManager()
+
+  fastify.post('/api/v1/oauth/xai/login/start', async (_req, reply) => {
+    const { fetchXaiDiscovery, xaiDeviceFlowProvider, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPES } =
+      await import('../oauth/xai-config.js')
+    const { generatePkce } = await import('../oauth/pkce.js')
+    let discovery
+    try {
+      discovery = await fetchXaiDiscovery()
+    } catch (err) {
+      await reply.code(502).send({
+        error: 'discovery_failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    const provider = xaiDeviceFlowProvider(discovery)
+    const pkce = generatePkce()
+
+    const initBody = new URLSearchParams()
+    initBody.set('client_id', XAI_OAUTH_CLIENT_ID)
+    initBody.set('scope', XAI_OAUTH_SCOPES.join(' '))
+    initBody.set('code_challenge', pkce.challenge)
+    initBody.set('code_challenge_method', pkce.method)
+
+    let initRes
+    try {
+      initRes = await fetch(provider.deviceAuthorizationUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: initBody.toString(),
+      })
+    } catch (err) {
+      await reply.code(502).send({
+        error: 'device_authorization_request_failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    if (!initRes.ok) {
+      const text = await initRes.text().catch(() => '')
+      await reply.code(502).send({
+        error: 'device_authorization_request_failed',
+        message: `HTTP ${String(initRes.status)} ${text.slice(0, 300)}`,
+      })
+      return
+    }
+    const initJson = (await initRes.json().catch(() => null)) as {
+      device_code?: string
+      user_code?: string
+      verification_uri?: string
+      verification_uri_complete?: string
+      expires_in?: number
+      interval?: number
+    } | null
+    if (!initJson?.device_code || !initJson.user_code || !initJson.verification_uri) {
+      await reply.code(502).send({
+        error: 'device_authorization_invalid_response',
+        message: 'xAI device-auth response missing device_code, user_code, or verification_uri',
+      })
+      return
+    }
+
+    const expiresInRaw = initJson.expires_in
+    const expiresInSec =
+      typeof expiresInRaw === 'number' && Number.isFinite(expiresInRaw) ? expiresInRaw : 900
+    // RFC 8628: minimum 5s polling interval.
+    const intervalRaw = initJson.interval
+    const rawInterval =
+      typeof intervalRaw === 'number' && Number.isFinite(intervalRaw) ? intervalRaw : 5
+    const intervalSec = Math.min(Math.max(rawInterval, 5), 60)
+    const session = oauthSessions.create({
+      provider,
+      deviceCode: initJson.device_code,
+      userCode: initJson.user_code,
+      verificationUri: initJson.verification_uri,
+      ...(initJson.verification_uri_complete
+        ? { verificationUriComplete: initJson.verification_uri_complete }
+        : {}),
+      expiresAtMs: Date.now() + expiresInSec * 1000,
+      codeVerifier: pkce.verifier,
+      intervalSec,
+    })
+    return session
+  })
+
+  fastify.get<{ Querystring: { session?: string } }>(
+    '/api/v1/oauth/xai/login/status',
+    async (req, reply) => {
+      const sessionId = req.query.session
+      if (!sessionId) {
+        await reply.code(400).send({ error: 'missing_session_id' })
+        return
+      }
+      const rec = oauthSessions.get(sessionId)
+      if (!rec) {
+        await reply.code(404).send({ error: 'unknown_session' })
+        return
+      }
+      // Re-polls of a completed session return the same terminal value
+      // so the browser can rely on idempotent status responses.
+      if (rec.completed) return rec.completed
+
+      const pollBody = new URLSearchParams()
+      pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
+      pollBody.set('device_code', rec.deviceCode)
+      pollBody.set('client_id', rec.provider.clientId)
+      pollBody.set('code_verifier', rec.codeVerifier)
+
+      let pollRes
+      try {
+        pollRes = await fetch(rec.tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+          },
+          body: pollBody.toString(),
+        })
+      } catch (err) {
+        // Transient network errors: report pending so the browser
+        // tries again at its own cadence. We do NOT mark failed here;
+        // a brief blip should not kill a sign-in.
+        return {
+          status: 'pending' as const,
+          poll_interval_sec: rec.intervalSec,
+          transient_error: err instanceof Error ? err.message : String(err),
+        }
+      }
+      const pollJson = (await pollRes.json().catch(() => null)) as {
+        access_token?: string
+        refresh_token?: string
+        expires_in?: number
+        scope?: string
+        error?: string
+        error_description?: string
+      } | null
+
+      if (pollRes.ok && pollJson?.access_token) {
+        const now = Date.now()
+        const expiresAtMs =
+          pollJson.expires_in !== undefined ? now + pollJson.expires_in * 1000 : now + 3_600_000
+        const grantedScopes = pollJson.scope ? pollJson.scope.split(/\s+/) : []
+        const refreshToken = pollJson.refresh_token ?? ''
+        if (!refreshToken) {
+          const fail = {
+            status: 'failed' as const,
+            error: 'no_refresh_token',
+            description:
+              'xAI did not return a refresh token; ensure the offline_access scope was granted at consent.',
+          }
+          oauthSessions.recordCompletion(sessionId, fail)
+          return fail
+        }
+        const { saveOAuthToken } = await import('../oauth/token-store.js')
+        await saveOAuthToken(home, {
+          provider: 'xai-oauth',
+          bearer: pollJson.access_token,
+          refreshToken,
+          metadata: {
+            granted_scopes: grantedScopes,
+            expires_at_ms: expiresAtMs,
+            created_at: new Date(now).toISOString(),
+          },
+        })
+        const result = {
+          status: 'completed' as const,
+          access_token: '<sealed-on-disk>',
+          refresh_token: '<sealed-on-disk>',
+          expires_at_ms: expiresAtMs,
+          granted_scopes: grantedScopes,
+        }
+        oauthSessions.recordCompletion(sessionId, result)
+        return result
+      }
+
+      const errorCode = pollJson?.error ?? 'unknown'
+      if (errorCode === 'authorization_pending') {
+        return { status: 'pending' as const, poll_interval_sec: rec.intervalSec }
+      }
+      if (errorCode === 'slow_down') {
+        oauthSessions.bumpInterval(sessionId, 5)
+        const updated = oauthSessions.get(sessionId)
+        return { status: 'pending' as const, poll_interval_sec: updated?.intervalSec ?? 10 }
+      }
+      const failResult = {
+        status: 'failed' as const,
+        error: errorCode,
+        ...(pollJson?.error_description ? { description: pollJson.error_description } : {}),
+      }
+      oauthSessions.recordCompletion(sessionId, failResult)
+      return failResult
+    },
+  )
+
+  fastify.get('/api/v1/oauth/xai/status', async () => {
+    const { readOAuthToken } = await import('../oauth/token-store.js')
+    const token = await readOAuthToken(home, 'xai-oauth').catch(() => null)
+    if (!token) {
+      return { configured: false }
+    }
+    return {
+      configured: true,
+      provider: token.provider,
+      granted_scopes: token.metadata.granted_scopes,
+      expires_at: new Date(token.metadata.expires_at_ms).toISOString(),
+      expires_at_ms: token.metadata.expires_at_ms,
+      created_at: token.metadata.created_at,
+      refreshed_at: token.metadata.refreshed_at ?? null,
+    }
+  })
+
+  fastify.post('/api/v1/oauth/xai/logout', async () => {
+    const { deleteOAuthToken } = await import('../oauth/token-store.js')
+    const removed = await deleteOAuthToken(home, 'xai-oauth')
+    return { removed }
+  })
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,
