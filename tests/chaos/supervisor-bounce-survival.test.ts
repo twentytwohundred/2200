@@ -125,6 +125,13 @@ describe('supervisor bounce survival (chaos)', () => {
     //    direct via child_process.spawn here so we own the handle.
     //    This mirrors what launchAgentProcess does (stdio: ['ignore', 'pipe', 'pipe'])
     //    so the EPIPE failure mode reproduces.
+    //
+    //    Heartbeat interval is shortened to 300ms via env so we can
+    //    wait for "the heartbeat loop has fired at least once" as a
+    //    steady-state signal. Without this, the test would race
+    //    `supervisor.shutdown()` against the in-flight register-RPC
+    //    response (closed listener → "connection closed" → agent
+    //    exits before its heartbeat loop is up).
     agent = spawn(process.execPath, [AGENT_BOOTSTRAP], {
       env: {
         ...process.env,
@@ -132,6 +139,7 @@ describe('supervisor bounce survival (chaos)', () => {
         TWENTYTWOHUNDRED_IDENTITY_PATH: idPath,
         TWENTYTWOHUNDRED_SOCKET_PATH: Supervisor.socketPath(home),
         TWENTYTWOHUNDRED_HOME: home,
+        TWENTYTWOHUNDRED_HEARTBEAT_INTERVAL_MS: '300',
         // Local provider with an unreachable URL: no completion is
         // ever attempted in this test (no tasks queued), but the
         // identity loader requires SOMETHING.
@@ -154,7 +162,14 @@ describe('supervisor bounce survival (chaos)', () => {
     })
     const dumpStderr = (): string => Buffer.concat(stderrChunks).toString('utf8')
 
-    // 3. Wait for the agent to register with the supervisor.
+    // 3. Wait for the agent to register AND its heartbeat loop to
+    //    have fired at least once. The register RPC updates
+    //    `last_heartbeat` on the supervisor side, so registering
+    //    alone isn't a strong-enough signal: we record the initial
+    //    timestamp, then wait for it to advance ... that proves
+    //    `agent.start()` returned and the heartbeat interval timer
+    //    is cycling, eliminating the supervisor-shutdown vs.
+    //    in-flight-register race.
     await eventually(() => {
       const snap = supervisor!.snapshot()
       const rec = snap.agents['chaos']
@@ -162,6 +177,16 @@ describe('supervisor bounce survival (chaos)', () => {
     })
     const initialPid = supervisor.snapshot().agents['chaos']!.pid
     expect(initialPid).toBe(agent.pid)
+    const registerHeartbeat = supervisor.snapshot().agents['chaos']!.last_heartbeat
+    await eventually(
+      () => {
+        const rec = supervisor!.snapshot().agents['chaos']
+        if (rec?.last_heartbeat == null) return false
+        if (registerHeartbeat == null) return true
+        return Date.parse(rec.last_heartbeat) > Date.parse(registerHeartbeat)
+      },
+      { timeoutMs: 5_000, intervalMs: 50 },
+    )
 
     // 4. SIGKILL the supervisor by closing its listener directly.
     //    (Real `daemon stop` would SIGTERM the daemon process; we
