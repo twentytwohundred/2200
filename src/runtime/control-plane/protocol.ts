@@ -276,9 +276,15 @@ export type StateSnapshotResult = z.infer<typeof StateSnapshotResultSchema>
  * records yet); exported here so downstream layers (plan-record writer,
  * Identity loader) share one source of truth.
  */
-export const ModelIdSchema = z.string().regex(/^[a-z0-9]+\/[a-z0-9.-]+$/, {
-  message: 'model identifier must be <provider>/<model_id>, e.g., "anthropic/claude-opus-4-7"',
-})
+// Provider segment allows hyphens (e.g. `xai-subscription`) and may
+// also use the `endpoint:<slug>` form for custom endpoints. Kept in
+// sync with ModelProviderSchema in identity/types.ts.
+export const ModelIdSchema = z
+  .string()
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*(:[a-z0-9][a-z0-9-]{0,49})?\/[a-z0-9.-]+$/, {
+    message:
+      'model identifier must be <provider>/<model_id>, e.g., "anthropic/claude-opus-4-7" or "xai-subscription/grok-4.3"',
+  })
 export type ModelId = z.infer<typeof ModelIdSchema>
 
 // ---------------------------------------------------------------------------

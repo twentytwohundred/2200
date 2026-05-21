@@ -30,17 +30,15 @@ import { Card } from '../../primitives'
 import styles from './GrokAuthSection.module.css'
 
 /**
- * Stylized X mark, modeled on xAI's brand wordmark (a clean,
- * geometric "X"). Renders in the tile's logo badge. Pure paths, no
- * external assets, picks up surrounding currentColor.
+ * Official Grok mark (the 2025 rebrand silhouette, sourced from xAI
+ * brand assets and dropped into apps/web/src/assets/grok-logo.svg).
+ * Inlined as a React component so it picks up surrounding
+ * currentColor without needing a wrapper element.
  */
-function XLogo(): ReactElement {
+function GrokLogo(): ReactElement {
   return (
-    <svg viewBox="0 0 32 32" aria-hidden="true">
-      <path
-        d="M3.5 4.5 L13.5 16 L3 27.5 L7.5 27.5 L15.7 18.2 L23 27.5 L28.5 27.5 L18.0 14.5 L27.5 4.5 L23.0 4.5 L15.7 12.7 L9.0 4.5 Z"
-        fill="currentColor"
-      />
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor" fillRule="evenodd">
+      <path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815" />
     </svg>
   )
 }
@@ -162,7 +160,7 @@ export function GrokAuthSection(): ReactElement {
         <div className={styles.header}>
           <div className={styles.headerInner}>
             <div className={styles.logoBadge} aria-hidden="true">
-              <XLogo />
+              <GrokLogo />
             </div>
             <div className={styles.headerText}>
               <h2 className={styles.title}>Sign in with X / SuperGrok</h2>
