@@ -240,6 +240,7 @@ describe('supervisor bounce survival (chaos)', () => {
     } catch (err) {
       throw new Error(
         `agent did not re-register after supervisor restart: ${err instanceof Error ? err.message : String(err)}\nagent stderr:\n${dumpStderr()}`,
+        { cause: err },
       )
     }
 

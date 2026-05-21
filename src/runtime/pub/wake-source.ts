@@ -370,7 +370,7 @@ export class PubWakeSource {
     const home = this.opts.home
     if (!router || !home) return null
 
-    let routerAgents: RouterAgent[] = []
+    let routerAgents: RouterAgent[]
     try {
       const roster = await readRoster(home, this.opts.pubName)
       // Pass the COMPLETE roster (including self) with each agent's

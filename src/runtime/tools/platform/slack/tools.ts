@@ -174,7 +174,9 @@ export function makeSlackTools(_client: SlackClient, deps?: SlackToolDeps): Tool
       try {
         response = await fetcher(fullUrl, init)
       } catch (err) {
-        throw new Error(`Slack fetch failed: ${err instanceof Error ? err.message : String(err)}`)
+        throw new Error(`Slack fetch failed: ${err instanceof Error ? err.message : String(err)}`, {
+          cause: err,
+        })
       }
       let bodyText: string
       try {
@@ -182,6 +184,7 @@ export function makeSlackTools(_client: SlackClient, deps?: SlackToolDeps): Tool
       } catch (err) {
         throw new Error(
           `Slack response read failed: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
       let parsed: unknown
@@ -190,6 +193,7 @@ export function makeSlackTools(_client: SlackClient, deps?: SlackToolDeps): Tool
       } catch (err) {
         throw new Error(
           `Slack response is not JSON (HTTP ${String(response.status)}): ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
       // Slack returns 200 even for logical errors; the envelope's `ok`

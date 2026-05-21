@@ -72,7 +72,7 @@ export async function listSkills(home: string): Promise<SkillListEntry[]> {
   for (const name of names.sort()) {
     if (name.startsWith('.')) continue
     const dir = join(root, name)
-    let isDir = false
+    let isDir: boolean
     try {
       isDir = (await stat(dir)).isDirectory()
     } catch {

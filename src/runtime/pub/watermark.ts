@@ -51,7 +51,9 @@ export async function loadWatermarks(home: string, agentName: string): Promise<W
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    throw new Error(`pub watermarks at ${path} is not valid JSON: ${describeError(err)}`)
+    throw new Error(`pub watermarks at ${path} is not valid JSON: ${describeError(err)}`, {
+      cause: err,
+    })
   }
   if (
     parsed === null ||

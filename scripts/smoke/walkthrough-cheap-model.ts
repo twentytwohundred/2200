@@ -281,7 +281,7 @@ function fromOpenAIChoice(msg: OpenAIResponse['choices'][0]['message']): Anthrop
     out.push({ type: 'text', text: msg.content })
   }
   for (const tc of msg.tool_calls ?? []) {
-    let input: Record<string, unknown> = {}
+    let input: Record<string, unknown>
     try {
       input = JSON.parse(tc.function.arguments) as Record<string, unknown>
     } catch {

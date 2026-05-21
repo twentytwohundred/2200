@@ -28,6 +28,7 @@ export async function readPulse(home: string, agentName: string): Promise<PulseS
   } catch (err) {
     throw new Error(
       `pulse.json at ${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
   // Try v2 first.

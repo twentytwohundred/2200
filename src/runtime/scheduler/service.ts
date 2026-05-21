@@ -339,7 +339,11 @@ export class Scheduler {
       return
     }
 
-    let hookResult: HookExecResult | null = null
+    // `hookResult` is set below ONLY on the runHook() path; both error
+    // paths (no tick hook, permission missing) bail without assigning.
+    // Declared without an initializer per @eslint/js v10's
+    // no-useless-assignment.
+    let hookResult: HookExecResult | null
     try {
       const ext = await readExtension(this.home, extensionName)
       const tickPath = ext.manifest.hooks.tick
