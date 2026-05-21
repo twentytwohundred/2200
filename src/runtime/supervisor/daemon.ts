@@ -21,7 +21,8 @@ import { existsSync } from 'node:fs'
 import { open, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { writePidFile, readLivePid } from './pidfile.js'
+import { writePidFile, readLivePid, readLegacyPidFile, pidFilePath, isPidAlive } from './pidfile.js'
+import { isLockHeld } from './process-lock.js'
 import { homePaths } from '../storage/layout.js'
 import { createLogger, type Logger } from '../util/logger.js'
 import { loadRuntimeEnv, defaultRuntimeEnvPath } from '../config/runtime-env.js'
@@ -46,6 +47,13 @@ export interface StartDaemonOptions {
    * loading entirely (tests).
    */
   runtimeEnvPath?: string | null
+  /**
+   * Wait for the spawned daemon to acquire its supervisor lock before
+   * returning. Defaults to true: when set, startDaemon's return is a
+   * real "daemon is up" signal. Tests that use a bogus bootstrap path
+   * (which never spawns a lock-acquiring process) pass false.
+   */
+  waitForReady?: boolean
 }
 
 /**
@@ -60,6 +68,19 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<number> {
   const existing = await readLivePid(opts.home)
   if (existing !== null) {
     throw new Error(`supervisor daemon already running with PID ${String(existing)}`)
+  }
+  // Migration check: a daemon from an older 2200 release (pre-lock)
+  // writes a PID file but never acquires the lock. Detect it via
+  // kill(0) so we refuse to start a second one, with a clear message
+  // for the operator.
+  const legacy = await readLegacyPidFile(opts.home)
+  if (legacy !== null) {
+    throw new Error(
+      `supervisor daemon already running with PID ${String(legacy)} ` +
+        `(legacy format, no lock file). Stop the old daemon (\`kill ${String(legacy)}\` or ` +
+        `restart it under the new release) before starting a new one. ` +
+        `If you know the process is stale, remove ${pidFilePath(opts.home)} and retry.`,
+    )
   }
 
   const bootstrapPath = opts.bootstrapPath ?? defaultBootstrapPath()
@@ -98,7 +119,28 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<number> {
     // as a zombie.
     child.unref()
 
+    // Seed the PID file with the spawned child's PID. The child's own
+    // bootstrap will rewrite it (same value) and acquire the lock.
+    // The seed is here so a CLI command that runs in the spawn-to-boot
+    // window has at least the PID file to read.
     await writePidFile(opts.home, child.pid)
+
+    if (opts.waitForReady !== false) {
+      // Wait up to ~10s for the child to acquire the supervisor lock.
+      // This makes startDaemon's return a real "daemon is up" signal:
+      // any caller that then runs readLivePid will see the lock and
+      // get the PID back, rather than racing the child's boot.
+      const lockReady = await waitForLockAcquisition(pidFilePath(opts.home), 10_000)
+      if (!lockReady) {
+        // The child spawned but did not take the lock in 10s. Either
+        // it crashed during boot or it's hung. Either way, do not lie
+        // to the caller about "daemon started".
+        throw new Error(
+          `supervisor daemon spawned (PID ${String(child.pid)}) but did not acquire the lock within 10s. ` +
+            `Check ${logPath} for errors.`,
+        )
+      }
+    }
 
     log.info('supervisor daemon started', {
       pid: child.pid,
@@ -147,9 +189,17 @@ export async function killDaemon(
   options: { timeoutMs?: number; logger?: Logger } = {},
 ): Promise<boolean> {
   const log = options.logger ?? createLogger('daemon')
-  const pid = await readLivePid(home)
+  // Try the lock-based check first. Fall back to the legacy
+  // kill(0) path so `daemon stop` can also stop a pre-lock daemon
+  // during the one-time upgrade transition.
+  let pid = await readLivePid(home)
+  let isLegacy = false
   if (pid === null) {
-    return false
+    const legacy = await readLegacyPidFile(home)
+    if (legacy === null) return false
+    pid = legacy
+    isLegacy = true
+    log.warn('stopping legacy daemon (no lock file)', { pid })
   }
 
   log.info('sending SIGTERM to daemon', { pid })
@@ -163,9 +213,13 @@ export async function killDaemon(
   const timeoutMs = options.timeoutMs ?? 5000
   const start = Date.now()
   const pollIntervalMs = 100
+  // For lock-aware daemons, "gone" means the lock is released. For
+  // legacy daemons, "gone" means kill(0) returns ESRCH.
+  const isStillAlive = async (): Promise<boolean> =>
+    isLegacy ? isPidAlive(pid) : (await readLivePid(home)) !== null
 
   while (Date.now() - start < timeoutMs) {
-    if ((await readLivePid(home)) === null) {
+    if (!(await isStillAlive())) {
       return true
     }
     await sleep(pollIntervalMs)
@@ -182,7 +236,7 @@ export async function killDaemon(
   // Wait briefly for the kernel to reap.
   const killStart = Date.now()
   while (Date.now() - killStart < 2000) {
-    if ((await readLivePid(home)) === null) {
+    if (!(await isStillAlive())) {
       return true
     }
     await sleep(pollIntervalMs)
@@ -193,6 +247,19 @@ export async function killDaemon(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Poll until the daemon's PID-file lock is held, or a timeout elapses.
+ * Used by startDaemon to convert "spawn returned" into "daemon is up".
+ */
+async function waitForLockAcquisition(filePath: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await isLockHeld(filePath)) return true
+    await sleep(100)
+  }
+  return isLockHeld(filePath)
 }
 
 function errMsg(err: unknown): string {

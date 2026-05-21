@@ -31,8 +31,21 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createLogger, type Logger } from '../util/logger.js'
+import { stat } from 'node:fs/promises'
 import { isPidAlive } from './pidfile.js'
+import { isLockHeld } from './process-lock.js'
+import { agentPaths } from '../storage/layout.js'
 export { isPidAlive }
+
+/** Returns true iff the lockfile exists (held or stale, doesn't matter). */
+async function lockFileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export interface TrackedAgent {
   /** The Agent's name (matches its record key in supervisor.json). */
@@ -93,13 +106,35 @@ class StartedAgentImpl implements TrackedAgent {
 class AdoptedAgentImpl implements TrackedAgent {
   readonly adopted = true
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
+  /** Cached path to the Agent's PID-file lock, set in the constructor. */
+  private readonly lockPath: string
 
   constructor(
     public readonly name: string,
     public readonly pid: number,
+    home: string,
     private readonly log: Logger,
   ) {
+    this.lockPath = agentPaths(home, name).pidFile
     this.exited = this.watchForExit()
+  }
+
+  /**
+   * Liveness: the Agent process holds a `proper-lockfile` lock on its
+   * PID file for its lifetime. Lock holdership is the authoritative
+   * signal because it cannot be faked by a stranger PID.
+   *
+   * Fallback to `kill(this.pid, 0)` when no lockfile exists at all:
+   * this covers the test path (where a generic sleeper is adopted
+   * without going through the Agent bootstrap) AND any pre-migration
+   * adopt case where an old-format Agent was still alive at handoff.
+   * The fallback only fires when there is no lockfile, so adoption
+   * of a real (post-migration) Agent always uses the lock path.
+   */
+  private async isAlive(): Promise<boolean> {
+    if (await isLockHeld(this.lockPath)) return true
+    if (await lockFileExists(this.lockPath)) return false
+    return isPidAlive(this.pid)
   }
 
   /**
@@ -112,18 +147,20 @@ class AdoptedAgentImpl implements TrackedAgent {
   private watchForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     return new Promise((resolve) => {
       const tick = (): void => {
-        if (!isPidAlive(this.pid)) {
-          resolve({ code: null, signal: null })
-          return
-        }
-        setTimeout(tick, 100)
+        void this.isAlive().then((alive) => {
+          if (!alive) {
+            resolve({ code: null, signal: null })
+            return
+          }
+          setTimeout(tick, 100)
+        })
       }
       tick()
     })
   }
 
   async stop(timeoutMs = 5000): Promise<void> {
-    if (!isPidAlive(this.pid)) {
+    if (!(await this.isAlive())) {
       // Already dead. `exited` may have fired or be about to fire.
       // Wait briefly so the supervisor's handleAgentExit can run
       // before stop() returns; otherwise stopAgent + startAgent
@@ -143,7 +180,7 @@ class AdoptedAgentImpl implements TrackedAgent {
     }
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
-      if (!isPidAlive(this.pid)) {
+      if (!(await this.isAlive())) {
         // Wait for the supervisor's exit handler to drain before
         // returning. See the comment above; same invariant applies
         // post-SIGTERM as pre-stop.
@@ -166,7 +203,7 @@ class AdoptedAgentImpl implements TrackedAgent {
       throw err
     }
     for (let i = 0; i < 30; i++) {
-      if (!isPidAlive(this.pid)) {
+      if (!(await this.isAlive())) {
         await Promise.race([this.exited, new Promise((r) => setTimeout(r, 250))])
         return
       }
@@ -223,10 +260,10 @@ export function validateAdoptedProcessArgv(pid: number, expectedBootstrapPath: s
  * supervisor can `stop()` and `await exited` on. The caller is responsible
  * for argv validation (via `validateAdoptedProcessArgv`) before adopting.
  */
-export function adoptAgent(name: string, pid: number, log?: Logger): TrackedAgent {
+export function adoptAgent(name: string, pid: number, home: string, log?: Logger): TrackedAgent {
   const componentLog = log ?? createLogger('lifecycle')
   componentLog.info('Agent process adopted', { name, pid })
-  return new AdoptedAgentImpl(name, pid, componentLog.child(name))
+  return new AdoptedAgentImpl(name, pid, home, componentLog.child(name))
 }
 
 export interface StartAgentOptions {
