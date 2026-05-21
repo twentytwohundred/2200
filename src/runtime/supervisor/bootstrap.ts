@@ -15,8 +15,9 @@
  * cleanly (code 0).
  */
 import { Supervisor } from './supervisor.js'
-import { writePidFile, removePidFile } from './pidfile.js'
+import { writePidFile, removePidFile, acquireSupervisorLock } from './pidfile.js'
 import { createLogger } from '../util/logger.js'
+import type { ProcessLock } from './process-lock.js'
 
 interface BootstrapArgs {
   home: string
@@ -70,6 +71,18 @@ async function main(): Promise<void> {
     recoverFromState: true,
   })
   await writePidFile(args.home, process.pid)
+  // Acquire the lock that signals "this daemon is alive" to every
+  // downstream liveness check. Held for the daemon's lifetime;
+  // released in the shutdown handler below.
+  let supervisorLock: ProcessLock
+  try {
+    supervisorLock = await acquireSupervisorLock(args.home, process.pid)
+  } catch (err) {
+    log.error('failed to acquire supervisor lock; another daemon may be alive', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    process.exit(75) // EX_TEMPFAIL
+  }
 
   log.info('supervisor daemon up', { pid: process.pid, home: args.home, runtime_mode: runtimeMode })
 
@@ -83,6 +96,11 @@ async function main(): Promise<void> {
     log.info('shutdown signal received', { signal, preserveChildren: options.preserveChildren })
     try {
       await supervisor.shutdown(5000, { preserveChildren: options.preserveChildren ?? false })
+      // Release lock BEFORE removing the PID file. proper-lockfile's
+      // release deletes the lock directory next to the PID file; the
+      // PID-file removal that follows then makes liveness checks
+      // unambiguous.
+      await supervisorLock.release()
       await removePidFile(args.home)
     } catch (err) {
       log.error('error during shutdown', {

@@ -135,7 +135,7 @@ describe('adoptAgent.stop()', () => {
   it('sends SIGTERM and waits for clean exit', async () => {
     const c = launchSleeper()
     const pid = c.pid!
-    const tracked = adoptAgent('test-agent', pid)
+    const tracked = adoptAgent('test-agent', pid, '/tmp/lifecycle-test-no-home')
     // No SIGKILL escalation needed; the sleeper exits cleanly on SIGTERM.
     await tracked.stop(5000)
     expect(isPidAlive(pid)).toBe(false)
@@ -155,7 +155,7 @@ describe('adoptAgent.stop()', () => {
     )
     if (typeof child.pid !== 'number') throw new Error('sigterm-resistant sleeper failed to start')
     tracked.push(child)
-    const tractor = adoptAgent('test-agent', child.pid)
+    const tractor = adoptAgent('test-agent', child.pid, '/tmp/lifecycle-test-no-home')
     // 500ms timeout: short enough to keep the test fast; long enough to
     // confirm SIGTERM was tried before SIGKILL.
     await tractor.stop(500)
@@ -171,7 +171,7 @@ describe('adoptAgent.stop()', () => {
         resolve()
       }),
     )
-    const tracked = adoptAgent('test-agent', pid)
+    const tracked = adoptAgent('test-agent', pid, '/tmp/lifecycle-test-no-home')
     await expect(tracked.stop(1000)).resolves.toBeUndefined()
   })
 })
@@ -179,7 +179,7 @@ describe('adoptAgent.stop()', () => {
 describe('adoptAgent.exited', () => {
   it('resolves when the adopted process exits', async () => {
     const c = launchSleeper()
-    const tracked = adoptAgent('test-agent', c.pid!)
+    const tracked = adoptAgent('test-agent', c.pid!, '/tmp/lifecycle-test-no-home')
     setTimeout(() => c.kill('SIGTERM'), 100)
     const result = await tracked.exited
     // We don't get the real code/signal because we didn't start the process.
