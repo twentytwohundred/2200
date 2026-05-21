@@ -38,11 +38,17 @@ import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
 import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
+import { GrokAuthSection } from './GrokAuthSection'
 import { SkillsSection } from './SkillsSection'
 import { SystemUpdateSection } from './SystemUpdateSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
+  {
+    command: '2200 oauth xai login',
+    description: 'sign in with X / SuperGrok (also at the top of this page)',
+  },
+  { command: '2200 oauth xai status', description: 'show xAI subscription credential state' },
   { command: '2200 web token list', description: 'list bearer tokens' },
   { command: '2200 web token rotate', description: 'rotate the default token' },
   { command: '2200 oauth login google', description: 'log into Google for Gmail / Calendar' },
@@ -86,9 +92,16 @@ export function SettingsScreen(): ReactElement {
     <Screen
       crumbs={['2200', 'settings']}
       title="Settings"
-      lede="Theme, runtime info, and a reference for management surfaces still on the CLI."
+      lede="Sign in with Grok, manage other providers, runtime info, and CLI reference."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
+      <section className={styles.block}>
+        <Meta>grok · sign in with your subscription</Meta>
+        <div className={styles.blockBody}>
+          <GrokAuthSection />
+        </div>
+      </section>
+
       <section className={styles.block}>
         <Meta>doctor</Meta>
         <div className={styles.blockBody}>

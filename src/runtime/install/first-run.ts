@@ -86,9 +86,8 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   io.info('  - choose where 2200 keeps its state (the "home" directory)')
   io.info('  - start the supervisor daemon (the long-running process behind your fleet)')
   io.info('  - mint your user identity (the name other Agents see when you chat with them)')
-  io.info('')
-  io.info('No API keys are needed yet. After this finishes I will point you at the')
-  io.info('Agent-build wizard, which is where you will configure an LLM provider.')
+  io.info('  - (optional) sign in with X / SuperGrok so every Agent that picks Grok')
+  io.info('    can use your subscription with no API key')
   io.info('')
 
   const proceed = await io.ask('Continue? [Y/n] ')
@@ -149,15 +148,40 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   io.success(`User identity minted (display name: ${displayName})`)
 
   // ------------------------------------------------------------------
-  // 5. Next step.
+  // 5. Grok-First sign-in (optional, default yes).
+  //
+  // Surfaced here so an operator who already has a SuperGrok / X
+  // Premium+ subscription leaves first-run with a working LLM
+  // credential ... no API key paste required. Skip is graceful: a
+  // later `2200 oauth xai login` (or the Settings UI tile) achieves
+  // the same outcome.
   // ------------------------------------------------------------------
   io.info('')
+  io.info('Grok subscription sign-in (recommended).')
+  io.info('')
+  io.info('If you have an X Premium+ or SuperGrok subscription, sign in now to use')
+  io.info('your Grok subscription across every Agent in your fleet ... no XAI_API_KEY')
+  io.info('required. Other LLM providers (Anthropic, OpenAI, DeepSeek, ...) remain')
+  io.info('available; this just makes Grok the easiest path.')
+  io.info('')
+  const grokReply = await io.ask('Sign in with X / SuperGrok now? [Y/n] ')
+  if (isYes(grokReply, true)) {
+    await runFirstRunGrokSignIn(io, home)
+  } else {
+    io.info('Skipped. You can run `2200 oauth xai login` later, or use the Settings page.')
+    io.info('')
+  }
+
+  // ------------------------------------------------------------------
+  // 6. Next step.
+  // ------------------------------------------------------------------
   io.info('Setup complete. Next:')
   io.info('')
   io.info('  2200 agent build')
   io.info('')
   io.info('That command starts the conversational wizard for your first Agent.')
-  io.info('It will ask for an LLM provider key (Anthropic, OpenAI, xAI, DeepSeek, ...).')
+  io.info('If you signed in with Grok above, the wizard will offer Grok as the')
+  io.info('default; you can still pick any other provider.')
   io.info('')
   io.info('Other useful commands:')
   io.info('  2200 --help          show all commands')
@@ -166,6 +190,86 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   io.info('')
 
   return { status: 'completed', home, displayName }
+}
+
+/**
+ * Drive the xAI device-code OAuth flow inline during first-run.
+ *
+ * Mirrors `2200 oauth xai login` but emits through `FirstRunIO` so the
+ * surrounding wizard's logging style is consistent. On failure we log
+ * and continue ... a failed Grok sign-in must NOT abort the wizard;
+ * the operator already has a working install, just no Grok credential
+ * yet (which they can fix later from Settings or CLI).
+ */
+async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void> {
+  const { fetchXaiDiscovery, xaiDeviceFlowProvider } = await import('../oauth/xai-config.js')
+  const { runDeviceFlow } = await import('../oauth/device-flow.js')
+  const { saveOAuthToken } = await import('../oauth/token-store.js')
+
+  io.info('Fetching xAI sign-in details...')
+  let discovery
+  try {
+    discovery = await fetchXaiDiscovery()
+  } catch (err) {
+    io.warn(
+      `Could not contact xAI for sign-in: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    io.warn('Skipping Grok sign-in for now. You can retry with `2200 oauth xai login` later.')
+    io.info('')
+    return
+  }
+  const provider = xaiDeviceFlowProvider(discovery)
+
+  try {
+    const tokens = await runDeviceFlow({
+      provider,
+      onPrompt: (prompt) => {
+        io.info('')
+        io.info('To sign in with your SuperGrok / X Premium+ account:')
+        io.info(`  1. Open this URL in any browser (phone works fine):`)
+        io.info(`     ${prompt.verificationUri}`)
+        if (
+          prompt.verificationUriComplete &&
+          prompt.verificationUriComplete !== prompt.verificationUri
+        ) {
+          io.info(`     (or the convenience URL with the code pre-filled:`)
+          io.info(`     ${prompt.verificationUriComplete})`)
+        }
+        io.info(`  2. When prompted, enter this code:  ${prompt.userCode}`)
+        io.info('')
+        io.info('xAI labels the consent screen "Grok Build" ... that is xAI\'s shared CLI OAuth')
+        io.info('client name, not a separate app you are installing.')
+        io.info('')
+        io.info(`Waiting for you to confirm (expires at ${prompt.expiresAt.toISOString()})...`)
+      },
+    })
+
+    if (!tokens.refresh_token) {
+      io.warn('xAI did not return a refresh token; sign-in incomplete. Skipping.')
+      io.info('')
+      return
+    }
+
+    const now = Date.now()
+    const expiresAtMs =
+      tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600 * 1000
+    await saveOAuthToken(home, {
+      provider: 'xai-oauth',
+      bearer: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      metadata: {
+        granted_scopes: tokens.scope ? tokens.scope.split(/\s+/) : [],
+        expires_at_ms: expiresAtMs,
+        created_at: new Date(now).toISOString(),
+      },
+    })
+    io.success('Signed in to xAI / Grok. Subscription credential sealed to disk.')
+    io.info('')
+  } catch (err) {
+    io.warn(`Grok sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
+    io.warn('Continuing without Grok. You can retry with `2200 oauth xai login` later.')
+    io.info('')
+  }
 }
 
 /**

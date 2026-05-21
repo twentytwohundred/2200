@@ -1595,6 +1595,59 @@ export const apiSystem = {
   upgradeStatus: () => request<{ status: UpgradeStatus | null }>('/api/v1/system/upgrade-status'),
 }
 
+/**
+ * `/api/v1/oauth/xai/*` ... browser-driven device-code sign-in for the
+ * SuperGrok / X Premium+ subscription credential. Mirrors the CLI
+ * (`2200 oauth xai login`) over HTTP so the Settings page can drive
+ * the flow inline. The Grok-First Settings tile is the primary
+ * consumer.
+ */
+export type XaiOAuthLoginStatusResponse =
+  | { status: 'pending'; poll_interval_sec: number; transient_error?: string }
+  | {
+      status: 'completed'
+      access_token: string
+      refresh_token: string
+      expires_at_ms: number
+      granted_scopes: string[]
+    }
+  | { status: 'failed'; error: string; description?: string }
+
+export interface XaiOAuthStartResponse {
+  session_id: string
+  user_code: string
+  verification_uri: string
+  verification_uri_complete?: string
+  expires_at: string
+  poll_interval_sec: number
+}
+
+export type XaiOAuthStatusResponse =
+  | { configured: false }
+  | {
+      configured: true
+      provider: string
+      granted_scopes: string[]
+      expires_at: string
+      expires_at_ms: number
+      created_at: string
+      refreshed_at: string | null
+    }
+
+export const apiOAuthXai = {
+  status: () => request<XaiOAuthStatusResponse>('/api/v1/oauth/xai/status'),
+  loginStart: () =>
+    request<XaiOAuthStartResponse>('/api/v1/oauth/xai/login/start', {
+      method: 'POST',
+      body: {},
+    }),
+  loginStatus: (sessionId: string) =>
+    request<XaiOAuthLoginStatusResponse>(
+      `/api/v1/oauth/xai/login/status?session=${encodeURIComponent(sessionId)}`,
+    ),
+  logout: () => request<{ removed: boolean }>('/api/v1/oauth/xai/logout', { method: 'POST' }),
+}
+
 export const apiDoctor = {
   diagnose: () =>
     request<{ items: DoctorIssue[]; generated_at: string }>('/api/v1/doctor/diagnose'),
