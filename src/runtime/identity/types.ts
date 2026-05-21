@@ -27,18 +27,26 @@ export type ModelTier = z.infer<typeof ModelTierSchema>
  * in `src/runtime/control-plane/protocol.ts`.
  */
 /**
- * Built-in providers are lowercase alphanumeric (`anthropic`,
- * `deepseek`, `xai`). Custom endpoints registered by the operator use
- * the `endpoint:<slug>` form (`endpoint:dgx-spark`, `endpoint:lab-vm`)
- * so the LLM registry can dispatch to the matching `<home>/config/
- * endpoints.json` entry. The slug after the colon follows the
- * `EndpointIdSchema` rule: lowercase alphanumeric + dashes, starting
- * with a letter or digit.
+ * Built-in providers are lowercase alphanumeric, optionally with
+ * single-hyphen segments (`anthropic`, `deepseek`, `xai`,
+ * `xai-subscription`). Custom endpoints registered by the operator
+ * use the `endpoint:<slug>` form (`endpoint:dgx-spark`,
+ * `endpoint:lab-vm`) so the LLM registry can dispatch to the matching
+ * `<home>/config/endpoints.json` entry. The slug after the colon
+ * follows the `EndpointIdSchema` rule: lowercase alphanumeric +
+ * dashes, starting with a letter or digit.
+ *
+ * Hyphens in the base name are permitted because `xai-subscription`
+ * (the OAuth-credentialed Grok provider) needs to be distinguishable
+ * from the env-API-key `xai`. Future subscription/credential-source
+ * variants follow the same pattern.
  */
-export const ModelProviderSchema = z.string().regex(/^[a-z0-9]+(:[a-z0-9][a-z0-9-]{0,49})?$/, {
-  message:
-    'model.provider must be lowercase alphanumeric (e.g. "anthropic") or "endpoint:<slug>" for a custom endpoint',
-})
+export const ModelProviderSchema = z
+  .string()
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*(:[a-z0-9][a-z0-9-]{0,49})?$/, {
+    message:
+      'model.provider must be lowercase alphanumeric (e.g. "anthropic", "xai-subscription") or "endpoint:<slug>" for a custom endpoint',
+  })
 
 /**
  * model_id portion of the model identifier. Lowercase alphanumeric,

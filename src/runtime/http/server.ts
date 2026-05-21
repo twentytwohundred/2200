@@ -1961,7 +1961,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // same validate-tmp-rename flow so a malformed Identity never
   // overwrites a good one.
   const PutAgentModelBody = z.object({
-    provider: z.string().regex(/^[a-z0-9]+$/),
+    // Provider names: lowercase + digits + hyphens (e.g. `xai-subscription`)
+    // OR the `endpoint:<slug>` shape custom-endpoint providers use.
+    // The downstream `listKnownProviders().includes(...)` check is the
+    // authoritative gate; this regex just keeps obviously-malformed
+    // input out of file paths.
+    provider: z.string().regex(/^[a-z0-9:-]+$/),
     model_id: z.string().regex(/^[a-z0-9.-]+$/),
     /** Optional follow-up model id; null clears the field. */
     followup_model_id: z

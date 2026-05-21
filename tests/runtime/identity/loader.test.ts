@@ -149,12 +149,30 @@ describe('loadIdentity (error paths)', () => {
     await expect(loadIdentity(path)).rejects.toThrow(/tier/)
   })
 
-  it('rejects a model.provider with separators', async () => {
+  it('rejects a model.provider with invalid characters', async () => {
+    // Hyphens are now allowed (e.g. `xai-subscription`), but uppercase
+    // letters / underscores / leading-hyphens are still rejected.
     const path = await writeAt(
       'bad-provider.md',
-      VALID.replace('provider: anthropic', 'provider: anthropic-co'),
+      VALID.replace('provider: anthropic', 'provider: Anthropic_Co'),
     )
     await expect(loadIdentity(path)).rejects.toThrow(/provider/)
+  })
+
+  it('accepts hyphenated provider names like xai-subscription', async () => {
+    // Regression guard for the picker fix: `xai-subscription` (the
+    // OAuth-credentialed Grok provider) must pass the Identity
+    // schema. Prior /^[a-z0-9]+...$/ rejected this; current
+    // schema explicitly supports single-hyphen segments.
+    const path = await writeAt(
+      'good-provider.md',
+      VALID.replace('provider: anthropic', 'provider: xai-subscription').replace(
+        'model_id: claude-opus-4-7',
+        'model_id: grok-4.3',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.model.provider).toBe('xai-subscription')
   })
 
   it('rejects a non-ISO created date', async () => {
