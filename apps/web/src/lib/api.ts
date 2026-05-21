@@ -767,6 +767,14 @@ export interface ProviderSettingsItem {
   key_masked: string | null
   agents_using: string[]
   suggested_models: string[]
+  /**
+   * Settings-UI category. Drives optgroup placement in the model picker
+   * and section grouping in Settings ▸ Models & API Keys.
+   *   - 'subscription': OAuth subscription credential (xAI / SuperGrok)
+   *   - 'api-key':      Paste-an-API-key (Anthropic, OpenAI, xAI, ...)
+   *   - 'local':        Self-hosted (Ollama / LM Studio / vLLM)
+   */
+  category: 'subscription' | 'api-key' | 'local'
 }
 
 interface RequestOptions {

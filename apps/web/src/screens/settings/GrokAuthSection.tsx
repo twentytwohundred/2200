@@ -29,6 +29,22 @@ import {
 import { Card } from '../../primitives'
 import styles from './GrokAuthSection.module.css'
 
+/**
+ * Stylized X mark, modeled on xAI's brand wordmark (a clean,
+ * geometric "X"). Renders in the tile's logo badge. Pure paths, no
+ * external assets, picks up surrounding currentColor.
+ */
+function XLogo(): ReactElement {
+  return (
+    <svg viewBox="0 0 32 32" aria-hidden="true">
+      <path
+        d="M3.5 4.5 L13.5 16 L3 27.5 L7.5 27.5 L15.7 18.2 L23 27.5 L28.5 27.5 L18.0 14.5 L27.5 4.5 L23.0 4.5 L15.7 12.7 L9.0 4.5 Z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
+
 function formatError(err: unknown): string {
   if (err instanceof ApiError) return `${err.code}: ${err.message}`
   if (err instanceof NetworkError) return 'Cannot reach the runtime.'
@@ -144,12 +160,19 @@ export function GrokAuthSection(): ReactElement {
     <Card padding={0}>
       <div className={styles.tile}>
         <div className={styles.header}>
-          <div>
-            <h2 className={styles.title}>Sign in with X / SuperGrok</h2>
-            <p className={styles.subtitle}>
-              Use your existing SuperGrok or X Premium+ subscription to power every Agent that picks
-              Grok ... no API key needed. The legacy <code>XAI_API_KEY</code> stays as a fallback.
-            </p>
+          <div className={styles.headerInner}>
+            <div className={styles.logoBadge} aria-hidden="true">
+              <XLogo />
+            </div>
+            <div className={styles.headerText}>
+              <h2 className={styles.title}>Sign in with X / SuperGrok</h2>
+              <p className={styles.subtitle}>
+                Use your existing SuperGrok or X Premium+ subscription to power any Agent set to
+                <strong> xAI / Grok (SuperGrok subscription)</strong> in the model picker ... no API
+                key needed. The legacy <code>XAI_API_KEY</code> path stays available as a separate
+                provider.
+              </p>
+            </div>
           </div>
         </div>
 
