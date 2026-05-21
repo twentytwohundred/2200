@@ -43,3 +43,40 @@
 .wrap:hover .chevron {
   color: var(--text);
 }
+
+/* Switching state: dim everything and replace the chevron with a
+   tiny spinner so the operator sees the restart in flight. */
+.switching .select {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.switching .chevron {
+  display: none;
+}
+
+.spinner {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-3);
+  border-top-color: transparent;
+  animation: model-picker-spin 700ms linear infinite;
+  pointer-events: none;
+}
+
+@keyframes model-picker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.errorTip {
+  font-size: 10.5px;
+  color: var(--ds-error, #cc4444);
+  margin-left: 8px;
+  font-family: var(--ds-font-mono);
+}
