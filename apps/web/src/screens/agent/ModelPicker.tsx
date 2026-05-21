@@ -17,8 +17,15 @@
 import type { ChangeEvent, ReactElement } from 'react'
 import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../lib/api'
+import { ApiError, NetworkError, api } from '../../lib/api'
+import { cx } from '../../primitives'
 import styles from './ModelPicker.module.css'
+
+function formatPickerError(err: unknown): string {
+  if (err instanceof ApiError) return err.message
+  if (err instanceof NetworkError) return 'runtime unreachable'
+  return err instanceof Error ? err.message : 'unknown error'
+}
 
 export interface ModelPickerProps {
   agentName: string
@@ -117,11 +124,36 @@ export function ModelPicker({
   // dropdown without dropping the user's existing binding.
   const inCatalog = groups.some((g) => g.options.some((o) => o.value === currentValue))
 
+  // Switching the model writes the Identity, but the Agent process
+  // holds its LLMProvider in memory ... it was constructed at boot
+  // and won't pick up the new binding (especially a credential-source
+  // change like xai → xai-subscription) until it restarts. Per Doug:
+  // auto-restart so the new model is the one actually serving the
+  // next request, without surprising the operator with a stale binding.
+  //
+  // Restart is best-effort. If stop or start fails (Agent already
+  // stopped, restart races a manual restart, ...) the model edit
+  // still landed on disk; the operator can manually restart later.
   const setModel = useMutation({
-    mutationFn: ({ provider, modelId }: { provider: string; modelId: string }) =>
-      api.agentModelSet(agentName, { provider, model_id: modelId }),
-    onSuccess: () => {
+    mutationFn: async ({ provider, modelId }: { provider: string; modelId: string }) => {
+      const edit = await api.agentModelSet(agentName, { provider, model_id: modelId })
+      try {
+        await api.agentStop(agentName, 'model_switch')
+      } catch {
+        // Already stopped, or stop race ... ignore; start below is the
+        // load-bearing step.
+      }
+      // Bubbles up on failure so the picker UI surfaces the case
+      // where the Identity changed but the Agent did not come back up.
+      await api.agentStart(agentName)
+      return edit
+    },
+    onSettled: () => {
+      // Always refresh; the AgentDetail screen polls per-Agent state
+      // off this query key, including the run state pill that flips
+      // back from 'starting' to 'running'.
       void queryClient.invalidateQueries({ queryKey: ['agents', agentName] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 
@@ -132,27 +164,54 @@ export function ModelPicker({
     setModel.mutate({ provider: decoded.provider, modelId: decoded.modelId })
   }
 
+  const switching = setModel.isPending
+  const switchError = setModel.error
+
   return (
-    <label className={styles.wrap} title="Change this Agent's model">
-      <select className={styles.select} value={currentValue} onChange={onChange}>
-        {!inCatalog && (
-          <option value={currentValue}>
-            {currentProvider} › {currentModelId} · current
-          </option>
+    <>
+      <label
+        className={cx(styles.wrap, switching && styles.switching)}
+        title={
+          switching
+            ? 'Switching model and restarting the Agent...'
+            : "Change this Agent's model (auto-restarts to pick up the new binding)"
+        }
+      >
+        <select
+          className={styles.select}
+          value={currentValue}
+          onChange={onChange}
+          disabled={switching}
+        >
+          {!inCatalog && (
+            <option value={currentValue}>
+              {currentProvider} › {currentModelId} · current
+            </option>
+          )}
+          {groups.map((g) => (
+            <optgroup key={g.label} label={g.label}>
+              {g.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {switching ? (
+          <span className={styles.spinner} aria-hidden="true" />
+        ) : (
+          <span className={styles.chevron} aria-hidden="true">
+            ▾
+          </span>
         )}
-        {groups.map((g) => (
-          <optgroup key={g.label} label={g.label}>
-            {g.options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-      <span className={styles.chevron} aria-hidden="true">
-        ▾
-      </span>
-    </label>
+      </label>
+      {switchError && (
+        <span className={styles.errorTip} role="alert">
+          model edit saved, but the Agent restart failed: {formatPickerError(switchError)}. Restart
+          manually with `2200 agent start {agentName}`.
+        </span>
+      )}
+    </>
   )
 }
