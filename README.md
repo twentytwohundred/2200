@@ -20,7 +20,7 @@ This repository holds the runtime code. The full project knowledge base ... visi
 
 ```bash
 # Shell installer (recommended for cold visitors):
-curl -fsSL https://raw.githubusercontent.com/twentytwohundred/2200/main/install.sh | sh
+curl -fsSL https://2200.ai/install.sh | sh
 
 # npm directly (if you already have Node):
 npm install -g @twentytwohundred/2200
