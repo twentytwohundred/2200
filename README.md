@@ -32,7 +32,19 @@ Then run:
 2200
 ```
 
-The bare `2200` invocation drops a fresh installation into a guided one-time setup: it initializes `2200_HOME` (default: `~/.local/share/2200/`), starts the supervisor daemon, mints your user identity, and points you at `2200 agent build` to create your first Agent. The Agent wizard will ask for an LLM provider key (Anthropic, OpenAI, xAI, DeepSeek, OpenRouter, Gemini, Kimi, or a local endpoint).
+The bare `2200` invocation drops a fresh installation into a guided one-time setup: it initializes `2200_HOME` (default: `~/.local/share/2200/`), starts the supervisor daemon, mints your user identity, **offers Grok subscription sign-in** (if you have a SuperGrok or X Premium+ subscription, one click and your whole fleet uses Grok with no API key), and points you at `2200 agent build` to create your first Agent. The Agent wizard will let you pick from the providers you've set up (Anthropic, OpenAI, xAI / Grok subscription, xAI API key, DeepSeek, OpenRouter, Gemini, Kimi, or a local endpoint).
+
+### Grok-First
+
+If you already pay for SuperGrok or X Premium+, you do not need an `XAI_API_KEY`. The bare-`2200` wizard offers sign-in inline; you can also do it any time from Settings → "Sign in with X / SuperGrok" or from the CLI:
+
+```bash
+2200 oauth xai login     # device-code flow; print code + URL, poll
+2200 oauth xai status    # show current credential + expiry
+2200 oauth xai logout    # delete the local token (does not revoke at xAI)
+```
+
+The OAuth credential is fleet-wide: one sign-in covers every Agent in your fleet whose model is set to `xAI / Grok (SuperGrok subscription)` in the picker. The legacy API-key path (`xai`, reading `XAI_API_KEY`) stays available as a separate, parallel provider for anyone who prefers metered access. See [the Grok-First decision record](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-05-21-xai-grok-oauth.md).
 
 ### Update
 
@@ -76,7 +88,7 @@ What's shipped on `main`:
 
 - **Agent runtime kernel** ... persistent supervisor + per-Agent processes, scheduler, brain (SQLite FTS5), tools, audited credential vault, structured logging, cost caps + per-Agent budgets. [[02-architecture]]
 - **Local pub coordination** ... multi-Agent messaging on a shared box via OpenPub. Ambient routing, @-mentions, `@team` broadcast, anti-ack-spiral guards. Multi-Agent coordination has been running end-to-end for weeks.
-- **Eight LLM providers wired** through a single provider abstraction: Anthropic (native Messages API), OpenAI, DeepSeek, Kimi (Moonshot), xAI, OpenRouter, Gemini, plus `local` for self-hosted endpoints (Ollama, LM Studio, vLLM, llama.cpp).
+- **Nine LLM providers wired** through a single provider abstraction: Anthropic (native Messages API), OpenAI, DeepSeek, Kimi (Moonshot), xAI (API key), **xAI / Grok via SuperGrok subscription (OAuth, no API key)**, OpenRouter, Gemini, plus `local` for self-hosted endpoints (Ollama, LM Studio, vLLM, llama.cpp). The subscription path is the Grok-First positioning ... see the section above.
 - **SCUT cross-instance identity** ... every Agent gets a verifiable identity at creation time. Hosted minter at `register.openscut.ai` for the default path; self-hosted SCUT for advanced operators.
 - **Conversational onboarding** ... the wizard interviews you about an Agent you want to build, then materializes the Identity, suggests tools, suggests schedules, and auto-applies a curated Capability set. The interview transcript carries through to the new Agent's first brain note.
 - **Capability Catalog** ([Phase F](https://github.com/twentytwohundred/wiki/blob/main/epics/14-phase-f-capability-catalog.md)) ... 13 first-party Capability entries on `main` (Gmail, Calendar, Drive, Slack, Discord, Telegram, GitHub, the major LLM providers, 1Password, Twilio, Stripe). Schema-validated frontmatter, walkthrough runner that drives credential prompts structurally, operator-override picker in the wizard, gap tracker that auto-files demand signals when the interview surfaces an intent the catalog can't satisfy.

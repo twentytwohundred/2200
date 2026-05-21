@@ -840,6 +840,16 @@ For OAuth tokens that rotate (access + refresh tokens for Spotify, Gmail, etc.),
 
 The supervisor log line \`oauth refresh tick {scanned: N, refreshed: M, failed: K, skipped: L}\` is the source of truth for whether the service is healthy. To confirm refresh activity, grep the supervisor log for \`oauth-refresh\`.
 
+### Layer 3: Fleet-scoped sealed OAuth token store
+
+For subscription credentials that belong to the operator (not to any one Agent), 2200 has a fleet-scoped store:
+
+- Sealed file at \`<2200_HOME>/state/oauth-tokens/<provider>.json\` (AES-256-GCM, HKDF over \`master.key\` with a fleet-scoped namespace, distinct from the per-Agent vault).
+- Currently used by \`xai-subscription\` (SuperGrok / X Premium+). One sign-in covers every Agent in the fleet that picks the subscription provider.
+- Populated by \`2200 oauth xai login\` (device-code flow, RFC 8628 + PKCE S256) or via the Settings page "Sign in with X / SuperGrok" tile.
+- Refreshed by the same supervisor-side \`TokenRefreshService\`; the fleet xAI token refreshes within 120s of expiry using the public-client refresh grant.
+- Provider resolution: Agents whose \`model.provider\` is \`xai-subscription\` read the bearer from this store at boot. If the store is empty or expired, the Agent fails to start with a clear "sign in via Settings or \`2200 oauth xai login\`" message. There is no silent fallback to the API-key path; the operator chose subscription and we honor it.
+
 ## Common confusions to avoid
 
 - **"There's no vault, no TokenRefreshService."** Both exist. Confirm via the source of truth (the supervisor log, or \`src/runtime/credentials/vault.ts\` + \`src/runtime/oauth/refresh-service.ts\`).
