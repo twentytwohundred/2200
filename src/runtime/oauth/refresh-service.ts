@@ -165,6 +165,11 @@ export class TokenRefreshService {
           }
         }
       }
+      // Fleet-scoped OAuth tokens (currently: xAI subscription). These
+      // live at <home>/state/oauth-tokens/ and refresh independently
+      // of any per-Agent vault. One refresh, every Agent sees the new
+      // bearer because resolveProvider re-reads on each Agent start.
+      await this.refreshFleetTokensInto(stats)
       this.log.info('oauth refresh tick', {
         scanned: stats.scanned,
         refreshed: stats.refreshed,
@@ -174,6 +179,78 @@ export class TokenRefreshService {
       return stats
     } finally {
       this.running = false
+    }
+  }
+
+  /**
+   * Refresh fleet-scoped OAuth tokens (xAI subscription, etc.) that
+   * are within `refreshWindowMs` of expiry. Unlike per-Agent OAuth,
+   * these use a public-client refresh grant (no client_secret) and
+   * land back in the home-level token store.
+   */
+  private async refreshFleetTokensInto(stats: TokenRefreshTickStats): Promise<void> {
+    const { readOAuthToken, saveOAuthToken } = await import('./token-store.js')
+    const { refreshDeviceFlowToken } = await import('./device-flow.js')
+    const { fetchXaiDiscovery, xaiDeviceFlowProvider, XAI_OAUTH_REFRESH_SKEW_SECONDS } =
+      await import('./xai-config.js')
+
+    // For now only xAI is fleet-scoped; extend the if-chain when a
+    // second fleet OAuth provider lands.
+    const xai = await readOAuthToken(this.home, 'xai-oauth').catch(() => null)
+    if (!xai) return
+    stats.scanned++
+
+    const cdKey = 'fleet:xai-oauth'
+    const cd = this.cooldowns.get(cdKey)
+    if (cd !== undefined && cd > this.nowFn().getTime()) {
+      stats.skipped++
+      return
+    }
+
+    const expiresMs = xai.metadata.expires_at_ms
+    const skewMs = XAI_OAUTH_REFRESH_SKEW_SECONDS * 1000
+    const remaining = expiresMs - this.nowFn().getTime()
+    if (remaining > Math.max(this.refreshWindowMs, skewMs)) {
+      stats.skipped++
+      return
+    }
+
+    try {
+      const fetchImpl = this.fetchImpl ?? fetch
+      const discovery = await fetchXaiDiscovery({ fetchImpl })
+      const provider = xaiDeviceFlowProvider(discovery)
+      const refreshArgs: Parameters<typeof refreshDeviceFlowToken>[0] = {
+        provider: { tokenUrl: provider.tokenUrl, clientId: provider.clientId },
+        refreshToken: xai.refreshToken,
+      }
+      if (this.fetchImpl) refreshArgs.fetchImpl = this.fetchImpl
+      const tokens = await refreshDeviceFlowToken(refreshArgs)
+      const now = this.nowFn().getTime()
+      await saveOAuthToken(this.home, {
+        provider: 'xai-oauth',
+        bearer: tokens.access_token,
+        refreshToken: tokens.refresh_token ?? xai.refreshToken,
+        metadata: {
+          ...xai.metadata,
+          granted_scopes: tokens.scope ? tokens.scope.split(/\s+/) : xai.metadata.granted_scopes,
+          expires_at_ms:
+            tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600_000,
+          refreshed_at: new Date(now).toISOString(),
+        },
+      })
+      stats.refreshed++
+      this.cooldowns.delete(cdKey)
+      this.log.info('refreshed fleet xai-oauth token', {
+        new_expires_at: new Date(
+          tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600_000,
+        ).toISOString(),
+      })
+    } catch (err) {
+      stats.failed++
+      this.cooldowns.set(cdKey, this.nowFn().getTime() + this.failureCooldownMs)
+      this.log.warn('fleet xai-oauth refresh failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
