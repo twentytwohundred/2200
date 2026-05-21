@@ -32,6 +32,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homePaths } from '../storage/layout.js'
 import { advanceUpgradeStage, readUpgradeStatus, writeUpgradeStatus } from './upgrade-status.js'
+import { isPidAlive } from '../supervisor/pidfile.js'
 
 const POLL_INTERVAL_MS = 250
 const DAEMON_SHUTDOWN_TIMEOUT_MS = 60_000
@@ -121,21 +122,10 @@ async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> 
   return false
 }
 
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // ESRCH = no such process. EPERM means the process exists but
-    // we lack permission to signal it; treat that as alive (a
-    // foreign process on the same PID is a bigger concern than this
-    // helper).
-    if (typeof err === 'object' && err !== null && 'code' in err) {
-      if (err.code === 'ESRCH') return false
-    }
-    return true
-  }
-}
+// isPidAlive imported from the canonical source in pidfile.ts (single
+// implementation + full hazard documentation for the PID-reuse / EPERM
+// stranger-PID window). The local copy here was the clearest of the three
+// duplicates; all now delegate to it.
 
 /**
  * Run `npm install -g <pkg>@<version>`, capturing stderr for the
