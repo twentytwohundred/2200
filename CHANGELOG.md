@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP connector Phase 1 substrate polish (PR 1d).** Tidy-up pass after Grok's full byte-level review. Documentation strengthened (X-Forwarded-For tunnel-trust assumption inline in `clientIp`; bodyLimit comment flagging the PR 2 need to widen when `contribute_to_thread` lands with large research payloads; per-fleet-salt WHY in `bearer-store.ts`; first-run wording aligned with the Grok-First step). Sync `getConnectorStatus` renamed to `getConnectorStatusFast` with a strong "not for operator surfaces" guard comment ... the async `getConnectorStatusDetailed` remains the only surface used by CLI / web / RPC. `2200 connector token show` now writes paste guidance to stderr (stdout stays clean for `... | pbcopy`). First-run success message uses the same "sealed to disk" voice as the Grok sign-in step. New regression test for the idle → regenerate listener transition. Decision record at [[2026-05-23-mcp-connector-phase1-as-shipped]] pins the substrate-level decisions before Phase 2 begins.
+
 ### Added
 
 - **First-run wizard offers MCP connector setup (PR 1c).** After Grok sign-in in the bare-`2200` wizard, the operator is offered a one-question opt-in to mint a connector token inline. Default NO ... keeps the install path uncluttered for users who do not know what MCP is. On yes, the wizard mints the bearer through the daemon's `cli.connector.regenerate` RPC and surfaces the token once with paste-target instructions (`grok.com/connectors` → New Connector → Custom). Failure is non-fatal; the operator can retry via `2200 connector token regenerate` or the Settings tile.

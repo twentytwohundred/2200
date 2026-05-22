@@ -887,10 +887,21 @@ export class Supervisor {
    *   without flapping the fleet."
    */
   /**
-   * Snapshot of the MCP connector's state, for the CLI status command
-   * and the (PR 1b) Settings tile.
+   * Fast (sync, no-disk) snapshot of the connector listener's lifecycle
+   * state. Returns the lifecycle fields truthfully (`configured`,
+   * `listening`, `port`) but **always reports `bearer_present: false`**
+   * and null timestamps — the bearer record lives in the sealed vault
+   * and reading it requires an async disk + crypto round-trip.
+   *
+   * **NOT for operator surfaces.** The CLI `connector status`, web
+   * Settings tile, and `cli.connector.status` RPC handler all use
+   * `getConnectorStatusDetailed()` instead, which fills in the bearer
+   * fields. Use this only when a synchronous lifecycle check is
+   * actually needed (and there are no such callers today — kept as a
+   * primitive so the async version doesn't have to duplicate the
+   * lifecycle logic).
    */
-  getConnectorStatus(): {
+  getConnectorStatusFast(): {
     configured: boolean
     listening: boolean
     port: number | null
@@ -911,12 +922,13 @@ export class Supervisor {
   }
 
   /**
-   * Same as getConnectorStatus but reads the vault for bearer metadata.
-   * Separated so the sync version can be used in hot paths that don't
-   * want to touch disk.
+   * The status snapshot used by every operator surface (CLI `connector
+   * status`, web Settings tile, `cli.connector.status` RPC). Reads the
+   * vault for bearer metadata; otherwise mirrors the lifecycle fields
+   * from {@link getConnectorStatusFast}.
    */
-  async getConnectorStatusDetailed(): Promise<ReturnType<Supervisor['getConnectorStatus']>> {
-    const base = this.getConnectorStatus()
+  async getConnectorStatusDetailed(): Promise<ReturnType<Supervisor['getConnectorStatusFast']>> {
+    const base = this.getConnectorStatusFast()
     const record = await readBearer(this.state.home)
     return {
       ...base,

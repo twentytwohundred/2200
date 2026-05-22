@@ -3830,6 +3830,15 @@ export function buildProgram(): Command {
         )
         process.exit(1)
       }
+      // Paste guidance goes to STDERR so the token stays alone on
+      // STDOUT (`2200 connector token show | pbcopy` still works).
+      // Symmetric with the regenerate banner's intent, just on the
+      // right stream for a `show` command.
+      if (process.stdout.isTTY) {
+        console.error('# 2200 MCP connector bearer (paste into your MCP client Authorization):')
+        console.error('#   grok.com/connectors → New Connector → Custom → Authorization')
+        console.error('#   (or any other MCP client that supports remote-MCP bearer auth)')
+      }
       console.log(record.token)
     })
 
