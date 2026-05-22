@@ -440,3 +440,151 @@ describe('HTTP server onboarding endpoints', () => {
     }
   })
 })
+
+/**
+ * `/api/v1/connector/*` routes need a connector-configured supervisor;
+ * the main HTTP-server describe block above does not configure the
+ * connector (most tests don't want the extra port). This block stands
+ * up its own connector-enabled supervisor so the operator-facing
+ * routes can be exercised end-to-end.
+ */
+describe('HTTP server / connector routes', () => {
+  let cHome: string
+  let cSup: Supervisor
+  let cHandle: HttpServerHandle
+  let cToken: string
+
+  beforeEach(async () => {
+    cHome = await mkdtemp(join(tmpdir(), '2200-http-connector-'))
+    cSup = await Supervisor.create({ home: cHome, connector: { port: 0 } })
+    await cSup.start({
+      home: cHome,
+      connector: { port: 0 },
+      listener: new NullListener(),
+    })
+    cHandle = await startHttpServer({
+      supervisor: cSup,
+      home: cHome,
+      port: 0,
+      host: '127.0.0.1',
+      staticDir: join(cHome, '__no_static_dir__'),
+    })
+    const tokens = new WebTokenStore(homePaths(cHome).stateWebTokens)
+    const list = await tokens.list()
+    cToken = list[0]!.value
+  })
+
+  afterEach(async () => {
+    await cHandle.stop().catch(() => undefined)
+    await cSup.shutdown().catch(() => undefined)
+    await rm(cHome, { recursive: true, force: true })
+  })
+
+  async function callJson(
+    method: 'GET' | 'POST',
+    path: string,
+  ): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`${cHandle.url}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${cToken}`,
+        ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(method === 'POST' ? { body: '{}' } : {}),
+    })
+    let body: unknown = await res.text()
+    try {
+      body = JSON.parse(body as string)
+    } catch {
+      // keep as text
+    }
+    return { status: res.status, body }
+  }
+
+  it('GET /api/v1/connector/status returns configured=true with no bearer on a fresh home', async () => {
+    const r = await callJson('GET', '/api/v1/connector/status')
+    expect(r.status).toBe(200)
+    const body = r.body as {
+      configured: boolean
+      listening: boolean
+      bearer_present: boolean
+    }
+    expect(body.configured).toBe(true)
+    expect(body.bearer_present).toBe(false)
+    expect(body.listening).toBe(false)
+  })
+
+  it('GET /api/v1/connector/token returns null when no bearer is provisioned', async () => {
+    const r = await callJson('GET', '/api/v1/connector/token')
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ token: null })
+  })
+
+  it('POST /api/v1/connector/regenerate mints a token + status reflects bearer_present', async () => {
+    const r = await callJson('POST', '/api/v1/connector/regenerate')
+    expect(r.status).toBe(200)
+    const body = r.body as { token: string }
+    expect(body.token).toMatch(/^2200-mcp-[A-Za-z0-9_-]{16,}$/)
+
+    const status = (await callJson('GET', '/api/v1/connector/status')).body as {
+      bearer_present: boolean
+      listening: boolean
+    }
+    expect(status.bearer_present).toBe(true)
+    expect(status.listening).toBe(true)
+
+    const tokenAgain = (await callJson('GET', '/api/v1/connector/token')).body as {
+      token: string | null
+    }
+    expect(tokenAgain.token).toBe(body.token)
+  })
+
+  it('POST /api/v1/connector/disable wipes the bearer + stops the listener', async () => {
+    await callJson('POST', '/api/v1/connector/regenerate')
+    const r = await callJson('POST', '/api/v1/connector/disable')
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ disabled: true })
+
+    const status = (await callJson('GET', '/api/v1/connector/status')).body as {
+      bearer_present: boolean
+      listening: boolean
+    }
+    expect(status.bearer_present).toBe(false)
+    expect(status.listening).toBe(false)
+  })
+
+  it('regenerate after disable mints a fresh token with regenerated_at unset (created_at is the only marker)', async () => {
+    await callJson('POST', '/api/v1/connector/regenerate')
+    await callJson('POST', '/api/v1/connector/disable')
+    const r = await callJson('POST', '/api/v1/connector/regenerate')
+    expect(r.status).toBe(200)
+    const status = (await callJson('GET', '/api/v1/connector/status')).body as {
+      bearer_present: boolean
+      bearer_created_at: string | null
+      bearer_regenerated_at: string | null
+    }
+    expect(status.bearer_present).toBe(true)
+    expect(status.bearer_created_at).not.toBeNull()
+    // After disable + regenerate, the prior token was deleted, so the
+    // new token's metadata has no regenerated_at marker.
+    expect(status.bearer_regenerated_at).toBeNull()
+  })
+})
+
+describe('isLoopbackHost', () => {
+  it('recognizes the canonical loopback forms', async () => {
+    const { isLoopbackHost } = await import('../../../src/runtime/supervisor/supervisor.js')
+    expect(isLoopbackHost('127.0.0.1')).toBe(true)
+    expect(isLoopbackHost('localhost')).toBe(true)
+    expect(isLoopbackHost('LocalHost')).toBe(true)
+    expect(isLoopbackHost('::1')).toBe(true)
+    expect(isLoopbackHost('0:0:0:0:0:0:0:1')).toBe(true)
+  })
+
+  it('rejects public bind targets', async () => {
+    const { isLoopbackHost } = await import('../../../src/runtime/supervisor/supervisor.js')
+    expect(isLoopbackHost('0.0.0.0')).toBe(false)
+    expect(isLoopbackHost('192.168.1.42')).toBe(false)
+    expect(isLoopbackHost('::')).toBe(false)
+  })
+})

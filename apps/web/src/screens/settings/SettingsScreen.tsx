@@ -36,6 +36,7 @@ import {
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
+import { ConnectorSection } from './ConnectorSection'
 import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
 import { GrokAuthSection } from './GrokAuthSection'
@@ -99,6 +100,13 @@ export function SettingsScreen(): ReactElement {
         <Meta>grok · sign in with your subscription</Meta>
         <div className={styles.blockBody}>
           <GrokAuthSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>mcp connector · expose 2200 to grok and other mcp clients</Meta>
+        <div className={styles.blockBody}>
+          <ConnectorSection />
         </div>
       </section>
 

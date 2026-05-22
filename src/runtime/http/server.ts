@@ -674,6 +674,44 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { removed }
   })
 
+  // ---------------------------------------------------------------------------
+  // MCP connector management (Phase 1 / PR 1b).
+  //
+  // These routes live on the loopback-bound web UI listener, NOT the
+  // public-internet-facing connector listener. They are operator
+  // controls; the actual remote-MCP traffic lands on the dedicated
+  // connector listener at port 2201 (default). Mounting them on the
+  // public listener would be a foot-gun ... an attacker who got past
+  // the connector bearer would be one step from minting fresh tokens.
+  // ---------------------------------------------------------------------------
+
+  fastify.get('/api/v1/connector/status', async () => {
+    return supervisor.getConnectorStatusDetailed()
+  })
+
+  // The bearer is "long-lived but revocable from our side" (per the
+  // 2026-05-22 Grok review): the user already pastes it into Grok's
+  // connector config, so it is not secret from us. Exposing read here
+  // is symmetric with the CLI `2200 connector token show`. This route
+  // lives on the loopback listener; the public-internet connector
+  // listener never serves it.
+  fastify.get('/api/v1/connector/token', async () => {
+    const { readBearer } = await import('../mcp/connector/index.js')
+    const record = await readBearer(home)
+    if (record === null) return { token: null }
+    return { token: record.token }
+  })
+
+  fastify.post('/api/v1/connector/regenerate', async () => {
+    const { token } = await supervisor.regenerateConnectorBearer()
+    return { token }
+  })
+
+  fastify.post('/api/v1/connector/disable', async () => {
+    await supervisor.disableConnector()
+    return { disabled: true as const }
+  })
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,
