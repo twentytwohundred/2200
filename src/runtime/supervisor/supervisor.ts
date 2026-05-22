@@ -68,6 +68,16 @@ import { TokenRefreshService } from '../oauth/refresh-service.js'
 import type { ScheduleListEntry } from '../control-plane/protocol.js'
 import { startHttpServer, type HttpServerHandle, type WsEvent } from '../http/server.js'
 import { DEFAULT_RUNTIME_MODE, type RuntimeMode } from '../config/runtime-mode.js'
+import {
+  ConnectorAuditEmitter,
+  deleteBearer,
+  hasBearer,
+  mintBearerToken,
+  readBearer,
+  saveBearer,
+  startConnectorListener,
+  type ConnectorListenerHandle,
+} from '../mcp/connector/index.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
@@ -100,6 +110,16 @@ export interface SupervisorOptions {
   web?: {
     port: number
     host: string
+  }
+  /**
+   * MCP connector listener config. Omit to skip the connector entirely
+   * (default for tests). Production bootstrap sets `{ port }`; the
+   * listener only actually binds if a bearer is present in the sealed
+   * vault. CLI `2200 connector token regenerate` is what provisions
+   * the bearer.
+   */
+  connector?: {
+    port: number
   }
   /**
    * On boot, walk on-disk state and revive previously-running pubs
@@ -197,6 +217,9 @@ export class Supervisor {
   private readonly onboardingSessions: OnboardingSessionStore
   private webHandle: { stop: () => Promise<void>; broadcast: (e: WsEvent) => void } | undefined
   private readonly webConfig: SupervisorOptions['web']
+  private readonly connectorConfig: SupervisorOptions['connector']
+  private connectorHandle: ConnectorListenerHandle | undefined
+  private connectorAudit: ConnectorAuditEmitter | undefined
   private readonly runtimeMode: RuntimeMode
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
@@ -215,6 +238,7 @@ export class Supervisor {
       logger: this.log.child('onboarding'),
     })
     this.webConfig = options.web
+    this.connectorConfig = options.connector
     this.runtimeMode = options.runtimeMode ?? DEFAULT_RUNTIME_MODE
   }
 
@@ -290,6 +314,30 @@ export class Supervisor {
         this.log.warn('http server failed to start', {
           error: err instanceof Error ? err.message : String(err),
         })
+      }
+    }
+    if (this.connectorConfig) {
+      this.connectorAudit = new ConnectorAuditEmitter({ home: this.state.home })
+      // The listener only binds if a bearer is already provisioned.
+      // First-run sees no bearer; the listener stays down until the
+      // operator runs `2200 connector token regenerate`.
+      if (await hasBearer(this.state.home)) {
+        try {
+          this.connectorHandle = await startConnectorListener({
+            home: this.state.home,
+            port: this.connectorConfig.port,
+            audit: this.connectorAudit,
+          })
+          this.log.info('connector listener listening', {
+            port: this.connectorHandle.port,
+          })
+        } catch (err) {
+          this.log.warn('connector listener failed to start', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      } else {
+        this.log.info('connector listener idle (no bearer in vault)')
       }
     }
     this.log.info('supervisor listening', {
@@ -772,6 +820,110 @@ export class Supervisor {
    *   preserved. The operator's intent for "restart the daemon
    *   without flapping the fleet."
    */
+  /**
+   * Snapshot of the MCP connector's state, for the CLI status command
+   * and the (PR 1b) Settings tile.
+   */
+  getConnectorStatus(): {
+    configured: boolean
+    listening: boolean
+    port: number | null
+    bearer_present: boolean
+    bearer_created_at: string | null
+    bearer_regenerated_at: string | null
+  } {
+    const configured = this.connectorConfig !== undefined
+    const listening = this.connectorHandle !== undefined
+    return {
+      configured,
+      listening,
+      port: this.connectorHandle?.port ?? this.connectorConfig?.port ?? null,
+      bearer_present: false,
+      bearer_created_at: null,
+      bearer_regenerated_at: null,
+    }
+  }
+
+  /**
+   * Same as getConnectorStatus but reads the vault for bearer metadata.
+   * Separated so the sync version can be used in hot paths that don't
+   * want to touch disk.
+   */
+  async getConnectorStatusDetailed(): Promise<ReturnType<Supervisor['getConnectorStatus']>> {
+    const base = this.getConnectorStatus()
+    const record = await readBearer(this.state.home)
+    return {
+      ...base,
+      bearer_present: record !== null,
+      bearer_created_at: record?.createdAt ?? null,
+      bearer_regenerated_at: record?.regeneratedAt ?? null,
+    }
+  }
+
+  /**
+   * Mint a fresh connector bearer, persist it to the sealed vault, and
+   * (re)start the listener with the new token. Returns the plaintext
+   * token; the caller is responsible for surfacing it to the operator
+   * exactly once (CLI prints, web Settings tile reveals).
+   *
+   * If a prior token existed, this call instantly invalidates it at
+   * the door. The operator must re-paste the new token wherever it
+   * was registered upstream (grok.com/connectors, etc.).
+   */
+  async regenerateConnectorBearer(): Promise<{ token: string }> {
+    if (!this.connectorConfig || !this.connectorAudit) {
+      throw new Error(
+        'connector not configured for this supervisor; pass `connector: { port }` to Supervisor.create',
+      )
+    }
+    const token = mintBearerToken()
+    const now = new Date().toISOString()
+    const existed = await hasBearer(this.state.home)
+    await saveBearer(this.state.home, {
+      token,
+      createdAt: now,
+      ...(existed ? { regeneratedAt: now } : {}),
+    })
+    // Restart the listener so its cached bearer matches the new vault
+    // value. Grok's review accepted a brief outage on regenerate over
+    // hot-swap complexity.
+    if (this.connectorHandle) {
+      try {
+        await this.connectorHandle.close('bearer_regenerated')
+      } catch {
+        // best-effort; we'll still try to start the new listener.
+      }
+      this.connectorHandle = undefined
+    }
+    this.connectorHandle = await startConnectorListener({
+      home: this.state.home,
+      port: this.connectorConfig.port,
+      audit: this.connectorAudit,
+    })
+    return { token }
+  }
+
+  /**
+   * Disable the MCP connector: delete the sealed bearer and stop the
+   * listener. The vault file is removed entirely (not just blanked) so
+   * a casual operator inspecting state/connector/ sees no dormant
+   * credential. Re-enable by running `regenerateConnectorBearer`.
+   */
+  async disableConnector(): Promise<void> {
+    if (!this.connectorConfig) {
+      throw new Error('connector not configured for this supervisor')
+    }
+    if (this.connectorHandle) {
+      try {
+        await this.connectorHandle.close('user_disabled')
+      } catch {
+        // best-effort
+      }
+      this.connectorHandle = undefined
+    }
+    await deleteBearer(this.state.home)
+  }
+
   async shutdown(timeoutMs = 5000, options: { preserveChildren?: boolean } = {}): Promise<void> {
     if (this.isShuttingDown) return
     this.isShuttingDown = true
@@ -790,6 +942,16 @@ export class Supervisor {
         })
       }
       this.webHandle = undefined
+    }
+    if (this.connectorHandle) {
+      try {
+        await this.connectorHandle.close('supervisor_shutdown')
+      } catch (err) {
+        this.log.warn('error stopping connector listener', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      this.connectorHandle = undefined
     }
     this.scheduler.stop()
     this.tokenRefresh.stop()
@@ -2221,6 +2383,17 @@ export class Supervisor {
           brain_imported_count: result.brain_imported_count,
           notification_id: result.notification_id,
         }
+      },
+      'cli.connector.status': async () => {
+        return this.getConnectorStatusDetailed()
+      },
+      'cli.connector.regenerate': async () => {
+        const { token } = await this.regenerateConnectorBearer()
+        return { token }
+      },
+      'cli.connector.disable': async () => {
+        await this.disableConnector()
+        return { disabled: true as const }
       },
     }
   }

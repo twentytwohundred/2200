@@ -695,6 +695,39 @@ export const CliBuildFromHandoffResultSchema = z.object({
 export type CliBuildFromHandoffResult = z.infer<typeof CliBuildFromHandoffResultSchema>
 
 // ---------------------------------------------------------------------------
+// MCP connector ops (Phase 1 / PR 1a substrate).
+// ---------------------------------------------------------------------------
+
+export const CliConnectorStatusParamsSchema = z.object({})
+export type CliConnectorStatusParams = z.infer<typeof CliConnectorStatusParamsSchema>
+
+export const CliConnectorStatusResultSchema = z.object({
+  configured: z.boolean(),
+  listening: z.boolean(),
+  port: z.number().int().nullable(),
+  bearer_present: z.boolean(),
+  bearer_created_at: z.string().nullable(),
+  bearer_regenerated_at: z.string().nullable(),
+})
+export type CliConnectorStatusResult = z.infer<typeof CliConnectorStatusResultSchema>
+
+export const CliConnectorRegenerateParamsSchema = z.object({})
+export type CliConnectorRegenerateParams = z.infer<typeof CliConnectorRegenerateParamsSchema>
+
+export const CliConnectorRegenerateResultSchema = z.object({
+  token: z.string(),
+})
+export type CliConnectorRegenerateResult = z.infer<typeof CliConnectorRegenerateResultSchema>
+
+export const CliConnectorDisableParamsSchema = z.object({})
+export type CliConnectorDisableParams = z.infer<typeof CliConnectorDisableParamsSchema>
+
+export const CliConnectorDisableResultSchema = z.object({
+  disabled: z.literal(true),
+})
+export type CliConnectorDisableResult = z.infer<typeof CliConnectorDisableResultSchema>
+
+// ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
 
@@ -812,6 +845,18 @@ export const METHODS = {
   'cli.build.from-handoff': {
     params: CliBuildFromHandoffParamsSchema,
     result: CliBuildFromHandoffResultSchema,
+  },
+  'cli.connector.status': {
+    params: CliConnectorStatusParamsSchema,
+    result: CliConnectorStatusResultSchema,
+  },
+  'cli.connector.regenerate': {
+    params: CliConnectorRegenerateParamsSchema,
+    result: CliConnectorRegenerateResultSchema,
+  },
+  'cli.connector.disable': {
+    params: CliConnectorDisableParamsSchema,
+    result: CliConnectorDisableResultSchema,
   },
 } as const
 

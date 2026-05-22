@@ -3799,6 +3799,116 @@ export function buildProgram(): Command {
     }
   })
 
+  // ---------------------------------------------------------------------------
+  // 2200 connector <subcommand>
+  //
+  // Manages the MCP connector endpoint that exposes 2200 to remote MCP
+  // clients (Grok via grok.com/connectors, Claude Desktop, etc.). Phase 1
+  // surface is intentionally narrow ... the token operations and a status
+  // readout. See wiki/inbox/hobby/grok-mcp-connector-locked-handoff.md
+  // (product scope) and wiki/inbox/grok/2026-05-22-mcp-listener-auth-design.md
+  // (substrate review).
+  // ---------------------------------------------------------------------------
+
+  const connector = program
+    .command('connector')
+    .description('manage the MCP connector endpoint that exposes 2200 to remote MCP clients')
+
+  const connectorToken = connector.command('token').description('manage the connector bearer token')
+
+  connectorToken
+    .command('show')
+    .description('print the current bearer token (reads directly from the sealed vault)')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { readBearer } = await import('../runtime/mcp/connector/index.js')
+      const record = await readBearer(home)
+      if (record === null) {
+        console.error(
+          'No connector token is provisioned.\n' +
+            '  Run `2200 connector token regenerate` to mint one (requires the daemon to be running).',
+        )
+        process.exit(1)
+      }
+      console.log(record.token)
+    })
+
+  connectorToken
+    .command('regenerate')
+    .description(
+      'mint a fresh bearer (invalidates the prior token), persist it to the sealed vault, and (re)start the listener',
+    )
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          'Connector regenerate requires a running daemon (the listener picks up the new token on restart).\n' +
+            '  Start the daemon: `2200 daemon start`',
+        )
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.regenerate', {})
+        console.log('# new connector bearer (shown once; copy now)')
+        console.log(result.token)
+        console.log('')
+        console.log(
+          'Paste this token into your MCP client configuration (e.g., grok.com/connectors → Authorization).',
+        )
+        console.log('The previous token is now invalid at the door.')
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorToken
+    .command('disable')
+    .description('delete the bearer from the vault and stop the listener')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error(
+          'Connector disable requires a running daemon.\n' +
+            '  Start the daemon and retry: `2200 daemon start`',
+        )
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.connector.disable', {})
+        console.log('Connector disabled. Bearer deleted; listener stopped.')
+      } finally {
+        await client.close()
+      }
+    })
+
+  connector
+    .command('status')
+    .description('print the connector status (configured, listening, port, bearer metadata)')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Connector status requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const status = await client.call('cli.connector.status', {})
+        const lines: string[] = [
+          `configured:               ${String(status.configured)}`,
+          `listening:                ${String(status.listening)}`,
+          `port:                     ${status.port === null ? '(none)' : String(status.port)}`,
+          `bearer present:           ${String(status.bearer_present)}`,
+          `bearer created at:        ${status.bearer_created_at ?? '(n/a)'}`,
+          `bearer regenerated at:    ${status.bearer_regenerated_at ?? '(n/a)'}`,
+        ]
+        for (const line of lines) console.log(line)
+      } finally {
+        await client.close()
+      }
+    })
+
   return program
 }
 

@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **MCP connector substrate (Phase 1 / PR 1a).** 2200 now exposes itself as a remote MCP server, on a dedicated Fastify listener (default `:2201`, configurable via `TWENTYTWOHUNDRED_CONNECTOR_PORT`) isolated from the web UI listener. Bearer-token auth via the sealed vault (constant-time compare, no fallback-allow, 32-byte `2200-mcp-<base64url>` tokens). Every inbound call surfaces as an Inbox event; failed-auth events are throttled per source IP to one per 10 minutes. PR 1a ships the substrate plus a single `liveness` probe tool; the real Phase 1 tool surface (`contribute_to_thread`, `propose_work_package`, `get_fleet_context`) lands in subsequent PRs after Grok's code review on this layer.
+  - New `2200 connector` CLI: `token show | regenerate | disable`, plus `status`. `regenerate` and `disable` route through the daemon over UDS so the live listener's cached bearer is swapped atomically.
+  - Sealed bearer store at `<home>/state/connector/bearer.json` (AES-256-GCM + HKDF, distinct namespace from the OAuth token store).
+  - Inbox audit events: `connector.call_received`, `connector.auth_rejected`, `connector.listener_state_changed`.
+  - Architecture review by Grok on listener boundary + auth model before PR; design note at `wiki/inbox/grok/2026-05-22-mcp-listener-auth-design.md`.
 - **Grok-First: SuperGrok / X Premium+ subscription auth (no API key).** Sign in to your existing xAI Grok subscription and every Agent set to the new `xai-subscription` provider uses the subscription bearer ... no `XAI_API_KEY` needed. The API-key path remains as a separate, parallel provider (`xai`).
   - Settings page: prominent "Sign in with X / SuperGrok" tile at the top, with the official Grok logo. Inline device-code flow with a phone-friendly URL + code; auto-polling status until completion. (`#237`)
   - Model picker: new "Subscriptions" optgroup pinned at the top of the dropdown. `xAI / Grok (SuperGrok subscription)` is a selectable provider distinct from the API-key sibling, so the credential choice is visible in the Agent's Identity. (`#238`, `#239`)
