@@ -86,12 +86,6 @@ export async function startConnectorListener(
   }
   const storedTokenBytes = Buffer.from(bearerRecord.token, 'utf-8')
 
-  const mcp: ConnectorMcpServerHandle = await createConnectorMcpServer({
-    home: args.home,
-    audit: args.audit,
-    ...args.serverDeps,
-  })
-
   // forceCloseConnections: ensures fastify.close() does not hang on
   // an open SSE stream during regenerate-bounce. The MCP transport
   // gets closed first in `close()` below so streams terminate cleanly
@@ -214,8 +208,19 @@ export async function startConnectorListener(
       })
       .catch(() => undefined)
     reply.hijack()
+    // Per-request fresh MCP server + transport (stateless mode, locked
+    // 2026-05-23 after the grok.com empirical smoke). Building the
+    // McpServer is JS-only (no I/O) so the per-request cost is small;
+    // the alternative — shared server with multiple sessions — pulls
+    // in session tracking that grok-connectors-manager doesn't honor.
+    let perRequestHandle: ConnectorMcpServerHandle | null = null
     try {
-      await mcp.transport.handleRequest(req.raw, reply.raw, req.body)
+      perRequestHandle = await createConnectorMcpServer({
+        home: args.home,
+        audit: args.audit,
+        ...args.serverDeps,
+      })
+      await perRequestHandle.transport.handleRequest(req.raw, reply.raw, req.body)
     } catch (err) {
       try {
         if (!reply.raw.headersSent) {
@@ -233,6 +238,10 @@ export async function startConnectorListener(
           errorSummary: err instanceof Error ? err.message : String(err),
         })
         .catch(() => undefined)
+    } finally {
+      if (perRequestHandle !== null) {
+        await perRequestHandle.close().catch(() => undefined)
+      }
     }
   })
 
@@ -253,11 +262,11 @@ export async function startConnectorListener(
       if (closing) return
       closing = true
       try {
-        // Order matters for clean SSE termination during a regenerate
-        // bounce: close the MCP transport FIRST so any held SSE
-        // streams terminate from the server side, then fastify.close()
-        // completes promptly. forceCloseConnections is a safety net.
-        await mcp.close().catch(() => undefined)
+        // forceCloseConnections + per-request transport lifecycle:
+        // each /mcp handler creates and closes its own ConnectorMcpServerHandle
+        // (stateless mode, per the locked 2026-05-23 SDK pattern). On
+        // listener close we just shut down fastify; any in-flight
+        // per-request handles get force-closed via the Fastify config.
         await fastify.close()
       } finally {
         await args.audit
