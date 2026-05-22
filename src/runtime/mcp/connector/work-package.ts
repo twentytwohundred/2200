@@ -169,6 +169,75 @@ export async function patchPackageFrontmatter(args: PatchPackageFrontmatterArgs)
   })
 }
 
+export interface WorkPackageListEntry {
+  packageId: string
+  slug: string
+  title: string
+  status: WorkPackageStatus
+  primaryAgent: string
+  targetKind: 'thread' | 'agent'
+  targetName: string
+  createdAt: string
+  /** Full body (markdown). Includes the `## Plan` section once written. */
+  body: string
+  approvedAt: string | null
+  approvedFollowOnTaskIds: string[]
+  rejectedAt: string | null
+  rejectionReason: string | null
+}
+
+export interface ListWorkPackagesArgs {
+  home: string
+  /** Filter to a specific status. Omit for "all statuses". */
+  status?: WorkPackageStatus
+  /** Max entries. Default 100. */
+  limit?: number
+}
+
+/**
+ * Enumerate work-package notes in the shared brain. Sorted by
+ * `createdAt` descending (most-recent first). The body is included
+ * so the operator's approval UI can render the `## Plan` section
+ * without a second round-trip.
+ */
+export async function listWorkPackages(
+  args: ListWorkPackagesArgs,
+): Promise<WorkPackageListEntry[]> {
+  const store = BrainStore.forShared(args.home)
+  const notes = await store.list({ tag: 'work-package', limit: args.limit ?? 100 })
+  const out: WorkPackageListEntry[] = []
+  for (const note of notes) {
+    const e = note.extras
+    const pid = typeof e['package_id'] === 'string' ? e['package_id'] : null
+    if (pid === null) continue
+    const status = (
+      typeof e['package_status'] === 'string' ? e['package_status'] : 'proposed'
+    ) as WorkPackageStatus
+    if (args.status !== undefined && status !== args.status) continue
+    const targetKind = (typeof e['target_kind'] === 'string' ? e['target_kind'] : 'thread') as
+      | 'thread'
+      | 'agent'
+    out.push({
+      packageId: pid,
+      slug: note.slug,
+      title: note.frontmatter.title.replace(/^Work package:\s*/, ''),
+      status,
+      primaryAgent: typeof e['primary_agent'] === 'string' ? e['primary_agent'] : '',
+      targetKind,
+      targetName: typeof e['target_name'] === 'string' ? e['target_name'] : '',
+      createdAt: typeof e['created_at'] === 'string' ? e['created_at'] : note.frontmatter.created,
+      body: note.body,
+      approvedAt: typeof e['approved_at'] === 'string' ? e['approved_at'] : null,
+      approvedFollowOnTaskIds: Array.isArray(e['approved_follow_on_task_ids'])
+        ? (e['approved_follow_on_task_ids'] as string[])
+        : [],
+      rejectedAt: typeof e['rejected_at'] === 'string' ? e['rejected_at'] : null,
+      rejectionReason: typeof e['rejection_reason'] === 'string' ? e['rejection_reason'] : null,
+    })
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
 export async function readWorkPackage(
   home: string,
   packageId: string,

@@ -712,6 +712,49 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { disabled: true as const }
   })
 
+  // Work-package operator surfaces (PR 5). The CLI verbs
+  // (`2200 connector work-package approve|reject`) drive the same
+  // RPCs; these HTTP routes back the web Settings UI's approval
+  // surface. List is filtered by status (default: only reviewable
+  // packages, which is what the operator is most likely to act on).
+  fastify.get<{ Querystring: { status?: string } }>(
+    '/api/v1/connector/work-packages',
+    async (req) => {
+      const { listWorkPackages } = await import('../mcp/connector/work-package.js')
+      const statusRaw = req.query.status
+      const validStatuses = new Set(['proposed', 'reviewable', 'approved', 'rejected'])
+      const status =
+        statusRaw !== undefined && validStatuses.has(statusRaw)
+          ? (statusRaw as 'proposed' | 'reviewable' | 'approved' | 'rejected')
+          : undefined
+      const entries = await listWorkPackages({
+        home,
+        ...(status !== undefined ? { status } : {}),
+      })
+      return { items: entries }
+    },
+  )
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/connector/work-packages/:id/approve',
+    async (req) => {
+      const { followOnTaskIds } = await supervisor.approveWorkPackage(req.params.id)
+      return { approved: true as const, follow_on_task_ids: followOnTaskIds }
+    },
+  )
+
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } | undefined }>(
+    '/api/v1/connector/work-packages/:id/reject',
+    async (req) => {
+      const reason =
+        req.body && typeof req.body.reason === 'string' && req.body.reason.length > 0
+          ? req.body.reason
+          : null
+      await supervisor.rejectWorkPackage(req.params.id, reason)
+      return { rejected: true as const }
+    },
+  )
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,

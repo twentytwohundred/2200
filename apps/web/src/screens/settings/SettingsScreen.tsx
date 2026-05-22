@@ -37,6 +37,7 @@ import {
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
 import { ConnectorSection } from './ConnectorSection'
+import { WorkPackagesSection } from './WorkPackagesSection'
 import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
 import { GrokAuthSection } from './GrokAuthSection'
@@ -107,6 +108,13 @@ export function SettingsScreen(): ReactElement {
         <Meta>mcp connector · expose 2200 to grok and other mcp clients</Meta>
         <div className={styles.blockBody}>
           <ConnectorSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>work packages · approve or reject proposals from mcp connector callers</Meta>
+        <div className={styles.blockBody}>
+          <WorkPackagesSection />
         </div>
       </section>
 

@@ -182,6 +182,12 @@ export function ConnectorSection(): ReactElement {
                   New token (paste into <code>grok.com/connectors</code> Authorization):
                 </div>
                 <code className={styles.tokenDisplay}>{justMinted}</code>
+                {copied && (
+                  <div className={styles.subtitle} style={{ margin: 0 }}>
+                    Token copied. Paste at <code>grok.com/connectors</code> → New Connector → Custom
+                    → Authorization to finish wiring the connector.
+                  </div>
+                )}
                 <div className={styles.buttons}>
                   <button
                     type="button"

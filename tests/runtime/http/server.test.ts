@@ -570,6 +570,55 @@ describe('HTTP server / connector routes', () => {
     expect(status.bearer_regenerated_at).toBeNull()
   })
 
+  it('GET /api/v1/connector/work-packages returns an empty list on a fresh home', async () => {
+    const r = await callJson('GET', '/api/v1/connector/work-packages')
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ items: [] })
+  })
+
+  it('GET /api/v1/connector/work-packages filters by status', async () => {
+    const { writeProposedPackage, patchPackageFrontmatter, newWorkPackageId } =
+      await import('../../../src/runtime/mcp/connector/work-package.js')
+    const proposedId = newWorkPackageId()
+    const reviewableId = newWorkPackageId()
+    await writeProposedPackage({
+      home: cHome,
+      packageId: proposedId,
+      primaryAgent: 'a',
+      proposal: {
+        title: 'p',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'a' },
+      },
+    })
+    await writeProposedPackage({
+      home: cHome,
+      packageId: reviewableId,
+      primaryAgent: 'a',
+      proposal: {
+        title: 'r',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'a' },
+      },
+    })
+    await patchPackageFrontmatter({
+      home: cHome,
+      packageId: reviewableId,
+      updates: { package_status: 'reviewable' },
+    })
+    const allResp = (await callJson('GET', '/api/v1/connector/work-packages')).body as {
+      items: { packageId: string; status: string }[]
+    }
+    expect(allResp.items).toHaveLength(2)
+    const reviewableResp = (
+      await callJson('GET', '/api/v1/connector/work-packages?status=reviewable')
+    ).body as { items: { packageId: string; status: string }[] }
+    expect(reviewableResp.items).toHaveLength(1)
+    expect(reviewableResp.items[0]?.packageId).toBe(reviewableId)
+  })
+
   it('regenerate starts the listener when it was previously idle (no bearer at supervisor start)', async () => {
     // Fresh home → supervisor started with connector configured but no
     // bearer provisioned. status reports listening:false, bearer_present:false.
