@@ -88,6 +88,14 @@ import {
   writeProposedPackage,
   type ProposedWorkPackage,
 } from '../mcp/connector/work-package.js'
+import {
+  listClients as listOAuthClients,
+  markRevoked as markOAuthClientRevoked,
+  readClient as readOAuthClient,
+  registerClient as registerOAuthClient,
+  rotateClientSecret as rotateOAuthClientSecret,
+} from '../mcp/connector/oauth/client-store.js'
+import { revokeClientTokens as revokeOAuthClientTokens } from '../mcp/connector/oauth/token-store.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
@@ -1473,6 +1481,129 @@ export class Supervisor {
         synthesis_failure_count: 0,
       },
     })
+  }
+
+  /**
+   * Register a new OAuth client at the trusted (loopback) operator
+   * surface. The operator's "I trust this Grok integration" decision
+   * is captured here; subsequent /authorize calls from this client_id
+   * proceed without operator presence. Returns the client_id + the
+   * one-time plaintext secret (null if PKCE-only).
+   *
+   * See wiki/inbox/grok/2026-05-23-phase2-oauth-as-locked-decisions.md.
+   */
+  async registerOAuthClient(args: {
+    displayName: string
+    redirectUris: string[]
+    mintSecret?: boolean
+    scopesAllowed?: string[]
+  }): Promise<{
+    clientId: string
+    clientSecret: string | null
+    redirectUris: string[]
+    scopesAllowed: string[]
+    registeredAt: string
+  }> {
+    const result = await registerOAuthClient({
+      home: this.state.home,
+      displayName: args.displayName,
+      redirectUris: args.redirectUris,
+      ...(args.mintSecret !== undefined ? { mintSecret: args.mintSecret } : {}),
+      ...(args.scopesAllowed !== undefined ? { scopesAllowed: args.scopesAllowed } : {}),
+    })
+    const record = await readOAuthClient(this.state.home, result.clientId)
+    if (record === null) {
+      throw new Error(
+        `register-and-read race for client ${result.clientId}; bailing rather than silently lose the audit event`,
+      )
+    }
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitOauthClientRegistered({
+          clientId: record.client_id,
+          displayName: record.display_name,
+          redirectUris: record.redirect_uris,
+          hasSecret: record.client_secret_hash !== null,
+        })
+        .catch(() => undefined)
+    }
+    return {
+      clientId: record.client_id,
+      clientSecret: result.clientSecret,
+      redirectUris: record.redirect_uris,
+      scopesAllowed: record.scopes_allowed,
+      registeredAt: record.registered_at,
+    }
+  }
+
+  async listOAuthClients(): Promise<
+    {
+      clientId: string
+      displayName: string
+      redirectUris: string[]
+      hasSecret: boolean
+      scopesAllowed: string[]
+      registeredAt: string
+      lastAuthorizeAt: string | null
+      revokedAt: string | null
+    }[]
+  > {
+    const records = await listOAuthClients(this.state.home)
+    return records.map((r) => ({
+      clientId: r.client_id,
+      displayName: r.display_name,
+      redirectUris: r.redirect_uris,
+      hasSecret: r.client_secret_hash !== null,
+      scopesAllowed: r.scopes_allowed,
+      registeredAt: r.registered_at,
+      lastAuthorizeAt: r.last_authorize_at,
+      revokedAt: r.revoked_at,
+    }))
+  }
+
+  /**
+   * Revoke an OAuth client: mark the record revoked, purge every
+   * access + refresh token associated with the client, emit the
+   * Inbox event. Subsequent /authorize and /token requests from
+   * this client_id will fail.
+   */
+  async revokeOAuthClient(clientId: string): Promise<{
+    removedRefresh: number
+    removedAccess: number
+  }> {
+    const existing = await readOAuthClient(this.state.home, clientId)
+    if (existing === null) throw new Error(`unknown client_id "${clientId}"`)
+    await markOAuthClientRevoked(this.state.home, clientId, new Date())
+    const { removed_refresh, removed_access } = await revokeOAuthClientTokens(
+      this.state.home,
+      clientId,
+    )
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitOauthClientRevoked({
+          clientId,
+          displayName: existing.display_name,
+          removedRefresh: removed_refresh,
+          removedAccess: removed_access,
+        })
+        .catch(() => undefined)
+    }
+    return { removedRefresh: removed_refresh, removedAccess: removed_access }
+  }
+
+  /**
+   * Rotate a client's secret in place. Returns the fresh plaintext
+   * secret (shown once). Existing access + refresh tokens for the
+   * client are NOT invalidated (per operator UX expectation: rotate
+   * to revoke a leaked secret, but keep tokens flowing). Use
+   * `revokeOAuthClient` instead if the goal is to kill the session.
+   */
+  async rotateOAuthClientSecret(clientId: string): Promise<{
+    clientId: string
+    clientSecret: string
+  }> {
+    const fresh = await rotateOAuthClientSecret(this.state.home, clientId)
+    return { clientId, clientSecret: fresh }
   }
 
   /**
@@ -2986,6 +3117,48 @@ export class Supervisor {
       'cli.connector.work-package.reject': async (params) => {
         await this.rejectWorkPackage(params.package_id, params.reason ?? null)
         return { rejected: true as const }
+      },
+      'cli.connector.oauth-client.register': async (params) => {
+        const result = await this.registerOAuthClient({
+          displayName: params.display_name,
+          redirectUris: params.redirect_uris,
+          ...(params.mint_secret !== undefined ? { mintSecret: params.mint_secret } : {}),
+          ...(params.scopes_allowed !== undefined ? { scopesAllowed: params.scopes_allowed } : {}),
+        })
+        return {
+          client_id: result.clientId,
+          client_secret: result.clientSecret,
+          redirect_uris: result.redirectUris,
+          scopes_allowed: result.scopesAllowed,
+          registered_at: result.registeredAt,
+        }
+      },
+      'cli.connector.oauth-client.list': async () => {
+        const items = await this.listOAuthClients()
+        return {
+          items: items.map((c) => ({
+            client_id: c.clientId,
+            display_name: c.displayName,
+            redirect_uris: c.redirectUris,
+            has_secret: c.hasSecret,
+            scopes_allowed: c.scopesAllowed,
+            registered_at: c.registeredAt,
+            last_authorize_at: c.lastAuthorizeAt,
+            revoked_at: c.revokedAt,
+          })),
+        }
+      },
+      'cli.connector.oauth-client.revoke': async (params) => {
+        const { removedRefresh, removedAccess } = await this.revokeOAuthClient(params.client_id)
+        return {
+          revoked: true as const,
+          removed_refresh: removedRefresh,
+          removed_access: removedAccess,
+        }
+      },
+      'cli.connector.oauth-client.rotate-secret': async (params) => {
+        const { clientId, clientSecret } = await this.rotateOAuthClientSecret(params.client_id)
+        return { client_id: clientId, client_secret: clientSecret }
       },
     }
   }

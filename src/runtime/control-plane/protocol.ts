@@ -769,6 +769,70 @@ export type CliConnectorWorkPackageRejectResult = z.infer<
   typeof CliConnectorWorkPackageRejectResultSchema
 >
 
+// OAuth client management (Phase 2 PR-A1)
+
+export const CliConnectorOAuthClientRegisterParamsSchema = z.object({
+  display_name: z.string().min(1),
+  redirect_uris: z.array(z.url()).min(1),
+  mint_secret: z.boolean().optional(),
+  scopes_allowed: z.array(z.string().min(1)).optional(),
+})
+export type CliConnectorOAuthClientRegisterParams = z.infer<
+  typeof CliConnectorOAuthClientRegisterParamsSchema
+>
+export const CliConnectorOAuthClientRegisterResultSchema = z.object({
+  client_id: z.string(),
+  client_secret: z.string().nullable(),
+  redirect_uris: z.array(z.string()),
+  scopes_allowed: z.array(z.string()),
+  registered_at: z.string(),
+})
+export type CliConnectorOAuthClientRegisterResult = z.infer<
+  typeof CliConnectorOAuthClientRegisterResultSchema
+>
+
+export const CliConnectorOAuthClientListParamsSchema = z.object({})
+export const CliConnectorOAuthClientListResultSchema = z.object({
+  items: z.array(
+    z.object({
+      client_id: z.string(),
+      display_name: z.string(),
+      redirect_uris: z.array(z.string()),
+      has_secret: z.boolean(),
+      scopes_allowed: z.array(z.string()),
+      registered_at: z.string(),
+      last_authorize_at: z.string().nullable(),
+      revoked_at: z.string().nullable(),
+    }),
+  ),
+})
+export type CliConnectorOAuthClientListResult = z.infer<
+  typeof CliConnectorOAuthClientListResultSchema
+>
+
+export const CliConnectorOAuthClientRevokeParamsSchema = z.object({
+  client_id: z.string().min(1),
+})
+export const CliConnectorOAuthClientRevokeResultSchema = z.object({
+  revoked: z.literal(true),
+  removed_refresh: z.number().int().nonnegative(),
+  removed_access: z.number().int().nonnegative(),
+})
+export type CliConnectorOAuthClientRevokeResult = z.infer<
+  typeof CliConnectorOAuthClientRevokeResultSchema
+>
+
+export const CliConnectorOAuthClientRotateSecretParamsSchema = z.object({
+  client_id: z.string().min(1),
+})
+export const CliConnectorOAuthClientRotateSecretResultSchema = z.object({
+  client_id: z.string(),
+  client_secret: z.string(),
+})
+export type CliConnectorOAuthClientRotateSecretResult = z.infer<
+  typeof CliConnectorOAuthClientRotateSecretResultSchema
+>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -911,6 +975,22 @@ export const METHODS = {
   'cli.connector.work-package.reject': {
     params: CliConnectorWorkPackageRejectParamsSchema,
     result: CliConnectorWorkPackageRejectResultSchema,
+  },
+  'cli.connector.oauth-client.register': {
+    params: CliConnectorOAuthClientRegisterParamsSchema,
+    result: CliConnectorOAuthClientRegisterResultSchema,
+  },
+  'cli.connector.oauth-client.list': {
+    params: CliConnectorOAuthClientListParamsSchema,
+    result: CliConnectorOAuthClientListResultSchema,
+  },
+  'cli.connector.oauth-client.revoke': {
+    params: CliConnectorOAuthClientRevokeParamsSchema,
+    result: CliConnectorOAuthClientRevokeResultSchema,
+  },
+  'cli.connector.oauth-client.rotate-secret': {
+    params: CliConnectorOAuthClientRotateSecretParamsSchema,
+    result: CliConnectorOAuthClientRotateSecretResultSchema,
   },
 } as const
 

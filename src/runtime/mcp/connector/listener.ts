@@ -30,6 +30,8 @@ import type { ConnectorAuditEmitter, ConnectorAuthRejectionContext } from './aud
 import type { ConnectorMcpServerHandle, ConnectorMcpServerDeps } from './server.js'
 import { createConnectorMcpServer } from './server.js'
 import { readBearer } from './bearer-store.js'
+import { mountOAuthServer, verifyOAuthBearer } from './oauth/server.js'
+import { isAccessTokenShape } from './oauth/token-store.js'
 
 export interface StartConnectorListenerArgs {
   /** 2200 home directory; used by the bearer-store and audit emitter. */
@@ -105,10 +107,76 @@ export async function startConnectorListener(
     connectionTimeout: 60_000,
   })
 
-  // Pre-handler: constant-time bearer compare. No fallback-allow.
-  // Emit audit on rejection (throttled per source IP in the emitter).
+  // OAuth /token + /revoke arrive as form-urlencoded by convention.
+  // Fastify v5 rejects unknown content types by default; register a
+  // pass-through parser that hands the raw string to the route, which
+  // then parses k=v&... pairs itself (see parseTokenBody in oauth/server.ts).
+  fastify.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_req, body, done) => {
+      done(null, body)
+    },
+  )
+
+  // The OAuth Authorization Server endpoints advertise their own
+  // issuer URL (RFC 8414 metadata). Since the listener doesn't know
+  // its public-facing URL (the tunnel decides), derive it from each
+  // request's Host / X-Forwarded-Host header on the fly. Captured
+  // here so all OAuth handlers can read the most-recent value.
+  let lastSeenIssuer: string | null = null
+  fastify.addHook('onRequest', (req, _reply, done) => {
+    const xfh = req.headers['x-forwarded-host']
+    const host = typeof xfh === 'string' ? xfh : req.headers.host
+    const xfp = req.headers['x-forwarded-proto']
+    const proto = typeof xfp === 'string' ? xfp : 'https'
+    if (typeof host === 'string' && host.length > 0) {
+      lastSeenIssuer = `${proto}://${host}`
+    }
+    done()
+  })
+
+  // Mount the OAuth Authorization Server endpoints (Phase 2 PR-A1).
+  // These live on `/oauth/*` + `/.well-known/oauth-authorization-server`
+  // and are PUBLIC (the AS itself is the auth gate; protecting it with
+  // bearer auth would chicken-and-egg the OAuth flow).
+  mountOAuthServer(fastify, {
+    home: args.home,
+    audit: args.audit,
+    issuerBaseUrl: () => lastSeenIssuer ?? `http://127.0.0.1:${String(args.port)}`,
+  })
+
+  // Pre-handler: routes-that-need-bearer-auth path.
+  //
+  // OAuth endpoints (`/oauth/*`, `/.well-known/*`) are PUBLIC — they
+  // are themselves the auth gate. Every other route requires either
+  // the static bearer (Phase 1 / PR 1a) OR a valid OAuth access token
+  // (Phase 2 PR-A1). Both paths coexist on `/mcp`; the listener tries
+  // OAuth first (token prefix disambiguates), then falls through to
+  // the static-bearer check.
   fastify.addHook('preHandler', async (req, reply) => {
+    if (isPublicAuthRoute(req.url)) return
+
     const auth = req.headers.authorization
+    const presented = extractBearer(auth)
+    // Try OAuth access token first — disambiguated by prefix.
+    if (presented !== null && isAccessTokenShape(presented)) {
+      const result = await verifyOAuthBearer(args.home, presented)
+      if (result.ok) return // OAuth-authenticated; proceed to route
+      await args.audit
+        .emitAuthRejected({
+          sourceIp: clientIp(req),
+          reason: 'value_mismatch',
+        })
+        .catch(() => undefined)
+      await reply
+        .code(401)
+        .header('content-type', 'application/json')
+        .send({ error: 'unauthorized' })
+      return
+    }
+
+    // Static-bearer path (PR 1a).
     const rejection: ConnectorAuthRejectionContext | null = classifyBearer(auth, storedTokenBytes)
     if (rejection !== null) {
       await args.audit
@@ -211,6 +279,29 @@ export async function startConnectorListener(
  * is not a secret) but still return the same uniform 401 response to
  * the caller.
  */
+/**
+ * True iff the URL targets a route that should bypass the bearer
+ * preHandler — the OAuth AS endpoints and its discovery metadata
+ * are themselves the auth gate; protecting them with bearer auth
+ * would chicken-and-egg the flow.
+ */
+function isPublicAuthRoute(url: string): boolean {
+  // Fastify routes don't carry the query string in `req.url` matching
+  // semantics, but `req.url` includes it. Strip it before prefix
+  // checks.
+  const path = url.split('?')[0] ?? url
+  if (path.startsWith('/oauth/')) return true
+  if (path === '/.well-known/oauth-authorization-server') return true
+  return false
+}
+
+/** Pull the bearer string out of the Authorization header. Null if absent / not Bearer. */
+function extractBearer(authHeader: string | string[] | undefined): string | null {
+  const raw = Array.isArray(authHeader) ? authHeader[0] : authHeader
+  if (!raw?.startsWith('Bearer ')) return null
+  return raw.slice('Bearer '.length).trim()
+}
+
 function classifyBearer(
   authHeader: string | string[] | undefined,
   storedTokenBytes: Buffer,
