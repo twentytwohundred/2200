@@ -500,6 +500,50 @@ describe('MCP connector listener', () => {
     await client.close()
   })
 
+  it('handles repeated `initialize` calls without `Server already initialized` (stateless transport)', async () => {
+    // Regression test for the 2026-05-23 empirical smoke against the real
+    // grok.com/connectors flow: grok-connectors-manager/0.1.0 sends a
+    // fresh `initialize` payload for each tool invocation rather than
+    // reusing an mcp-session-id. Stateful mode rejected the re-init
+    // with `-32600 Invalid Request: Server already initialized`,
+    // surfacing as "error decoding response body" on Grok's side.
+    // Stateless transport handles each request independently.
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const initPayload = {
+      jsonrpc: '2.0' as const,
+      id: 0,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'regression-test-client', version: '0.0.0' },
+      },
+    }
+    // Two back-to-back initialize calls from "different sessions"
+    // (no mcp-session-id header on either). Both must succeed.
+    for (let i = 0; i < 2; i++) {
+      const resp = await fetch(`http://127.0.0.1:${String(handle.port)}/mcp`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ ...initPayload, id: i }),
+      })
+      expect(resp.status).toBe(200)
+      // Stateless mode characteristic: NO mcp-session-id header on responses.
+      expect(resp.headers.get('mcp-session-id')).toBeNull()
+    }
+  })
+
   it('get_fleet_context returns a schema_version=1 packet shape', async () => {
     const audit = new ConnectorAuditEmitter({ home })
     handle = await startConnectorListener({

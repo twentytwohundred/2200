@@ -22,7 +22,6 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { ConnectorAuditEmitter } from './audit.js'
 import { buildFleetContext, type FleetContextDeps } from './fleet-context.js'
@@ -455,9 +454,25 @@ export async function createConnectorMcpServer(
     },
   )
 
+  // Stateless transport, fresh per request (discovered empirically
+  // 2026-05-23 against the real grok.com/connectors flow):
+  // grok-connectors-manager/0.1.0 sends a fresh `initialize` for each
+  // tool invocation rather than reusing an mcp-session-id. Stateful
+  // mode rejected the re-init with `-32600 Invalid Request: Server
+  // already initialized`, surfacing as "error decoding response body"
+  // on Grok's side. Stateless mode + per-request transport is the
+  // SDK's documented pattern for stateless servers.
+  //
+  // Safety: the OAuth access token (Phase 2 / PR-A1) or static bearer
+  // (Phase 1 / PR 1a) remains the auth boundary. Session IDs were
+  // never a security primitive in our model.
+  // Cast required: the SDK's TS surface declares
+  // `sessionIdGenerator: () => string` but the runtime + the SDK docs
+  // explicitly support `undefined` to enable stateless mode. Same
+  // cast pattern the SDK README shows.
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-  })
+    sessionIdGenerator: undefined,
+  } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0])
 
   // The SDK transport's TS surface declares mandatory `onclose`/`onerror`
   // setters after connection, but our exactOptionalPropertyTypes-strict
