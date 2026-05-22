@@ -72,8 +72,19 @@ export async function startConnectorListener(
 
   const mcp: ConnectorMcpServerHandle = await createConnectorMcpServer()
 
+  // forceCloseConnections: ensures fastify.close() does not hang on
+  // an open SSE stream during regenerate-bounce. The MCP transport
+  // gets closed first in `close()` below so streams terminate cleanly
+  // from the server side; forceCloseConnections is the belt to the
+  // suspenders for any keep-alive that slipped through.
+  //
+  // connectionTimeout: 60s covers MCP initialize + first request. A
+  // slow client cannot tie up a connection slot forever. SSE streams
+  // are kept alive by data flow, not by this timeout.
   const fastify = Fastify({
     bodyLimit: args.bodyLimitBytes ?? DEFAULT_BODY_LIMIT_BYTES,
+    forceCloseConnections: true,
+    connectionTimeout: 60_000,
   })
 
   // Pre-handler: constant-time bearer compare. No fallback-allow.
@@ -102,15 +113,24 @@ export async function startConnectorListener(
   // Fastify routes all three under one ALL handler; the transport
   // dispatches by method internally.
   fastify.all('/mcp', async (req: FastifyRequest, reply: FastifyReply) => {
-    const startMs = Date.now()
     const peek = peekMcpEnvelope(req.body)
+    const ip = clientIp(req)
+    // Audit fires BEFORE the transport handoff. The MCP transport
+    // holds SSE streams open well past the JSON-RPC result so
+    // emitting on transport-resolve would defer the audit until the
+    // stream closes (review-pointed-out 2026-05-22). "Call received"
+    // is the right semantic at request-receipt time.
+    args.audit
+      .emitCallReceived({
+        sourceIp: ip,
+        method: peek.method ?? 'unknown',
+        ...(peek.toolName !== undefined ? { toolName: peek.toolName } : {}),
+      })
+      .catch(() => undefined)
     reply.hijack()
     try {
       await mcp.transport.handleRequest(req.raw, reply.raw, req.body)
     } catch (err) {
-      // The transport writes its own response on success and most
-      // errors. If we land here, it threw before/while writing. Try
-      // to close the response cleanly.
       try {
         if (!reply.raw.headersSent) {
           reply.raw.statusCode = 500
@@ -120,24 +140,14 @@ export async function startConnectorListener(
         // best-effort
       }
       args.audit
-        .emitCallReceived({
-          sourceIp: clientIp(req),
+        .emitCallErrored({
+          sourceIp: ip,
           method: peek.method ?? 'unknown',
           ...(peek.toolName !== undefined ? { toolName: peek.toolName } : {}),
-          responseSummary: `error: ${err instanceof Error ? err.message : String(err)}`,
-          latencyMs: Date.now() - startMs,
+          errorSummary: err instanceof Error ? err.message : String(err),
         })
         .catch(() => undefined)
-      return
     }
-    args.audit
-      .emitCallReceived({
-        sourceIp: clientIp(req),
-        method: peek.method ?? 'unknown',
-        ...(peek.toolName !== undefined ? { toolName: peek.toolName } : {}),
-        latencyMs: Date.now() - startMs,
-      })
-      .catch(() => undefined)
   })
 
   const host = args.host ?? DEFAULT_HOST
@@ -157,9 +167,13 @@ export async function startConnectorListener(
       if (closing) return
       closing = true
       try {
+        // Order matters for clean SSE termination during a regenerate
+        // bounce: close the MCP transport FIRST so any held SSE
+        // streams terminate from the server side, then fastify.close()
+        // completes promptly. forceCloseConnections is a safety net.
+        await mcp.close().catch(() => undefined)
         await fastify.close()
       } finally {
-        await mcp.close().catch(() => undefined)
         await args.audit
           .emitListenerStateChanged({
             state: 'stopped',

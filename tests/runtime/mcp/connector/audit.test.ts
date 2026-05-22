@@ -59,17 +59,33 @@ describe('ConnectorAuditEmitter.emitCallReceived', () => {
     expect(notes[0]?.raw).toContain('method: tools/list')
   })
 
-  it('includes tool_name and latency when provided', async () => {
+  it('includes tool_name when provided', async () => {
     const audit = new ConnectorAuditEmitter({ home })
     await audit.emitCallReceived({
       sourceIp: '203.0.113.7',
       method: 'tools/call',
       toolName: 'liveness',
-      latencyMs: 42,
     })
     const [note] = await readEmittedNotifications()
     expect(note?.raw).toContain('tool_name: liveness')
-    expect(note?.raw).toContain('latency_ms: 42')
+  })
+})
+
+describe('ConnectorAuditEmitter.emitCallErrored', () => {
+  it('emits a normal-tier notification with error_summary, method, and tool_name', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    await audit.emitCallErrored({
+      sourceIp: '203.0.113.7',
+      method: 'tools/call',
+      toolName: 'liveness',
+      errorSummary: 'transport blew up',
+    })
+    const [note] = await readEmittedNotifications()
+    expect(note?.raw).toContain('tier: normal')
+    expect(note?.raw).toContain('kind: connector.call_errored')
+    expect(note?.raw).toContain('error_summary: transport blew up')
+    expect(note?.raw).toContain('tool_name: liveness')
+    expect(note?.raw).toContain('method: tools/call')
   })
 })
 

@@ -39,10 +39,11 @@ export interface ConnectorCallContext {
   toolName?: string
   /** Args summary; the caller is responsible for PII sanitization. */
   argsSummary?: string
-  /** Response summary; the caller is responsible for PII sanitization. */
-  responseSummary?: string
-  /** Latency in ms (round-trip inside our listener). */
-  latencyMs?: number
+}
+
+export interface ConnectorCallErrorContext extends ConnectorCallContext {
+  /** Error class / message; sanitized by the caller. */
+  errorSummary: string
 }
 
 export interface ConnectorAuthRejectionContext {
@@ -79,7 +80,18 @@ export class ConnectorAuditEmitter {
     this.now = deps.now ?? Date.now
   }
 
-  /** Emit a successful connector call audit event. Passive tier. */
+  /**
+   * Emit a "call received" audit event at the START of inbound request
+   * handling — before the MCP transport is given control. Passive tier.
+   *
+   * Why pre-handoff and not post: the SDK's streamable-HTTP transport
+   * holds the response open for the lifetime of any SSE stream, which
+   * for a tools/call can extend well past the JSON-RPC result. Emitting
+   * "call received" at request-receipt time gives the operator the
+   * right semantic ("Grok called in") without depending on stream
+   * lifecycle. If we later need latency or completion telemetry, a
+   * paired finish event with proper transport hooks is the follow-up.
+   */
   async emitCallReceived(ctx: ConnectorCallContext): Promise<void> {
     const extras: Record<string, unknown> = {
       source_ip: ctx.sourceIp,
@@ -87,8 +99,6 @@ export class ConnectorAuditEmitter {
     }
     if (ctx.toolName !== undefined) extras['tool_name'] = ctx.toolName
     if (ctx.argsSummary !== undefined) extras['args_summary'] = ctx.argsSummary
-    if (ctx.responseSummary !== undefined) extras['response_summary'] = ctx.responseSummary
-    if (ctx.latencyMs !== undefined) extras['latency_ms'] = ctx.latencyMs
 
     const body =
       ctx.toolName !== undefined
@@ -100,6 +110,36 @@ export class ConnectorAuditEmitter {
       agentName: CONNECTOR_EMITTER,
       tier: 'passive',
       kind: 'connector.call_received',
+      body,
+      extras,
+    })
+  }
+
+  /**
+   * Emit a "call errored" audit event when the MCP transport throws
+   * before/while writing its response. Tier `normal` so the operator
+   * sees it in the Inbox feed — error-on-error is the kind of thing
+   * worth surfacing.
+   */
+  async emitCallErrored(ctx: ConnectorCallErrorContext): Promise<void> {
+    const extras: Record<string, unknown> = {
+      source_ip: ctx.sourceIp,
+      method: ctx.method,
+      error_summary: ctx.errorSummary,
+    }
+    if (ctx.toolName !== undefined) extras['tool_name'] = ctx.toolName
+    if (ctx.argsSummary !== undefined) extras['args_summary'] = ctx.argsSummary
+
+    const body =
+      ctx.toolName !== undefined
+        ? `MCP connector call errored: \`${ctx.method}\` → \`${ctx.toolName}\` from ${ctx.sourceIp}: ${ctx.errorSummary}`
+        : `MCP connector call errored: \`${ctx.method}\` from ${ctx.sourceIp}: ${ctx.errorSummary}`
+
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.call_errored',
       body,
       extras,
     })

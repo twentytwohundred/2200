@@ -144,7 +144,11 @@ describe('MCP connector listener', () => {
     expect(body.error).toBe('unauthorized')
   })
 
-  it('emits a call_received audit event with the method and tool_name on a successful call', async () => {
+  it('emits a call_received audit event with method and tool_name BEFORE the transport handoff', async () => {
+    // Pre-emit timing: the audit fires at request receipt, not after
+    // SSE close. The Grok review (2026-05-22) called out the old
+    // post-handleRequest timing as deferred-by-SSE; this asserts the
+    // new semantics.
     const audit = new ConnectorAuditEmitter({ home })
     handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
 
@@ -152,15 +156,33 @@ describe('MCP connector listener', () => {
     await client.callTool({ name: 'liveness', arguments: {} })
     await client.close()
 
-    // Allow the post-response audit emit to flush.
+    // Pre-emit means the notification lands during the call. A small
+    // grace flush for file-write completion.
     await new Promise((r) => setTimeout(r, 50))
     const notes = await readEmittedNotifications()
     const callNotes = notes.filter((n) => n.includes('kind: connector.call_received'))
-    // At least the tools/call entry; initialize and tools/list may
-    // each show up too depending on SDK behavior.
     const toolsCall = callNotes.find((n) => n.includes('method: tools/call'))
     expect(toolsCall).toBeDefined()
     expect(toolsCall).toContain('tool_name: liveness')
+  })
+
+  it('close() returns promptly even with an active client connection (regenerate-bounce semantics)', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+
+    const client = await newClient(token, handle.port)
+    await client.listTools() // keeps an SSE stream warm
+
+    const startMs = Date.now()
+    await handle.close('test_bounce')
+    const elapsedMs = Date.now() - startMs
+    handle = null
+    // Without the (mcp.close → fastify.close) order + forceCloseConnections
+    // option, an active SSE stream from listTools would hold close() open
+    // until the client side dropped. 2 seconds is plenty of headroom; in
+    // practice the close completes in single-digit ms.
+    expect(elapsedMs).toBeLessThan(2_000)
+    await client.close().catch(() => undefined)
   })
 
   it('emits started + stopped lifecycle events around its lifetime', async () => {
