@@ -23,6 +23,7 @@ interface BootstrapArgs {
   home: string
   webPort: number
   webHost: string
+  connectorPort: number
 }
 
 function parseArgs(argv: string[]): BootstrapArgs {
@@ -40,7 +41,9 @@ function parseArgs(argv: string[]): BootstrapArgs {
   const portRaw = process.env['TWENTYTWOHUNDRED_WEB_PORT']
   const webPort = portRaw ? Number.parseInt(portRaw, 10) : 2200
   const webHost = process.env['TWENTYTWOHUNDRED_WEB_HOST'] ?? '127.0.0.1'
-  return { home, webPort, webHost }
+  const connectorPortRaw = process.env['TWENTYTWOHUNDRED_CONNECTOR_PORT']
+  const connectorPort = connectorPortRaw ? Number.parseInt(connectorPortRaw, 10) : 2201
+  return { home, webPort, webHost, connectorPort }
 }
 
 async function main(): Promise<void> {
@@ -59,11 +62,13 @@ async function main(): Promise<void> {
   const supervisor = await Supervisor.create({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
+    connector: { port: args.connectorPort },
     runtimeMode,
   })
   await supervisor.start({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
+    connector: { port: args.connectorPort },
     runtimeMode,
     // Production daemon: revive pubs and agents that were running
     // before the previous incarnation went down. Off by default in
