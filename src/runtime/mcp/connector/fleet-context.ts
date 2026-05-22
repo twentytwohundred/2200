@@ -13,6 +13,7 @@
 import { BrainStore } from '../../brain/store.js'
 import { listNotifications } from '../../notifications/reader.js'
 import type { StateSnapshotResult } from '../../control-plane/protocol.js'
+import { readBrief, briefSlug } from './synthesis.js'
 
 export interface FleetContextDeps {
   home: string
@@ -37,6 +38,14 @@ export interface FleetContextThreadSummary {
   primary_agent: string | null
   contribution_count: number
   last_contribution_at: string | null
+  /** First ~500 chars of the synthesized brief, or null if no brief exists yet. */
+  brief_excerpt: string | null
+  /** ISO timestamp the brief is "current as of"; null if no brief yet. */
+  brief_synthesized_through: string | null
+  /** True iff `synthesized_through < last_contribution_at`. */
+  brief_stale: boolean
+  /** True iff three consecutive synthesis failures have blocked the thread. */
+  brief_blocked: boolean
 }
 
 export interface FleetContextActivitySummary {
@@ -87,37 +96,62 @@ export async function buildFleetContext(deps: FleetContextDeps): Promise<FleetCo
 async function listResearchThreads(home: string): Promise<FleetContextThreadSummary[]> {
   const store = BrainStore.forShared(home)
   const notes = await store.list({ tag: 'research-thread', limit: MAX_THREADS * 2 })
-  return notes
-    .map((note) => {
-      const extras = note.extras
-      // Strip the `research-` prefix we mint in contributions.ts to
-      // surface the bare thread name to consumers.
-      const bareSlug = note.slug.startsWith('research-')
-        ? note.slug.slice('research-'.length)
-        : note.slug
-      const displayName =
-        (typeof extras['display_name'] === 'string' ? extras['display_name'] : null) ?? bareSlug
-      const primaryAgent =
-        typeof extras['primary_agent'] === 'string' ? extras['primary_agent'] : null
-      const contributionCount =
-        typeof extras['contribution_count'] === 'number' ? extras['contribution_count'] : 0
-      const lastContributionAt =
-        typeof extras['last_contribution_at'] === 'string' ? extras['last_contribution_at'] : null
-      return {
-        slug: bareSlug,
-        display_name: displayName,
-        primary_agent: primaryAgent,
-        contribution_count: contributionCount,
-        last_contribution_at: lastContributionAt,
-      }
+  // The brief sibling note also carries `research-thread`; filter to
+  // anchors only (the brief is additionally tagged `standing-brief`).
+  const anchors = notes.filter((n) => !n.frontmatter.tags.includes('standing-brief'))
+  const summaries: FleetContextThreadSummary[] = []
+  for (const note of anchors) {
+    const extras = note.extras
+    const bareSlug = note.slug.startsWith('research-')
+      ? note.slug.slice('research-'.length)
+      : note.slug
+    const displayName =
+      (typeof extras['display_name'] === 'string' ? extras['display_name'] : null) ?? bareSlug
+    const primaryAgent =
+      typeof extras['primary_agent'] === 'string' ? extras['primary_agent'] : null
+    const contributionCount =
+      typeof extras['contribution_count'] === 'number' ? extras['contribution_count'] : 0
+    const lastContributionAt =
+      typeof extras['last_contribution_at'] === 'string' ? extras['last_contribution_at'] : null
+    const synthesizedThrough =
+      typeof extras['synthesized_through'] === 'string' ? extras['synthesized_through'] : null
+    const blocked =
+      typeof extras['synthesis_blocked'] === 'boolean' ? extras['synthesis_blocked'] : false
+    const brief = await readBrief(home, bareSlug)
+    const briefExcerpt =
+      brief === null
+        ? null
+        : brief.body.length <= BRIEF_EXCERPT_CHARS
+          ? brief.body
+          : brief.body.slice(0, BRIEF_EXCERPT_CHARS) +
+            '\n\n...(truncated; call get_research_brief for full text)'
+    const stale =
+      synthesizedThrough === null
+        ? lastContributionAt !== null
+        : lastContributionAt !== null && synthesizedThrough < lastContributionAt
+    summaries.push({
+      slug: bareSlug,
+      display_name: displayName,
+      primary_agent: primaryAgent,
+      contribution_count: contributionCount,
+      last_contribution_at: lastContributionAt,
+      brief_excerpt: briefExcerpt,
+      brief_synthesized_through: synthesizedThrough,
+      brief_stale: stale,
+      brief_blocked: blocked,
     })
-    .sort((a, b) => {
-      if (a.last_contribution_at === null && b.last_contribution_at === null) return 0
-      if (a.last_contribution_at === null) return 1
-      if (b.last_contribution_at === null) return -1
-      return b.last_contribution_at.localeCompare(a.last_contribution_at)
-    })
+  }
+  return summaries.sort((a, b) => {
+    if (a.last_contribution_at === null && b.last_contribution_at === null) return 0
+    if (a.last_contribution_at === null) return 1
+    if (b.last_contribution_at === null) return -1
+    return b.last_contribution_at.localeCompare(a.last_contribution_at)
+  })
 }
+
+const BRIEF_EXCERPT_CHARS = 500
+
+export { briefSlug }
 
 async function listRecentActivity(home: string): Promise<FleetContextActivitySummary[]> {
   // Recent operator-visible (non-passive) and selected passive Inbox

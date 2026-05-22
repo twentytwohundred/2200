@@ -78,6 +78,8 @@ import {
   startConnectorListener,
   type ConnectorListenerHandle,
 } from '../mcp/connector/index.js'
+import { SynthesisReconciler } from '../mcp/connector/synthesis-reconciler.js'
+import { updateAnchorFrontmatter } from '../mcp/connector/synthesis.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
@@ -92,6 +94,29 @@ import { toEnvelopeV1 as toCredentialRequestEnvelopeV1 } from '../credentials/re
 function stripArchiveSuffix(name: string): string {
   const m = /^(.+)-archived-\d{4}-\d{2}-\d{2}(?:-\d+)?$/.exec(name)
   return m?.[1] ?? name
+}
+
+function renderSynthesisTaskBody(args: {
+  threadSlug: string
+  pendingSynthesisAt: string
+  budgetUsd: number
+}): string {
+  return [
+    `Synthesize the standing brief for research thread \`${args.threadSlug}\`.`,
+    '',
+    `The chronological contribution log lives at \`<shared>/brain/research-${args.threadSlug}.md\`. Read it with \`brain_read_shared\`, then write the synthesized brief via \`brain_write_research_brief\` with thread_slug \`${args.threadSlug}\`.`,
+    '',
+    'The brief should be a current-state summary, not a chronicle. Suggested structure (deviate where it helps):',
+    '',
+    '  ## Current state',
+    '  ## Open questions',
+    '  ## Recent direction',
+    '  ## Next steps',
+    '',
+    `Cite contribution timestamps for any claims drawn from specific contributions. The thread is currently pending synthesis through ${args.pendingSynthesisAt}.`,
+    '',
+    `Budget cap for this task: $${args.budgetUsd.toFixed(2)}.`,
+  ].join('\n')
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '0:0:0:0:0:0:0:1'])
@@ -276,6 +301,7 @@ export class Supervisor {
   private readonly connectorConfig: SupervisorOptions['connector']
   private connectorHandle: ConnectorListenerHandle | undefined
   private connectorAudit: ConnectorAuditEmitter | undefined
+  private synthesisReconciler: SynthesisReconciler | undefined
   private readonly runtimeMode: RuntimeMode
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
@@ -390,6 +416,19 @@ export class Supervisor {
     }
     if (this.connectorConfig) {
       this.connectorAudit = new ConnectorAuditEmitter({ home: this.state.home })
+      // Standing-brief synthesis reconciler runs whenever the connector
+      // is configured (even if no bearer is provisioned yet) ... it
+      // reconciles existing threads, which can exist before the user
+      // pastes their first connector bearer if the operator created a
+      // thread via a future CLI / other path.
+      this.synthesisReconciler = new SynthesisReconciler({
+        home: this.state.home,
+        audit: this.connectorAudit,
+        isAgentRunning: (name: string) => this.state.agents[name]?.state === 'running',
+        submitSynthesisTask: (args) => this.submitSynthesisTask(args),
+        logger: this.log.child('synthesis-reconciler'),
+      })
+      this.synthesisReconciler.start()
       // The listener only binds if a bearer is already provisioned.
       // First-run sees no bearer; the listener stays down until the
       // operator runs `2200 connector token regenerate`.
@@ -1007,6 +1046,62 @@ export class Supervisor {
   }
 
   /**
+   * Hand a synthesis task to a primary Agent. Used by the reconciler.
+   *
+   * The task description tells the Agent everything it needs: the
+   * thread slug, the `pending_synthesis_at` snapshot to advance the
+   * brief through, the per-synthesis budget cap, the structure
+   * recommendation, and which tool to call.
+   */
+  private async submitSynthesisTask(args: {
+    agent: string
+    threadSlug: string
+    pendingSynthesisAt: string
+    budgetUsd: number
+  }): Promise<{ taskId: string }> {
+    if (!(args.agent in this.state.agents)) {
+      throw new Error(`no Agent record for ${args.agent}`)
+    }
+    const store = new TaskStore(this.state.home, args.agent)
+    const title = `Synthesize standing brief for research thread "${args.threadSlug}"`
+    const body = renderSynthesisTaskBody(args)
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: args.agent,
+      title,
+      body,
+      // Priority `0` is the existing default for newPendingTask. The
+      // synthesis task does not pre-empt other Agent work.
+      priority: 0,
+    })
+    await store.save(task)
+    this.log.info('synthesis task submitted', {
+      agent: args.agent,
+      thread: args.threadSlug,
+      task_id: task.frontmatter.id,
+      budget_usd: args.budgetUsd,
+    })
+    return { taskId: task.frontmatter.id }
+  }
+
+  /**
+   * Public hook the reconciler exposes for the CLI / RPC `connector
+   * synthesis unblock`: clear `synthesis_blocked` + reset the failure
+   * count on a thread anchor. Operator's recovery path after three
+   * consecutive synthesis failures.
+   */
+  async clearSynthesisBlocked(threadSlug: string): Promise<void> {
+    await updateAnchorFrontmatter({
+      home: this.state.home,
+      threadSlug,
+      updates: {
+        synthesis_blocked: false,
+        synthesis_failure_count: 0,
+      },
+    })
+  }
+
+  /**
    * Disable the MCP connector: delete the sealed bearer and stop the
    * listener. The vault file is removed entirely (not just blanked) so
    * a casual operator inspecting state/connector/ sees no dormant
@@ -1045,6 +1140,10 @@ export class Supervisor {
         })
       }
       this.webHandle = undefined
+    }
+    if (this.synthesisReconciler) {
+      this.synthesisReconciler.stop()
+      this.synthesisReconciler = undefined
     }
     if (this.connectorHandle) {
       try {
@@ -2497,6 +2596,10 @@ export class Supervisor {
       'cli.connector.disable': async () => {
         await this.disableConnector()
         return { disabled: true as const }
+      },
+      'cli.connector.synthesis.unblock': async (params) => {
+        await this.clearSynthesisBlocked(params.thread_slug)
+        return { unblocked: true as const }
       },
     }
   }

@@ -727,6 +727,20 @@ export const CliConnectorDisableResultSchema = z.object({
 })
 export type CliConnectorDisableResult = z.infer<typeof CliConnectorDisableResultSchema>
 
+export const CliConnectorSynthesisUnblockParamsSchema = z.object({
+  thread_slug: z.string().min(1),
+})
+export type CliConnectorSynthesisUnblockParams = z.infer<
+  typeof CliConnectorSynthesisUnblockParamsSchema
+>
+
+export const CliConnectorSynthesisUnblockResultSchema = z.object({
+  unblocked: z.literal(true),
+})
+export type CliConnectorSynthesisUnblockResult = z.infer<
+  typeof CliConnectorSynthesisUnblockResultSchema
+>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -857,6 +871,10 @@ export const METHODS = {
   'cli.connector.disable': {
     params: CliConnectorDisableParamsSchema,
     result: CliConnectorDisableResultSchema,
+  },
+  'cli.connector.synthesis.unblock': {
+    params: CliConnectorSynthesisUnblockParamsSchema,
+    result: CliConnectorSynthesisUnblockResultSchema,
   },
 } as const
 
