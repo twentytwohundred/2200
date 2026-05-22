@@ -324,6 +324,28 @@ export const TaskFrontmatterSchema = z.object({
    * the task.
    */
   wait_for: WaitForSchema.optional().default(null),
+  /**
+   * Task-scoped tool policy. `inherit_agent` (default) preserves the
+   * current behavior ... the dispatcher gates only on the Agent's
+   * identity-level `allowedToolNames`. `strict_allowlist` causes the
+   * dispatcher to ALSO enforce `allowed_tools` below as a hard
+   * constraint regardless of what the Agent's identity grants.
+   *
+   * Phase 1 callers that set `strict_allowlist`:
+   *   - standing_brief_synthesis (PR 4 retrofit of PR 3)
+   *   - work_package_coordination (PR 4)
+   *
+   * See wiki/inbox/grok/2026-05-23-pr4-propose-work-package-design.md
+   * for the load-bearing rationale: the invariant is mechanical at
+   * dispatch time, not advisory in the task body.
+   */
+  tool_policy: z.enum(['inherit_agent', 'strict_allowlist']).optional().default('inherit_agent'),
+  /**
+   * The narrow tool allowlist for `tool_policy: strict_allowlist`.
+   * Ignored when `tool_policy` is `inherit_agent`. Exact tool names
+   * (not families) so the audit surface stays precise.
+   */
+  allowed_tools: z.array(z.string().min(1)).optional().default([]),
 })
 export type TaskFrontmatter = z.infer<typeof TaskFrontmatterSchema>
 
@@ -351,6 +373,9 @@ export function newPendingTask(args: {
   delegation_depth?: number
   /** Task source; defaults to null (treated as "unknown / non-chat" by surface-aware tools). */
   source?: TaskSource
+  /** Optional strict allowlist policy + tool names. Defaults to `inherit_agent` (no extra gating). */
+  tool_policy?: 'inherit_agent' | 'strict_allowlist'
+  allowed_tools?: string[]
   now?: () => Date
 }): TaskRecord {
   const now = args.now ?? (() => new Date())
@@ -376,6 +401,8 @@ export function newPendingTask(args: {
       agent_state_at_terminal: null,
       source: args.source ?? null,
       wait_for: null,
+      tool_policy: args.tool_policy ?? 'inherit_agent',
+      allowed_tools: args.allowed_tools ?? [],
     },
     body: args.body,
   }

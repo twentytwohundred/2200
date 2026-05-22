@@ -3892,6 +3892,57 @@ export function buildProgram(): Command {
       }
     })
 
+  const connectorWorkPackage = connector
+    .command('work-package')
+    .description('approve or reject work packages proposed by MCP connector callers')
+
+  connectorWorkPackage
+    .command('approve <package-id>')
+    .description(
+      'approve a reviewable work package: parse the plan steps and submit them as normal Agent tasks to the primary agent',
+    )
+    .action(async (packageId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Work-package approve requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.work-package.approve', {
+          package_id: packageId,
+        })
+        console.log(
+          `Work package "${packageId}" approved. ${String(result.follow_on_task_ids.length)} follow-on task(s) submitted.`,
+        )
+        for (const id of result.follow_on_task_ids) console.log(`  ${id}`)
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorWorkPackage
+    .command('reject <package-id>')
+    .description('reject a work package; the proposal stays in the brain for the record')
+    .option('--reason <reason>', 'short free-form note explaining the rejection')
+    .action(async (packageId: string, opts: { reason?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Work-package reject requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.connector.work-package.reject', {
+          package_id: packageId,
+          ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+        })
+        console.log(`Work package "${packageId}" rejected.`)
+      } finally {
+        await client.close()
+      }
+    })
+
   const connectorSynthesis = connector
     .command('synthesis')
     .description('manage standing-brief synthesis for research threads')

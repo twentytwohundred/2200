@@ -287,6 +287,8 @@ export class AgentProcess {
     const expandedGrants = expandToolGrants(this.identity.frontmatter.tools, registry.toolNames())
     const allowedToolNames = new Set<string>([...BASELINE_TOOL_NAMES, ...expandedGrants])
 
+    const taskStore = new TaskStore(this.options.home, this.options.name)
+    this.taskStore = taskStore
     const dispatcher = new ToolDispatcher({
       registry,
       allowedToolNames,
@@ -295,8 +297,19 @@ export class AgentProcess {
       brainDir: ap.brain,
       projectDir: ap.project,
       logger: this.log.child('dispatcher'),
+      // Strict-allowlist enforcement (PR 4) reads the calling task's
+      // `tool_policy` + `allowed_tools` once per task and caches it.
+      // Tasks that don't set `tool_policy: strict_allowlist` are
+      // unaffected (behavior matches the prior identity-only gate).
+      loadTaskPolicy: async (taskId: string) => {
+        const task = await taskStore.get(taskId)
+        if (task === null) return null
+        return {
+          policy: task.frontmatter.tool_policy,
+          allowed: new Set<string>(task.frontmatter.allowed_tools),
+        }
+      },
     })
-    this.taskStore = new TaskStore(this.options.home, this.options.name)
     const telemetryWriter = new TelemetryWriter(this.options.home, this.options.name)
     const budgetTracker = new BudgetTracker({
       agentName: this.options.name,

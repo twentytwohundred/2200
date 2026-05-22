@@ -113,6 +113,23 @@ function formatToolArgsError(tool: string, issues: unknown): string {
   return lines.join('\n')
 }
 
+/**
+ * Task-scoped tool policy snapshot, looked up by the dispatcher from
+ * the calling task's frontmatter. The dispatcher caches one snapshot
+ * per task id for the dispatcher instance's lifetime.
+ *
+ * When `policy === 'strict_allowlist'`, the dispatcher rejects tool
+ * calls whose name is not in `allowed` BEFORE the identity-level
+ * `allowedToolNames` check. The invariant is enforced mechanically
+ * here, not advisorily in the task body. See
+ * wiki/inbox/grok/2026-05-23-pr4-propose-work-package-design.md.
+ */
+export interface TaskPolicySnapshot {
+  policy: 'inherit_agent' | 'strict_allowlist'
+  /** Exact tool names (e.g., 'brain_read_shared'). Empty when policy is inherit_agent. */
+  allowed: ReadonlySet<string>
+}
+
 export interface DispatcherOptions {
   registry: ToolRegistry
   /** Tools allowed for this Agent (baseline + Identity additions). */
@@ -125,6 +142,14 @@ export interface DispatcherOptions {
   brainDir: string
   /** Calling Agent's project dir. */
   projectDir: string
+  /**
+   * Read the task-scoped tool policy from disk. Required for the
+   * strict-allowlist guard to fire; if omitted, every task is
+   * treated as `inherit_agent` (back-compat with callers that
+   * haven't been updated yet). The dispatcher caches the result
+   * per task id, so this is called at most once per task.
+   */
+  loadTaskPolicy?: (taskId: string) => Promise<TaskPolicySnapshot | null>
   /** Logger. */
   logger?: Logger
 }
@@ -165,6 +190,15 @@ export interface DispatchResult {
 
 export class ToolDispatcher {
   private readonly log: Logger
+  /**
+   * Per-task tool-policy cache. Populated on first dispatch for a
+   * given task id; survives for the dispatcher instance's lifetime.
+   * Tasks do not mutate `tool_policy` mid-run, so a single snapshot
+   * is correct for the task's full execution. Sentinel `null` means
+   * "task does not exist or has no policy lookup hook" so we don't
+   * keep retrying the disk read for a non-existent task.
+   */
+  private readonly taskPolicyCache = new Map<string, TaskPolicySnapshot | null>()
 
   constructor(private readonly options: DispatcherOptions) {
     this.log = options.logger ?? createLogger(`tools/dispatcher/${options.callingAgent}`)
@@ -182,6 +216,33 @@ export class ToolDispatcher {
       this.options.registry.find(input.tool.replace('.', '_'))
     if (!tool) {
       throw new ToolNotFoundError(input.tool)
+    }
+
+    // 0) Task-scoped strict allowlist enforcement.
+    //
+    // Before any other check, if the calling task has a
+    // `tool_policy: strict_allowlist` declared, the dispatcher
+    // refuses any tool not on the task's `allowed_tools` list.
+    // This is the load-bearing invariant for the connector's
+    // `propose_work_package` flow (and the standing-brief
+    // synthesis task that PR 4 retrofits): internal-coordination
+    // tasks can only ever produce text, never invoke execution
+    // tools, regardless of what the Agent's identity grants.
+    //
+    // See wiki/inbox/grok/2026-05-23-pr4-propose-work-package-design.md
+    // (locked: dispatcher-level enforcement, exact tool names,
+    // per-task caching).
+    if (input.taskId !== null) {
+      const policy = await this.resolveTaskPolicy(input.taskId)
+      if (policy !== null && policy.policy === 'strict_allowlist') {
+        if (!policy.allowed.has(tool.name)) {
+          throw new ToolDeniedError(
+            tool.name,
+            'task_allowlist_violation',
+            `task ${input.taskId} has tool_policy='strict_allowlist'; tool '${tool.name}' is not on the task's allowed_tools list`,
+          )
+        }
+      }
     }
 
     // 1) Validate args against the tool's schema. Surfaces malformed
@@ -351,6 +412,41 @@ export class ToolDispatcher {
     }
 
     return { output, callId, planId, permId, runId, durationMs }
+  }
+
+  /**
+   * Cached lookup of the calling task's `tool_policy` + `allowed_tools`.
+   * Returns null when no policy hook is provided, or when the task
+   * record cannot be found (the dispatcher then treats the call as
+   * `inherit_agent` — preserves existing behavior for ad-hoc / legacy
+   * tasks). Memoized for the dispatcher's lifetime.
+   */
+  private async resolveTaskPolicy(taskId: string): Promise<TaskPolicySnapshot | null> {
+    if (this.taskPolicyCache.has(taskId)) {
+      return this.taskPolicyCache.get(taskId) ?? null
+    }
+    if (this.options.loadTaskPolicy === undefined) {
+      this.taskPolicyCache.set(taskId, null)
+      return null
+    }
+    try {
+      const snap = await this.options.loadTaskPolicy(taskId)
+      this.taskPolicyCache.set(taskId, snap)
+      return snap
+    } catch (err) {
+      // A disk-read failure on the task should not silently widen the
+      // permission surface. Log and treat as "no recognized policy"
+      // (i.e., behave as `inherit_agent` for the call, matching the
+      // ad-hoc / no-task baseline). Strict-allowlist tasks rely on the
+      // task record existing; if it does not, the policy is undefined
+      // and the call falls through to the existing identity check.
+      this.log.warn('tool-policy lookup failed; treating as inherit_agent', {
+        task_id: taskId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      this.taskPolicyCache.set(taskId, null)
+      return null
+    }
   }
 }
 

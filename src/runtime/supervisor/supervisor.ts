@@ -80,6 +80,14 @@ import {
 } from '../mcp/connector/index.js'
 import { SynthesisReconciler } from '../mcp/connector/synthesis-reconciler.js'
 import { updateAnchorFrontmatter } from '../mcp/connector/synthesis.js'
+import {
+  newWorkPackageId,
+  patchPackageFrontmatter,
+  readWorkPackage,
+  workPackageSlug,
+  writeProposedPackage,
+  type ProposedWorkPackage,
+} from '../mcp/connector/work-package.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
@@ -94,6 +102,92 @@ import { toEnvelopeV1 as toCredentialRequestEnvelopeV1 } from '../credentials/re
 function stripArchiveSuffix(name: string): string {
   const m = /^(.+)-archived-\d{4}-\d{2}-\d{2}(?:-\d+)?$/.exec(name)
   return m?.[1] ?? name
+}
+
+/**
+ * Strict allowlist for `standing_brief_synthesis` tasks. The
+ * synthesizing Agent reads the chronological log from the shared
+ * brain and writes the synthesized brief via the dedicated
+ * `brain_write_research_brief` tool. Nothing else.
+ *
+ * **Additions to this list require explicit review** (Grok lock,
+ * 2026-05-23): every new shared-brain or write tool must be
+ * consciously evaluated for whether it belongs here. The whole
+ * point of the strict-allowlist mechanism is that this list cannot
+ * silently grow.
+ */
+export const STANDING_BRIEF_SYNTHESIS_ALLOWED_TOOLS = [
+  'brain_read_shared',
+  'brain_search_shared',
+  'brain_list_shared',
+  'brain_write_research_brief',
+] as const
+
+/**
+ * Strict allowlist for `work_package_coordination` tasks. The
+ * primary Agent assembles a reviewable plan from the proposed work
+ * package: read the package + (optionally) collaborate via pub,
+ * then write the plan back into the same shared-brain note.
+ *
+ * **Additions require explicit review** (Grok lock, 2026-05-23).
+ * No execution tools. No schedule tools. No task tools. No
+ * per-Agent brain writes. No fs/shell/agent-creation/notification.
+ * The whole product-safety story of the connector lives or dies on
+ * this list staying narrow.
+ */
+export const WORK_PACKAGE_COORDINATION_ALLOWED_TOOLS = [
+  'brain_read_shared',
+  'brain_search_shared',
+  'brain_list_shared',
+  'brain_write_shared',
+  'pub_post',
+  'pub_read',
+] as const
+
+function renderWorkPackageCoordinationTaskBody(packageId: string): string {
+  return [
+    `A work package has been proposed by an MCP connector caller.`,
+    `Package id: ${packageId}`,
+    `Read the package note with \`brain_read_shared\` at slug \`work-package-${packageId}\`.`,
+    '',
+    `YOUR JOB: produce a reviewable plan and write it back into the package note via \`brain_write_shared\` (use the same slug). You may collaborate with peers via \`pub_post\` / \`pub_read\` if the package's complexity warrants it.`,
+    '',
+    'HARD CONSTRAINTS (enforced by the dispatcher; violations will fail):',
+    '- You may ONLY call: brain_read_shared, brain_search_shared, brain_list_shared, brain_write_shared, pub_post, pub_read.',
+    '- You may NOT call any execution tool, schedule tool, task tool, agent tool, fs tool, shell tool, or notification tool.',
+    '- DO NOT submit follow-up tasks. DO NOT create schedules. DO NOT spawn Agents. DO NOT call external tools.',
+    '',
+    'Output: rewrite the package note so the existing pending sections are filled in. The full body should remain readable as a single document; preserve the original proposal above your additions.',
+    '',
+    '## Plan',
+    '## Risks',
+    '## Success criteria',
+    '## Estimated cost / budget impact',
+    '## Internal coordination log',
+    '   (peers consulted + their input, or "none" if the package was simple enough to plan alone)',
+    '',
+    'When the plan is written, the package automatically becomes `reviewable`. The operator approves it (or rejects it) through the Inbox / CLI. ONLY operator approval routes the plan to real execution.',
+  ].join('\n')
+}
+
+/** Parse `- ` bulleted steps under the `## Plan` heading. */
+function parsePlanSteps(body: string): string[] {
+  const planIdx = body.search(/^##\s+Plan\s*$/m)
+  if (planIdx === -1) return []
+  const rest = body.slice(planIdx)
+  // Capture lines until the next `##` heading (or end of string).
+  const sectionMatch = /^##\s+Plan\s*$([\s\S]*?)(?=^##\s+|$(?![\s\S]))/m.exec(rest)
+  if (sectionMatch?.[1] === undefined) return []
+  const section = sectionMatch[1]
+  const steps: string[] = []
+  for (const raw of section.split('\n')) {
+    const m = /^\s*-\s+(.+)$/.exec(raw)
+    if (m?.[1] !== undefined) {
+      const text = m[1].trim()
+      if (text.length > 0 && !text.startsWith('_')) steps.push(text)
+    }
+  }
+  return steps
 }
 
 function renderSynthesisTaskBody(args: {
@@ -302,6 +396,20 @@ export class Supervisor {
   private connectorHandle: ConnectorListenerHandle | undefined
   private connectorAudit: ConnectorAuditEmitter | undefined
   private synthesisReconciler: SynthesisReconciler | undefined
+  private connectorOutcomeWatcherTimer: ReturnType<typeof setInterval> | undefined
+  /**
+   * Work-package coordination tasks the supervisor is awaiting
+   * terminal transitions on. Mirrors the synthesis-reconciler's own
+   * inflight tracking; the supervisor's outcome watcher polls task
+   * state every 30 s and dispatches `done`/`errored` to the right
+   * handler (the reconciler's `observeTaskOutcome` for synthesis;
+   * inline plan-ready / coordination-failed events here for work
+   * packages).
+   */
+  private readonly workPackageCoordinationTasks = new Map<
+    string,
+    { packageId: string; primaryAgent: string }
+  >()
   private readonly runtimeMode: RuntimeMode
 
   private constructor(state: SupervisorState, options: SupervisorOptions) {
@@ -429,6 +537,18 @@ export class Supervisor {
         logger: this.log.child('synthesis-reconciler'),
       })
       this.synthesisReconciler.start()
+      // Outcome watcher: polls every 30 s for terminal transitions of
+      // synthesis / work-package coordination tasks and routes them to
+      // the right observer. Lightweight; runs only when the connector
+      // is configured.
+      this.connectorOutcomeWatcherTimer = setInterval(() => {
+        void this.pollConnectorTaskOutcomes().catch((err: unknown) => {
+          this.log.warn('connector outcome watcher tick failed', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+      }, 30_000)
+      this.connectorOutcomeWatcherTimer.unref()
       // The listener only binds if a bearer is already provisioned.
       // First-run sees no bearer; the listener stays down until the
       // operator runs `2200 connector token regenerate`.
@@ -1038,10 +1158,22 @@ export class Supervisor {
   private connectorServerDeps(): {
     snapshot: () => StateSnapshotResult
     knownAgents: () => Promise<Set<string>>
+    resolveThreadPrimaryAgent: (threadSlug: string) => Promise<string | null>
+    proposeWorkPackage: (args: {
+      proposal: ProposedWorkPackage
+      primaryAgent: string
+    }) => Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }>
   } {
     return {
       snapshot: () => this.snapshot(),
       knownAgents: () => Promise.resolve(new Set(Object.keys(this.state.agents))),
+      resolveThreadPrimaryAgent: async (threadSlug: string) => {
+        const { listSynthesisStates } = await import('../mcp/connector/synthesis.js')
+        const states = await listSynthesisStates(this.state.home)
+        const state = states.find((s) => s.threadSlug === threadSlug)
+        return state?.primaryAgent ?? null
+      },
+      proposeWorkPackage: (args) => this.proposeWorkPackage(args),
     }
   }
 
@@ -1073,6 +1205,13 @@ export class Supervisor {
       // Priority `0` is the existing default for newPendingTask. The
       // synthesis task does not pre-empt other Agent work.
       priority: 0,
+      // PR 4 retrofit: synthesis is internal-coordination-only ... the
+      // primary Agent reads the thread log and writes the brief; no
+      // execution, no per-Agent brain mutations, no shell, no
+      // schedules. The dispatcher enforces this list before any
+      // identity-level check (see ToolDispatcher.dispatch step 0).
+      tool_policy: 'strict_allowlist',
+      allowed_tools: [...STANDING_BRIEF_SYNTHESIS_ALLOWED_TOOLS],
     })
     await store.save(task)
     this.log.info('synthesis task submitted', {
@@ -1082,6 +1221,241 @@ export class Supervisor {
       budget_usd: args.budgetUsd,
     })
     return { taskId: task.frontmatter.id }
+  }
+
+  /**
+   * Accept an inbound work-package proposal from the MCP connector.
+   * Writes the package note, submits the (strict-allowlist)
+   * coordination task to the primary Agent, emits the
+   * `work_package_arrived` Inbox event, returns the package id +
+   * coordination task id.
+   *
+   * Phase 1 invariant (locked, do not break): the coordination task
+   * runs under `tool_policy: strict_allowlist` with
+   * WORK_PACKAGE_COORDINATION_ALLOWED_TOOLS. The dispatcher enforces
+   * the allowlist mechanically — internal coordination only, no
+   * execution surface, until the operator explicitly approves.
+   */
+  async proposeWorkPackage(args: {
+    proposal: ProposedWorkPackage
+    primaryAgent: string
+  }): Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }> {
+    if (!(args.primaryAgent in this.state.agents)) {
+      throw new Error(`no Agent record for primary agent "${args.primaryAgent}"`)
+    }
+    const packageId = newWorkPackageId()
+    const writeResult = await writeProposedPackage({
+      home: this.state.home,
+      packageId,
+      proposal: args.proposal,
+      primaryAgent: args.primaryAgent,
+    })
+    const coordinationTaskId = await this.submitWorkPackageCoordinationTask({
+      agent: args.primaryAgent,
+      packageId,
+    })
+    await patchPackageFrontmatter({
+      home: this.state.home,
+      packageId,
+      updates: { coordination_task_id: coordinationTaskId },
+    })
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitWorkPackageArrived({
+          packageId,
+          packageSlug: writeResult.slug,
+          packagePath: writeResult.path,
+          primaryAgent: args.primaryAgent,
+          title: args.proposal.title,
+          targetKind: args.proposal.target.kind,
+          targetName:
+            args.proposal.target.kind === 'thread'
+              ? args.proposal.target.thread_slug
+              : args.proposal.target.agent_name,
+          coordinationTaskId,
+        })
+        .catch(() => undefined)
+    }
+    this.workPackageCoordinationTasks.set(coordinationTaskId, {
+      packageId,
+      primaryAgent: args.primaryAgent,
+    })
+    return { packageId, packageSlug: writeResult.slug, coordinationTaskId }
+  }
+
+  /** Submit a strict-allowlist coordination task to the primary Agent. */
+  private async submitWorkPackageCoordinationTask(args: {
+    agent: string
+    packageId: string
+  }): Promise<string> {
+    const store = new TaskStore(this.state.home, args.agent)
+    const task = newPendingTask({
+      id: newTaskId(),
+      agent: args.agent,
+      title: `Produce reviewable plan for work package ${args.packageId}`,
+      body: renderWorkPackageCoordinationTaskBody(args.packageId),
+      priority: 0,
+      tool_policy: 'strict_allowlist',
+      allowed_tools: [...WORK_PACKAGE_COORDINATION_ALLOWED_TOOLS],
+    })
+    await store.save(task)
+    this.log.info('work-package coordination task submitted', {
+      agent: args.agent,
+      package_id: args.packageId,
+      task_id: task.frontmatter.id,
+    })
+    return task.frontmatter.id
+  }
+
+  /**
+   * Approve a work package: parse the `## Plan` section from the
+   * note body, submit one follow-on task per plan step to the
+   * primary Agent (these run under the Agent's normal
+   * `inherit_agent` policy — execution is now permitted because the
+   * human approved), patch the note's frontmatter to `approved`,
+   * emit the approval Inbox event.
+   */
+  async approveWorkPackage(packageId: string): Promise<{ followOnTaskIds: string[] }> {
+    const record = await readWorkPackage(this.state.home, packageId)
+    if (record === null) throw new Error(`unknown work package ${packageId}`)
+    if (record.status !== 'reviewable') {
+      throw new Error(
+        `work package ${packageId} has status "${record.status}"; can only approve from "reviewable"`,
+      )
+    }
+    const { BrainStore } = await import('../brain/store.js')
+    const note = await BrainStore.forShared(this.state.home).read(workPackageSlug(packageId))
+    const planSteps = parsePlanSteps(note.body)
+    if (planSteps.length === 0) {
+      throw new Error(
+        `work package ${packageId} has no parseable Plan steps (looking for "- " bullets under "## Plan")`,
+      )
+    }
+    const store = new TaskStore(this.state.home, record.primaryAgent)
+    const followOnTaskIds: string[] = []
+    for (const [idx, step] of planSteps.entries()) {
+      const task = newPendingTask({
+        id: newTaskId(),
+        agent: record.primaryAgent,
+        title: `Plan step ${String(idx + 1)} of ${String(planSteps.length)} for work package ${packageId}`,
+        body: `Work package: ${packageId}\nSlug: ${record.slug}\n\nStep ${String(idx + 1)}: ${step}\n\nReference the full plan and original proposal at \`<shared>/brain/${record.slug}.md\` (read via \`brain_read_shared\`) for context.`,
+        priority: 0,
+      })
+      await store.save(task)
+      followOnTaskIds.push(task.frontmatter.id)
+    }
+    const now = new Date().toISOString()
+    await patchPackageFrontmatter({
+      home: this.state.home,
+      packageId,
+      updates: {
+        package_status: 'approved',
+        approved_at: now,
+        approved_follow_on_task_ids: followOnTaskIds,
+      },
+    })
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitWorkPackageApproved({
+          packageId,
+          primaryAgent: record.primaryAgent,
+          followOnTaskIds,
+        })
+        .catch(() => undefined)
+    }
+    return { followOnTaskIds }
+  }
+
+  /** Reject a work package. */
+  async rejectWorkPackage(packageId: string, reason: string | null): Promise<void> {
+    const record = await readWorkPackage(this.state.home, packageId)
+    if (record === null) throw new Error(`unknown work package ${packageId}`)
+    if (record.status === 'approved' || record.status === 'rejected') {
+      throw new Error(
+        `work package ${packageId} has status "${record.status}"; cannot reject from terminal state`,
+      )
+    }
+    const now = new Date().toISOString()
+    await patchPackageFrontmatter({
+      home: this.state.home,
+      packageId,
+      updates: {
+        package_status: 'rejected',
+        rejected_at: now,
+        rejection_reason: reason,
+      },
+    })
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitWorkPackageRejected({
+          packageId,
+          primaryAgent: record.primaryAgent,
+          reason,
+        })
+        .catch(() => undefined)
+    }
+  }
+
+  /**
+   * Periodic poll over tracked connector tasks (synthesis-reconciler
+   * inflight + work-package coordination). Dispatches terminal task
+   * transitions to the right observer. Runs every 30 s while the
+   * connector is configured.
+   */
+  private async pollConnectorTaskOutcomes(): Promise<void> {
+    if (this.workPackageCoordinationTasks.size === 0) return
+    for (const [taskId, ctx] of this.workPackageCoordinationTasks.entries()) {
+      const store = new TaskStore(this.state.home, ctx.primaryAgent)
+      const task = await store.get(taskId).catch(() => null)
+      if (task === null) {
+        // Task record gone; stop tracking but emit a coordination_failed
+        // event so the operator sees the anomaly.
+        this.workPackageCoordinationTasks.delete(taskId)
+        if (this.connectorAudit) {
+          await this.connectorAudit
+            .emitWorkPackageCoordinationFailed({
+              packageId: ctx.packageId,
+              primaryAgent: ctx.primaryAgent,
+              coordinationTaskId: taskId,
+              errorSummary: 'task record missing',
+            })
+            .catch(() => undefined)
+        }
+        continue
+      }
+      const state = task.frontmatter.state
+      if (state === 'done') {
+        this.workPackageCoordinationTasks.delete(taskId)
+        await patchPackageFrontmatter({
+          home: this.state.home,
+          packageId: ctx.packageId,
+          updates: { package_status: 'reviewable' },
+        })
+        if (this.connectorAudit) {
+          await this.connectorAudit
+            .emitWorkPackagePlanReady({
+              packageId: ctx.packageId,
+              packageSlug: workPackageSlug(ctx.packageId),
+              primaryAgent: ctx.primaryAgent,
+              coordinationTaskId: taskId,
+            })
+            .catch(() => undefined)
+        }
+      } else if (state === 'errored') {
+        this.workPackageCoordinationTasks.delete(taskId)
+        if (this.connectorAudit) {
+          await this.connectorAudit
+            .emitWorkPackageCoordinationFailed({
+              packageId: ctx.packageId,
+              primaryAgent: ctx.primaryAgent,
+              coordinationTaskId: taskId,
+              errorSummary: task.frontmatter.error?.message ?? '(no detail)',
+            })
+            .catch(() => undefined)
+        }
+      }
+      // Non-terminal states: leave tracking in place; next tick re-checks.
+    }
   }
 
   /**
@@ -1144,6 +1518,10 @@ export class Supervisor {
     if (this.synthesisReconciler) {
       this.synthesisReconciler.stop()
       this.synthesisReconciler = undefined
+    }
+    if (this.connectorOutcomeWatcherTimer !== undefined) {
+      clearInterval(this.connectorOutcomeWatcherTimer)
+      this.connectorOutcomeWatcherTimer = undefined
     }
     if (this.connectorHandle) {
       try {
@@ -2600,6 +2978,14 @@ export class Supervisor {
       'cli.connector.synthesis.unblock': async (params) => {
         await this.clearSynthesisBlocked(params.thread_slug)
         return { unblocked: true as const }
+      },
+      'cli.connector.work-package.approve': async (params) => {
+        const { followOnTaskIds } = await this.approveWorkPackage(params.package_id)
+        return { approved: true as const, follow_on_task_ids: followOnTaskIds }
+      },
+      'cli.connector.work-package.reject': async (params) => {
+        await this.rejectWorkPackage(params.package_id, params.reason ?? null)
+        return { rejected: true as const }
       },
     }
   }
