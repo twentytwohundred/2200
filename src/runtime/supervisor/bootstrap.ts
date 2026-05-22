@@ -24,6 +24,7 @@ interface BootstrapArgs {
   webPort: number
   webHost: string
   connectorPort: number
+  connectorBodyLimitBytes: number | undefined
 }
 
 function parseArgs(argv: string[]): BootstrapArgs {
@@ -43,7 +44,9 @@ function parseArgs(argv: string[]): BootstrapArgs {
   const webHost = process.env['TWENTYTWOHUNDRED_WEB_HOST'] ?? '127.0.0.1'
   const connectorPortRaw = process.env['TWENTYTWOHUNDRED_CONNECTOR_PORT']
   const connectorPort = connectorPortRaw ? Number.parseInt(connectorPortRaw, 10) : 2201
-  return { home, webPort, webHost, connectorPort }
+  const bodyLimitRaw = process.env['TWENTYTWOHUNDRED_CONNECTOR_BODY_LIMIT_BYTES']
+  const connectorBodyLimitBytes = bodyLimitRaw ? Number.parseInt(bodyLimitRaw, 10) : undefined
+  return { home, webPort, webHost, connectorPort, connectorBodyLimitBytes }
 }
 
 async function main(): Promise<void> {
@@ -62,13 +65,23 @@ async function main(): Promise<void> {
   const supervisor = await Supervisor.create({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
-    connector: { port: args.connectorPort },
+    connector: {
+      port: args.connectorPort,
+      ...(args.connectorBodyLimitBytes !== undefined
+        ? { bodyLimitBytes: args.connectorBodyLimitBytes }
+        : {}),
+    },
     runtimeMode,
   })
   await supervisor.start({
     home: args.home,
     web: { port: args.webPort, host: args.webHost },
-    connector: { port: args.connectorPort },
+    connector: {
+      port: args.connectorPort,
+      ...(args.connectorBodyLimitBytes !== undefined
+        ? { bodyLimitBytes: args.connectorBodyLimitBytes }
+        : {}),
+    },
     runtimeMode,
     // Production daemon: revive pubs and agents that were running
     // before the previous incarnation went down. Off by default in

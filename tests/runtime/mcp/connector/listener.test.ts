@@ -37,6 +37,10 @@ afterEach(async () => {
     await handle.close('test cleanup').catch(() => undefined)
     handle = null
   }
+  // Audit emits are fire-and-forget on the request path
+  // (`emitCallReceived(...).catch(...)` without await). Brief settle
+  // before rm so an in-flight notification write doesn't lose the race.
+  await new Promise((r) => setTimeout(r, 20))
   await rm(home, { recursive: true, force: true })
 })
 
@@ -50,6 +54,28 @@ async function readEmittedNotifications(): Promise<string[]> {
     throw err
   }
   return Promise.all(entries.map((name) => readFile(join(dir, name), 'utf-8')))
+}
+
+function stubServerDeps(opts: { knownAgents?: string[] } = {}): {
+  snapshot: () => {
+    schema_version: 1
+    home: string
+    state_dir: string
+    agents: Record<string, never>
+    pubs: Record<string, never>
+  }
+  knownAgents: () => Promise<Set<string>>
+} {
+  return {
+    snapshot: () => ({
+      schema_version: 1 as const,
+      home,
+      state_dir: home + '/state',
+      agents: {},
+      pubs: {},
+    }),
+    knownAgents: () => Promise.resolve(new Set(opts.knownAgents ?? [])),
+  }
 }
 
 async function newClient(authToken: string, port: number): Promise<Client> {
@@ -72,9 +98,9 @@ describe('MCP connector listener', () => {
     const home2 = await mkdtemp(join(tmpdir(), '2200-connector-listener-empty-'))
     try {
       const audit = new ConnectorAuditEmitter({ home: home2 })
-      await expect(startConnectorListener({ home: home2, port: 0, audit })).rejects.toThrow(
-        /no bearer token in vault/,
-      )
+      await expect(
+        startConnectorListener({ home: home2, port: 0, audit, serverDeps: stubServerDeps() }),
+      ).rejects.toThrow(/no bearer token in vault/)
     } finally {
       await rm(home2, { recursive: true, force: true })
     }
@@ -82,7 +108,13 @@ describe('MCP connector listener', () => {
 
   it('lists the liveness tool over the MCP transport with the valid bearer', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const client = await newClient(token, handle.port)
     const tools = await client.listTools()
@@ -92,7 +124,13 @@ describe('MCP connector listener', () => {
 
   it('liveness probe returns ok + a server timestamp', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const client = await newClient(token, handle.port)
     const result = await client.callTool({ name: 'liveness', arguments: {} })
@@ -106,7 +144,13 @@ describe('MCP connector listener', () => {
 
   it('rejects a request with no Authorization header (401) and emits an auth_rejected audit event', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const resp = await fetch(`http://127.0.0.1:${String(handle.port)}/mcp`, {
       method: 'POST',
@@ -127,7 +171,13 @@ describe('MCP connector listener', () => {
 
   it('rejects a request with a wrong bearer (401) without distinguishing the failure reason in the response', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const resp = await fetch(`http://127.0.0.1:${String(handle.port)}/mcp`, {
       method: 'POST',
@@ -150,7 +200,13 @@ describe('MCP connector listener', () => {
     // post-handleRequest timing as deferred-by-SSE; this asserts the
     // new semantics.
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const client = await newClient(token, handle.port)
     await client.callTool({ name: 'liveness', arguments: {} })
@@ -168,7 +224,13 @@ describe('MCP connector listener', () => {
 
   it('close() returns promptly even with an active client connection (regenerate-bounce semantics)', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
 
     const client = await newClient(token, handle.port)
     await client.listTools() // keeps an SSE stream warm
@@ -187,13 +249,138 @@ describe('MCP connector listener', () => {
 
   it('emits started + stopped lifecycle events around its lifetime', async () => {
     const audit = new ConnectorAuditEmitter({ home })
-    handle = await startConnectorListener({ home, port: 0, host: '127.0.0.1', audit })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
     await handle.close('test')
     handle = null
     const notes = await readEmittedNotifications()
     const stateNotes = notes.filter((n) => n.includes('kind: connector.listener_state_changed'))
     expect(stateNotes.some((n) => n.includes('listener_state: started'))).toBe(true)
     expect(stateNotes.some((n) => n.includes('listener_state: stopped'))).toBe(true)
+  })
+
+  it('lists liveness + contribute_to_thread + get_fleet_context as the PR 2 tool surface', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const client = await newClient(token, handle.port)
+    const tools = await client.listTools()
+    const names = tools.tools.map((t) => t.name)
+    expect(names).toEqual(
+      expect.arrayContaining(['liveness', 'contribute_to_thread', 'get_fleet_context']),
+    )
+    await client.close()
+  })
+
+  it('contribute_to_thread (thread target) creates a shared-brain research thread + emits contribution_received', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const client = await newClient(token, handle.port)
+    const result = await client.callTool({
+      name: 'contribute_to_thread',
+      arguments: {
+        target: { thread: 'Tesla Grok MCP spike' },
+        research_findings: 'Custom connectors are reachable from the Voice Agent API.',
+        reasoning: 'Verified against xAI docs and the connector consumer flow.',
+        sources: [{ url: 'https://docs.x.ai/grok/connectors', title: 'xAI connectors docs' }],
+        open_questions: ['Does the in-car Tesla surface honor allowed_tools?'],
+        proposed_direction: 'Ship the connector as-is and verify on Doug-s hardware.',
+      },
+    })
+    const text = textFromContent(result.content)
+    expect(text).not.toBeNull()
+    const out = JSON.parse(text ?? '{}') as {
+      status: string
+      target_kind: string
+      target_name: string
+      contribution_slug: string
+      contribution_path: string
+      created_target: boolean
+    }
+    expect(out.status).toBe('accepted')
+    expect(out.target_kind).toBe('thread')
+    expect(out.target_name).toBe('tesla-grok-mcp-spike')
+    expect(out.contribution_slug).toBe('research-tesla-grok-mcp-spike')
+    expect(out.created_target).toBe(true)
+    await client.close()
+
+    // Allow the audit emit to flush.
+    await new Promise((r) => setTimeout(r, 50))
+    const notes = await readEmittedNotifications()
+    const contribNote = notes.find((n) => n.includes('kind: connector.contribution_received'))
+    expect(contribNote).toBeDefined()
+    expect(contribNote).toContain('target_kind: thread')
+    expect(contribNote).toContain('target_name: tesla-grok-mcp-spike')
+  })
+
+  it('contribute_to_thread (agent target) is rejected when the agent is unknown', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      // No agents in the snapshot; targeting one must fail with a clear error.
+      serverDeps: stubServerDeps({ knownAgents: [] }),
+    })
+    const client = await newClient(token, handle.port)
+    // The MCP SDK surfaces tool-handler errors as result.isError === true
+    // with the error message in the content blocks, rather than throwing.
+    const result = await client.callTool({
+      name: 'contribute_to_thread',
+      arguments: {
+        target: { agent: 'nonexistent' },
+        research_findings: 'x',
+        reasoning: 'y',
+        sources: [],
+        open_questions: [],
+      },
+    })
+    expect(result.isError).toBe(true)
+    expect(textFromContent(result.content)).toMatch(/unknown agent/)
+    await client.close()
+  })
+
+  it('get_fleet_context returns a schema_version=1 packet shape', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const client = await newClient(token, handle.port)
+    const result = await client.callTool({ name: 'get_fleet_context', arguments: {} })
+    const text = textFromContent(result.content)
+    expect(text).not.toBeNull()
+    const packet = JSON.parse(text ?? '{}') as {
+      schema_version: number
+      agents: unknown[]
+      threads: unknown[]
+      recent_activity: unknown[]
+    }
+    expect(packet.schema_version).toBe(1)
+    expect(Array.isArray(packet.agents)).toBe(true)
+    expect(Array.isArray(packet.threads)).toBe(true)
+    expect(Array.isArray(packet.recent_activity)).toBe(true)
+    await client.close()
   })
 })
 

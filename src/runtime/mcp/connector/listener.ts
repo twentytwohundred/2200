@@ -27,7 +27,7 @@ import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify'
 import { timingSafeEqual } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type { ConnectorAuditEmitter, ConnectorAuthRejectionContext } from './audit.js'
-import type { ConnectorMcpServerHandle } from './server.js'
+import type { ConnectorMcpServerHandle, ConnectorMcpServerDeps } from './server.js'
 import { createConnectorMcpServer } from './server.js'
 import { readBearer } from './bearer-store.js'
 
@@ -40,8 +40,14 @@ export interface StartConnectorListenerArgs {
   audit: ConnectorAuditEmitter
   /** Override the bind host. Default 0.0.0.0 (public; behind user's tunnel). */
   host?: string
-  /** Hard cap on request body bytes. Default 1MB ... MCP payloads are small. */
+  /** Hard cap on request body bytes. Default 8 MiB ... PR 2 widened from 1 MiB to fit contribute_to_thread payloads. */
   bodyLimitBytes?: number
+  /**
+   * Supervisor-side dependencies for the MCP tool surface
+   * (snapshot reader for `get_fleet_context`; known-agent set
+   * for `contribute_to_thread` agent-target validation).
+   */
+  serverDeps: Omit<ConnectorMcpServerDeps, 'home' | 'audit'>
 }
 
 export interface ConnectorListenerHandle {
@@ -52,13 +58,15 @@ export interface ConnectorListenerHandle {
 }
 
 const DEFAULT_HOST = '0.0.0.0'
-// 1 MiB body limit. Sized for Phase 1's surface (the liveness probe is
-// tiny; `get_fleet_context` will return short orientation packets).
-// `contribute_to_thread` will carry research blobs / sources / long
-// transcripts and is expected to exceed this — PR 2 will widen the
-// default and/or expose `bodyLimitBytes` via supervisor options when
-// that tool lands. See Grok's 2026-05-23 full review.
-const DEFAULT_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+// 8 MiB body limit. PR 2 widened from 1 MiB to fit
+// `contribute_to_thread` payloads (research blobs, long transcripts,
+// source lists). Operators can raise further via the supervisor's
+// `connector.bodyLimitBytes` option (env: `TWENTYTWOHUNDRED_CONNECTOR_BODY_LIMIT_BYTES`).
+// Note: this listener is public-internet-facing (behind the user's
+// tunnel) — a larger body limit is a larger DoS surface. The decision
+// record at wiki/decisions/2026-05-23-mcp-connector-phase1-as-shipped.md
+// captures the trade-off.
+const DEFAULT_BODY_LIMIT_BYTES = 8 * 1024 * 1024
 
 /**
  * Start the connector listener. Throws if no bearer is provisioned ...
@@ -76,7 +84,11 @@ export async function startConnectorListener(
   }
   const storedTokenBytes = Buffer.from(bearerRecord.token, 'utf-8')
 
-  const mcp: ConnectorMcpServerHandle = await createConnectorMcpServer()
+  const mcp: ConnectorMcpServerHandle = await createConnectorMcpServer({
+    home: args.home,
+    audit: args.audit,
+    ...args.serverDeps,
+  })
 
   // forceCloseConnections: ensures fastify.close() does not hang on
   // an open SSE stream during regenerate-bounce. The MCP transport
