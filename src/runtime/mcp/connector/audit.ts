@@ -58,6 +58,19 @@ export interface ConnectorListenerStateContext {
   reason?: string
 }
 
+export interface ConnectorContributionContext {
+  /** Source IP of the inbound call (best effort). */
+  sourceIp: string
+  /** Whether the contribution targeted a shared research thread or a single Agent. */
+  targetKind: 'thread' | 'agent'
+  /** Thread slug or Agent name. */
+  targetName: string
+  /** Slug of the Brain note that was written / appended. */
+  contributionSlug: string
+  /** Absolute path to the Brain note for one-click operator follow. */
+  contributionPath: string
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -184,6 +197,35 @@ export class ConnectorAuditEmitter {
       },
     })
     return true
+  }
+
+  /**
+   * Emit a contribution-received audit event when `contribute_to_thread`
+   * persists a Brain note. Passive tier — the audit lives alongside the
+   * generic `call_received` so an operator can locate the produced note
+   * from the Inbox without scanning the brain directly. The `target_kind`
+   * + `target_name` + `contribution_slug` + `contribution_path` extras
+   * are what make the Inbox row useful at a glance per Grok's review.
+   */
+  async emitContributionReceived(ctx: ConnectorContributionContext): Promise<void> {
+    const body =
+      ctx.targetKind === 'thread'
+        ? `MCP contribution received → thread \`${ctx.targetName}\` (\`${ctx.contributionSlug}\`)`
+        : `MCP contribution received → agent \`${ctx.targetName}\` (\`${ctx.contributionSlug}\`)`
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.contribution_received',
+      body,
+      extras: {
+        source_ip: ctx.sourceIp,
+        target_kind: ctx.targetKind,
+        target_name: ctx.targetName,
+        contribution_slug: ctx.contributionSlug,
+        contribution_path: ctx.contributionPath,
+      },
+    })
   }
 
   /** Emit a listener lifecycle event. Passive tier. */

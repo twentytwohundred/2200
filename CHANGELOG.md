@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **MCP connector real Phase 1 tools (PR 2).** Two structured tools land on top of the substrate plus the existing `liveness` probe:
+  - `contribute_to_thread`: Grok (or any MCP client) hands a structured contribution (`research_findings`, `reasoning`, `sources`, `open_questions`, `proposed_direction`, optional `related_threads`) into one of two destinations via a discriminated `target` union. `{ thread: <name> }` appends a `## <ISO ts>` section to a shared-brain research thread anchor at `<shared>/brain/research-<slug>.md` (created on first contribution, tagged `research-thread`). `{ agent: <name> }` writes the contribution as a standalone Brain note at `<agent>/brain/grok-contribution-<compact-ts>-<hash>.md` (tagged `grok-contribution`). Both paths are normal Brain notes that participate in the existing `brain_search` / `brain_read` surface ... no special-casing in the brain layer. Phase 1 contributions are inert from an execution standpoint (read material only).
+  - `get_fleet_context`: small, structured orientation packet (`agents`, `threads`, `recent_activity`) so a returning Grok conversation can pick up cleanly after a long gap. Deliberately small ... PR 3's standing-brief layer is what makes re-engagement high-quality.
+- **`connector.contribution_received` Inbox event** (passive) carrying `target_kind` (`thread` | `agent`), `target_name`, `contribution_slug`, `contribution_path` so the Inbox row links straight to the produced note.
+- **`bodyLimitBytes` operator escape hatch** for the connector listener. Default raised from 1 MiB to 8 MiB (sized for `contribute_to_thread` research blobs); overridable via `TWENTYTWOHUNDRED_CONNECTOR_BODY_LIMIT_BYTES` env var. Trade-off documented in the as-shipped decision record: larger body = larger public-facing DoS surface.
+
 ### Changed
 
 - **MCP connector Phase 1 substrate polish (PR 1d).** Tidy-up pass after Grok's full byte-level review. Documentation strengthened (X-Forwarded-For tunnel-trust assumption inline in `clientIp`; bodyLimit comment flagging the PR 2 need to widen when `contribute_to_thread` lands with large research payloads; per-fleet-salt WHY in `bearer-store.ts`; first-run wording aligned with the Grok-First step). Sync `getConnectorStatus` renamed to `getConnectorStatusFast` with a strong "not for operator surfaces" guard comment ... the async `getConnectorStatusDetailed` remains the only surface used by CLI / web / RPC. `2200 connector token show` now writes paste guidance to stderr (stdout stays clean for `... | pbcopy`). First-run success message uses the same "sealed to disk" voice as the Grok sign-in step. New regression test for the idle → regenerate listener transition. Decision record at [[2026-05-23-mcp-connector-phase1-as-shipped]] pins the substrate-level decisions before Phase 2 begins.

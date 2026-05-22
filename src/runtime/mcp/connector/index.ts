@@ -25,3 +25,15 @@ export {
   type ConnectorListenerHandle,
   type StartConnectorListenerArgs,
 } from './listener.js'
+
+export {
+  sluggifyThreadName,
+  validateThreadSlug,
+  writeAgentContribution,
+  writeThreadContribution,
+  type ContributionPayload,
+  type WriteAgentContributionResult,
+  type WriteThreadContributionResult,
+} from './contributions.js'
+
+export { buildFleetContext, type FleetContextPacket } from './fleet-context.js'

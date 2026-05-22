@@ -43,7 +43,7 @@ import { buildTimeoutContinuationSection } from '../agent/task/continuation.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
 import { findFreePort } from '../util/free-port.js'
-import type { TaskListEntry, PubListEntry } from '../control-plane/protocol.js'
+import type { TaskListEntry, PubListEntry, StateSnapshotResult } from '../control-plane/protocol.js'
 import { resetPulseToGreen } from '../agent/detectors/trip-record.js'
 import { writeCredentialFile, readCredentialFile } from '../pub/keypair.js'
 import { generateKeypair } from '../pub/keypair-generate.js'
@@ -167,9 +167,15 @@ export interface SupervisorOptions {
    * listener only actually binds if a bearer is present in the sealed
    * vault. CLI `2200 connector token regenerate` is what provisions
    * the bearer.
+   *
+   * `bodyLimitBytes` is the public-internet-facing operator escape
+   * hatch for large `contribute_to_thread` payloads (research blobs,
+   * long transcripts). Default 8 MiB. Larger = larger DoS surface;
+   * see the as-shipped decision record.
    */
   connector?: {
     port: number
+    bodyLimitBytes?: number
   }
   /**
    * On boot, walk on-disk state and revive previously-running pubs
@@ -393,6 +399,10 @@ export class Supervisor {
             home: this.state.home,
             port: this.connectorConfig.port,
             audit: this.connectorAudit,
+            ...(this.connectorConfig.bodyLimitBytes !== undefined
+              ? { bodyLimitBytes: this.connectorConfig.bodyLimitBytes }
+              : {}),
+            serverDeps: this.connectorServerDeps(),
           })
           this.log.info('connector listener listening', {
             port: this.connectorHandle.port,
@@ -977,8 +987,23 @@ export class Supervisor {
       home: this.state.home,
       port: this.connectorConfig.port,
       audit: this.connectorAudit,
+      ...(this.connectorConfig.bodyLimitBytes !== undefined
+        ? { bodyLimitBytes: this.connectorConfig.bodyLimitBytes }
+        : {}),
+      serverDeps: this.connectorServerDeps(),
     })
     return { token }
+  }
+
+  /** Build the connector-server dep bag from in-memory supervisor state. */
+  private connectorServerDeps(): {
+    snapshot: () => StateSnapshotResult
+    knownAgents: () => Promise<Set<string>>
+  } {
+    return {
+      snapshot: () => this.snapshot(),
+      knownAgents: () => Promise.resolve(new Set(Object.keys(this.state.agents))),
+    }
   }
 
   /**
