@@ -94,6 +94,56 @@ function stripArchiveSuffix(name: string): string {
   return m?.[1] ?? name
 }
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '0:0:0:0:0:0:0:1'])
+
+/** True iff `host` resolves to a loopback address by name. */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase())
+}
+
+/**
+ * Emit a `normal`-tier Inbox event when the web UI listener is bound
+ * to a non-loopback host. The MCP-connector security model assumes
+ * the web UI (with its session-bearer + connector-management routes)
+ * is loopback-only; the connector listener on a separate port is the
+ * intended public-facing surface.
+ *
+ * Best-effort: a failed notification write must not prevent the
+ * supervisor from coming up.
+ */
+async function warnWebHostNonLoopback(args: {
+  home: string
+  host: string
+  port: number
+  logger: Logger
+}): Promise<void> {
+  args.logger.warn('web UI listener bound to non-loopback host', {
+    host: args.host,
+    port: args.port,
+  })
+  try {
+    const { emitNotification } = await import('../notifications/writer.js')
+    await emitNotification({
+      home: args.home,
+      agentName: '__connector',
+      tier: 'normal',
+      kind: 'connector.web_host_non_loopback',
+      body:
+        `The web UI listener is bound to **${args.host}:${String(args.port)}**, which is not a ` +
+        `loopback address. The MCP-connector security model assumes the web UI is loopback-only ` +
+        `(use the dedicated connector listener on the configured port for remote access).\n\n` +
+        `If this was deliberate, you can ignore this. To revert, unset ` +
+        `\`TWENTYTWOHUNDRED_WEB_HOST\` and restart the daemon.`,
+      extras: {
+        web_host: args.host,
+        web_port: args.port,
+      },
+    })
+  } catch {
+    // best-effort; do not break boot
+  }
+}
+
 export interface SupervisorOptions {
   /** 2200_HOME root per the commons-and-storage-root spec addendum. */
   home: string
@@ -313,6 +363,22 @@ export class Supervisor {
       } catch (err) {
         this.log.warn('http server failed to start', {
           error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      // Safety check: if an operator set TWENTYTWOHUNDRED_WEB_HOST to
+      // something non-loopback, the web UI (with its session-bearer,
+      // not the MCP connector bearer) is now reachable from the
+      // network. The MCP-connector design assumes the web UI is
+      // loopback-bound; surface this loudly so the operator either
+      // reverts or knows they've widened the surface deliberately.
+      // The connector listener has its own bearer and remains the
+      // intended public-facing surface.
+      if (!isLoopbackHost(this.webConfig.host)) {
+        void warnWebHostNonLoopback({
+          home: this.state.home,
+          host: this.webConfig.host,
+          port: this.webConfig.port,
+          logger: this.log,
         })
       }
     }

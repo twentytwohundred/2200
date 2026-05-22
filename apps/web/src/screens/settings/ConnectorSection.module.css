@@ -1,0 +1,204 @@
+/**
+ * MCP Connector Settings tile. Same visual language as
+ * GrokAuthSection but without the top-of-page accent border:
+ * the connector is operator infrastructure, not a primary
+ * sign-in path.
+ */
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 8px;
+  background: var(--ds-surface);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title {
+  font-family: var(--ds-font-display, var(--ds-font-sans));
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.muted {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+}
+
+.bodyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.statusLine {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--ds-text-dim);
+}
+
+.statusLine strong {
+  color: var(--ds-text);
+  font-family: var(--ds-font-mono);
+}
+
+.statusOn {
+  color: var(--ds-success, #2e7d32) !important;
+}
+
+.statusOff {
+  color: var(--ds-warning, #b35900) !important;
+}
+
+.tokenRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tokenButtons {
+  display: flex;
+  gap: 8px;
+}
+
+.tokenDisplay {
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.05));
+  color: var(--ds-text);
+  word-break: break-all;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.mintedBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--ds-accent);
+  border-radius: 8px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.04));
+}
+
+.mintedLabel {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+}
+
+.confirmBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.04));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.warnBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--ds-warning, #b35900);
+  border-radius: 6px;
+  background: rgba(179, 89, 0, 0.06);
+  font-size: 13px;
+  color: var(--ds-text);
+}
+
+.errorBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--ds-danger, #b00020);
+  border-radius: 6px;
+  background: rgba(176, 0, 32, 0.06);
+  font-size: 13px;
+  color: var(--ds-text);
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primaryButton {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-accent);
+  background: var(--ds-accent);
+  color: var(--ds-bg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondaryButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-border-strong);
+  background: var(--ds-surface);
+  color: var(--ds-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.secondaryButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tertiaryButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tertiaryButton:hover {
+  color: var(--ds-text);
+}
+
+.dangerButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-danger, #b00020);
+  background: var(--ds-danger, #b00020);
+  color: var(--ds-bg);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dangerButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

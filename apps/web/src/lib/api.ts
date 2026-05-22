@@ -1656,6 +1656,31 @@ export const apiOAuthXai = {
   logout: () => request<{ removed: boolean }>('/api/v1/oauth/xai/logout', { method: 'POST' }),
 }
 
+/**
+ * `/api/v1/connector/*` ... operator controls for the MCP connector
+ * endpoint that exposes 2200 to remote MCP clients (Grok via
+ * grok.com/connectors, Claude Desktop, etc.). The actual remote-MCP
+ * traffic lands on a separate listener (default :2201); these routes
+ * live on the loopback web UI listener and are operator-only.
+ */
+export interface ConnectorStatusResponse {
+  configured: boolean
+  listening: boolean
+  port: number | null
+  bearer_present: boolean
+  bearer_created_at: string | null
+  bearer_regenerated_at: string | null
+}
+
+export const apiConnector = {
+  status: () => request<ConnectorStatusResponse>('/api/v1/connector/status'),
+  token: () => request<{ token: string | null }>('/api/v1/connector/token'),
+  regenerate: () =>
+    request<{ token: string }>('/api/v1/connector/regenerate', { method: 'POST', body: {} }),
+  disable: () =>
+    request<{ disabled: true }>('/api/v1/connector/disable', { method: 'POST', body: {} }),
+}
+
 export const apiDoctor = {
   diagnose: () =>
     request<{ items: DoctorIssue[]; generated_at: string }>('/api/v1/doctor/diagnose'),
