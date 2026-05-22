@@ -88,6 +88,8 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   io.info('  - mint your user identity (the name other Agents see when you chat with them)')
   io.info('  - (optional) sign in with X / SuperGrok so every Agent that picks Grok')
   io.info('    can use your subscription with no API key')
+  io.info('  - (optional, advanced) mint an MCP connector token so Grok or other')
+  io.info('    MCP clients can call into your fleet via your own tunnel')
   io.info('')
 
   const proceed = await io.ask('Continue? [Y/n] ')
@@ -169,6 +171,34 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
     await runFirstRunGrokSignIn(io, home)
   } else {
     io.info('Skipped. You can run `2200 oauth xai login` later, or use the Settings page.')
+    io.info('')
+  }
+
+  // ------------------------------------------------------------------
+  // 5b. MCP connector setup (optional, default NO).
+  //
+  // Exposes a narrow, read-only-first slice of the fleet to Grok and
+  // other MCP clients via the operator's own tunnel. Most operators
+  // don't need this on day one ... it requires a tunnel (ngrok,
+  // cloudflared, Tailscale Funnel, etc.) plus registering a Custom
+  // connector at grok.com/connectors. Default NO so the install
+  // path stays uncluttered for users who do not know what MCP is;
+  // the `2200 connector token regenerate` command (or Settings tile)
+  // achieves the same thing later.
+  // ------------------------------------------------------------------
+  io.info('MCP connector (advanced; default skip).')
+  io.info('')
+  io.info('Lets Grok (and any other MCP-speaking client) call into your fleet via')
+  io.info('your own tunnel. You will need a tunnel service (ngrok / cloudflared /')
+  io.info('Tailscale Funnel) and a Custom connector registration at')
+  io.info('grok.com/connectors. Skip if not sure ... the Settings page can set this')
+  io.info('up later.')
+  io.info('')
+  const connectorReply = await io.ask('Generate a connector token now? [y/N] ')
+  if (isYes(connectorReply, false)) {
+    await runFirstRunConnectorSetup(io, home)
+  } else {
+    io.info('Skipped. Visit Settings → MCP Connector when you are ready.')
     io.info('')
   }
 
@@ -269,6 +299,52 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
     io.warn(`Grok sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
     io.warn('Continuing without Grok. You can retry with `2200 oauth xai login` later.')
     io.info('')
+  }
+}
+
+/**
+ * Mint a fresh MCP connector bearer + start the listener.
+ *
+ * The daemon is already running by this point (step 3 of the wizard
+ * launched it). We open a short-lived RPC connection over the UDS,
+ * call `cli.connector.regenerate`, and surface the token once with
+ * paste-target instructions. Failure is non-fatal ... the operator
+ * can retry via `2200 connector token regenerate` or the Settings
+ * tile.
+ */
+async function runFirstRunConnectorSetup(io: FirstRunIO, home: string): Promise<void> {
+  const sock = Supervisor.socketPath(home)
+  let transport
+  try {
+    transport = await connectWithRetry(sock, 5_000)
+  } catch (err) {
+    io.warn(
+      `Could not reach the daemon for connector setup: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    io.warn('Skipping. Retry with `2200 connector token regenerate` or the Settings tile.')
+    io.info('')
+    return
+  }
+  const rpc = new JsonRpcClient(transport)
+  try {
+    const { token } = await rpc.call('cli.connector.regenerate', {})
+    io.success('Connector listener started. Bearer minted (shown once, copy it now):')
+    io.info('')
+    io.info(`  ${token}`)
+    io.info('')
+    io.info('Paste this token at https://grok.com/connectors → New Connector → Custom')
+    io.info('(Authorization field). Make the connector endpoint reachable from the')
+    io.info('public internet with a tunnel of your choice (ngrok / cloudflared /')
+    io.info('Tailscale Funnel) ... by default the listener binds to port 2201.')
+    io.info('')
+    io.info('Regenerate or disable any time from `2200 connector token ...` or Settings.')
+    io.info('')
+  } catch (err) {
+    io.warn(`Connector setup failed: ${err instanceof Error ? err.message : String(err)}`)
+    io.warn('Skipping. Retry with `2200 connector token regenerate` or the Settings tile.')
+    io.info('')
+  } finally {
+    await rpc.close()
   }
 }
 
