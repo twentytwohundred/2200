@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrainStore } from '../../../../src/runtime/brain/store.js'
 import {
+  listWorkPackages,
   newWorkPackageId,
   patchPackageFrontmatter,
   readWorkPackage,
@@ -128,5 +129,70 @@ describe('readWorkPackage', () => {
     expect(record?.status).toBe('proposed')
     expect(record?.primaryAgent).toBe('hobby')
     expect(record?.proposal.target).toEqual({ kind: 'agent', agent_name: 'hobby' })
+  })
+})
+
+describe('listWorkPackages', () => {
+  it('returns an empty array on a fresh home', async () => {
+    expect(await listWorkPackages({ home })).toEqual([])
+  })
+
+  it('lists all packages sorted by createdAt descending', async () => {
+    const a = newWorkPackageId()
+    const b = newWorkPackageId()
+    await writeProposedPackage({
+      home,
+      packageId: a,
+      primaryAgent: 'hobby',
+      proposal: {
+        title: 'older',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'hobby' },
+      },
+      now: () => new Date('2026-05-23T10:00:00Z'),
+    })
+    await writeProposedPackage({
+      home,
+      packageId: b,
+      primaryAgent: 'hobby',
+      proposal: {
+        title: 'newer',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'hobby' },
+      },
+      now: () => new Date('2026-05-23T11:00:00Z'),
+    })
+    const items = await listWorkPackages({ home })
+    expect(items).toHaveLength(2)
+    expect(items[0]?.packageId).toBe(b)
+    expect(items[1]?.packageId).toBe(a)
+  })
+
+  it('filters by status', async () => {
+    const a = newWorkPackageId()
+    const b = newWorkPackageId()
+    for (const id of [a, b]) {
+      await writeProposedPackage({
+        home,
+        packageId: id,
+        primaryAgent: 'hobby',
+        proposal: {
+          title: 't',
+          summary: 's',
+          proposed_steps: ['x'],
+          target: { kind: 'agent', agent_name: 'hobby' },
+        },
+      })
+    }
+    await patchPackageFrontmatter({
+      home,
+      packageId: b,
+      updates: { package_status: 'reviewable' },
+    })
+    const reviewable = await listWorkPackages({ home, status: 'reviewable' })
+    expect(reviewable).toHaveLength(1)
+    expect(reviewable[0]?.packageId).toBe(b)
   })
 })

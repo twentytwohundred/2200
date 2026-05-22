@@ -1681,6 +1681,49 @@ export const apiConnector = {
     request<{ disabled: true }>('/api/v1/connector/disable', { method: 'POST', body: {} }),
 }
 
+/**
+ * Work packages proposed by remote MCP callers (Grok). The operator
+ * approval surface lives on the Settings page; these routes back it.
+ * The CLI (`2200 connector work-package approve | reject`) drives
+ * the same RPCs.
+ */
+export type WorkPackageStatus = 'proposed' | 'reviewable' | 'approved' | 'rejected'
+
+export interface WorkPackageSummary {
+  packageId: string
+  slug: string
+  title: string
+  status: WorkPackageStatus
+  primaryAgent: string
+  targetKind: 'thread' | 'agent'
+  targetName: string
+  createdAt: string
+  body: string
+  approvedAt: string | null
+  approvedFollowOnTaskIds: string[]
+  rejectedAt: string | null
+  rejectionReason: string | null
+}
+
+export const apiConnectorWorkPackages = {
+  list: (status?: WorkPackageStatus) =>
+    request<{ items: WorkPackageSummary[] }>(
+      status === undefined
+        ? '/api/v1/connector/work-packages'
+        : `/api/v1/connector/work-packages?status=${encodeURIComponent(status)}`,
+    ),
+  approve: (packageId: string) =>
+    request<{ approved: true; follow_on_task_ids: string[] }>(
+      `/api/v1/connector/work-packages/${encodeURIComponent(packageId)}/approve`,
+      { method: 'POST', body: {} },
+    ),
+  reject: (packageId: string, reason?: string) =>
+    request<{ rejected: true }>(
+      `/api/v1/connector/work-packages/${encodeURIComponent(packageId)}/reject`,
+      { method: 'POST', body: reason !== undefined ? { reason } : {} },
+    ),
+}
+
 export const apiDoctor = {
   diagnose: () =>
     request<{ items: DoctorIssue[]; generated_at: string }>('/api/v1/doctor/diagnose'),

@@ -1,0 +1,275 @@
+/**
+ * Work-package approval tile. Sits below the MCP Connector tile on
+ * the Settings page. Visual idiom matches ConnectorSection.
+ */
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 8px;
+  background: var(--ds-surface);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title {
+  font-family: var(--ds-font-display, var(--ds-font-sans));
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.filterRow {
+  display: flex;
+  gap: 8px;
+}
+
+.filterButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-border-strong);
+  background: transparent;
+  color: var(--ds-text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.filterActive {
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.05));
+  color: var(--ds-text);
+}
+
+.muted {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.02));
+}
+
+.cardHead {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cardTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cardTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.statusPill {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.statusPending {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--ds-text-dim);
+}
+
+.statusAttention {
+  background: rgba(0, 100, 200, 0.15);
+  color: var(--ds-accent);
+}
+
+.statusApproved {
+  background: rgba(46, 125, 50, 0.15);
+  color: var(--ds-success, #2e7d32);
+}
+
+.statusRejected {
+  background: rgba(176, 0, 32, 0.12);
+  color: var(--ds-danger, #b00020);
+}
+
+.cardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--ds-text-dim);
+}
+
+.cardMeta code {
+  font-family: var(--ds-font-mono);
+}
+
+.packageId {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--ds-text-dim);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meta {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ds-text-dim);
+  font-weight: 600;
+}
+
+.sectionBody {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ds-text);
+}
+
+.preBody {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ds-text);
+  background: var(--ds-surface, rgba(0, 0, 0, 0.03));
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.confirmBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface, rgba(0, 0, 0, 0.04));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reasonInput {
+  font-family: var(--ds-font-sans);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 4px;
+  background: var(--ds-surface);
+  color: var(--ds-text);
+  resize: vertical;
+}
+
+.approvedBlock {
+  font-size: 12px;
+  color: var(--ds-success, #2e7d32);
+  padding: 8px 10px;
+  border-left: 3px solid var(--ds-success, #2e7d32);
+  background: rgba(46, 125, 50, 0.06);
+}
+
+.rejectedBlock {
+  font-size: 12px;
+  color: var(--ds-text-dim);
+  padding: 8px 10px;
+  border-left: 3px solid var(--ds-danger, #b00020);
+  background: rgba(176, 0, 32, 0.05);
+}
+
+.errorBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--ds-danger, #b00020);
+  border-radius: 6px;
+  background: rgba(176, 0, 32, 0.06);
+  font-size: 13px;
+  color: var(--ds-text);
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primaryButton {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-accent);
+  background: var(--ds-accent);
+  color: var(--ds-bg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tertiaryButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tertiaryButton:hover {
+  color: var(--ds-text);
+}
+
+.dangerButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-danger, #b00020);
+  background: var(--ds-danger, #b00020);
+  color: var(--ds-bg);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dangerButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
