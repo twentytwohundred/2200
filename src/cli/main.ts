@@ -3892,6 +3892,185 @@ export function buildProgram(): Command {
       }
     })
 
+  const connectorOauthClient = connector
+    .command('oauth-client')
+    .description(
+      'manage OAuth clients that grok.com/connectors (and other consumer-side MCP clients) authenticate as',
+    )
+
+  connectorOauthClient
+    .command('register')
+    .description(
+      'register a new OAuth client (pre-authorize a remote MCP caller to talk to the fleet)',
+    )
+    .requiredOption('--display-name <name>', 'human-readable name for this client (e.g., "Grok")')
+    .option(
+      '--redirect-uri <uri>',
+      'redirect URI the client will use; repeat the flag for multiple. paste the URI grok.com/connectors shows you during connector setup',
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
+    .option(
+      '--mint-secret',
+      'also mint a client_secret (default is PKCE-only, which matches the grok.com/connectors default)',
+    )
+    .option(
+      '--scope <scope>',
+      'a scope this client may request; repeat for multiple. default: connector:full',
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
+    .action(
+      async (opts: {
+        displayName: string
+        redirectUri: string[]
+        mintSecret?: boolean
+        scope: string[]
+      }) => {
+        if (opts.redirectUri.length === 0) {
+          console.error(
+            'At least one --redirect-uri is required. Get it from grok.com/connectors → New Connector → Custom (the URI Grok shows you after entering the MCP server URL).',
+          )
+          process.exit(1)
+        }
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (!client) {
+          console.error('OAuth client registration requires a running daemon.')
+          process.exit(1)
+        }
+        try {
+          const params: Record<string, unknown> = {
+            display_name: opts.displayName,
+            redirect_uris: opts.redirectUri,
+          }
+          if (opts.mintSecret === true) params['mint_secret'] = true
+          if (opts.scope.length > 0) params['scopes_allowed'] = opts.scope
+          const result = await client.call(
+            'cli.connector.oauth-client.register',
+            params as Parameters<typeof client.call>[1] & {
+              display_name: string
+              redirect_uris: string[]
+            },
+          )
+          console.log('OAuth client registered.')
+          console.log('')
+          console.log(`  Client ID:                ${result.client_id}`)
+          if (result.client_secret !== null) {
+            console.log(`  Client Secret:            ${result.client_secret}`)
+            console.log('  (shown once; copy now — re-display is not possible)')
+          } else {
+            console.log('  Client Secret:            (none; PKCE-only)')
+          }
+          console.log(`  Redirect URI(s):          ${result.redirect_uris.join(', ')}`)
+          console.log(`  Scopes:                   ${result.scopes_allowed.join(', ')}`)
+          console.log(`  Registered at:            ${result.registered_at}`)
+          console.log('')
+          console.log('Paste these into grok.com/connectors → New Connector → Custom:')
+          console.log('')
+          console.log('  MCP server URL:           https://<your-tunnel>/mcp')
+          console.log(`  Client ID:                ${result.client_id}`)
+          if (result.client_secret !== null) {
+            console.log(`  Client Secret:            ${result.client_secret}`)
+          } else {
+            console.log('  Client Secret:            (leave blank)')
+          }
+          console.log('  Authorization Endpoint:   https://<your-tunnel>/oauth/authorize')
+          console.log('  Token Endpoint:           https://<your-tunnel>/oauth/token')
+          console.log(`  Scopes:                   ${result.scopes_allowed.join(' ')}`)
+          console.log(
+            `  Token Auth Method:        ${result.client_secret !== null ? 'client_secret_post' : 'none (PKCE only)'}`,
+          )
+          console.log('')
+          console.log(
+            `This client is now pre-authorized. Revoke with \`2200 connector oauth-client revoke ${result.client_id}\`.`,
+          )
+        } finally {
+          await client.close()
+        }
+      },
+    )
+
+  connectorOauthClient
+    .command('list')
+    .description('list registered OAuth clients')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('OAuth client list requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.oauth-client.list', {})
+        if (result.items.length === 0) {
+          console.log('No OAuth clients registered.')
+          return
+        }
+        for (const c of result.items) {
+          const flags: string[] = []
+          if (c.has_secret) flags.push('has_secret')
+          else flags.push('pkce_only')
+          if (c.revoked_at !== null) flags.push('REVOKED')
+          console.log(`${c.client_id}  ${c.display_name}  [${flags.join(', ')}]`)
+          console.log(`  redirect_uris: ${c.redirect_uris.join(', ')}`)
+          console.log(`  scopes:        ${c.scopes_allowed.join(', ')}`)
+          console.log(`  registered:    ${c.registered_at}`)
+          console.log(`  last_authorize: ${c.last_authorize_at ?? '(never)'}`)
+          if (c.revoked_at !== null) console.log(`  revoked_at:    ${c.revoked_at}`)
+          console.log('')
+        }
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorOauthClient
+    .command('revoke <client-id>')
+    .description(
+      'revoke an OAuth client; marks it revoked + purges all outstanding access and refresh tokens for it',
+    )
+    .action(async (clientId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('OAuth client revoke requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.oauth-client.revoke', {
+          client_id: clientId,
+        })
+        console.log(
+          `OAuth client ${clientId} revoked. ${String(result.removed_refresh)} refresh token(s) and ${String(result.removed_access)} access token(s) invalidated.`,
+        )
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorOauthClient
+    .command('rotate-secret <client-id>')
+    .description('rotate the client_secret for an OAuth client (existing tokens stay valid)')
+    .action(async (clientId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('OAuth client rotate-secret requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.oauth-client.rotate-secret', {
+          client_id: clientId,
+        })
+        console.log(`OAuth client ${result.client_id} secret rotated.`)
+        console.log(`  New Client Secret: ${result.client_secret}`)
+        console.log('  (shown once; copy now — re-display is not possible)')
+      } finally {
+        await client.close()
+      }
+    })
+
   const connectorWorkPackage = connector
     .command('work-package')
     .description('approve or reject work packages proposed by MCP connector callers')

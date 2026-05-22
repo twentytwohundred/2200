@@ -142,6 +142,52 @@ export interface ConnectorWorkPackageRejectedContext {
   reason: string | null
 }
 
+export interface ConnectorOAuthClientRegisteredContext {
+  clientId: string
+  displayName: string
+  redirectUris: string[]
+  hasSecret: boolean
+}
+
+export interface ConnectorOAuthClientRevokedContext {
+  clientId: string
+  displayName: string
+  removedRefresh: number
+  removedAccess: number
+}
+
+export interface ConnectorOAuthAuthorizeContext {
+  clientId: string
+  redirectUri: string
+  scopes: string[]
+}
+
+export interface ConnectorOAuthAuthorizeRejectedContext {
+  clientId: string | null
+  reason:
+    | 'unknown_client'
+    | 'client_revoked'
+    | 'redirect_uri_mismatch'
+    | 'unsupported_response_type'
+    | 'missing_pkce'
+    | 'bad_scope'
+    | 'unsupported_pkce_method'
+}
+
+export interface ConnectorOAuthTokenIssuedContext {
+  clientId: string
+  scopes: string[]
+  grantType: 'authorization_code' | 'refresh_token'
+  /** True iff this token came from a refresh-token rotation. */
+  rotated: boolean
+}
+
+export interface ConnectorOAuthRefreshReuseContext {
+  clientId: string
+  chainId: string
+  removedRefresh: number
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -469,6 +515,112 @@ export class ConnectorAuditEmitter {
         ? `Work package \`${ctx.packageId}\` rejected: ${ctx.reason}.`
         : `Work package \`${ctx.packageId}\` rejected.`,
       extras,
+    })
+  }
+
+  /** Emit when an OAuth client is registered. Passive tier. */
+  async emitOauthClientRegistered(ctx: ConnectorOAuthClientRegisteredContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.oauth_client_registered',
+      body: `OAuth client registered: **${ctx.displayName}** (\`${ctx.clientId}\`). PKCE: required. Client secret: ${ctx.hasSecret ? 'set' : 'none (PKCE-only)'}.`,
+      extras: {
+        client_id: ctx.clientId,
+        display_name: ctx.displayName,
+        redirect_uris: ctx.redirectUris,
+        has_secret: ctx.hasSecret,
+      },
+    })
+  }
+
+  /** Emit when an OAuth client is revoked. Normal tier (operator should see). */
+  async emitOauthClientRevoked(ctx: ConnectorOAuthClientRevokedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.oauth_client_revoked',
+      body: `OAuth client revoked: **${ctx.displayName}** (\`${ctx.clientId}\`). ${String(ctx.removedRefresh)} refresh token(s) and ${String(ctx.removedAccess)} access token(s) invalidated.`,
+      extras: {
+        client_id: ctx.clientId,
+        display_name: ctx.displayName,
+        removed_refresh: ctx.removedRefresh,
+        removed_access: ctx.removedAccess,
+      },
+    })
+  }
+
+  /** Emit on successful /authorize. Passive tier; the meaningful signal is the token_issued event. */
+  async emitOauthAuthorizeSucceeded(ctx: ConnectorOAuthAuthorizeContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.oauth_authorize_succeeded',
+      body: `OAuth authorize for \`${ctx.clientId}\` (scopes: ${ctx.scopes.join(', ')}).`,
+      extras: {
+        client_id: ctx.clientId,
+        redirect_uri: ctx.redirectUri,
+        scopes: ctx.scopes,
+      },
+    })
+  }
+
+  /**
+   * Emit on rejected /authorize. Normal tier; the rejection reason
+   * names a specific class so the operator can fix configuration.
+   * The client_id is null when the request didn't even include one;
+   * non-null reasons are operator-actionable.
+   */
+  async emitOauthAuthorizeRejected(ctx: ConnectorOAuthAuthorizeRejectedContext): Promise<void> {
+    const extras: Record<string, unknown> = { reason: ctx.reason }
+    if (ctx.clientId !== null) extras['client_id'] = ctx.clientId
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.oauth_authorize_rejected',
+      body: `OAuth authorize rejected${ctx.clientId !== null ? ` for \`${ctx.clientId}\`` : ''}: ${ctx.reason}.`,
+      extras,
+    })
+  }
+
+  /** Emit on token issuance (initial code grant or refresh). Passive tier. */
+  async emitOauthTokenIssued(ctx: ConnectorOAuthTokenIssuedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.oauth_token_issued',
+      body: `OAuth token issued for \`${ctx.clientId}\` (grant: ${ctx.grantType}${ctx.rotated ? ', rotated' : ''}).`,
+      extras: {
+        client_id: ctx.clientId,
+        scopes: ctx.scopes,
+        grant_type: ctx.grantType,
+        rotated: ctx.rotated,
+      },
+    })
+  }
+
+  /**
+   * Emit on detected refresh-token reuse (the canonical compromise
+   * signal per OAuth BCPs). Important tier — the operator should
+   * investigate and likely revoke the client.
+   */
+  async emitOauthRefreshReuse(ctx: ConnectorOAuthRefreshReuseContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'important',
+      kind: 'connector.oauth_refresh_reuse',
+      body: `OAuth refresh-token REUSE detected for \`${ctx.clientId}\` (chain \`${ctx.chainId}\`). Chain revoked (${String(ctx.removedRefresh)} refresh token(s) invalidated). Investigate; consider \`2200 connector oauth-client revoke ${ctx.clientId}\`.`,
+      extras: {
+        client_id: ctx.clientId,
+        chain_id: ctx.chainId,
+        removed_refresh: ctx.removedRefresh,
+      },
     })
   }
 
