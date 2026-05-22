@@ -398,6 +398,127 @@ export const brainWriteShared = defineTool({
   },
 })
 
+// ---------------------------------------------------------------------------
+// brain.write_research_brief (PR 3 / Phase 1 standing-brief mechanism)
+//
+// The synthesis-as-Agent-task path produces a standing brief for a
+// research thread. This tool is the write surface for that brief:
+// the Agent runs its normal task loop, generates the brief body via
+// its own LLM, then calls this tool to persist it.
+//
+// The tool computes provenance from the thread's current state
+// (contribution_count, first/last contribution timestamps, contributor
+// sources) and writes it as frontmatter on the brief note. Provenance
+// is therefore always machine-readable even if the Agent's body
+// doesn't cite cleanly.
+//
+// On success, the thread anchor's frontmatter is patched:
+//   - `synthesized_through` = the `pending_synthesis_at` snapshot the
+//     tool read at the start of the call (later contributions may
+//     have arrived since; the reconciler picks those up on the next
+//     tick).
+//   - `synthesis_failure_count` reset to 0.
+// ---------------------------------------------------------------------------
+
+const BrainWriteResearchBriefArgsSchema = z.object({
+  /** Bare thread slug (no `research-` prefix). */
+  thread_slug: z.string().min(1),
+  /** Markdown body of the synthesized brief. */
+  brief_body: z.string().min(1),
+  /** Optional: pass through token usage so it lands in the audit event. */
+  token_usage: z
+    .object({
+      input: z.number().optional(),
+      output: z.number().optional(),
+      total: z.number().optional(),
+    })
+    .optional(),
+  /** Optional: synthesis duration. */
+  duration_ms: z.number().optional(),
+})
+
+export const brainWriteResearchBrief = defineTool({
+  name: 'brain_write_research_brief',
+  description:
+    "Write the synthesized standing brief for a research thread. Reads the thread's chronological log to compute provenance (contribution count + timestamp range + contributor sources), then writes the brief as a sibling note at `<shared>/brain/research-<slug>-brief.md` and resets the thread's synthesis-failure counter. The calling Agent should typically be the thread's primary agent.",
+  idempotency: 'checkpointed',
+  argsSchema: BrainWriteResearchBriefArgsSchema,
+  execute: async (args, ctx) => {
+    const sharedStore = BrainStore.forShared(ctx.home)
+    const anchorSlug = `research-${args.thread_slug}`
+    const anchor = await sharedStore.tryRead(anchorSlug)
+    if (anchor === null) {
+      throw new Error(
+        `no research thread "${args.thread_slug}" (expected shared brain note ${anchorSlug}.md)`,
+      )
+    }
+    const contributionCount =
+      typeof anchor.extras['contribution_count'] === 'number'
+        ? anchor.extras['contribution_count']
+        : 0
+    const pendingSynthesisAt =
+      typeof anchor.extras['pending_synthesis_at'] === 'string'
+        ? anchor.extras['pending_synthesis_at']
+        : null
+    const lastContributionAt =
+      typeof anchor.extras['last_contribution_at'] === 'string'
+        ? anchor.extras['last_contribution_at']
+        : null
+    // Walk the contribution log body for the first `## <ISO ts>`
+    // section's timestamp. The thread anchor doesn't track
+    // first-contribution explicitly, so we parse it back out.
+    const firstTimestamp = extractFirstContributionTimestamp(anchor.body)
+
+    const { writeBrief, updateAnchorFrontmatter } = await import('../../mcp/connector/synthesis.js')
+
+    const now = new Date()
+    const briefResult = await writeBrief({
+      home: ctx.home,
+      threadSlug: args.thread_slug,
+      briefBody: args.brief_body,
+      provenance: {
+        brief_schema_version: 1,
+        source_thread: args.thread_slug,
+        synthesized_through: pendingSynthesisAt ?? lastContributionAt ?? now.toISOString(),
+        contribution_count: contributionCount,
+        contribution_first_at: firstTimestamp,
+        contribution_last_at: lastContributionAt,
+        // For Phase 1 the connector is the only contribution source.
+        // When Claude / OpenAI / others start contributing, the writer
+        // path will set additional source markers in the contribution
+        // notes; this aggregation will start reading them.
+        contributor_sources: ['mcp-connector'],
+        synthesizing_agent: ctx.callingAgent,
+        ...(args.token_usage !== undefined ? { token_usage: args.token_usage } : {}),
+        ...(args.duration_ms !== undefined ? { duration_ms: args.duration_ms } : {}),
+        brief_written_at: now.toISOString(),
+      },
+    })
+
+    await updateAnchorFrontmatter({
+      home: ctx.home,
+      threadSlug: args.thread_slug,
+      updates: {
+        synthesized_through: pendingSynthesisAt ?? lastContributionAt ?? now.toISOString(),
+        synthesis_failure_count: 0,
+      },
+    })
+
+    return {
+      thread_slug: args.thread_slug,
+      brief_slug: briefResult.slug,
+      brief_path: briefResult.path,
+      brief_created: briefResult.created,
+      contribution_count: contributionCount,
+    }
+  },
+})
+
+function extractFirstContributionTimestamp(body: string): string | null {
+  const match = /^##\s+(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/m.exec(body)
+  return match?.[1] ?? null
+}
+
 export const brainTools: ToolDefinition[] = [
   brainWrite,
   brainRead,
@@ -410,4 +531,5 @@ export const brainTools: ToolDefinition[] = [
   brainSearchShared,
   brainListShared,
   brainWriteShared,
+  brainWriteResearchBrief,
 ]

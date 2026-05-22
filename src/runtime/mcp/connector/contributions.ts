@@ -225,8 +225,20 @@ export async function writeThreadContribution(
     contribution_count: contributionCount + 1,
     last_contribution_at: now.toISOString(),
     display_name: displayName,
+    // Set on every contribute so the PR 3 reconciler picks the thread
+    // up for re-synthesis. The reconciler clears (or advances) this
+    // when the Agent's synthesis task completes.
+    pending_synthesis_at: now.toISOString(),
   }
   if (primaryAgent !== null) extras['primary_agent'] = primaryAgent
+  // Preserve PR 3 synthesis state across writes (existing values win
+  // if present; do not regress on contribute).
+  if (existing !== null) {
+    const carryKeys = ['synthesized_through', 'synthesis_failure_count', 'synthesis_blocked']
+    for (const k of carryKeys) {
+      if (existing.extras[k] !== undefined) extras[k] = existing.extras[k]
+    }
+  }
 
   const result = await store.write({
     slug,

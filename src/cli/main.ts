@@ -3892,6 +3892,30 @@ export function buildProgram(): Command {
       }
     })
 
+  const connectorSynthesis = connector
+    .command('synthesis')
+    .description('manage standing-brief synthesis for research threads')
+
+  connectorSynthesis
+    .command('unblock <thread-slug>')
+    .description(
+      'clear the synthesis_blocked flag + reset the failure counter (use after three consecutive synthesis failures have paused auto-synthesis)',
+    )
+    .action(async (threadSlug: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Connector synthesis unblock requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.connector.synthesis.unblock', { thread_slug: threadSlug })
+        console.log(`Thread "${threadSlug}" unblocked. Next contribution will trigger synthesis.`)
+      } finally {
+        await client.close()
+      }
+    })
+
   connector
     .command('status')
     .description('print the connector status (configured, listening, port, bearer metadata)')

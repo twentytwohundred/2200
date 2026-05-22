@@ -71,6 +71,40 @@ export interface ConnectorContributionContext {
   contributionPath: string
 }
 
+export interface ConnectorSynthesisLifecycleContext {
+  /** Bare thread slug. */
+  threadSlug: string
+  /** Primary Agent assigned to synthesize this thread. */
+  primaryAgent: string
+}
+
+export interface ConnectorSynthesisCompletedContext extends ConnectorSynthesisLifecycleContext {
+  /** Number of contributions synthesized. */
+  contributionCount: number
+  /** Brief sibling note slug. */
+  briefSlug: string
+  /** Wall-clock duration of the synthesis task. */
+  durationMs?: number
+}
+
+export interface ConnectorSynthesisFailedContext extends ConnectorSynthesisLifecycleContext {
+  /** Coarse class. */
+  errorClass: 'task_errored' | 'budget_exceeded' | 'tool_failure' | 'unknown'
+  /** Error summary; caller sanitizes. */
+  errorSummary: string
+  /** Consecutive failure count after this failure. */
+  failureCount: number
+  /** True iff this failure escalates the thread to `synthesis_blocked`. */
+  blocked: boolean
+}
+
+export interface ConnectorSynthesisPrimaryMissingContext {
+  /** Bare thread slug. */
+  threadSlug: string
+  /** Name the anchor recorded (may be a stale name with no live record). */
+  expectedAgent: string | null
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -225,6 +259,80 @@ export class ConnectorAuditEmitter {
         contribution_slug: ctx.contributionSlug,
         contribution_path: ctx.contributionPath,
       },
+    })
+  }
+
+  /** Emit when the reconciler hands a synthesis task to the primary Agent. Passive. */
+  async emitSynthesisStarted(ctx: ConnectorSynthesisLifecycleContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.synthesis_started',
+      body: `Synthesis started for thread \`${ctx.threadSlug}\` (primary agent: \`${ctx.primaryAgent}\`).`,
+      extras: { thread_slug: ctx.threadSlug, primary_agent: ctx.primaryAgent },
+    })
+  }
+
+  /** Emit when synthesis completes and a fresh brief is written. Passive. */
+  async emitSynthesisCompleted(ctx: ConnectorSynthesisCompletedContext): Promise<void> {
+    const extras: Record<string, unknown> = {
+      thread_slug: ctx.threadSlug,
+      primary_agent: ctx.primaryAgent,
+      contribution_count: ctx.contributionCount,
+      brief_slug: ctx.briefSlug,
+    }
+    if (ctx.durationMs !== undefined) extras['duration_ms'] = ctx.durationMs
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.synthesis_completed',
+      body: `Synthesis completed for thread \`${ctx.threadSlug}\` (${String(ctx.contributionCount)} contributions).`,
+      extras,
+    })
+  }
+
+  /**
+   * Emit when synthesis fails. Tier escalates to `important` once the
+   * thread is `synthesis_blocked` so the operator sees that
+   * future contributions to this thread will not auto-synthesize until
+   * they unblock.
+   */
+  async emitSynthesisFailed(ctx: ConnectorSynthesisFailedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: ctx.blocked ? 'important' : 'normal',
+      kind: 'connector.synthesis_failed',
+      body: ctx.blocked
+        ? `Synthesis BLOCKED for thread \`${ctx.threadSlug}\` after ${String(ctx.failureCount)} consecutive failures: ${ctx.errorClass}. Unblock with \`2200 connector synthesis unblock ${ctx.threadSlug}\`.`
+        : `Synthesis failed for thread \`${ctx.threadSlug}\` (failure ${String(ctx.failureCount)}): ${ctx.errorClass}.`,
+      extras: {
+        thread_slug: ctx.threadSlug,
+        primary_agent: ctx.primaryAgent,
+        error_class: ctx.errorClass,
+        error_summary: ctx.errorSummary,
+        failure_count: ctx.failureCount,
+        blocked: ctx.blocked,
+      },
+    })
+  }
+
+  /** Emit when the primary Agent assigned to a thread is missing / not running. */
+  async emitSynthesisPrimaryMissing(ctx: ConnectorSynthesisPrimaryMissingContext): Promise<void> {
+    const extras: Record<string, unknown> = { thread_slug: ctx.threadSlug }
+    if (ctx.expectedAgent !== null) extras['expected_agent'] = ctx.expectedAgent
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.synthesis_primary_missing',
+      body:
+        ctx.expectedAgent === null
+          ? `Thread \`${ctx.threadSlug}\` has no primary agent assigned; synthesis is paused until one is set.`
+          : `Thread \`${ctx.threadSlug}\` primary agent \`${ctx.expectedAgent}\` is not running; synthesis is paused.`,
+      extras,
     })
   }
 

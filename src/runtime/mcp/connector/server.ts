@@ -32,6 +32,7 @@ import {
   writeThreadContribution,
   type ContributionPayload,
 } from './contributions.js'
+import { readBrief } from './synthesis.js'
 
 export interface ConnectorMcpServerDeps {
   /** 2200 home directory. */
@@ -129,6 +130,10 @@ const FleetContextOutputShape = {
       primary_agent: z.string().nullable(),
       contribution_count: z.number(),
       last_contribution_at: z.string().nullable(),
+      brief_excerpt: z.string().nullable(),
+      brief_synthesized_through: z.string().nullable(),
+      brief_stale: z.boolean(),
+      brief_blocked: z.boolean(),
     }),
   ),
   recent_activity: z.array(
@@ -139,6 +144,26 @@ const FleetContextOutputShape = {
       kind: z.string(),
     }),
   ),
+}
+
+const GetResearchBriefInputShape = {
+  thread_slug: z.string().min(1),
+}
+
+const GetResearchBriefOutputShape = {
+  thread_slug: z.string(),
+  brief: z
+    .object({
+      body: z.string(),
+      synthesized_through: z.string().nullable(),
+      contribution_count: z.number(),
+      contribution_first_at: z.string().nullable(),
+      contribution_last_at: z.string().nullable(),
+      contributor_sources: z.array(z.string()),
+      synthesizing_agent: z.string().nullable(),
+      brief_written_at: z.string().nullable(),
+    })
+    .nullable(),
 }
 
 export async function createConnectorMcpServer(
@@ -264,6 +289,41 @@ export async function createConnectorMcpServer(
       }
       return {
         structuredContent: out,
+        content: [{ type: 'text' as const, text: JSON.stringify(out) }],
+      }
+    },
+  )
+
+  mcpServer.registerTool(
+    'get_research_brief',
+    {
+      title: 'get_research_brief',
+      description:
+        'Return the full synthesized standing brief for a research thread, plus its provenance metadata (what window of contributions the brief covers, who synthesized it). Returns `brief: null` if no brief has been synthesized yet for the thread.',
+      inputSchema: GetResearchBriefInputShape,
+      outputSchema: GetResearchBriefOutputShape,
+    },
+    async (args, _extra) => {
+      const result = await readBrief(deps.home, args.thread_slug)
+      const out =
+        result === null
+          ? { thread_slug: args.thread_slug, brief: null }
+          : {
+              thread_slug: args.thread_slug,
+              brief: {
+                body: result.body,
+                synthesized_through: result.provenance?.synthesized_through ?? null,
+                contribution_count: result.provenance?.contribution_count ?? 0,
+                contribution_first_at: result.provenance?.contribution_first_at ?? null,
+                contribution_last_at: result.provenance?.contribution_last_at ?? null,
+                contributor_sources: result.provenance?.contributor_sources ?? [],
+                synthesizing_agent: result.provenance?.synthesizing_agent ?? null,
+                brief_written_at: result.provenance?.brief_written_at ?? null,
+              },
+            }
+      const structured = JSON.parse(JSON.stringify(out)) as Record<string, unknown>
+      return {
+        structuredContent: structured,
         content: [{ type: 'text' as const, text: JSON.stringify(out) }],
       }
     },

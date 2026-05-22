@@ -264,7 +264,7 @@ describe('MCP connector listener', () => {
     expect(stateNotes.some((n) => n.includes('listener_state: stopped'))).toBe(true)
   })
 
-  it('lists liveness + contribute_to_thread + get_fleet_context as the PR 2 tool surface', async () => {
+  it('lists the locked Phase 1 tool surface (liveness + contribute_to_thread + get_fleet_context + get_research_brief)', async () => {
     const audit = new ConnectorAuditEmitter({ home })
     handle = await startConnectorListener({
       home,
@@ -277,8 +277,35 @@ describe('MCP connector listener', () => {
     const tools = await client.listTools()
     const names = tools.tools.map((t) => t.name)
     expect(names).toEqual(
-      expect.arrayContaining(['liveness', 'contribute_to_thread', 'get_fleet_context']),
+      expect.arrayContaining([
+        'liveness',
+        'contribute_to_thread',
+        'get_fleet_context',
+        'get_research_brief',
+      ]),
     )
+    await client.close()
+  })
+
+  it('get_research_brief returns null brief when no brief has been synthesized', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const client = await newClient(token, handle.port)
+    const result = await client.callTool({
+      name: 'get_research_brief',
+      arguments: { thread_slug: 'no-such-thread' },
+    })
+    const text = textFromContent(result.content)
+    expect(text).not.toBeNull()
+    const parsed = JSON.parse(text ?? '{}') as { thread_slug: string; brief: unknown }
+    expect(parsed.thread_slug).toBe('no-such-thread')
+    expect(parsed.brief).toBeNull()
     await client.close()
   })
 
