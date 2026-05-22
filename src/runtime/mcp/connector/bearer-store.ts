@@ -168,6 +168,17 @@ async function getOrCreateSalt(home: string): Promise<Buffer> {
   return fresh
 }
 
+/**
+ * Why both a master key AND a per-fleet salt: the master key is a
+ * long-lived secret derived from the install layout; the salt is a
+ * per-purpose randomizer that scopes the wrapping key to this store
+ * only. Combined with `HKDF_INFO` (the namespace string), HKDF gives
+ * us a wrapping key that is unique to (master key, this store, this
+ * fleet) — so a compromise of any single OAuth-store salt does not
+ * derive the connector-bearer wrapping key, and vice versa. The
+ * primitives are the same as the per-Agent vault; the namespacing is
+ * what keeps the blast radius small.
+ */
 async function getOrCreateWrappingKey(home: string): Promise<Buffer> {
   const masterKey = await loadOrCreateMasterKey(home)
   const salt = await getOrCreateSalt(home)

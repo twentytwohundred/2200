@@ -186,13 +186,13 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   // the `2200 connector token regenerate` command (or Settings tile)
   // achieves the same thing later.
   // ------------------------------------------------------------------
-  io.info('MCP connector (advanced; default skip).')
+  io.info('MCP connector setup (advanced).')
   io.info('')
   io.info('Lets Grok (and any other MCP-speaking client) call into your fleet via')
-  io.info('your own tunnel. You will need a tunnel service (ngrok / cloudflared /')
-  io.info('Tailscale Funnel) and a Custom connector registration at')
-  io.info('grok.com/connectors. Skip if not sure ... the Settings page can set this')
-  io.info('up later.')
+  io.info('your own tunnel. Recommended for power users who already have a tunnel')
+  io.info('service set up (ngrok / cloudflared / Tailscale Funnel) and want to')
+  io.info('register a Custom connector at grok.com/connectors. Skip if not sure ...')
+  io.info('the Settings page can set this up later.')
   io.info('')
   const connectorReply = await io.ask('Generate a connector token now? [y/N] ')
   if (isYes(connectorReply, false)) {
@@ -328,8 +328,9 @@ async function runFirstRunConnectorSetup(io: FirstRunIO, home: string): Promise<
   const rpc = new JsonRpcClient(transport)
   try {
     const { token } = await rpc.call('cli.connector.regenerate', {})
-    io.success('Connector listener started. Bearer minted (shown once, copy it now):')
+    io.success('Connector bearer minted and sealed to disk. Listener is live.')
     io.info('')
+    io.info('Token (shown once, copy it now):')
     io.info(`  ${token}`)
     io.info('')
     io.info('Paste this token at https://grok.com/connectors → New Connector → Custom')

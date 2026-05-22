@@ -52,7 +52,13 @@ export interface ConnectorListenerHandle {
 }
 
 const DEFAULT_HOST = '0.0.0.0'
-const DEFAULT_BODY_LIMIT_BYTES = 1 * 1024 * 1024 // 1MB
+// 1 MiB body limit. Sized for Phase 1's surface (the liveness probe is
+// tiny; `get_fleet_context` will return short orientation packets).
+// `contribute_to_thread` will carry research blobs / sources / long
+// transcripts and is expected to exceed this — PR 2 will widen the
+// default and/or expose `bodyLimitBytes` via supervisor options when
+// that tool lands. See Grok's 2026-05-23 full review.
+const DEFAULT_BODY_LIMIT_BYTES = 1 * 1024 * 1024
 
 /**
  * Start the connector listener. Throws if no bearer is provisioned ...
@@ -239,7 +245,24 @@ function peekMcpEnvelope(body: unknown): McpEnvelopePeek {
   }
 }
 
-/** Resolve a best-effort client IP from a Fastify request. */
+/**
+ * Resolve a best-effort client IP from a Fastify request.
+ *
+ * Trust assumption: this listener sits behind the operator's own
+ * tunnel (ngrok / cloudflared / Tailscale Funnel / etc.) — the
+ * immediate hop is the tunnel terminator, which is the source of
+ * truth for `req.ip`. `X-Forwarded-For` is what the tunnel injects
+ * with the real upstream client. This is fine in the supported
+ * configurations because there is exactly one trusted intermediary.
+ *
+ * Footgun: if an operator put a different reverse proxy in front
+ * that does NOT scrub a client-supplied XFF header, an attacker
+ * could spoof `sourceIp` in Inbox audit events. The audit values
+ * are never used for auth or routing decisions (only for operator
+ * visibility), so the blast radius is "the Inbox event names a
+ * fake IP" — annoying, not exploitable. Documented here so a future
+ * deployment outside the supported tunnel set knows the assumption.
+ */
 function clientIp(req: FastifyRequest): string {
   const xff = req.headers['x-forwarded-for']
   if (typeof xff === 'string' && xff.length > 0) {

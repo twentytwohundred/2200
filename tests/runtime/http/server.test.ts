@@ -569,6 +569,30 @@ describe('HTTP server / connector routes', () => {
     // new token's metadata has no regenerated_at marker.
     expect(status.bearer_regenerated_at).toBeNull()
   })
+
+  it('regenerate starts the listener when it was previously idle (no bearer at supervisor start)', async () => {
+    // Fresh home → supervisor started with connector configured but no
+    // bearer provisioned. status reports listening:false, bearer_present:false.
+    // Regenerate must transition the listener to live in one step (the
+    // "idle → regenerate" Settings-tile UI state).
+    const beforeStatus = (await callJson('GET', '/api/v1/connector/status')).body as {
+      listening: boolean
+      bearer_present: boolean
+    }
+    expect(beforeStatus.listening).toBe(false)
+    expect(beforeStatus.bearer_present).toBe(false)
+
+    const regen = await callJson('POST', '/api/v1/connector/regenerate')
+    expect(regen.status).toBe(200)
+    const afterStatus = (await callJson('GET', '/api/v1/connector/status')).body as {
+      listening: boolean
+      bearer_present: boolean
+      port: number | null
+    }
+    expect(afterStatus.listening).toBe(true)
+    expect(afterStatus.bearer_present).toBe(true)
+    expect(afterStatus.port).not.toBeNull()
+  })
 })
 
 describe('isLoopbackHost', () => {
