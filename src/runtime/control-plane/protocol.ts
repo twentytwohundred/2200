@@ -741,6 +741,34 @@ export type CliConnectorSynthesisUnblockResult = z.infer<
   typeof CliConnectorSynthesisUnblockResultSchema
 >
 
+export const CliConnectorWorkPackageApproveParamsSchema = z.object({
+  package_id: z.string().min(1),
+})
+export type CliConnectorWorkPackageApproveParams = z.infer<
+  typeof CliConnectorWorkPackageApproveParamsSchema
+>
+export const CliConnectorWorkPackageApproveResultSchema = z.object({
+  approved: z.literal(true),
+  follow_on_task_ids: z.array(z.string()),
+})
+export type CliConnectorWorkPackageApproveResult = z.infer<
+  typeof CliConnectorWorkPackageApproveResultSchema
+>
+
+export const CliConnectorWorkPackageRejectParamsSchema = z.object({
+  package_id: z.string().min(1),
+  reason: z.string().min(1).optional(),
+})
+export type CliConnectorWorkPackageRejectParams = z.infer<
+  typeof CliConnectorWorkPackageRejectParamsSchema
+>
+export const CliConnectorWorkPackageRejectResultSchema = z.object({
+  rejected: z.literal(true),
+})
+export type CliConnectorWorkPackageRejectResult = z.infer<
+  typeof CliConnectorWorkPackageRejectResultSchema
+>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -875,6 +903,14 @@ export const METHODS = {
   'cli.connector.synthesis.unblock': {
     params: CliConnectorSynthesisUnblockParamsSchema,
     result: CliConnectorSynthesisUnblockResultSchema,
+  },
+  'cli.connector.work-package.approve': {
+    params: CliConnectorWorkPackageApproveParamsSchema,
+    result: CliConnectorWorkPackageApproveResultSchema,
+  },
+  'cli.connector.work-package.reject': {
+    params: CliConnectorWorkPackageRejectParamsSchema,
+    result: CliConnectorWorkPackageRejectResultSchema,
   },
 } as const
 

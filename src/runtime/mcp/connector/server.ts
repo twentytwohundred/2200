@@ -33,6 +33,7 @@ import {
   type ContributionPayload,
 } from './contributions.js'
 import { readBrief } from './synthesis.js'
+import type { ProposedWorkPackage } from './work-package.js'
 
 export interface ConnectorMcpServerDeps {
   /** 2200 home directory. */
@@ -43,6 +44,22 @@ export interface ConnectorMcpServerDeps {
   audit: ConnectorAuditEmitter
   /** Set of agent names the connector may write contributions to. Null means "any agent on disk." */
   knownAgents?: () => Promise<Set<string>>
+  /**
+   * Resolve a thread slug to its primary Agent name. Used by
+   * `propose_work_package` when the proposal targets a thread; returns
+   * null if the thread has no primary agent assigned.
+   */
+  resolveThreadPrimaryAgent?: (threadSlug: string) => Promise<string | null>
+  /**
+   * Handler that persists the proposed work package and submits the
+   * (strict-allowlist) coordination task to the primary Agent.
+   * The supervisor provides this; the MCP tool just collects the
+   * proposal and forwards.
+   */
+  proposeWorkPackage?: (args: {
+    proposal: ProposedWorkPackage
+    primaryAgent: string
+  }) => Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }>
 }
 
 export interface ConnectorMcpServerHandle {
@@ -289,6 +306,89 @@ export async function createConnectorMcpServer(
       }
       return {
         structuredContent: out,
+        content: [{ type: 'text' as const, text: JSON.stringify(out) }],
+      }
+    },
+  )
+
+  mcpServer.registerTool(
+    'propose_work_package',
+    {
+      title: 'propose_work_package',
+      description:
+        'Propose a body of work to the fleet. The proposal lands as an INERT note in the shared brain. The primary Agent runs an internal-coordination-only task (strict allowlist, no execution tools) to produce a reviewable plan, which sits inert in the Inbox until a human operator approves. Anything with real-world effects (task creation, schedule creation, agent spawn, external calls) requires explicit operator approval through `2200 connector work-package approve <package_id>`. The connector caller does not control execution; this tool only QUEUES a proposal for human review.',
+      inputSchema: {
+        title: z.string().min(1),
+        summary: z.string().min(1),
+        proposed_steps: z.array(z.string().min(1)).min(1),
+        target: z.union([
+          z.object({ thread: z.string().min(1) }).strict(),
+          z.object({ agent: z.string().min(1) }).strict(),
+        ]),
+        success_criteria: z.array(z.string().min(1)).optional(),
+        risk_notes: z.array(z.string().min(1)).optional(),
+        estimated_cost_usd: z.number().optional(),
+        estimated_duration_minutes: z.number().int().optional(),
+      },
+      outputSchema: {
+        status: z.literal('queued_for_review'),
+        package_id: z.string(),
+        package_slug: z.string(),
+        coordination_task_id: z.string().nullable(),
+      },
+    },
+    async (args, _extra) => {
+      if (deps.proposeWorkPackage === undefined) {
+        throw new Error(
+          'propose_work_package not wired: supervisor did not provide a handler. This is a runtime configuration error.',
+        )
+      }
+      // Resolve primary agent.
+      let primaryAgent: string
+      if ('agent' in args.target) {
+        const knownAgents = deps.knownAgents ? await deps.knownAgents() : null
+        if (knownAgents && !knownAgents.has(args.target.agent)) {
+          throw new Error(`unknown agent: "${args.target.agent}"`)
+        }
+        primaryAgent = args.target.agent
+      } else {
+        const resolved = deps.resolveThreadPrimaryAgent
+          ? await deps.resolveThreadPrimaryAgent(args.target.thread)
+          : null
+        if (resolved === null) {
+          throw new Error(
+            `thread "${args.target.thread}" has no primary agent assigned; cannot route a work package to it. Assign a primary agent on the thread first.`,
+          )
+        }
+        primaryAgent = resolved
+      }
+      const proposal: ProposedWorkPackage = {
+        title: args.title,
+        summary: args.summary,
+        proposed_steps: args.proposed_steps,
+        target:
+          'thread' in args.target
+            ? { kind: 'thread', thread_slug: args.target.thread }
+            : { kind: 'agent', agent_name: args.target.agent },
+        ...(args.success_criteria !== undefined ? { success_criteria: args.success_criteria } : {}),
+        ...(args.risk_notes !== undefined ? { risk_notes: args.risk_notes } : {}),
+        ...(args.estimated_cost_usd !== undefined
+          ? { estimated_cost_usd: args.estimated_cost_usd }
+          : {}),
+        ...(args.estimated_duration_minutes !== undefined
+          ? { estimated_duration_minutes: args.estimated_duration_minutes }
+          : {}),
+      }
+      const result = await deps.proposeWorkPackage({ proposal, primaryAgent })
+      const out = {
+        status: 'queued_for_review' as const,
+        package_id: result.packageId,
+        package_slug: result.packageSlug,
+        coordination_task_id: result.coordinationTaskId,
+      }
+      const structured = JSON.parse(JSON.stringify(out)) as Record<string, unknown>
+      return {
+        structuredContent: structured,
         content: [{ type: 'text' as const, text: JSON.stringify(out) }],
       }
     },

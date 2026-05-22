@@ -350,6 +350,111 @@ describe('ToolDispatcher actually creates side effects', () => {
     expect(written).toBe('agent wrote this')
   })
 
+  it('refuses a tool when the calling task has tool_policy=strict_allowlist and the tool is not on the list', async () => {
+    // The strict-allowlist guard added in PR 4. The Agent's
+    // identity-level allowedToolNames includes `fs_write`, but the
+    // task this call is associated with has tool_policy='strict_allowlist'
+    // with an allowed_tools list that does NOT include fs_write.
+    // Expected: the dispatcher rejects with a `task_allowlist_violation`
+    // ToolDeniedError, regardless of what the Agent could otherwise call.
+    const registry = new ToolRegistry()
+    registry.register(createInProcessServer('fs', fsTools))
+    const dispatcher = new ToolDispatcher({
+      registry,
+      allowedToolNames: new Set(BASELINE_TOOL_NAMES),
+      home,
+      callingAgent: 'hobby',
+      brainDir,
+      projectDir: agentPaths(home, 'hobby').project,
+      loadTaskPolicy: () =>
+        Promise.resolve({
+          policy: 'strict_allowlist' as const,
+          allowed: new Set(['fs_read']),
+        }),
+    })
+    await expect(
+      dispatcher.dispatch({
+        tool: 'fs_write',
+        args: { path: '/commons/scratch/x.md', content: 'should be refused' },
+        taskId: 'task_restricted',
+        taskIdempotency: 'destructive',
+        model: 'anthropic/claude-opus-4-7',
+        predictedOutcome: '',
+        reason: '',
+      }),
+    ).rejects.toThrow(/task_allowlist_violation/)
+  })
+
+  it('allows a tool when the strict-allowlist policy includes it', async () => {
+    await writeFile(join(homePaths(home).commonsScratch, 'allowed.md'), 'on the list')
+    const registry = new ToolRegistry()
+    registry.register(createInProcessServer('fs', fsTools))
+    const dispatcher = new ToolDispatcher({
+      registry,
+      allowedToolNames: new Set(BASELINE_TOOL_NAMES),
+      home,
+      callingAgent: 'hobby',
+      brainDir,
+      projectDir: agentPaths(home, 'hobby').project,
+      loadTaskPolicy: () =>
+        Promise.resolve({
+          policy: 'strict_allowlist' as const,
+          allowed: new Set(['fs_read']),
+        }),
+    })
+    const result = await dispatcher.dispatch({
+      tool: 'fs_read',
+      args: { path: '/commons/scratch/allowed.md' },
+      taskId: 'task_restricted',
+      taskIdempotency: 'pure',
+      model: 'anthropic/claude-opus-4-7',
+      predictedOutcome: '',
+      reason: '',
+    })
+    expect((result.output as { content: string }).content).toBe('on the list')
+  })
+
+  it('caches the task policy snapshot so the loader is called at most once per task', async () => {
+    let loaderCalls = 0
+    const registry = new ToolRegistry()
+    registry.register(createInProcessServer('fs', fsTools))
+    const dispatcher = new ToolDispatcher({
+      registry,
+      allowedToolNames: new Set(BASELINE_TOOL_NAMES),
+      home,
+      callingAgent: 'hobby',
+      brainDir,
+      projectDir: agentPaths(home, 'hobby').project,
+      loadTaskPolicy: () => {
+        loaderCalls += 1
+        return Promise.resolve({
+          policy: 'inherit_agent' as const,
+          allowed: new Set<string>(),
+        })
+      },
+    })
+    await writeFile(join(homePaths(home).commonsScratch, 'cache.md'), 'x')
+    await dispatcher.dispatch({
+      tool: 'fs_read',
+      args: { path: '/commons/scratch/cache.md' },
+      taskId: 'task_cache',
+      taskIdempotency: 'pure',
+      model: 'anthropic/claude-opus-4-7',
+      predictedOutcome: '',
+      reason: '',
+    })
+    await dispatcher.dispatch({
+      tool: 'fs_read',
+      args: { path: '/commons/scratch/cache.md' },
+      taskId: 'task_cache',
+      taskIdempotency: 'pure',
+      model: 'anthropic/claude-opus-4-7',
+      predictedOutcome: '',
+      reason: '',
+    })
+    expect(loaderCalls).toBe(1)
+  })
+
   it('fs.list lists entries under commons/reference', async () => {
     const refDir = homePaths(home).commonsReference
     await writeFile(join(refDir, 'a.md'), '')

@@ -56,7 +56,16 @@ async function readEmittedNotifications(): Promise<string[]> {
   return Promise.all(entries.map((name) => readFile(join(dir, name), 'utf-8')))
 }
 
-function stubServerDeps(opts: { knownAgents?: string[] } = {}): {
+function stubServerDeps(
+  opts: {
+    knownAgents?: string[]
+    resolveThreadPrimaryAgent?: (slug: string) => Promise<string | null>
+    proposeWorkPackage?: (args: {
+      proposal: unknown
+      primaryAgent: string
+    }) => Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }>
+  } = {},
+): {
   snapshot: () => {
     schema_version: 1
     home: string
@@ -65,6 +74,11 @@ function stubServerDeps(opts: { knownAgents?: string[] } = {}): {
     pubs: Record<string, never>
   }
   knownAgents: () => Promise<Set<string>>
+  resolveThreadPrimaryAgent: (slug: string) => Promise<string | null>
+  proposeWorkPackage: (args: {
+    proposal: unknown
+    primaryAgent: string
+  }) => Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }>
 } {
   return {
     snapshot: () => ({
@@ -75,6 +89,15 @@ function stubServerDeps(opts: { knownAgents?: string[] } = {}): {
       pubs: {},
     }),
     knownAgents: () => Promise.resolve(new Set(opts.knownAgents ?? [])),
+    resolveThreadPrimaryAgent: opts.resolveThreadPrimaryAgent ?? (() => Promise.resolve(null)),
+    proposeWorkPackage:
+      opts.proposeWorkPackage ??
+      (() =>
+        Promise.resolve({
+          packageId: 'pkg_stubbedstubbedstubbed',
+          packageSlug: 'work-package-pkg_stubbedstubbedstubbed',
+          coordinationTaskId: 'task_stub',
+        })),
   }
 }
 
@@ -306,6 +329,99 @@ describe('MCP connector listener', () => {
     const parsed = JSON.parse(text ?? '{}') as { thread_slug: string; brief: unknown }
     expect(parsed.thread_slug).toBe('no-such-thread')
     expect(parsed.brief).toBeNull()
+    await client.close()
+  })
+
+  it('lists propose_work_package alongside the other Phase 1 tools', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps(),
+    })
+    const client = await newClient(token, handle.port)
+    const tools = await client.listTools()
+    expect(tools.tools.map((t) => t.name)).toEqual(
+      expect.arrayContaining([
+        'liveness',
+        'contribute_to_thread',
+        'get_fleet_context',
+        'get_research_brief',
+        'propose_work_package',
+      ]),
+    )
+    await client.close()
+  })
+
+  it('propose_work_package (agent target) returns queued_for_review with package/coordination ids', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    let captured: { proposal: unknown; primaryAgent: string } | null = null
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps({
+        knownAgents: ['hobby'],
+        proposeWorkPackage: (args) => {
+          captured = args
+          return Promise.resolve({
+            packageId: 'pkg_abcdef0123456789abcdef01',
+            packageSlug: 'work-package-pkg_abcdef0123456789abcdef01',
+            coordinationTaskId: 'task_coordination_xyz',
+          })
+        },
+      }),
+    })
+    const client = await newClient(token, handle.port)
+    const result = await client.callTool({
+      name: 'propose_work_package',
+      arguments: {
+        title: 'Test proposal',
+        summary: 'A small test.',
+        proposed_steps: ['step 1', 'step 2'],
+        target: { agent: 'hobby' },
+      },
+    })
+    const text = textFromContent(result.content)
+    expect(text).not.toBeNull()
+    const out = JSON.parse(text ?? '{}') as {
+      status: string
+      package_id: string
+      coordination_task_id: string
+    }
+    expect(out.status).toBe('queued_for_review')
+    expect(out.package_id).toBe('pkg_abcdef0123456789abcdef01')
+    expect(out.coordination_task_id).toBe('task_coordination_xyz')
+    expect(captured).not.toBeNull()
+    await client.close()
+  })
+
+  it('propose_work_package (thread target) is rejected when the thread has no primary agent', async () => {
+    const audit = new ConnectorAuditEmitter({ home })
+    handle = await startConnectorListener({
+      home,
+      port: 0,
+      host: '127.0.0.1',
+      audit,
+      serverDeps: stubServerDeps({
+        resolveThreadPrimaryAgent: () => Promise.resolve(null),
+      }),
+    })
+    const client = await newClient(token, handle.port)
+    const result = await client.callTool({
+      name: 'propose_work_package',
+      arguments: {
+        title: 'Test proposal',
+        summary: 'A small test.',
+        proposed_steps: ['step 1'],
+        target: { thread: 'orphan-thread' },
+      },
+    })
+    expect(result.isError).toBe(true)
+    expect(textFromContent(result.content)).toMatch(/no primary agent/)
     await client.close()
   })
 

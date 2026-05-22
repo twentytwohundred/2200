@@ -105,6 +105,43 @@ export interface ConnectorSynthesisPrimaryMissingContext {
   expectedAgent: string | null
 }
 
+export interface ConnectorWorkPackageArrivedContext {
+  packageId: string
+  packageSlug: string
+  packagePath: string
+  primaryAgent: string
+  title: string
+  targetKind: 'thread' | 'agent'
+  targetName: string
+  coordinationTaskId: string | null
+}
+
+export interface ConnectorWorkPackagePlanReadyContext {
+  packageId: string
+  packageSlug: string
+  primaryAgent: string
+  coordinationTaskId: string
+}
+
+export interface ConnectorWorkPackageCoordinationFailedContext {
+  packageId: string
+  primaryAgent: string
+  coordinationTaskId: string
+  errorSummary: string
+}
+
+export interface ConnectorWorkPackageApprovedContext {
+  packageId: string
+  primaryAgent: string
+  followOnTaskIds: string[]
+}
+
+export interface ConnectorWorkPackageRejectedContext {
+  packageId: string
+  primaryAgent: string
+  reason: string | null
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -332,6 +369,105 @@ export class ConnectorAuditEmitter {
         ctx.expectedAgent === null
           ? `Thread \`${ctx.threadSlug}\` has no primary agent assigned; synthesis is paused until one is set.`
           : `Thread \`${ctx.threadSlug}\` primary agent \`${ctx.expectedAgent}\` is not running; synthesis is paused.`,
+      extras,
+    })
+  }
+
+  /**
+   * Emit when a `propose_work_package` call lands. Tier `important`:
+   * a proposal of real work has arrived and is awaiting a plan.
+   */
+  async emitWorkPackageArrived(ctx: ConnectorWorkPackageArrivedContext): Promise<void> {
+    const extras: Record<string, unknown> = {
+      package_id: ctx.packageId,
+      package_slug: ctx.packageSlug,
+      package_path: ctx.packagePath,
+      primary_agent: ctx.primaryAgent,
+      target_kind: ctx.targetKind,
+      target_name: ctx.targetName,
+    }
+    if (ctx.coordinationTaskId !== null) extras['coordination_task_id'] = ctx.coordinationTaskId
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'important',
+      kind: 'connector.work_package_arrived',
+      body: `Work package proposed: **${ctx.title}** (\`${ctx.packageId}\`). Primary agent: \`${ctx.primaryAgent}\`. Coordination task in flight; plan will surface as \`work_package_plan_ready\` once ready.`,
+      extras,
+    })
+  }
+
+  /**
+   * Emit when the coordination task finishes producing the plan and
+   * the package transitions to `reviewable`. Tier `important` so the
+   * operator sees a plan is awaiting their approval.
+   */
+  async emitWorkPackagePlanReady(ctx: ConnectorWorkPackagePlanReadyContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'important',
+      kind: 'connector.work_package_plan_ready',
+      body: `Work package \`${ctx.packageId}\` plan is reviewable. Approve with \`2200 connector work-package approve ${ctx.packageId}\` or reject with \`2200 connector work-package reject ${ctx.packageId} [--reason ...]\`.`,
+      extras: {
+        package_id: ctx.packageId,
+        package_slug: ctx.packageSlug,
+        primary_agent: ctx.primaryAgent,
+        coordination_task_id: ctx.coordinationTaskId,
+      },
+    })
+  }
+
+  /** Emit when the coordination task errors. Tier `normal`. */
+  async emitWorkPackageCoordinationFailed(
+    ctx: ConnectorWorkPackageCoordinationFailedContext,
+  ): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.work_package_coordination_failed',
+      body: `Coordination failed for work package \`${ctx.packageId}\` (agent \`${ctx.primaryAgent}\`): ${ctx.errorSummary}.`,
+      extras: {
+        package_id: ctx.packageId,
+        primary_agent: ctx.primaryAgent,
+        coordination_task_id: ctx.coordinationTaskId,
+        error_summary: ctx.errorSummary,
+      },
+    })
+  }
+
+  /** Emit when the operator approves a work package. Tier `normal`. */
+  async emitWorkPackageApproved(ctx: ConnectorWorkPackageApprovedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.work_package_approved',
+      body: `Work package \`${ctx.packageId}\` approved; ${String(ctx.followOnTaskIds.length)} follow-on task(s) submitted to \`${ctx.primaryAgent}\`.`,
+      extras: {
+        package_id: ctx.packageId,
+        primary_agent: ctx.primaryAgent,
+        follow_on_task_ids: ctx.followOnTaskIds,
+      },
+    })
+  }
+
+  /** Emit when the operator rejects a work package. Tier `normal`. */
+  async emitWorkPackageRejected(ctx: ConnectorWorkPackageRejectedContext): Promise<void> {
+    const extras: Record<string, unknown> = {
+      package_id: ctx.packageId,
+      primary_agent: ctx.primaryAgent,
+    }
+    if (ctx.reason !== null) extras['rejection_reason'] = ctx.reason
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.work_package_rejected',
+      body: ctx.reason
+        ? `Work package \`${ctx.packageId}\` rejected: ${ctx.reason}.`
+        : `Work package \`${ctx.packageId}\` rejected.`,
       extras,
     })
   }
