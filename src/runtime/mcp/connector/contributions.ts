@@ -113,6 +113,15 @@ export interface WriteAgentContributionArgs {
   payload: ContributionPayload
   /** Optional thread context for cross-reference in the note frontmatter / body. */
   threadContextSlug?: string
+  /**
+   * When set (PR-B3 embassy routing), the note lands in this embassy
+   * Agent's brain tagged `relationship-history` instead of the target
+   * Agent's private brain. The `agentName` is preserved as metadata
+   * (`target_agent` extras) so the operator + embassy can route /
+   * cross-reference. Embassy mode is the default after B3 when the
+   * caller authenticated via OAuth and a conduit is registered.
+   */
+  embassyAgent?: string
   /** Injected clock (tests). */
   now?: () => Date
 }
@@ -134,17 +143,32 @@ export async function writeAgentContribution(
   args: WriteAgentContributionArgs,
 ): Promise<WriteAgentContributionResult> {
   const now = args.now?.() ?? new Date()
-  const store = BrainStore.forAgent(args.home, args.agentName)
+  // Embassy routing (PR-B3): when an embassy is supplied, the note
+  // lands in the embassy's brain with a `relationship-history` tag
+  // instead of the target agent's private brain. The target agent
+  // is preserved as `target_agent` extras so search + routing can
+  // recover it. Legacy path (no embassy) writes to the target agent
+  // directly per the Phase 1 contract.
+  const targetAgent = args.embassyAgent ?? args.agentName
+  const store = BrainStore.forAgent(args.home, targetAgent)
   const body = renderContributionBody(args.payload, now)
   const slug = mintContributionSlug(now, body)
   const title = deriveContributionTitle(args.payload)
   const tags = ['grok-contribution']
+  if (args.embassyAgent !== undefined) tags.push('relationship-history')
   if (args.threadContextSlug !== undefined) tags.push(`thread:${args.threadContextSlug}`)
   const extras: Record<string, unknown> = {
     contributor: 'mcp-connector',
     received_at: now.toISOString(),
   }
   if (args.threadContextSlug !== undefined) extras['thread_context'] = args.threadContextSlug
+  if (args.embassyAgent !== undefined && args.agentName !== args.embassyAgent) {
+    // Preserve the original target so the embassy + operator know
+    // who Grok meant the contribution to reach. Routing decisions
+    // (forward to target's chat, surface in fleet roster, etc.) can
+    // read this without changing the on-disk layout.
+    extras['target_agent'] = args.agentName
+  }
   if (args.payload.related_threads && args.payload.related_threads.length > 0) {
     extras['related_threads'] = args.payload.related_threads
   }
@@ -172,6 +196,13 @@ export interface WriteThreadContributionArgs {
   /** Primary Agent (set on first write only). */
   primaryAgent?: string
   payload: ContributionPayload
+  /**
+   * When set (PR-B3 embassy routing), the thread anchor lands in
+   * this embassy Agent's brain instead of the shared brain. Legacy
+   * shared-brain writes only occur for callers without a registered
+   * conduit (transitional; the one-time migration absorbs those).
+   */
+  embassyAgent?: string
   /** Injected clock (tests). */
   now?: () => Date
 }
@@ -201,7 +232,15 @@ export async function writeThreadContribution(
   args: WriteThreadContributionArgs,
 ): Promise<WriteThreadContributionResult> {
   const now = args.now?.() ?? new Date()
-  const store = BrainStore.forShared(args.home)
+  // Embassy routing (PR-B3): land thread anchors in the embassy's
+  // brain when a conduit is registered for the caller. Legacy
+  // shared-brain writes are reserved for static-bearer / no-conduit
+  // callers — those notes get absorbed by the one-time migration
+  // when an embassy is first registered.
+  const store =
+    args.embassyAgent !== undefined
+      ? BrainStore.forAgent(args.home, args.embassyAgent)
+      : BrainStore.forShared(args.home)
   const slug = `research-${args.threadSlug}`
   const existing = await store.tryRead(slug)
   const created = existing === null
@@ -240,12 +279,14 @@ export async function writeThreadContribution(
     }
   }
 
+  const threadTags = ['research-thread']
+  if (args.embassyAgent !== undefined) threadTags.push('relationship-history')
   const result = await store.write({
     slug,
     title,
     body: newBody,
     type: 'research-thread',
-    tags: ['research-thread'],
+    tags: threadTags,
     extras,
     now: () => now,
   })

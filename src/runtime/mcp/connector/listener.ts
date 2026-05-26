@@ -156,7 +156,15 @@ export async function startConnectorListener(
     // Try OAuth access token first — disambiguated by prefix.
     if (presented !== null && isAccessTokenShape(presented)) {
       const result = await verifyOAuthBearer(args.home, presented)
-      if (result.ok) return // OAuth-authenticated; proceed to route
+      if (result.ok) {
+        // Stash the calling OAuth client_id on the request so per-
+        // request MCP server construction can route to the right
+        // embassy. Phase 1 / static-bearer callers leave this
+        // undefined; the connector tools fall back to legacy
+        // ownerless-note behavior in that case (transitional).
+        ;(req as FastifyRequest & { callingClientId?: string }).callingClientId = result.clientId
+        return // OAuth-authenticated; proceed to route
+      }
       await args.audit
         .emitAuthRejected({
           sourceIp: clientIp(req),
@@ -213,11 +221,14 @@ export async function startConnectorListener(
     // McpServer is JS-only (no I/O) so the per-request cost is small;
     // the alternative — shared server with multiple sessions — pulls
     // in session tracking that grok-connectors-manager doesn't honor.
+    const callingClientId =
+      (req as FastifyRequest & { callingClientId?: string }).callingClientId ?? null
     let perRequestHandle: ConnectorMcpServerHandle | null = null
     try {
       perRequestHandle = await createConnectorMcpServer({
         home: args.home,
         audit: args.audit,
+        callingClientId,
         ...args.serverDeps,
       })
       await perRequestHandle.transport.handleRequest(req.raw, reply.raw, req.body)
