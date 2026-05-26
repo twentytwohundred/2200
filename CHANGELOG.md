@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`propose_work_package` + `get_research_brief` route through the embassy (Phase 2 / PR-B3b).** Fast follow-up to PR-B3 part 1. The remaining two connector tools now respect embassy routing; reads search across the shared brain + every registered embassy so operator workflows (CLI approve, web Settings tile) work without the operator naming a specific embassy.
+  - **`writeProposedPackage`** gains an optional `embassyAgent` parameter. When set, the package note lands in the embassy's brain (tagged `relationship-history` + `work-package`) instead of the shared brain.
+  - **`Supervisor.proposeWorkPackage`** threads `callingClientId` through and calls `resolveCallingEmbassy` to pick the embassy. The MCP tool plumbs `callingClientId` from `ConnectorMcpServerDeps`.
+  - **`readWorkPackage` / `listWorkPackages` / `patchPackageFrontmatter`** search across the shared brain + every registered embassy brain; reads and lookups don't require operator-supplied embassy context. List aggregates with dedup by `package_id`.
+  - **`readBrief`** (the read side of `get_research_brief`) searches shared brain first, then every registered embassy. Briefs synthesised after B3 land in the embassy that owns the conduit.
+  - **`locatePackageStore`** helper centralizes the cross-store search pattern; same shape adopted in `readBrief` for briefs.
 - **`contribute_to_thread` routes through the embassy + one-time pre-embassy note migration (Phase 2 / PR-B3 part 1).** Connector contributions now land in the embassy's brain (tagged `relationship-history`) for OAuth-authenticated callers with a registered conduit. When the first conduit is registered, existing pre-embassy notes are migrated to the new embassy automatically (sentinel-tracked, idempotent).
   - **Routing helper** `resolveCallingEmbassy(home, callingClientId)` — single lookup surface from OAuth `client_id` → conduit → embassy. Returns null for static-bearer callers and unregistered clients; tools fall back to legacy ownerless-note behavior. Records `last_seen_at` on the conduit on every match.
   - **`contribute_to_thread` migrated**: both thread and agent targets route through the embassy when one is registered for the calling OAuth client. Thread anchors land in the embassy's brain (tagged `research-thread` + `relationship-history`); per-Agent contributions land in the embassy's brain too with `target_agent` preserved in extras for cross-reference.

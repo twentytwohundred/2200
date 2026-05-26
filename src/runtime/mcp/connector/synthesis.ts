@@ -101,7 +101,15 @@ export async function writeBrief(args: WriteBriefArgs): Promise<WriteBriefResult
   return { slug: result.slug, path: result.path, created }
 }
 
-/** Read the brief note for a thread. Returns null when no brief exists. */
+/**
+ * Read the brief note for a thread. Returns null when no brief exists.
+ *
+ * Searches shared brain first (legacy + pre-migration briefs) then
+ * each registered embassy's brain (PR-B3b: briefs now land in the
+ * embassy that owns the conduit). Embassy ownership is opaque to
+ * the read path — operators (and the get_research_brief tool) ask
+ * by thread slug, the right store wins.
+ */
 export async function readBrief(
   home: string,
   threadSlug: string,
@@ -110,14 +118,21 @@ export async function readBrief(
   provenance: BriefProvenance | null
   path: string
 } | null> {
-  const store = BrainStore.forShared(home)
-  const note = await store.tryRead(briefSlug(threadSlug))
-  if (note === null) return null
-  const provenance =
-    note.extras['brief_schema_version'] === BRIEF_SCHEMA_VERSION
-      ? (note.extras as unknown as BriefProvenance)
-      : null
-  return { body: note.body, provenance, path: note.path }
+  const slug = briefSlug(threadSlug)
+  const stores: BrainStore[] = [BrainStore.forShared(home)]
+  const { listConduits } = await import('./embassy/conduits.js')
+  const conduits = await listConduits(home).catch(() => [])
+  for (const c of conduits) stores.push(BrainStore.forAgent(home, c.embassy_agent))
+  for (const store of stores) {
+    const note = await store.tryRead(slug)
+    if (note === null) continue
+    const provenance =
+      note.extras['brief_schema_version'] === BRIEF_SCHEMA_VERSION
+        ? (note.extras as unknown as BriefProvenance)
+        : null
+    return { body: note.body, provenance, path: note.path }
+  }
+  return null
 }
 
 export interface ThreadSynthesisState {
