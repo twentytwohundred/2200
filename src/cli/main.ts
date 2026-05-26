@@ -36,6 +36,7 @@ runFreshnessCheck()
 import { Supervisor } from '../runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../runtime/control-plane/client.js'
 import { connectUds } from '../runtime/control-plane/uds-client.js'
+import { GROK_CONNECTOR_REDIRECT_URI } from '../runtime/mcp/connector/oauth/client-store.js'
 import type {
   CliScheduleAddParams,
   StateSnapshotResult,
@@ -3906,7 +3907,7 @@ export function buildProgram(): Command {
     .requiredOption('--display-name <name>', 'human-readable name for this client (e.g., "Grok")')
     .option(
       '--redirect-uri <uri>',
-      'redirect URI the client will use; repeat the flag for multiple. paste the URI grok.com/connectors shows you during connector setup',
+      `redirect URI the client will use; repeat the flag for multiple. defaults to the grok.com/connectors callback (${GROK_CONNECTOR_REDIRECT_URI}) discovered empirically 2026-05-23; override for other MCP clients`,
       (v: string, prev: string[]) => [...prev, v],
       [] as string[],
     )
@@ -3927,12 +3928,8 @@ export function buildProgram(): Command {
         mintSecret?: boolean
         scope: string[]
       }) => {
-        if (opts.redirectUri.length === 0) {
-          console.error(
-            'At least one --redirect-uri is required. Get it from grok.com/connectors → New Connector → Custom (the URI Grok shows you after entering the MCP server URL).',
-          )
-          process.exit(1)
-        }
+        const redirectUris =
+          opts.redirectUri.length === 0 ? [GROK_CONNECTOR_REDIRECT_URI] : opts.redirectUri
         const home = await resolveHomeFromOpts(program)
         const client = await connectToDaemon(home)
         if (!client) {
@@ -3942,7 +3939,7 @@ export function buildProgram(): Command {
         try {
           const params: Record<string, unknown> = {
             display_name: opts.displayName,
-            redirect_uris: opts.redirectUri,
+            redirect_uris: redirectUris,
           }
           if (opts.mintSecret === true) params['mint_secret'] = true
           if (opts.scope.length > 0) params['scopes_allowed'] = opts.scope

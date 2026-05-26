@@ -755,6 +755,70 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     },
   )
 
+  // OAuth client management (Phase 2 / PR-A2). The CLI verbs
+  // (`2200 connector oauth-client register | list | revoke |
+  // rotate-secret`) drive the same Supervisor methods; these HTTP
+  // routes back the web Settings UI's OAuth Clients sub-section.
+  // Loopback-only by the listener's bind; the public connector
+  // listener never serves them.
+  fastify.get('/api/v1/connector/oauth-clients', async () => {
+    // The supervisor method already returns camelCase shapes; pass
+    // through so the web client doesn't need a normalization pass.
+    // (The CLI hits the JsonRpcServer over UDS, which uses snake_case
+    // for protocol-level fields — separate surface, intentional.)
+    const items = await supervisor.listOAuthClients()
+    return { items }
+  })
+
+  fastify.post<{
+    Body: {
+      display_name: string
+      redirect_uris?: string[]
+      mint_secret?: boolean
+      scopes_allowed?: string[]
+    }
+  }>('/api/v1/connector/oauth-clients', async (req) => {
+    const { GROK_CONNECTOR_REDIRECT_URI } = await import('../mcp/connector/oauth/client-store.js')
+    const redirectUris =
+      Array.isArray(req.body.redirect_uris) && req.body.redirect_uris.length > 0
+        ? req.body.redirect_uris
+        : [GROK_CONNECTOR_REDIRECT_URI]
+    const result = await supervisor.registerOAuthClient({
+      displayName: req.body.display_name,
+      redirectUris: redirectUris,
+      ...(req.body.mint_secret === true ? { mintSecret: true } : {}),
+      ...(Array.isArray(req.body.scopes_allowed) && req.body.scopes_allowed.length > 0
+        ? { scopesAllowed: req.body.scopes_allowed }
+        : {}),
+    })
+    return result
+  })
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/connector/oauth-clients/:id/revoke',
+    async (req) => {
+      const { removedRefresh, removedAccess } = await supervisor.revokeOAuthClient(req.params.id)
+      return {
+        revoked: true as const,
+        removed_refresh: removedRefresh,
+        removed_access: removedAccess,
+      }
+    },
+  )
+
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/connector/oauth-clients/:id/rotate-secret',
+    async (req) => {
+      const { clientId, clientSecret } = await supervisor.rotateOAuthClientSecret(req.params.id)
+      return { client_id: clientId, client_secret: clientSecret }
+    },
+  )
+
+  fastify.get('/api/v1/connector/grok-redirect-uri', async () => {
+    const { GROK_CONNECTOR_REDIRECT_URI } = await import('../mcp/connector/oauth/client-store.js')
+    return { redirect_uri: GROK_CONNECTOR_REDIRECT_URI }
+  })
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,

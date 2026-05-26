@@ -366,4 +366,20 @@ describe('end-to-end OAuth flow', () => {
     expect(meta.code_challenge_methods_supported).toEqual(['S256'])
     expect(meta.scopes_supported).toEqual(['connector:full'])
   })
+
+  it('publishes /.well-known/oauth-protected-resource (RFC 9728)', async () => {
+    const baseUrl = await startListener()
+    const resp = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`)
+    expect(resp.status).toBe(200)
+    const meta = (await resp.json()) as {
+      resource: string
+      authorization_servers: string[]
+      bearer_methods_supported: string[]
+      scopes_supported: string[]
+    }
+    expect(meta.resource).toContain('/mcp')
+    expect(meta.authorization_servers).toHaveLength(1)
+    expect(meta.bearer_methods_supported).toEqual(['header'])
+    expect(meta.scopes_supported).toEqual(['connector:full'])
+  })
 })
