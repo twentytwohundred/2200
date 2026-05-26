@@ -1705,6 +1705,58 @@ export interface WorkPackageSummary {
   rejectionReason: string | null
 }
 
+export interface OAuthClientSummary {
+  clientId: string
+  displayName: string
+  redirectUris: string[]
+  hasSecret: boolean
+  scopesAllowed: string[]
+  registeredAt: string
+  lastAuthorizeAt: string | null
+  revokedAt: string | null
+}
+
+export interface OAuthClientRegisterRequest {
+  display_name: string
+  redirect_uris?: string[]
+  mint_secret?: boolean
+  scopes_allowed?: string[]
+}
+
+export interface OAuthClientRegisterResponse {
+  clientId: string
+  clientSecret: string | null
+  redirectUris: string[]
+  scopesAllowed: string[]
+  registeredAt: string
+}
+
+/**
+ * OAuth client management routes (Phase 2 PR-A2). Backs the Settings
+ * → MCP Connector → OAuth Clients sub-section. Same routes the CLI
+ * verbs `2200 connector oauth-client ...` hit via the daemon's
+ * loopback API.
+ */
+export const apiConnectorOAuthClients = {
+  list: () => request<{ items: OAuthClientSummary[] }>('/api/v1/connector/oauth-clients'),
+  register: (body: OAuthClientRegisterRequest) =>
+    request<OAuthClientRegisterResponse>('/api/v1/connector/oauth-clients', {
+      method: 'POST',
+      body,
+    }),
+  revoke: (clientId: string) =>
+    request<{ revoked: true; removed_refresh: number; removed_access: number }>(
+      `/api/v1/connector/oauth-clients/${encodeURIComponent(clientId)}/revoke`,
+      { method: 'POST', body: {} },
+    ),
+  rotateSecret: (clientId: string) =>
+    request<{ client_id: string; client_secret: string }>(
+      `/api/v1/connector/oauth-clients/${encodeURIComponent(clientId)}/rotate-secret`,
+      { method: 'POST', body: {} },
+    ),
+  grokRedirectUri: () => request<{ redirect_uri: string }>('/api/v1/connector/grok-redirect-uri'),
+}
+
 export const apiConnectorWorkPackages = {
   list: (status?: WorkPackageStatus) =>
     request<{ items: WorkPackageSummary[] }>(

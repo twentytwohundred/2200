@@ -1,0 +1,296 @@
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 8px;
+  background: var(--ds-surface);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title {
+  font-family: var(--ds-font-display, var(--ds-font-sans));
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.muted {
+  font-size: 13px;
+  color: var(--ds-text-dim);
+  margin: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.02));
+}
+
+.cardRevoked {
+  opacity: 0.6;
+}
+
+.cardHead {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cardTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cardTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.revokedPill {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  background: rgba(176, 0, 32, 0.12);
+  color: var(--ds-danger, #b00020);
+}
+
+.clientId {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--ds-text-dim);
+}
+
+.cardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--ds-text-dim);
+}
+
+.formBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.03));
+}
+
+.formTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.formRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ds-text-dim);
+  font-weight: 600;
+}
+
+.checkboxLabel {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--ds-text);
+}
+
+.input {
+  font-family: var(--ds-font-sans);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 4px;
+  background: var(--ds-surface);
+  color: var(--ds-text);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--ds-text-dim);
+  line-height: 1.4;
+}
+
+.resultBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface, rgba(0, 0, 0, 0.04));
+}
+
+.copyRow {
+  display: grid;
+  grid-template-columns: 180px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px dashed var(--ds-border-strong);
+}
+
+.copyRow:first-of-type {
+  border-top: none;
+}
+
+.copyLabel {
+  font-size: 12px;
+  color: var(--ds-text-dim);
+}
+
+.copyValue {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--ds-text);
+  word-break: break-all;
+  user-select: text;
+}
+
+.sensitive {
+  background: rgba(176, 124, 0, 0.08);
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.copyButton {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--ds-border-strong);
+  background: transparent;
+  color: var(--ds-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  background: var(--ds-surface-alt, rgba(0, 0, 0, 0.05));
+}
+
+.confirmBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 6px;
+  background: var(--ds-surface, rgba(0, 0, 0, 0.04));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.errorBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--ds-danger, #b00020);
+  border-radius: 6px;
+  background: rgba(176, 0, 32, 0.06);
+  font-size: 13px;
+  color: var(--ds-text);
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primaryButton {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-accent);
+  background: var(--ds-accent);
+  color: var(--ds-bg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondaryButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-border-strong);
+  background: transparent;
+  color: var(--ds-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tertiaryButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tertiaryButton:hover {
+  color: var(--ds-text);
+}
+
+.dangerButton {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ds-danger, #b00020);
+  background: var(--ds-danger, #b00020);
+  color: var(--ds-bg);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dangerButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

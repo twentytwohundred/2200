@@ -78,6 +78,19 @@ export function mountOAuthServer(
     scopes_supported: [SUPPORTED_SCOPE],
   }))
 
+  // RFC 9728 protected-resource metadata. grok-connectors-manager
+  // probes this on every connect; we 401'd it in PR-A1 (defaulted by
+  // the bearer preHandler). Publishing the metadata is cheap spec
+  // compliance and unblocks clients that hard-require it. Also
+  // public — same posture as the AS metadata; the document itself
+  // contains no secrets.
+  fastify.get('/.well-known/oauth-protected-resource', () => ({
+    resource: `${deps.issuerBaseUrl()}/mcp`,
+    authorization_servers: [deps.issuerBaseUrl()],
+    bearer_methods_supported: ['header'],
+    scopes_supported: [SUPPORTED_SCOPE],
+  }))
+
   fastify.get<{
     Querystring: {
       response_type?: string

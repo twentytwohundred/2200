@@ -131,7 +131,7 @@ export async function startConnectorListener(
   })
 
   // Mount the OAuth Authorization Server endpoints (Phase 2 PR-A1).
-  // These live on `/oauth/*` + `/.well-known/oauth-authorization-server`
+  // These live on `/oauth/*` + `/.well-known/oauth-authorization-server` + `/.well-known/oauth-protected-resource`
   // and are PUBLIC (the AS itself is the auth gate; protecting it with
   // bearer auth would chicken-and-egg the OAuth flow).
   mountOAuthServer(fastify, {
@@ -301,6 +301,7 @@ function isPublicAuthRoute(url: string): boolean {
   const path = url.split('?')[0] ?? url
   if (path.startsWith('/oauth/')) return true
   if (path === '/.well-known/oauth-authorization-server') return true
+  if (path === '/.well-known/oauth-protected-resource') return true
   return false
 }
 

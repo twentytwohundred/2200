@@ -56,6 +56,19 @@ const CLIENT_SECRET_BYTES = 32 // 43 base64url chars
 const SCRYPT_SALT_BYTES = 16
 const SCRYPT_KEYLEN = 32
 
+/**
+ * Canonical redirect URI grok.com/connectors uses for the Custom
+ * Connector flow. Discovered empirically 2026-05-23 by registering a
+ * connector and reading the redirect_uri query parameter off the
+ * /authorize request. Not documented anywhere in xAI's public docs;
+ * this constant is the fleet's source of truth.
+ *
+ * Other consumer-side MCP clients (Claude Desktop, ChatGPT MCP) use
+ * different callback URLs; operators override via `--redirect-uri`
+ * or the equivalent web form field.
+ */
+export const GROK_CONNECTOR_REDIRECT_URI = 'https://grok.com/connectors-oauth-exchange-code/'
+
 const ClientRecordSchema = z.object({
   schema_version: z.literal(1),
   client_id: z.string().min(1),
