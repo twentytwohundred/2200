@@ -4058,6 +4058,59 @@ export function buildProgram(): Command {
       }
     })
 
+  const connectorMcpShelf = connectorMcp
+    .command('shelf')
+    .description('approve or reject pending shelf placements (sensitivity=private items)')
+
+  connectorMcpShelf
+    .command('approve <approval-token>')
+    .description(
+      'approve a pending shelf placement: writes the item to the embassy with source_type=human_curated',
+    )
+    .option(
+      '--operator-name <name>',
+      'name to record as the curator on the resulting shelf item (defaults to "operator")',
+    )
+    .action(async (approvalToken: string, opts: { operatorName?: string }) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Shelf approve requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const params: Record<string, unknown> = { approval_token: approvalToken }
+        if (opts.operatorName !== undefined) params['operator_name'] = opts.operatorName
+        const result = await client.call(
+          'cli.connector.mcp.shelf.approve',
+          params as Parameters<typeof client.call>[1] & { approval_token: string },
+        )
+        console.log(
+          `Approved. Shelf item ${result.shelf_item_id} written to embassy ${result.embassy_agent}.`,
+        )
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorMcpShelf
+    .command('reject <approval-token>')
+    .description('reject a pending shelf placement; the request is deleted with no shelf write')
+    .action(async (approvalToken: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Shelf reject requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.connector.mcp.shelf.reject', { approval_token: approvalToken })
+        console.log(`Approval ${approvalToken} rejected.`)
+      } finally {
+        await client.close()
+      }
+    })
+
   const connectorOauthClient = connector
     .command('oauth-client')
     .description(

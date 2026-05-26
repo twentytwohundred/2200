@@ -54,7 +54,7 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 43 tools (42 prior + restart_self)', () => {
+  it('exports exactly 52 tools (43 prior + 9 embassy shelf tools)', () => {
     // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
     // 38 with `credential_has`, 39 with `http_request`. 2026-05-16
     // bumped to 40 with `whatsapp_send` and 41 with `discord_send`
@@ -67,10 +67,17 @@ describe('baseline tool registry', () => {
     // (no cross-Agent target; cross-Agent restart goes through the
     // operator). Field-driven by Jodin's 2026-05-18 stuck-asking-
     // operator-to-restart loop.
-    expect(BASELINE_TOOL_NAMES).toHaveLength(43)
+    // 2026-05-26 PR-B2: bumped to 52 with the nine embassy-internal
+    // shelf tools (shelf_place, shelf_resolve, shelf_reopen,
+    // shelf_reprioritize, shelf_remove, shelf_list_mine, shelf_read,
+    // shelf_curate_from_inbox, shelf_request_human_placement). These
+    // are registered in the global baseline so the dispatcher can
+    // resolve them, but the identity-level `tools:` allowlist
+    // restricts actual call permission to embassy Agents.
+    expect(BASELINE_TOOL_NAMES).toHaveLength(52)
   })
 
-  it('baselineServers() builds seventeen servers (adds restart)', () => {
+  it('baselineServers() builds eighteen servers (adds shelf)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -84,6 +91,7 @@ describe('baseline tool registry', () => {
       'pub',
       'restart',
       'schedule',
+      'shelf',
       'shell',
       'system',
       'task',

@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Embassy shelf data model + nine internal tools + sensitivity gate (Phase 2 / PR-B2).** Second slice of the embassy/shelf arc. Lays the shelf substrate; the connector tools migrate through it in B3; remote-model surfacing in `get_fleet_context` lands in B4.
+  - **Shelf data model** per spec section 5 verbatim. Items live at `agents/<embassy>/brain/shelf/<shelf-item-id>.md`, frontmatter-typed (Zod-validated) with full provenance (`source.client_id` for `self_reflected` detection, `provenance.ingested_at` / `_by` / `chain`). `shelf_item_id` is `shelf_<24 base32>`. Item types are `question`, `context`, `research_request`, `synthesis_prompt`, `agenda`; one-shot vs standing collection semantics per spec section 6.
+  - **Nine internal tools** (spec section 8 + the `shelf_read` Grok approved in the final pass), all under the `shelf_` namespace per the runtime's `<namespace>_<verb>` convention. Spec → runtime mapping documented inline:
+    - `shelf_place` (spec: `place_on_shelf`) — writes a `pending` item.
+    - `shelf_resolve` (spec: `resolve_shelf_item`) — forces `collected`.
+    - `shelf_reopen` (spec: `reopen_shelf_item`) — `collected` → `pending`.
+    - `shelf_reprioritize` (spec: `reprioritize_shelf_item`).
+    - `shelf_remove` (spec: `remove_from_shelf`) — deletes the file.
+    - `shelf_list_mine` (spec: `list_my_shelf`) — full bodies; embassy-internal, distinct from the bounded preview that lands in B4.
+    - `shelf_read` (new) — single-item full body + frontmatter; embassy-internal pull path.
+    - `shelf_curate_from_inbox` (spec: `curate_from_inbox`) — moves operator-curated items to the shelf with `source_type: human_curated`.
+    - `shelf_request_human_placement` (spec: `request_human_shelf_placement`) — only path for items needing operator approval.
+  - **Sensitivity gate (locked 2026-05-26)**. `shelf_place` rejects `sensitivity: 'private'` at the Zod schema layer (the enum is restricted to `'none'`); `shelf_request_human_placement` is the only path. Operator approval via `2200 connector mcp shelf approve <token>` writes the item with `source_type: human_curated` and the operator's name as curator — the human approval IS the desensitization.
+  - **Rate limiting (locked 2026-05-26)**. In-memory rolling 60-second window per embassy. System defaults 20/min soft (audit-only) + 100/min hard (rejects with `ToolDeniedError` reason `placement_rate_exceeded`). Per-embassy overrides on the conduit record's optional `rate_limits` block. Resets on Agent restart.
+  - **Five audit event types**: `connector.embassy_shelf_item_placed` (passive, fires on every successful write including post-approval), `_item_resolved` (passive, manual + auto), `_human_approval_requested` (normal, the operator-actionable event), `_item_read` (passive, embassy reads its own shelf), `_rate_threshold` / `_rate_exceeded` (normal / important, burst guard).
+  - **CLI verbs**: `2200 connector mcp shelf approve <token> [--operator-name <name>]` and `2200 connector mcp shelf reject <token>` for the human-approval flow.
+  - **Dedicated-embassy registration** now defaults `tools:` to include all nine shelf tools so the embassy can actually use the shelf out of the box; attached mode preserves existing tools (operators add explicitly).
+  - **Spec→runtime "collected" rule** (per Grok's 2026-05-26 wording): an item is considered collected only when the remote model has received the full (or sufficient) body during the same inbound call session, not when it has only seen a preview. The `applyCollectionTransition` helper enforces type-driven rules: one-shot types → `collected`, standing types stay `pending` after the model pulls.
 - **Embassy substrate + conduits registry (Phase 2 / PR-B1).** First slice of the locked embassy/shelf arc (spec: `wiki/inbox/grok/2026-05-23-embassy-shelf-handoff.md`). Lays the substrate; subsequent PRs in the arc layer on top.
   - **`embassy` block on the identity frontmatter** marks an Agent as currently acting as a fleet embassy for an external MCP-speaking model. Records `external_model`, `client_id` (the OAuth client this embassy serves), `mode` (`dedicated` or `attached`), `registered_at`. Optional + additive; existing identity files parse cleanly.
   - **Conduits registry** at `<home>/state/connector/conduits/<client_id>.json`, keyed by OAuth `client_id` per the 2026-05-26 locked decision. The access token at `/mcp` already carries `client_id`, so subsequent PRs route to the right embassy without an extra lookup. Operator-visible projection regenerates at `<shared>/brain/conduits.md` (same pattern as `<home>/state/fleet.md` — rebuildable mirror, never edit by hand).

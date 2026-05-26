@@ -12,6 +12,7 @@ import { stringify as yamlStringify } from 'yaml'
 import { loadIdentity, writeIdentity } from '../../../identity/loader.js'
 import type { IdentityFrontmatter } from '../../../identity/types.js'
 import { agentPaths } from '../../../storage/layout.js'
+import { SHELF_TOOL_NAMES } from '../../../tools/baseline/shelf.js'
 import type { ConduitRecord, EmbassyIdentityBlock } from './types.js'
 import {
   renderEmbassyIdentityBody,
@@ -77,12 +78,16 @@ export async function buildDedicatedSourceIdentity(
   const body = renderEmbassyIdentityBody(renderArgs)
   const ap = agentPaths(args.home, args.agentName)
   const today = args.created ?? args.registeredAt.slice(0, 10)
+  // Dedicated embassies get the shelf tool surface by default (PR-B2).
+  // Attached mode keeps the existing tools; operators add shelf tools
+  // explicitly if they want the attached Agent to also do shelf work.
+  const defaultEmbassyTools = [...SHELF_TOOL_NAMES] as IdentityFrontmatter['tools']
   const frontmatter: Partial<IdentityFrontmatter> = {
     schema_version: 5,
     agent_name: args.agentName,
     agent_role: `Embassy for ${displayName}`,
     model: args.model,
-    tools: args.tools ?? [],
+    tools: args.tools ?? defaultEmbassyTools,
     project_dir: ap.project,
     brain_dir: ap.brain,
     created: today,

@@ -18,6 +18,27 @@ export const ExternalModelSchema = z.string().min(1).max(64)
 export type ExternalModel = z.infer<typeof ExternalModelSchema>
 
 /**
+ * Per-embassy rate-limit override (PR-B2). When unset on the
+ * conduit, the system defaults apply (see `DEFAULT_SHELF_RATE_LIMITS`
+ * in `shelf/rate-limit.ts`). Both thresholds count placement calls
+ * per rolling 60-second window per embassy.
+ *
+ *   `soft_per_minute` — exceeding fires `connector.embassy_shelf_rate_threshold`
+ *                       (audit-only; placements still succeed)
+ *   `hard_per_minute` — exceeding rejects placement with
+ *                       ToolDeniedError reason `placement_rate_exceeded`
+ *                       and fires `connector.embassy_shelf_rate_exceeded`
+ *
+ * Configurable per-embassy per the 2026-05-26 locked decision; v1
+ * defaults match what the spec called "lightweight, logging-first."
+ */
+export const ConduitRateLimitsSchema = z.object({
+  soft_per_minute: z.number().int().min(1),
+  hard_per_minute: z.number().int().min(1),
+})
+export type ConduitRateLimits = z.infer<typeof ConduitRateLimitsSchema>
+
+/**
  * Conduit record. One per registered embassy/external-model
  * binding. On disk at
  *   `<home>/state/connector/conduits/<client_id>.json`
@@ -42,6 +63,13 @@ export const ConduitRecordSchema = z.object({
   last_seen_at: z.string().nullable(),
   /** When non-null, the conduit is retired and no longer routes traffic. */
   retired_at: z.string().nullable(),
+  /**
+   * Per-embassy shelf-placement rate-limit override (PR-B2). When
+   * null (or absent on legacy records), `DEFAULT_SHELF_RATE_LIMITS`
+   * applies. Configurable to let operators tighten or loosen the
+   * limit per relationship.
+   */
+  rate_limits: ConduitRateLimitsSchema.nullable().optional(),
 })
 export type ConduitRecord = z.infer<typeof ConduitRecordSchema>
 
