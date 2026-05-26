@@ -3893,6 +3893,171 @@ export function buildProgram(): Command {
       }
     })
 
+  const connectorMcp = connector
+    .command('mcp')
+    .description(
+      'manage MCP conduits (embassies that own the relationship with a remote MCP-speaking model)',
+    )
+
+  connectorMcp
+    .command('register')
+    .description(
+      'register a new MCP conduit: bind an existing OAuth client to an Agent (dedicated or attached) and write the conduit registry entry',
+    )
+    .requiredOption(
+      '--client-id <id>',
+      'OAuth client_id from `2200 connector oauth-client register` (the conduits registry primary key)',
+    )
+    .requiredOption(
+      '--external-model <name>',
+      'identifier for the external model (e.g., `grok`, `claude`, `chatgpt`)',
+    )
+    .requiredOption(
+      '--embassy-agent <name>',
+      'Agent name. With --mode dedicated, a fresh Agent is created with this name. With --mode attached, this Agent must already exist.',
+    )
+    .requiredOption('--mode <mode>', 'dedicated | attached')
+    .requiredOption(
+      '--display-name <name>',
+      'human-readable name for the conduit (e.g., "Grok (Doug\'s subscription)")',
+    )
+    .option(
+      '--model-tier <tier>',
+      'model tier for dedicated mode (frontier | fast | economy | specialist)',
+    )
+    .option('--model-provider <provider>', 'model provider for dedicated mode')
+    .option('--model-id <id>', 'model id for dedicated mode (e.g., grok-4)')
+    .option(
+      '--tool <name>',
+      'tool to add to the embassy Agent (repeat for multiple); defaults to empty in PR-B1',
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
+    .action(
+      async (opts: {
+        clientId: string
+        externalModel: string
+        embassyAgent: string
+        mode: string
+        displayName: string
+        modelTier?: string
+        modelProvider?: string
+        modelId?: string
+        tool: string[]
+      }) => {
+        if (opts.mode !== 'dedicated' && opts.mode !== 'attached') {
+          console.error("Mode must be 'dedicated' or 'attached'.")
+          process.exit(1)
+        }
+        const home = await resolveHomeFromOpts(program)
+        const client = await connectToDaemon(home)
+        if (!client) {
+          console.error('Embassy registration requires a running daemon.')
+          process.exit(1)
+        }
+        try {
+          const params: Record<string, unknown> = {
+            client_id: opts.clientId,
+            external_model: opts.externalModel,
+            embassy_agent: opts.embassyAgent,
+            mode: opts.mode,
+            display_name: opts.displayName,
+          }
+          if (opts.mode === 'dedicated') {
+            if (
+              opts.modelTier === undefined ||
+              opts.modelProvider === undefined ||
+              opts.modelId === undefined
+            ) {
+              console.error(
+                'Dedicated mode requires --model-tier, --model-provider, and --model-id.',
+              )
+              process.exit(1)
+            }
+            params['model'] = {
+              tier: opts.modelTier,
+              provider: opts.modelProvider,
+              model_id: opts.modelId,
+            }
+          }
+          if (opts.tool.length > 0) params['tools'] = opts.tool
+          const result = await client.call(
+            'cli.connector.mcp.register',
+            params as Parameters<typeof client.call>[1] & {
+              client_id: string
+              external_model: string
+              embassy_agent: string
+              mode: 'dedicated' | 'attached'
+              display_name: string
+            },
+          )
+          console.log(`Embassy registered for client_id ${result.client_id}.`)
+          console.log(`  Embassy agent: ${result.embassy_agent} (${result.mode})`)
+          if (result.agent_created) console.log('  Agent record created.')
+          console.log(`  Registered at: ${result.registered_at}`)
+          console.log('')
+          console.log(
+            'Operator-visible index regenerated at <shared>/brain/conduits.md. The embassy is wired but does not yet own the connector tool surfaces; those migrate in PR-B3.',
+          )
+        } finally {
+          await client.close()
+        }
+      },
+    )
+
+  connectorMcp
+    .command('list')
+    .description('list registered MCP conduits (embassies)')
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Embassy list requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        const result = await client.call('cli.connector.mcp.list', {})
+        if (result.items.length === 0) {
+          console.log('No conduits registered.')
+          return
+        }
+        for (const c of result.items) {
+          const flags: string[] = []
+          if (c.retired_at !== null) flags.push('RETIRED')
+          console.log(
+            `${c.client_id}  →  ${c.external_model} · ${c.embassy_agent} (${c.mode})  ${flags.join(' ')}`,
+          )
+          console.log(`  display:        ${c.display_name}`)
+          console.log(`  registered:     ${c.registered_at}`)
+          console.log(`  last_seen:      ${c.last_seen_at ?? '(never)'}`)
+          if (c.retired_at !== null) console.log(`  retired_at:     ${c.retired_at}`)
+          console.log('')
+        }
+      } finally {
+        await client.close()
+      }
+    })
+
+  connectorMcp
+    .command('retire <client-id>')
+    .description(
+      'retire a conduit; the conduit record stays for audit but the listener stops routing through it. Does NOT delete the OAuth client or the embassy Agent.',
+    )
+    .action(async (clientId: string) => {
+      const home = await resolveHomeFromOpts(program)
+      const client = await connectToDaemon(home)
+      if (!client) {
+        console.error('Embassy retire requires a running daemon.')
+        process.exit(1)
+      }
+      try {
+        await client.call('cli.connector.mcp.retire', { client_id: clientId })
+        console.log(`Conduit ${clientId} retired.`)
+      } finally {
+        await client.close()
+      }
+    })
+
   const connectorOauthClient = connector
     .command('oauth-client')
     .description(

@@ -34,7 +34,7 @@ import {
 import { isLockHeld } from './process-lock.js'
 import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
-import type { AgentPubBlock } from '../identity/types.js'
+import type { AgentPubBlock, IdentityFrontmatter } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
 import { initHome, initAgentDirs, initPubDirs } from '../storage/init.js'
 import { createLogger, type Logger } from '../util/logger.js'
@@ -96,6 +96,20 @@ import {
   rotateClientSecret as rotateOAuthClientSecret,
 } from '../mcp/connector/oauth/client-store.js'
 import { revokeClientTokens as revokeOAuthClientTokens } from '../mcp/connector/oauth/token-store.js'
+import {
+  listConduits,
+  markRetired as markConduitRetired,
+  readConduit,
+  regenerateConduitsIndex,
+  writeConduit,
+} from '../mcp/connector/embassy/conduits.js'
+import {
+  buildConduitRecord,
+  buildDedicatedSourceIdentity,
+  initEmbassyBrainDirs,
+  patchIdentityWithEmbassyBlock,
+} from '../mcp/connector/embassy/registration.js'
+import type { ConduitRecord } from '../mcp/connector/embassy/types.js'
 import { PulseWatcher } from '../agent/pulse/watcher.js'
 import { OnboardingSessionStore } from '../onboarding/session-store.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
@@ -1604,6 +1618,140 @@ export class Supervisor {
   }> {
     const fresh = await rotateOAuthClientSecret(this.state.home, clientId)
     return { clientId, clientSecret: fresh }
+  }
+
+  /**
+   * Register an embassy: bind an existing OAuth client to an Agent
+   * (dedicated or attached) and write the conduit registry entry.
+   *
+   * Locked decisions (2026-05-26): the conduits registry is keyed
+   * by the OAuth client_id; the embassy spec is additive to the
+   * connector data model from the 2026-05-22 handoff.
+   *
+   * Dedicated mode creates a fresh Agent via `createAgent` with an
+   * identity body rendered from the embassy template + frontmatter
+   * carrying the embassy marker block. Attached mode patches an
+   * existing Agent's canonical identity to add the marker block.
+   *
+   * Both modes:
+   *   - Validate the OAuth client_id exists + is not revoked.
+   *   - Refuse if the client_id already has a registered conduit.
+   *   - Write a ConduitRecord under
+   *     `<home>/state/connector/conduits/<client_id>.json`.
+   *   - Initialize the embassy's brain subdirs (shelf/, etc.).
+   *   - Regenerate the `<shared>/brain/conduits.md` operator index.
+   *
+   * Audit events for embassy lifecycle land in PR-B6.
+   */
+  async registerEmbassy(args: {
+    clientId: string
+    externalModel: string
+    embassyAgent: string
+    mode: 'dedicated' | 'attached'
+    displayName: string
+    registeredBy: string
+    /** Required for `dedicated` mode; ignored for `attached`. */
+    model?: IdentityFrontmatter['model']
+    /** Optional for `dedicated` mode (defaults to empty tool set). */
+    tools?: IdentityFrontmatter['tools']
+  }): Promise<{ conduit: ConduitRecord; agentCreated: boolean }> {
+    const client = await readOAuthClient(this.state.home, args.clientId)
+    if (client === null) {
+      throw new Error(
+        `no OAuth client registered with client_id "${args.clientId}"; register one first via '2200 connector oauth-client register' (or Settings → OAuth clients)`,
+      )
+    }
+    if (client.revoked_at !== null) {
+      throw new Error(
+        `OAuth client "${args.clientId}" is revoked; register a fresh client before registering an embassy for it`,
+      )
+    }
+    const existingConduit = await readConduit(this.state.home, args.clientId)
+    if (existingConduit !== null && existingConduit.retired_at === null) {
+      throw new Error(
+        `client_id "${args.clientId}" already has a registered conduit (embassy: ${existingConduit.embassy_agent}). Retire it first before re-registering.`,
+      )
+    }
+
+    const now = new Date()
+    const registeredAt = now.toISOString()
+    let agentCreated = false
+
+    if (args.mode === 'dedicated') {
+      if (this.state.agents[args.embassyAgent] !== undefined) {
+        throw new Error(
+          `cannot register dedicated embassy: Agent "${args.embassyAgent}" already exists. Either pick a different name or use --mode attached.`,
+        )
+      }
+      if (args.model === undefined) {
+        throw new Error('dedicated mode requires a model binding (provider + model_id + tier)')
+      }
+      const sourcePath = await buildDedicatedSourceIdentity({
+        home: this.state.home,
+        agentName: args.embassyAgent,
+        externalModel: args.externalModel,
+        clientId: args.clientId,
+        registeredAt,
+        model: args.model,
+        ...(args.tools !== undefined ? { tools: args.tools } : {}),
+      })
+      await this.createAgent(args.embassyAgent, sourcePath)
+      agentCreated = true
+    } else {
+      if (this.state.agents[args.embassyAgent] === undefined) {
+        throw new Error(
+          `cannot attach embassy role to non-existent Agent "${args.embassyAgent}". Either pick an existing Agent or use --mode dedicated.`,
+        )
+      }
+      const ap = agentPaths(this.state.home, args.embassyAgent).identity
+      await patchIdentityWithEmbassyBlock(ap, {
+        external_model: args.externalModel,
+        client_id: args.clientId,
+        mode: 'attached',
+        registered_at: registeredAt,
+      })
+    }
+
+    // Initialize embassy-specific brain subdirs (spec section 4).
+    await initEmbassyBrainDirs(this.state.home, args.embassyAgent)
+
+    const conduit = buildConduitRecord({
+      clientId: args.clientId,
+      externalModel: args.externalModel,
+      embassyAgent: args.embassyAgent,
+      mode: args.mode,
+      displayName: args.displayName,
+      registeredAt,
+      registeredBy: args.registeredBy,
+    })
+    await writeConduit(this.state.home, conduit)
+    await regenerateConduitsIndex(this.state.home)
+
+    this.log.info('embassy registered', {
+      client_id: args.clientId,
+      embassy_agent: args.embassyAgent,
+      external_model: args.externalModel,
+      mode: args.mode,
+    })
+
+    return { conduit, agentCreated }
+  }
+
+  async listConduits(): Promise<ConduitRecord[]> {
+    return listConduits(this.state.home)
+  }
+
+  /** Retire a conduit. The Agent record stays (might be a dedicated embassy with valuable history); the conduit no longer routes traffic. */
+  async retireConduit(clientId: string): Promise<void> {
+    const existing = await readConduit(this.state.home, clientId)
+    if (existing === null) throw new Error(`unknown conduit client_id "${clientId}"`)
+    if (existing.retired_at !== null) return // idempotent
+    await markConduitRetired(this.state.home, clientId, new Date())
+    await regenerateConduitsIndex(this.state.home)
+    this.log.info('embassy retired', {
+      client_id: clientId,
+      embassy_agent: existing.embassy_agent,
+    })
   }
 
   /**
@@ -3159,6 +3307,48 @@ export class Supervisor {
       'cli.connector.oauth-client.rotate-secret': async (params) => {
         const { clientId, clientSecret } = await this.rotateOAuthClientSecret(params.client_id)
         return { client_id: clientId, client_secret: clientSecret }
+      },
+      'cli.connector.mcp.register': async (params) => {
+        const result = await this.registerEmbassy({
+          clientId: params.client_id,
+          externalModel: params.external_model,
+          embassyAgent: params.embassy_agent,
+          mode: params.mode,
+          displayName: params.display_name,
+          registeredBy: 'cli',
+          ...(params.model !== undefined
+            ? {
+                model: params.model as IdentityFrontmatter['model'],
+              }
+            : {}),
+          ...(params.tools !== undefined ? { tools: params.tools } : {}),
+        })
+        return {
+          client_id: result.conduit.client_id,
+          embassy_agent: result.conduit.embassy_agent,
+          mode: result.conduit.mode,
+          agent_created: result.agentCreated,
+          registered_at: result.conduit.registered_at,
+        }
+      },
+      'cli.connector.mcp.list': async () => {
+        const items = await this.listConduits()
+        return {
+          items: items.map((c) => ({
+            client_id: c.client_id,
+            external_model: c.external_model,
+            embassy_agent: c.embassy_agent,
+            mode: c.mode,
+            display_name: c.display_name,
+            registered_at: c.registered_at,
+            last_seen_at: c.last_seen_at,
+            retired_at: c.retired_at,
+          })),
+        }
+      },
+      'cli.connector.mcp.retire': async (params) => {
+        await this.retireConduit(params.client_id)
+        return { retired: true as const }
       },
     }
   }

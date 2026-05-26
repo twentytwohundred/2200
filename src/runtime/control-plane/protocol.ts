@@ -833,6 +833,60 @@ export type CliConnectorOAuthClientRotateSecretResult = z.infer<
   typeof CliConnectorOAuthClientRotateSecretResultSchema
 >
 
+// Embassy / MCP conduit management (Phase 2 / PR-B1)
+
+export const CliConnectorMcpRegisterParamsSchema = z.object({
+  client_id: z.string().min(1),
+  external_model: z.string().min(1),
+  embassy_agent: z.string().min(1),
+  mode: z.enum(['dedicated', 'attached']),
+  display_name: z.string().min(1),
+  /** Required for dedicated; ignored for attached. */
+  model: z
+    .object({
+      tier: z.string().min(1),
+      provider: z.string().min(1),
+      model_id: z.string().min(1),
+    })
+    .optional(),
+  tools: z.array(z.string().min(1)).optional(),
+})
+export type CliConnectorMcpRegisterParams = z.infer<typeof CliConnectorMcpRegisterParamsSchema>
+
+export const CliConnectorMcpRegisterResultSchema = z.object({
+  client_id: z.string(),
+  embassy_agent: z.string(),
+  mode: z.enum(['dedicated', 'attached']),
+  agent_created: z.boolean(),
+  registered_at: z.string(),
+})
+export type CliConnectorMcpRegisterResult = z.infer<typeof CliConnectorMcpRegisterResultSchema>
+
+export const CliConnectorMcpListParamsSchema = z.object({})
+export const CliConnectorMcpListResultSchema = z.object({
+  items: z.array(
+    z.object({
+      client_id: z.string(),
+      external_model: z.string(),
+      embassy_agent: z.string(),
+      mode: z.enum(['dedicated', 'attached']),
+      display_name: z.string(),
+      registered_at: z.string(),
+      last_seen_at: z.string().nullable(),
+      retired_at: z.string().nullable(),
+    }),
+  ),
+})
+export type CliConnectorMcpListResult = z.infer<typeof CliConnectorMcpListResultSchema>
+
+export const CliConnectorMcpRetireParamsSchema = z.object({
+  client_id: z.string().min(1),
+})
+export const CliConnectorMcpRetireResultSchema = z.object({
+  retired: z.literal(true),
+})
+export type CliConnectorMcpRetireResult = z.infer<typeof CliConnectorMcpRetireResultSchema>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -991,6 +1045,18 @@ export const METHODS = {
   'cli.connector.oauth-client.rotate-secret': {
     params: CliConnectorOAuthClientRotateSecretParamsSchema,
     result: CliConnectorOAuthClientRotateSecretResultSchema,
+  },
+  'cli.connector.mcp.register': {
+    params: CliConnectorMcpRegisterParamsSchema,
+    result: CliConnectorMcpRegisterResultSchema,
+  },
+  'cli.connector.mcp.list': {
+    params: CliConnectorMcpListParamsSchema,
+    result: CliConnectorMcpListResultSchema,
+  },
+  'cli.connector.mcp.retire': {
+    params: CliConnectorMcpRetireParamsSchema,
+    result: CliConnectorMcpRetireResultSchema,
   },
 } as const
 
