@@ -1730,6 +1730,21 @@ export class Supervisor {
     await writeConduit(this.state.home, conduit)
     await regenerateConduitsIndex(this.state.home)
 
+    // One-time migration of pre-embassy ownerless notes (PR-B3).
+    // Runs only when no prior embassy claimed them (the sentinel
+    // tracks completion). Idempotent — re-runs no-op.
+    const { migrateOwnerlessNotesToEmbassy } =
+      await import('../mcp/connector/embassy/note-migration.js')
+    const migration = await migrateOwnerlessNotesToEmbassy(this.state.home, args.embassyAgent)
+    if (!migration.skipped_already_complete) {
+      this.log.info('ownerless notes migrated to embassy', {
+        embassy_agent: args.embassyAgent,
+        migrated_threads: migration.migrated_threads,
+        migrated_briefs: migration.migrated_briefs,
+        migrated_agent_contributions: migration.migrated_agent_contributions,
+      })
+    }
+
     this.log.info('embassy registered', {
       client_id: args.clientId,
       embassy_agent: args.embassyAgent,

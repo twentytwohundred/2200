@@ -41,6 +41,15 @@ export interface ConnectorMcpServerDeps {
   snapshot: FleetContextDeps['snapshot']
   /** Inbox audit emitter shared with the listener. */
   audit: ConnectorAuditEmitter
+  /**
+   * OAuth client_id of the current /mcp call. Null when the caller
+   * authenticated via the static bearer (Phase 1 dev-API path),
+   * which doesn't carry a client identity. Tools that route through
+   * the embassy (PR-B3) look up the conduit by this id; falling
+   * back to legacy ownerless-note behavior when null or when no
+   * conduit is registered (transitional).
+   */
+  callingClientId?: string | null
   /** Set of agent names the connector may write contributions to. Null means "any agent on disk." */
   knownAgents?: () => Promise<Set<string>>
   /**
@@ -237,6 +246,14 @@ export async function createConnectorMcpServer(
           : {}),
         ...(args.related_threads !== undefined ? { related_threads: args.related_threads } : {}),
       }
+      // PR-B3 embassy routing: look up the embassy for the calling
+      // OAuth client. When non-null, contributions land in the
+      // embassy's brain. When null (static-bearer caller, or no
+      // conduit registered for the client_id), contributions fall
+      // back to the legacy path. The one-time migration absorbs
+      // pre-embassy notes when an embassy is first registered.
+      const { resolveCallingEmbassy } = await import('./embassy/routing.js')
+      const embassy = await resolveCallingEmbassy(deps.home, deps.callingClientId ?? null)
       const target = args.target
       if ('thread' in target) {
         const slugResult = validateThreadSlug(target.thread)
@@ -251,6 +268,7 @@ export async function createConnectorMcpServer(
             : { displayName: target.thread }),
           ...(args.primary_agent !== undefined ? { primaryAgent: args.primary_agent } : {}),
           payload,
+          ...(embassy !== null ? { embassyAgent: embassy.embassyAgent } : {}),
         })
         await deps.audit
           .emitContributionReceived({
@@ -285,6 +303,7 @@ export async function createConnectorMcpServer(
         home: deps.home,
         agentName: target.agent,
         payload,
+        ...(embassy !== null ? { embassyAgent: embassy.embassyAgent } : {}),
       })
       await deps.audit
         .emitContributionReceived({
