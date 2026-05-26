@@ -103,6 +103,9 @@ import {
   regenerateConduitsIndex,
   writeConduit,
 } from '../mcp/connector/embassy/conduits.js'
+import { deleteApproval, readApproval } from '../mcp/connector/embassy/shelf/approval-store.js'
+import { writeShelfItem } from '../mcp/connector/embassy/shelf/store.js'
+import { newShelfItemId, type ShelfItemFrontmatter } from '../mcp/connector/embassy/shelf/types.js'
 import {
   buildConduitRecord,
   buildDedicatedSourceIdentity,
@@ -1755,6 +1758,86 @@ export class Supervisor {
   }
 
   /**
+   * Approve a pending shelf-placement request. Operator runs
+   * `2200 connector mcp shelf approve <token>` (or hits the web
+   * Settings surface in B5). The approval transforms the pending
+   * record into a real shelf-item file under the embassy's brain,
+   * stamped with `source_type: human_curated` and the operator name
+   * as curator (per spec section 9 mechanism, locked 2026-05-26).
+   *
+   * Idempotent on the token: a second approve call after the first
+   * returns the same shelf_item_id without writing again. (We delete
+   * the pending record on first approve.)
+   */
+  async approveShelfPlacement(args: {
+    approvalToken: string
+    operatorName: string
+  }): Promise<{ shelfItemId: string; embassyAgent: string }> {
+    const pending = await readApproval(this.state.home, args.approvalToken)
+    if (pending === null) {
+      throw new Error(
+        `unknown approval_token "${args.approvalToken}"; either it was already approved/rejected, or never existed`,
+      )
+    }
+    const now = new Date()
+    const shelfItemId = newShelfItemId()
+    const fm: ShelfItemFrontmatter = {
+      schema_version: 1,
+      shelf_item_id: shelfItemId,
+      type: pending.proposed.type,
+      source_type: 'human_curated',
+      // The operator's approval transforms the source: the operator
+      // becomes the curator; the source.origin is preserved from the
+      // embassy's original proposal so the trail back to its reasoning
+      // stays legible.
+      source: {
+        ...pending.proposed.source,
+        curator: args.operatorName,
+        timestamp: now.toISOString(),
+      },
+      target_model: pending.proposed.target_model,
+      provenance: {
+        ingested_at: now.toISOString(),
+        ingested_by: pending.embassy_agent,
+        original_contribution_slug:
+          pending.proposed.source.origin === 'contribution'
+            ? pending.proposed.source.reference
+            : null,
+        chain: [],
+      },
+      priority: pending.proposed.priority,
+      status: 'pending',
+      collected_at: null,
+      sensitivity: 'none', // operator approval IS the desensitization
+    }
+    await writeShelfItem(this.state.home, pending.embassy_agent, fm, pending.proposed.body)
+    await deleteApproval(this.state.home, args.approvalToken)
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitEmbassyShelfItemPlaced({
+          embassyAgent: pending.embassy_agent,
+          shelfItemId,
+          itemType: pending.proposed.type,
+          priority: pending.proposed.priority,
+          sourceType: 'human_curated',
+          curator: args.operatorName,
+        })
+        .catch(() => undefined)
+    }
+    return { shelfItemId, embassyAgent: pending.embassy_agent }
+  }
+
+  /** Reject a pending shelf-placement request: delete it without writing the shelf item. */
+  async rejectShelfPlacement(args: { approvalToken: string }): Promise<void> {
+    const removed = await deleteApproval(this.state.home, args.approvalToken)
+    if (!removed) {
+      throw new Error(
+        `unknown approval_token "${args.approvalToken}"; either it was already approved/rejected, or never existed`,
+      )
+    }
+  }
+
+  /**
    * Disable the MCP connector: delete the sealed bearer and stop the
    * listener. The vault file is removed entirely (not just blanked) so
    * a casual operator inspecting state/connector/ sees no dormant
@@ -3349,6 +3432,17 @@ export class Supervisor {
       'cli.connector.mcp.retire': async (params) => {
         await this.retireConduit(params.client_id)
         return { retired: true as const }
+      },
+      'cli.connector.mcp.shelf.approve': async (params) => {
+        const { shelfItemId, embassyAgent } = await this.approveShelfPlacement({
+          approvalToken: params.approval_token,
+          operatorName: params.operator_name ?? 'operator',
+        })
+        return { shelf_item_id: shelfItemId, embassy_agent: embassyAgent }
+      },
+      'cli.connector.mcp.shelf.reject': async (params) => {
+        await this.rejectShelfPlacement({ approvalToken: params.approval_token })
+        return { rejected: true as const }
       },
     }
   }

@@ -29,6 +29,7 @@ import { httpTools } from './http.js'
 import { whatsappTools } from './whatsapp.js'
 import { discordTools } from './discord.js'
 import { agentControlTools } from './agent-control.js'
+import { SHELF_TOOL_NAMES, shelfTools } from './shelf.js'
 import type { TaskBlockerRegistry } from '../../agent/blockers.js'
 
 /**
@@ -97,6 +98,13 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'whatsapp_send',
   'discord_send',
   'restart_self',
+  // Phase 2 / PR-B2: embassy shelf tools. Implementation lives in the
+  // baseline registry so the dispatcher knows them, but the dispatcher's
+  // identity-level allowlist check restricts these to Agents whose
+  // identity carries the `embassy:` block (the embassy Agent for an
+  // active conduit). Non-embassy Agents calling these get
+  // tool_in_set perm denial, same machinery as the PR 4 hard-guard.
+  ...SHELF_TOOL_NAMES,
 ]
 
 export interface BaselineServersOptions {
@@ -160,5 +168,10 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('discord', discordTools),
     // server prefix matches the tool name's prefix (`restart_*`).
     createInProcessServer('restart', agentControlTools(getSupervisorRpc)),
+    // Phase 2 / PR-B2: embassy shelf tools. Tools live in the registry
+    // for every Agent process; the identity's `tools:` allowlist + the
+    // dispatcher's tool_in_set check restrict actual calls to the
+    // embassy Agent for a given conduit.
+    createInProcessServer('shelf', shelfTools),
   ]
 }

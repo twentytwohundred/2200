@@ -188,6 +188,46 @@ export interface ConnectorOAuthRefreshReuseContext {
   removedRefresh: number
 }
 
+export interface ConnectorEmbassyShelfItemPlacedContext {
+  embassyAgent: string
+  shelfItemId: string
+  itemType: string
+  priority: string
+  sourceType: 'human_curated' | 'embassy_autonomous'
+  curator: string
+}
+
+export interface ConnectorEmbassyShelfItemResolvedContext {
+  embassyAgent: string
+  shelfItemId: string
+  itemType: string
+  /** `manual_resolve` (operator/embassy called resolve_shelf_item) or `auto_collected` (one-shot pull). */
+  reason: 'manual_resolve' | 'auto_collected'
+}
+
+export interface ConnectorEmbassyShelfHumanApprovalRequestedContext {
+  embassyAgent: string
+  approvalToken: string
+  itemType: string
+  priority: string
+  /** Short embassy-supplied reasoning snippet (first ~200 chars). */
+  reasoningExcerpt: string
+}
+
+export interface ConnectorEmbassyShelfItemReadContext {
+  embassyAgent: string
+  shelfItemId: string
+  itemType: string
+}
+
+export interface ConnectorEmbassyShelfRateContext {
+  embassyAgent: string
+  /** Class of event: soft threshold crossed (audit only, placement succeeded) or hard exceeded (placement rejected). */
+  kind: 'soft' | 'hard'
+  countInWindow: number
+  limit: number
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -620,6 +660,111 @@ export class ConnectorAuditEmitter {
         client_id: ctx.clientId,
         chain_id: ctx.chainId,
         removed_refresh: ctx.removedRefresh,
+      },
+    })
+  }
+
+  /** Emit when an item lands on an embassy's shelf. Passive tier. */
+  async emitEmbassyShelfItemPlaced(ctx: ConnectorEmbassyShelfItemPlacedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.embassy_shelf_item_placed',
+      body: `Embassy \`${ctx.embassyAgent}\` placed a \`${ctx.itemType}\` on the shelf (\`${ctx.shelfItemId}\`, priority \`${ctx.priority}\`, source \`${ctx.sourceType}\`, curator \`${ctx.curator}\`).`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        shelf_item_id: ctx.shelfItemId,
+        item_type: ctx.itemType,
+        priority: ctx.priority,
+        source_type: ctx.sourceType,
+        curator: ctx.curator,
+      },
+    })
+  }
+
+  /** Emit when a shelf item transitions to collected (manual resolve or one-shot auto-collected). Passive tier. */
+  async emitEmbassyShelfItemResolved(ctx: ConnectorEmbassyShelfItemResolvedContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.embassy_shelf_item_resolved',
+      body: `Embassy \`${ctx.embassyAgent}\` resolved shelf item \`${ctx.shelfItemId}\` (type \`${ctx.itemType}\`, reason \`${ctx.reason}\`).`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        shelf_item_id: ctx.shelfItemId,
+        item_type: ctx.itemType,
+        reason: ctx.reason,
+      },
+    })
+  }
+
+  /**
+   * Emit when the embassy requests human approval for a `private`
+   * shelf placement. Normal tier — this is the operator-actionable
+   * event (an Inbox row asking for the approve / reject decision).
+   */
+  async emitEmbassyShelfHumanApprovalRequested(
+    ctx: ConnectorEmbassyShelfHumanApprovalRequestedContext,
+  ): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.embassy_shelf_human_approval_requested',
+      body: `Embassy \`${ctx.embassyAgent}\` is requesting your approval to place a \`${ctx.itemType}\` (priority \`${ctx.priority}\`) on the shelf. Reasoning: ${ctx.reasoningExcerpt}. Approve with \`2200 connector mcp shelf approve ${ctx.approvalToken}\`.`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        approval_token: ctx.approvalToken,
+        item_type: ctx.itemType,
+        priority: ctx.priority,
+      },
+    })
+  }
+
+  /**
+   * Emit when the embassy reads a shelf item via `read_shelf_item`.
+   * Passive tier per the 2026-05-26 final-pass: cheap visibility, no
+   * Inbox spam at scale.
+   */
+  async emitEmbassyShelfItemRead(ctx: ConnectorEmbassyShelfItemReadContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.embassy_shelf_item_read',
+      body: `Embassy \`${ctx.embassyAgent}\` read shelf item \`${ctx.shelfItemId}\` (type \`${ctx.itemType}\`).`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        shelf_item_id: ctx.shelfItemId,
+        item_type: ctx.itemType,
+      },
+    })
+  }
+
+  /** Emit rate-limit telemetry. `soft` is normal tier (operator-visible); `hard` is important tier (operator should investigate). */
+  async emitEmbassyShelfRate(ctx: ConnectorEmbassyShelfRateContext): Promise<void> {
+    const tier = ctx.kind === 'soft' ? 'normal' : 'important'
+    const kind =
+      ctx.kind === 'soft'
+        ? 'connector.embassy_shelf_rate_threshold'
+        : 'connector.embassy_shelf_rate_exceeded'
+    const phrase =
+      ctx.kind === 'soft'
+        ? `is exceeding ${String(ctx.limit)} placements/minute (currently ${String(ctx.countInWindow)} in the rolling window)`
+        : `HARD-rejected: ${String(ctx.countInWindow)} placements/minute exceeds the hard cap of ${String(ctx.limit)}`
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier,
+      kind,
+      body: `Embassy \`${ctx.embassyAgent}\` shelf placement rate ${phrase}.`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        kind: ctx.kind,
+        count_in_window: ctx.countInWindow,
+        limit: ctx.limit,
       },
     })
   }

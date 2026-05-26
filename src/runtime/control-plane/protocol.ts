@@ -887,6 +887,28 @@ export const CliConnectorMcpRetireResultSchema = z.object({
 })
 export type CliConnectorMcpRetireResult = z.infer<typeof CliConnectorMcpRetireResultSchema>
 
+export const CliConnectorMcpShelfApproveParamsSchema = z.object({
+  approval_token: z.string().min(1),
+  operator_name: z.string().min(1).optional(),
+})
+export const CliConnectorMcpShelfApproveResultSchema = z.object({
+  shelf_item_id: z.string(),
+  embassy_agent: z.string(),
+})
+export type CliConnectorMcpShelfApproveResult = z.infer<
+  typeof CliConnectorMcpShelfApproveResultSchema
+>
+
+export const CliConnectorMcpShelfRejectParamsSchema = z.object({
+  approval_token: z.string().min(1),
+})
+export const CliConnectorMcpShelfRejectResultSchema = z.object({
+  rejected: z.literal(true),
+})
+export type CliConnectorMcpShelfRejectResult = z.infer<
+  typeof CliConnectorMcpShelfRejectResultSchema
+>
+
 // ---------------------------------------------------------------------------
 // Method registry (a single source of truth for handlers and validation)
 // ---------------------------------------------------------------------------
@@ -1057,6 +1079,14 @@ export const METHODS = {
   'cli.connector.mcp.retire': {
     params: CliConnectorMcpRetireParamsSchema,
     result: CliConnectorMcpRetireResultSchema,
+  },
+  'cli.connector.mcp.shelf.approve': {
+    params: CliConnectorMcpShelfApproveParamsSchema,
+    result: CliConnectorMcpShelfApproveResultSchema,
+  },
+  'cli.connector.mcp.shelf.reject': {
+    params: CliConnectorMcpShelfRejectParamsSchema,
+    result: CliConnectorMcpShelfRejectResultSchema,
   },
 } as const
 
