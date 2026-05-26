@@ -23,6 +23,33 @@
  */
 import { randomBytes } from 'node:crypto'
 import { BrainStore } from '../../brain/store.js'
+import { listConduits } from './embassy/conduits.js'
+
+/**
+ * Locate the BrainStore holding a given work package. Searches the
+ * shared brain first, then each registered embassy's brain. Returns
+ * null if not found anywhere. Used by read / patch / list paths so
+ * operator workflows (CLI approve, web Settings tile) work without
+ * the operator needing to know which embassy owns the package.
+ */
+async function locatePackageStore(
+  home: string,
+  _packageId: string,
+  slug: string,
+): Promise<{ store: BrainStore; owner: string } | null> {
+  // 1. Shared brain (legacy + pre-migration).
+  const shared = BrainStore.forShared(home)
+  if ((await shared.tryRead(slug)) !== null) return { store: shared, owner: 'shared' }
+  // 2. Every registered embassy.
+  const conduits = await listConduits(home).catch(() => [])
+  for (const c of conduits) {
+    const embassyStore = BrainStore.forAgent(home, c.embassy_agent)
+    if ((await embassyStore.tryRead(slug)) !== null) {
+      return { store: embassyStore, owner: c.embassy_agent }
+    }
+  }
+  return null
+}
 
 export const WORK_PACKAGE_SCHEMA_VERSION = 1
 export const WORK_PACKAGE_TAGS = ['work-package']
@@ -69,6 +96,13 @@ export interface WriteProposedPackageArgs {
   packageId: string
   proposal: ProposedWorkPackage
   primaryAgent: string
+  /**
+   * Embassy routing (PR-B3b): when set, the package note lands in
+   * this embassy's brain (tagged `relationship-history`) instead of
+   * the shared brain. Absent: legacy shared-brain write (static-
+   * bearer / unregistered conduits).
+   */
+  embassyAgent?: string
   /** Optional clock injection for tests. */
   now?: () => Date
 }
@@ -94,7 +128,15 @@ export async function writeProposedPackage(
 ): Promise<WriteProposedPackageResult> {
   const now = args.now?.() ?? new Date()
   const createdAt = now.toISOString()
-  const store = BrainStore.forShared(args.home)
+  // Embassy routing (PR-B3b): land work-package anchors in the
+  // embassy's brain when one is registered for the calling client.
+  // Shared-brain writes are reserved for static-bearer / unregistered
+  // callers; the one-time migration absorbs those when an embassy
+  // is first registered.
+  const store =
+    args.embassyAgent !== undefined
+      ? BrainStore.forAgent(args.home, args.embassyAgent)
+      : BrainStore.forShared(args.home)
   const slug = workPackageSlug(args.packageId)
   const body = renderProposedPackageBody(args.proposal, createdAt)
   const extras: Record<string, unknown> = {
@@ -120,12 +162,14 @@ export async function writeProposedPackage(
   if (args.proposal.estimated_duration_minutes !== undefined) {
     extras['estimated_duration_minutes'] = args.proposal.estimated_duration_minutes
   }
+  const tags = [...WORK_PACKAGE_TAGS, `target:${extras['target_kind'] as string}`]
+  if (args.embassyAgent !== undefined) tags.push('relationship-history')
   const result = await store.write({
     slug,
     title: `Work package: ${args.proposal.title}`,
     body,
     type: 'work-package',
-    tags: [...WORK_PACKAGE_TAGS, `target:${extras['target_kind'] as string}`],
+    tags,
     extras,
     now: () => now,
   })
@@ -146,8 +190,17 @@ export interface PatchPackageFrontmatterArgs {
 }
 
 export async function patchPackageFrontmatter(args: PatchPackageFrontmatterArgs): Promise<void> {
-  const store = BrainStore.forShared(args.home)
+  // The package may live in any embassy's brain (post-B3 routing) OR
+  // in the shared brain (legacy / pre-migration). Search until we
+  // find it; the slug is globally unique.
   const slug = workPackageSlug(args.packageId)
+  const found = await locatePackageStore(args.home, args.packageId, slug)
+  if (found === null) {
+    throw new Error(
+      `unknown work package ${args.packageId}; not found in shared brain or any embassy`,
+    )
+  }
+  const { store } = found
   const existing = await store.read(slug)
   const newExtras: Record<string, unknown> = { ...existing.extras }
   const updates = args.updates as Record<string, unknown>
@@ -203,8 +256,24 @@ export interface ListWorkPackagesArgs {
 export async function listWorkPackages(
   args: ListWorkPackagesArgs,
 ): Promise<WorkPackageListEntry[]> {
-  const store = BrainStore.forShared(args.home)
-  const notes = await store.list({ tag: 'work-package', limit: args.limit ?? 100 })
+  // Aggregate across the shared brain (legacy + pre-migration
+  // packages) and every registered embassy's brain. Dedup by
+  // package_id; embassy ownership wins on conflict (shouldn't
+  // happen post-migration, but guard against double-listing).
+  const stores: BrainStore[] = [BrainStore.forShared(args.home)]
+  const conduits = await listConduits(args.home).catch(() => [])
+  for (const c of conduits) stores.push(BrainStore.forAgent(args.home, c.embassy_agent))
+  const seen = new Set<string>()
+  const notes: Awaited<ReturnType<BrainStore['list']>> = []
+  for (const s of stores) {
+    const local = await s.list({ tag: 'work-package', limit: args.limit ?? 100 }).catch(() => [])
+    for (const n of local) {
+      const pid = typeof n.extras['package_id'] === 'string' ? n.extras['package_id'] : null
+      if (pid === null || seen.has(pid)) continue
+      seen.add(pid)
+      notes.push(n)
+    }
+  }
   const out: WorkPackageListEntry[] = []
   for (const note of notes) {
     const e = note.extras
@@ -242,8 +311,13 @@ export async function readWorkPackage(
   home: string,
   packageId: string,
 ): Promise<WorkPackageRecord | null> {
-  const store = BrainStore.forShared(home)
-  const note = await store.tryRead(workPackageSlug(packageId))
+  // Search shared + every embassy. Post-B3b the embassy is the
+  // expected location; shared remains for pre-migration / static-
+  // bearer-written packages.
+  const slug = workPackageSlug(packageId)
+  const found = await locatePackageStore(home, packageId, slug)
+  if (found === null) return null
+  const note = await found.store.tryRead(slug)
   if (note === null) return null
   const e = note.extras
   const status = (

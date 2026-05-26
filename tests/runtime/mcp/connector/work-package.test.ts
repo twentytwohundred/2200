@@ -196,3 +196,113 @@ describe('listWorkPackages', () => {
     expect(reviewable[0]?.packageId).toBe(b)
   })
 })
+
+describe('embassy routing (PR-B3b)', () => {
+  it('writeProposedPackage with embassyAgent lands in the embassy brain, tagged relationship-history', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { initAgentDirs } = await import('../../../../src/runtime/storage/init.js')
+    await mkdir(join(home, 'agents'), { recursive: true })
+    const idPath = join(home, 'grok-embassy.identity.md')
+    await writeFile(
+      idPath,
+      [
+        '---',
+        'schema_version: 5',
+        'agent_name: grok-embassy',
+        'agent_role: "embassy"',
+        'model:',
+        '  tier: frontier',
+        '  provider: anthropic',
+        '  model_id: claude-opus-4-7',
+        'tools: []',
+        `project_dir: ${join(home, 'agents', 'grok-embassy', 'project')}`,
+        `brain_dir: ${join(home, 'agents', 'grok-embassy', 'brain')}`,
+        'created: 2026-05-26',
+        '---',
+        '',
+        '# Identity',
+      ].join('\n'),
+    )
+    await initAgentDirs(home, 'grok-embassy', idPath)
+
+    const id = newWorkPackageId()
+    await writeProposedPackage({
+      home,
+      packageId: id,
+      primaryAgent: 'grok-embassy',
+      proposal: {
+        title: 'Embassy-routed package',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'hobby' },
+      },
+      embassyAgent: 'grok-embassy',
+    })
+
+    // Note landed in embassy brain, NOT shared.
+    expect(await BrainStore.forShared(home).tryRead(workPackageSlug(id))).toBeNull()
+    const embassyNote = await BrainStore.forAgent(home, 'grok-embassy').read(workPackageSlug(id))
+    expect(embassyNote.frontmatter.tags).toContain('relationship-history')
+    expect(embassyNote.frontmatter.tags).toContain('work-package')
+  })
+
+  it('readWorkPackage finds a package in the embassy brain (cross-store search)', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { initAgentDirs } = await import('../../../../src/runtime/storage/init.js')
+    const { writeConduit } =
+      await import('../../../../src/runtime/mcp/connector/embassy/conduits.js')
+    const { buildConduitRecord } =
+      await import('../../../../src/runtime/mcp/connector/embassy/registration.js')
+    await mkdir(join(home, 'agents'), { recursive: true })
+    const idPath = join(home, 'e.identity.md')
+    await writeFile(
+      idPath,
+      [
+        '---',
+        'schema_version: 5',
+        'agent_name: e',
+        'agent_role: "embassy"',
+        'model:',
+        '  tier: frontier',
+        '  provider: anthropic',
+        '  model_id: claude-opus-4-7',
+        'tools: []',
+        `project_dir: ${join(home, 'agents', 'e', 'project')}`,
+        `brain_dir: ${join(home, 'agents', 'e', 'brain')}`,
+        'created: 2026-05-26',
+        '---',
+        '',
+        '# Identity',
+      ].join('\n'),
+    )
+    await initAgentDirs(home, 'e', idPath)
+    await writeConduit(
+      home,
+      buildConduitRecord({
+        clientId: 'grok-aaa',
+        externalModel: 'grok',
+        embassyAgent: 'e',
+        mode: 'dedicated',
+        displayName: 'Grok',
+        registeredAt: '2026-05-26T10:00:00.000Z',
+        registeredBy: 'cli',
+      }),
+    )
+    const id = newWorkPackageId()
+    await writeProposedPackage({
+      home,
+      packageId: id,
+      primaryAgent: 'e',
+      proposal: {
+        title: 'x',
+        summary: 's',
+        proposed_steps: ['x'],
+        target: { kind: 'agent', agent_name: 'e' },
+      },
+      embassyAgent: 'e',
+    })
+    const found = await readWorkPackage(home, id)
+    expect(found).not.toBeNull()
+    expect(found?.packageId).toBe(id)
+  })
+})
