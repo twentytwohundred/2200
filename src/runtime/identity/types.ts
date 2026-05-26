@@ -578,6 +578,31 @@ export const IdentityFrontmatterSchema = z.object({
       reason: z.string().optional(),
     })
     .optional(),
+  /**
+   * Embassy marker (Phase 2 / PR-B1). Present when this Agent is
+   * currently acting as the fleet's diplomatic mission to a remote
+   * MCP-speaking model — owning the relationship, the shelf, the
+   * standing brief, and the inbound-only continuity primitives.
+   *
+   * The marker is keyed by `client_id` (the OAuth client_id from
+   * the conduits registry, also serving as the registry's primary
+   * key per the 2026-05-26 locked decision). Both dedicated (the
+   * Agent IS the embassy) and attached (an existing Agent took on
+   * the embassy role) modes set the marker the same way; the
+   * registration mode is recorded so subsequent operations know
+   * whether to manage the Agent's lifecycle as embassy or treat
+   * the Agent as having multiple concerns.
+   *
+   * Absent on every Agent that is not currently acting as embassy.
+   */
+  embassy: z
+    .object({
+      external_model: z.string().min(1),
+      client_id: z.string().min(1),
+      mode: z.enum(['dedicated', 'attached']),
+      registered_at: z.string().min(1),
+    })
+    .optional(),
   mcp_servers: z
     .array(McpServerSpecSchema)
     .default([])
