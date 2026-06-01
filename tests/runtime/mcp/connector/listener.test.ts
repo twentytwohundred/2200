@@ -350,6 +350,7 @@ describe('MCP connector listener', () => {
         'get_fleet_context',
         'get_research_brief',
         'propose_work_package',
+        'shelf_pull',
       ]),
     )
     await client.close()
