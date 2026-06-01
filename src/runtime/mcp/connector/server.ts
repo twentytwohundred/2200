@@ -171,6 +171,32 @@ const FleetContextOutputShape = {
       kind: z.string(),
     }),
   ),
+  // Optional in the response: omitted when the caller has no
+  // registered conduit (static-bearer / unregistered OAuth client).
+  shelf_preview: z
+    .object({
+      items: z.array(
+        z.object({
+          shelf_item_id: z.string(),
+          type: z.string(),
+          priority: z.string(),
+          ingested_at: z.string(),
+          excerpt: z.string(),
+          provenance: z.object({
+            source_type: z.string(),
+            source_origin: z.string(),
+            source_curator: z.string(),
+            original_contribution_slug: z.string().nullable(),
+          }),
+          self_reflected: z.boolean(),
+        }),
+      ),
+      total_pending: z.number(),
+      standing_pending: z.number(),
+      one_shot_pending: z.number(),
+      next_priority_ids: z.array(z.string()),
+    })
+    .optional(),
 }
 
 const GetResearchBriefInputShape = {
@@ -454,6 +480,89 @@ export async function createConnectorMcpServer(
   )
 
   mcpServer.registerTool(
+    'shelf_pull',
+    {
+      title: 'shelf_pull',
+      description:
+        'Pull the full body of a shelf item by id. The shelf is a per-model continuity queue managed by the embassy; items are surfaced inline via `get_fleet_context.shelf_preview`. Calling this returns the full body and (for one-shot types like `question` and `research_request`) marks the item collected. Standing types (`context`, `synthesis_prompt`, `agenda`) stay pending after pull. Returns `invalid_params` for unknown ids or items belonging to a different conduit.',
+      inputSchema: { shelf_item_id: z.string().min(1) },
+      outputSchema: {
+        shelf_item_id: z.string(),
+        type: z.string(),
+        priority: z.string(),
+        ingested_at: z.string(),
+        body: z.string(),
+        source: z.object({
+          source_type: z.string(),
+          source_origin: z.string(),
+          source_curator: z.string(),
+          original_contribution_slug: z.string().nullable(),
+        }),
+        transitioned_to_collected: z.boolean(),
+      },
+    },
+    async (args, _extra) => {
+      const { resolveCallingEmbassy } = await import('./embassy/routing.js')
+      const embassy = await resolveCallingEmbassy(deps.home, deps.callingClientId ?? null)
+      if (embassy === null) {
+        throw new Error(
+          'shelf_pull requires an OAuth-authenticated call with a registered conduit; static-bearer calls cannot pull shelf items.',
+        )
+      }
+      const { readShelfItem, applyCollectionTransition } = await import('./embassy/shelf/store.js')
+      const rec = await readShelfItem(deps.home, embassy.embassyAgent, args.shelf_item_id)
+      if (rec === null) {
+        throw new Error(`unknown shelf_item_id "${args.shelf_item_id}"`)
+      }
+      // Cross-conduit refusal: an item attributed to a different
+      // OAuth client_id must not be served. Threat-model tightening
+      // locked 2026-05-27.
+      const itemClientId = rec.frontmatter.source.client_id
+      if (
+        itemClientId !== null &&
+        deps.callingClientId !== undefined &&
+        deps.callingClientId !== null &&
+        itemClientId !== deps.callingClientId
+      ) {
+        throw new Error(`unknown shelf_item_id "${args.shelf_item_id}"`)
+      }
+      const { transitioned } = await applyCollectionTransition(
+        deps.home,
+        embassy.embassyAgent,
+        args.shelf_item_id,
+        new Date(),
+      )
+      await deps.audit
+        .emitEmbassyShelfPulled({
+          embassyAgent: embassy.embassyAgent,
+          shelfItemId: rec.frontmatter.shelf_item_id,
+          itemType: rec.frontmatter.type,
+          transitioned,
+        })
+        .catch(() => undefined)
+      const out = {
+        shelf_item_id: rec.frontmatter.shelf_item_id,
+        type: rec.frontmatter.type,
+        priority: rec.frontmatter.priority,
+        ingested_at: rec.frontmatter.provenance.ingested_at,
+        body: rec.body,
+        source: {
+          source_type: rec.frontmatter.source_type,
+          source_origin: rec.frontmatter.source.origin,
+          source_curator: rec.frontmatter.source.curator,
+          original_contribution_slug: rec.frontmatter.provenance.original_contribution_slug,
+        },
+        transitioned_to_collected: transitioned,
+      }
+      const structured = JSON.parse(JSON.stringify(out)) as Record<string, unknown>
+      return {
+        structuredContent: structured,
+        content: [{ type: 'text' as const, text: JSON.stringify(out) }],
+      }
+    },
+  )
+
+  mcpServer.registerTool(
     'get_fleet_context',
     {
       title: 'get_fleet_context',
@@ -466,7 +575,29 @@ export async function createConnectorMcpServer(
       const packet = await buildFleetContext({
         home: deps.home,
         snapshot: deps.snapshot,
+        callingClientId: deps.callingClientId ?? null,
       })
+      // PR-B4 audit: fire when the response includes a non-empty
+      // shelf preview. Distinguishes self-reflected items so the
+      // operator sees how Grok is engaging with material it
+      // previously contributed.
+      if (packet.shelf_preview !== undefined && packet.shelf_preview.items.length > 0) {
+        const { resolveCallingEmbassy } = await import('./embassy/routing.js')
+        const embassy = await resolveCallingEmbassy(deps.home, deps.callingClientId ?? null)
+        if (embassy !== null) {
+          const selfReflectedCount = packet.shelf_preview.items.filter(
+            (i) => i.self_reflected,
+          ).length
+          await deps.audit
+            .emitEmbassyShelfPreviewSurfaced({
+              embassyAgent: embassy.embassyAgent,
+              itemsSurfaced: packet.shelf_preview.items.length,
+              selfReflectedCount,
+              totalPending: packet.shelf_preview.total_pending,
+            })
+            .catch(() => undefined)
+        }
+      }
       // The SDK's `structuredContent` type expects an index-signature
       // shape; our `FleetContextPacket` is a closed shape. JSON-clone
       // through a parse/stringify lands a plain object with the same

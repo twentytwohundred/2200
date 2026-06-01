@@ -14,10 +14,18 @@ import { BrainStore } from '../../brain/store.js'
 import { listNotifications } from '../../notifications/reader.js'
 import type { StateSnapshotResult } from '../../control-plane/protocol.js'
 import { readBrief, briefSlug } from './synthesis.js'
+import { resolveCallingEmbassy } from './embassy/routing.js'
+import { buildShelfPreview, type ShelfPreview } from './embassy/surfacing.js'
 
 export interface FleetContextDeps {
   home: string
   snapshot: () => Promise<StateSnapshotResult> | StateSnapshotResult
+  /**
+   * OAuth client_id of the inbound call. Determines `shelf_preview`
+   * embassy lookup + `self_reflected` detection. Null for static-
+   * bearer callers (no embassy + no self_reflected).
+   */
+  callingClientId?: string | null
   /**
    * Wall-clock for "served at" stamping; useful in tests so the
    * packet is deterministic.
@@ -61,6 +69,14 @@ export interface FleetContextPacket {
   agents: FleetContextAgentSummary[]
   threads: FleetContextThreadSummary[]
   recent_activity: FleetContextActivitySummary[]
+  /**
+   * Shelf preview for the calling embassy (PR-B4). Omitted entirely
+   * when the caller is not bound to a registered conduit (static-
+   * bearer callers or unregistered OAuth clients). Bounded to 10
+   * inline items + a `next_priority_ids` long-tail list per spec
+   * section 7.
+   */
+  shelf_preview?: ShelfPreview
 }
 
 const MAX_AGENTS = 10
@@ -84,13 +100,26 @@ export async function buildFleetContext(deps: FleetContextDeps): Promise<FleetCo
 
   const recent_activity: FleetContextActivitySummary[] = await listRecentActivity(deps.home)
 
-  return {
+  // Shelf preview (PR-B4). Look up the calling embassy via the
+  // routing helper; null result → omit `shelf_preview` from the
+  // response entirely (vs returning an empty block — keeps the
+  // packet compact for static-bearer / unregistered callers).
+  const callingClientId = deps.callingClientId ?? null
+  const embassy = await resolveCallingEmbassy(deps.home, callingClientId)
+  const shelf_preview =
+    embassy !== null
+      ? await buildShelfPreview(deps.home, embassy.embassyAgent, callingClientId)
+      : null
+
+  const packet: FleetContextPacket = {
     schema_version: 1,
     served_at: now.toISOString(),
     agents,
     threads: threads.slice(0, MAX_THREADS),
     recent_activity: recent_activity.slice(0, MAX_RECENT_ACTIVITY),
   }
+  if (shelf_preview !== null) packet.shelf_preview = shelf_preview
+  return packet
 }
 
 async function listResearchThreads(home: string): Promise<FleetContextThreadSummary[]> {

@@ -228,6 +228,21 @@ export interface ConnectorEmbassyShelfRateContext {
   limit: number
 }
 
+export interface ConnectorEmbassyShelfPulledContext {
+  embassyAgent: string
+  shelfItemId: string
+  itemType: string
+  /** Whether the type-driven collection transition fired (one-shot only). */
+  transitioned: boolean
+}
+
+export interface ConnectorEmbassyShelfPreviewSurfacedContext {
+  embassyAgent: string
+  itemsSurfaced: number
+  selfReflectedCount: number
+  totalPending: number
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -765,6 +780,52 @@ export class ConnectorAuditEmitter {
         kind: ctx.kind,
         count_in_window: ctx.countInWindow,
         limit: ctx.limit,
+      },
+    })
+  }
+
+  /**
+   * Emit on a successful `shelf_pull` call (PR-B4). Passive tier.
+   * Distinct from `embassy_shelf_item_read` which fires on the
+   * embassy-internal `shelf_read` tool. `transitioned: true` means
+   * the type-driven collection transition fired (one-shot item).
+   */
+  async emitEmbassyShelfPulled(ctx: ConnectorEmbassyShelfPulledContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.embassy_shelf_pulled',
+      body: `Embassy \`${ctx.embassyAgent}\` shelf item \`${ctx.shelfItemId}\` pulled (type \`${ctx.itemType}\`${ctx.transitioned ? ', collected' : ''}).`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        shelf_item_id: ctx.shelfItemId,
+        item_type: ctx.itemType,
+        transitioned: ctx.transitioned,
+      },
+    })
+  }
+
+  /**
+   * Emit once per `get_fleet_context` call that returned a non-
+   * empty `shelf_preview` block. Passive tier (compatible with
+   * `call_received`; gives operator visibility into how Grok is
+   * actually engaging with the shelf).
+   */
+  async emitEmbassyShelfPreviewSurfaced(
+    ctx: ConnectorEmbassyShelfPreviewSurfacedContext,
+  ): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'passive',
+      kind: 'connector.embassy_shelf_preview_surfaced',
+      body: `Embassy \`${ctx.embassyAgent}\` surfaced ${String(ctx.itemsSurfaced)} shelf item(s) in get_fleet_context (${String(ctx.selfReflectedCount)} self-reflected; ${String(ctx.totalPending)} total pending).`,
+      extras: {
+        embassy_agent: ctx.embassyAgent,
+        items_surfaced: ctx.itemsSurfaced,
+        self_reflected_count: ctx.selfReflectedCount,
+        total_pending: ctx.totalPending,
       },
     })
   }
