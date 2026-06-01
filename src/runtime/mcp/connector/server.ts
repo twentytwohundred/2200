@@ -67,6 +67,8 @@ export interface ConnectorMcpServerDeps {
   proposeWorkPackage?: (args: {
     proposal: ProposedWorkPackage
     primaryAgent: string
+    /** Set by the listener; the supervisor routes the package into the embassy when present. */
+    callingClientId?: string | null
   }) => Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }>
 }
 
@@ -397,7 +399,11 @@ export async function createConnectorMcpServer(
           ? { estimated_duration_minutes: args.estimated_duration_minutes }
           : {}),
       }
-      const result = await deps.proposeWorkPackage({ proposal, primaryAgent })
+      const result = await deps.proposeWorkPackage({
+        proposal,
+        primaryAgent,
+        callingClientId: deps.callingClientId ?? null,
+      })
       const out = {
         status: 'queued_for_review' as const,
         package_id: result.packageId,

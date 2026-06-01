@@ -1264,16 +1264,26 @@ export class Supervisor {
   async proposeWorkPackage(args: {
     proposal: ProposedWorkPackage
     primaryAgent: string
+    /**
+     * OAuth client_id of the caller (set by the connector listener
+     * when the call is OAuth-authenticated; null for static-bearer
+     * / legacy paths). Routes the package note into the embassy's
+     * brain when a conduit is registered for the client.
+     */
+    callingClientId?: string | null
   }): Promise<{ packageId: string; packageSlug: string; coordinationTaskId: string }> {
     if (!(args.primaryAgent in this.state.agents)) {
       throw new Error(`no Agent record for primary agent "${args.primaryAgent}"`)
     }
     const packageId = newWorkPackageId()
+    const { resolveCallingEmbassy } = await import('../mcp/connector/embassy/routing.js')
+    const embassy = await resolveCallingEmbassy(this.state.home, args.callingClientId ?? null)
     const writeResult = await writeProposedPackage({
       home: this.state.home,
       packageId,
       proposal: args.proposal,
       primaryAgent: args.primaryAgent,
+      ...(embassy !== null ? { embassyAgent: embassy.embassyAgent } : {}),
     })
     const coordinationTaskId = await this.submitWorkPackageCoordinationTask({
       agent: args.primaryAgent,
