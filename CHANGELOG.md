@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Embassy arc cleanup pass (Phase 2 / PR-B6).** Final piece of the embassy/shelf arc. Completes the `connector.embassy_*` audit family and validates the full chain end-to-end with an integration test.
+  - **Three new audit events** (normal tier — operator-noteworthy lifecycle):
+    - `connector.embassy_registered` — fires when an embassy / conduit binding is established (atomic or two-step path).
+    - `connector.embassy_retired` — fires when a conduit is retired and stops routing.
+    - `connector.embassy_shelf_approval_resolved` — fires on operator approve / reject of a pending shelf placement. Decision recorded in extras.
+  - **`Supervisor.rejectShelfPlacement`** now reads the pending approval before deleting so it can emit the rejected event with the correct embassy context.
+  - **End-to-end chain test** at `tests/runtime/mcp/connector/embassy/chain.test.ts` exercising the locked shape: register embassy → contribute (lands in embassy brain) → embassy autonomous `shelf_place` → embassy `shelf_request_human_placement` → operator approves → `buildShelfPreview` surfaces all items with `self_reflected` + prefix-variation by `source_type` → `applyCollectionTransition` on one-shot transitions to collected → standing item stays pending. Validates both data flow and audit-event flow. Three test cases (full chain, retire fires event, reject fires event).
+
 - **Settings UI for embassies + atomic OAuth-and-embassy registration (Phase 2 / PR-B5).** Operator polish on top of the embassy substrate. The "register a connection to Grok" intent now maps to one Settings flow, not two cascading ones.
   - **`Settings → Embassies`** sub-section: list of registered conduits with mode, external model, embassy agent, registered-at, last-seen-at. Two-step retire confirm (no `window.confirm`). Same idiom as `Settings → OAuth Clients` and `Settings → Work Packages`.
   - **Atomic registration form**: one submit mints the OAuth client + provisions the embassy Agent. Result page shows the full paste block for `grok.com/connectors → Custom` (MCP server URL, Client ID, Authorization/Token endpoints, scopes, Token Auth Method). When mint_secret is enabled the client secret is shown once.
