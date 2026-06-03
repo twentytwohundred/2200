@@ -243,6 +243,30 @@ export interface ConnectorEmbassyShelfPreviewSurfacedContext {
   totalPending: number
 }
 
+export interface ConnectorEmbassyRegisteredContext {
+  clientId: string
+  externalModel: string
+  embassyAgent: string
+  mode: 'dedicated' | 'attached'
+  displayName: string
+  agentCreated: boolean
+}
+
+export interface ConnectorEmbassyRetiredContext {
+  clientId: string
+  embassyAgent: string
+  externalModel: string
+}
+
+export interface ConnectorEmbassyShelfApprovalResolvedContext {
+  embassyAgent: string
+  approvalToken: string
+  /** `approved` (item placed on the shelf) or `rejected` (placement discarded). */
+  decision: 'approved' | 'rejected'
+  /** Set on approve; the shelf item id that resulted from the operator's decision. */
+  shelfItemId?: string
+}
+
 const FAILED_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000
 
 /**
@@ -827,6 +851,75 @@ export class ConnectorAuditEmitter {
         self_reflected_count: ctx.selfReflectedCount,
         total_pending: ctx.totalPending,
       },
+    })
+  }
+
+  /**
+   * Emit when an embassy is registered (atomic or two-step path).
+   * Normal tier — operator-noteworthy lifecycle event (a new
+   * external-model relationship now exists).
+   */
+  async emitEmbassyRegistered(ctx: ConnectorEmbassyRegisteredContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.embassy_registered',
+      body: `Embassy registered: \`${ctx.displayName}\` (\`${ctx.embassyAgent}\`, mode \`${ctx.mode}\`) for external model \`${ctx.externalModel}\` (client \`${ctx.clientId}\`).${ctx.agentCreated ? ' Dedicated Agent created.' : ''}`,
+      extras: {
+        client_id: ctx.clientId,
+        external_model: ctx.externalModel,
+        embassy_agent: ctx.embassyAgent,
+        mode: ctx.mode,
+        display_name: ctx.displayName,
+        agent_created: ctx.agentCreated,
+      },
+    })
+  }
+
+  /**
+   * Emit when an embassy / conduit is retired. Normal tier — the
+   * inbound routing for this client_id stops here.
+   */
+  async emitEmbassyRetired(ctx: ConnectorEmbassyRetiredContext): Promise<void> {
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.embassy_retired',
+      body: `Embassy retired: \`${ctx.embassyAgent}\` (client \`${ctx.clientId}\`, external model \`${ctx.externalModel}\`). Inbound calls from this client no longer route through it.`,
+      extras: {
+        client_id: ctx.clientId,
+        embassy_agent: ctx.embassyAgent,
+        external_model: ctx.externalModel,
+      },
+    })
+  }
+
+  /**
+   * Emit when the operator approves or rejects a pending shelf
+   * placement request. Normal tier — operator-actionable decisions
+   * deserve visibility in the Inbox feed.
+   */
+  async emitEmbassyShelfApprovalResolved(
+    ctx: ConnectorEmbassyShelfApprovalResolvedContext,
+  ): Promise<void> {
+    const extras: Record<string, unknown> = {
+      embassy_agent: ctx.embassyAgent,
+      approval_token: ctx.approvalToken,
+      decision: ctx.decision,
+    }
+    if (ctx.shelfItemId !== undefined) extras['shelf_item_id'] = ctx.shelfItemId
+    await emitNotification({
+      home: this.home,
+      agentName: CONNECTOR_EMITTER,
+      tier: 'normal',
+      kind: 'connector.embassy_shelf_approval_resolved',
+      body:
+        ctx.decision === 'approved'
+          ? `Operator approved shelf placement \`${ctx.approvalToken}\` for embassy \`${ctx.embassyAgent}\`${ctx.shelfItemId !== undefined ? ` (shelf item \`${ctx.shelfItemId}\`)` : ''}.`
+          : `Operator rejected shelf placement \`${ctx.approvalToken}\` for embassy \`${ctx.embassyAgent}\`.`,
+      extras,
     })
   }
 

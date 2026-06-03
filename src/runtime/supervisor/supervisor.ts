@@ -1762,6 +1762,23 @@ export class Supervisor {
       mode: args.mode,
     })
 
+    // PR-B6 audit: embassy lifecycle event (normal tier). Distinct
+    // from `oauth_client_registered` — that fired when the client
+    // record was minted; this fires when the embassy / conduit
+    // binding is established.
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitEmbassyRegistered({
+          clientId: args.clientId,
+          externalModel: args.externalModel,
+          embassyAgent: args.embassyAgent,
+          mode: args.mode,
+          displayName: args.displayName,
+          agentCreated,
+        })
+        .catch(() => undefined)
+    }
+
     return { conduit, agentCreated }
   }
 
@@ -1845,6 +1862,15 @@ export class Supervisor {
       client_id: clientId,
       embassy_agent: existing.embassy_agent,
     })
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitEmbassyRetired({
+          clientId,
+          embassyAgent: existing.embassy_agent,
+          externalModel: existing.external_model,
+        })
+        .catch(() => undefined)
+    }
   }
 
   /**
@@ -1913,17 +1939,38 @@ export class Supervisor {
           curator: args.operatorName,
         })
         .catch(() => undefined)
+      // PR-B6: operator-decision lifecycle event (normal tier). The
+      // _item_placed event above is the "what landed on disk" signal
+      // (passive); this is the "operator made a decision" signal.
+      await this.connectorAudit
+        .emitEmbassyShelfApprovalResolved({
+          embassyAgent: pending.embassy_agent,
+          approvalToken: args.approvalToken,
+          decision: 'approved',
+          shelfItemId,
+        })
+        .catch(() => undefined)
     }
     return { shelfItemId, embassyAgent: pending.embassy_agent }
   }
 
   /** Reject a pending shelf-placement request: delete it without writing the shelf item. */
   async rejectShelfPlacement(args: { approvalToken: string }): Promise<void> {
-    const removed = await deleteApproval(this.state.home, args.approvalToken)
-    if (!removed) {
+    const pending = await readApproval(this.state.home, args.approvalToken)
+    if (pending === null) {
       throw new Error(
         `unknown approval_token "${args.approvalToken}"; either it was already approved/rejected, or never existed`,
       )
+    }
+    await deleteApproval(this.state.home, args.approvalToken)
+    if (this.connectorAudit) {
+      await this.connectorAudit
+        .emitEmbassyShelfApprovalResolved({
+          embassyAgent: pending.embassy_agent,
+          approvalToken: args.approvalToken,
+          decision: 'rejected',
+        })
+        .catch(() => undefined)
     }
   }
 
