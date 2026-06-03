@@ -1757,6 +1757,65 @@ export const apiConnectorOAuthClients = {
   grokRedirectUri: () => request<{ redirect_uri: string }>('/api/v1/connector/grok-redirect-uri'),
 }
 
+/**
+ * Embassy / conduit management (Phase 2 / PR-B5).
+ *
+ * The operator's "register a connection to Grok" mental model maps to
+ * the atomic `register` call here — mints an OAuth client and registers
+ * an embassy in one step. List + retire round out the lifecycle.
+ */
+export type ConduitMode = 'dedicated' | 'attached'
+
+export interface ConduitSummary {
+  schema_version: 1
+  client_id: string
+  external_model: string
+  embassy_agent: string
+  mode: ConduitMode
+  display_name: string
+  registered_at: string
+  registered_by: string
+  last_seen_at: string | null
+  retired_at: string | null
+}
+
+export interface ConduitRegisterRequest {
+  display_name: string
+  external_model: string
+  embassy_agent: string
+  mode: ConduitMode
+  redirect_uris?: string[]
+  mint_secret?: boolean
+  scopes_allowed?: string[]
+  model?: {
+    tier: string
+    provider: string
+    model_id: string
+  }
+  tools?: string[]
+}
+
+export interface ConduitRegisterResponse {
+  conduit: ConduitSummary
+  agentCreated: boolean
+  clientId: string
+  clientSecret: string | null
+}
+
+export const apiConnectorConduits = {
+  list: () => request<{ items: ConduitSummary[] }>('/api/v1/connector/conduits'),
+  register: (body: ConduitRegisterRequest) =>
+    request<ConduitRegisterResponse>('/api/v1/connector/conduits', {
+      method: 'POST',
+      body,
+    }),
+  retire: (clientId: string) =>
+    request<{ retired: true }>(
+      `/api/v1/connector/conduits/${encodeURIComponent(clientId)}/retire`,
+      { method: 'POST', body: {} },
+    ),
+}
+
 export const apiConnectorWorkPackages = {
   list: (status?: WorkPackageStatus) =>
     request<{ items: WorkPackageSummary[] }>(

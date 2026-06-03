@@ -1765,6 +1765,71 @@ export class Supervisor {
     return { conduit, agentCreated }
   }
 
+  /**
+   * Atomic embassy provisioning (PR-B5): mint a fresh OAuth client +
+   * register an embassy for it in one operation. The operator's
+   * "register a connection to Grok" intent maps to ONE Settings flow,
+   * not two cascading ones. If embassy registration fails after the
+   * OAuth client is minted, the client is revoked so the operator
+   * isn't left with orphaned credentials.
+   *
+   * Returns the same shape `registerOAuthClient` returns (including
+   * the one-time `clientSecret` when minted) plus the embassy record.
+   */
+  async registerEmbassyAndOAuthClient(args: {
+    displayName: string
+    externalModel: string
+    embassyAgent: string
+    mode: 'dedicated' | 'attached'
+    redirectUris?: string[]
+    mintSecret?: boolean
+    scopesAllowed?: string[]
+    registeredBy: string
+    model?: IdentityFrontmatter['model']
+    tools?: IdentityFrontmatter['tools']
+  }): Promise<{
+    conduit: ConduitRecord
+    agentCreated: boolean
+    clientId: string
+    clientSecret: string | null
+  }> {
+    const { GROK_CONNECTOR_REDIRECT_URI } = await import('../mcp/connector/oauth/client-store.js')
+    const oauth = await this.registerOAuthClient({
+      displayName: args.displayName,
+      redirectUris:
+        args.redirectUris !== undefined && args.redirectUris.length > 0
+          ? args.redirectUris
+          : [GROK_CONNECTOR_REDIRECT_URI],
+      ...(args.mintSecret !== undefined ? { mintSecret: args.mintSecret } : {}),
+      ...(args.scopesAllowed !== undefined ? { scopesAllowed: args.scopesAllowed } : {}),
+    })
+    try {
+      const embassy = await this.registerEmbassy({
+        clientId: oauth.clientId,
+        externalModel: args.externalModel,
+        embassyAgent: args.embassyAgent,
+        mode: args.mode,
+        displayName: args.displayName,
+        registeredBy: args.registeredBy,
+        ...(args.model !== undefined ? { model: args.model } : {}),
+        ...(args.tools !== undefined ? { tools: args.tools } : {}),
+      })
+      return {
+        conduit: embassy.conduit,
+        agentCreated: embassy.agentCreated,
+        clientId: oauth.clientId,
+        clientSecret: oauth.clientSecret,
+      }
+    } catch (err) {
+      // Roll back the just-minted OAuth client so the operator
+      // isn't left with an orphaned credential pointing nowhere.
+      // Best-effort; if revoke also fails, surface the original
+      // registration error so the operator knows what to fix.
+      await this.revokeOAuthClient(oauth.clientId).catch(() => undefined)
+      throw err
+    }
+  }
+
   async listConduits(): Promise<ConduitRecord[]> {
     return listConduits(this.state.home)
   }

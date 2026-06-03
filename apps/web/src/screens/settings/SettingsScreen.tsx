@@ -37,6 +37,7 @@ import {
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
 import { ConnectorSection } from './ConnectorSection'
+import { EmbassiesSection } from './EmbassiesSection'
 import { OAuthClientsSection } from './OAuthClientsSection'
 import { WorkPackagesSection } from './WorkPackagesSection'
 import { DoctorSection } from './DoctorSection'
@@ -116,6 +117,13 @@ export function SettingsScreen(): ReactElement {
         <Meta>oauth clients · pre-authorize grok and other consumer-side mcp clients</Meta>
         <div className={styles.blockBody}>
           <OAuthClientsSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>embassies · diplomatic missions to remote mcp-speaking models</Meta>
+        <div className={styles.blockBody}>
+          <EmbassiesSection />
         </div>
       </section>
 

@@ -819,6 +819,57 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { redirect_uri: GROK_CONNECTOR_REDIRECT_URI }
   })
 
+  // Embassy / conduit management (PR-B5). Mirrors the CLI verbs
+  // `2200 connector mcp register | list | retire`. Loopback only.
+  fastify.get('/api/v1/connector/conduits', async () => {
+    const items = await supervisor.listConduits()
+    return { items }
+  })
+
+  fastify.post<{
+    Body: {
+      display_name: string
+      external_model: string
+      embassy_agent: string
+      mode: 'dedicated' | 'attached'
+      redirect_uris?: string[]
+      mint_secret?: boolean
+      scopes_allowed?: string[]
+      model?: {
+        tier: string
+        provider: string
+        model_id: string
+      }
+      tools?: string[]
+    }
+  }>('/api/v1/connector/conduits', async (req) => {
+    type Model = IdentityFrontmatter['model']
+    const result = await supervisor.registerEmbassyAndOAuthClient({
+      displayName: req.body.display_name,
+      externalModel: req.body.external_model,
+      embassyAgent: req.body.embassy_agent,
+      mode: req.body.mode,
+      registeredBy: 'web',
+      ...(Array.isArray(req.body.redirect_uris) && req.body.redirect_uris.length > 0
+        ? { redirectUris: req.body.redirect_uris }
+        : {}),
+      ...(req.body.mint_secret === true ? { mintSecret: true } : {}),
+      ...(Array.isArray(req.body.scopes_allowed) && req.body.scopes_allowed.length > 0
+        ? { scopesAllowed: req.body.scopes_allowed }
+        : {}),
+      ...(req.body.model !== undefined ? { model: req.body.model as Model } : {}),
+      ...(Array.isArray(req.body.tools) && req.body.tools.length > 0
+        ? { tools: req.body.tools }
+        : {}),
+    })
+    return result
+  })
+
+  fastify.post<{ Params: { id: string } }>('/api/v1/connector/conduits/:id/retire', async (req) => {
+    await supervisor.retireConduit(req.params.id)
+    return { retired: true as const }
+  })
+
   fastify.get('/api/v1/schema', () => ({
     api: 'v1',
     runtime: VERSION,
