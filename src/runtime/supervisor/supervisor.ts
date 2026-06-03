@@ -2442,8 +2442,17 @@ export class Supervisor {
     this.intentionalStops.add(name)
     const tracked = this.tracked.get(name)
     if (!tracked) {
-      // No running process; mark stopped and persist. Drop the flag
-      // since no handleAgentExit will fire to consume it.
+      // No tracked process — but an orphaned Agent process may still
+      // hold the pid lock (this happens whenever the supervisor was
+      // restarted while the Agent kept running, e.g., via the
+      // `daemon restart --preserve-fleet` path or any earlier
+      // supervisor restart). Treat the lock file as the source of
+      // truth for "is this Agent alive?", not the in-memory `tracked`
+      // map. Without this, `stopAgent` silently no-ops on orphans —
+      // which breaks every flow that does stop+start (model switch,
+      // identity edit, manual restart), because the subsequent
+      // `startAgent` fails to acquire the lock the orphan still holds.
+      await this.killOrphanedAgentIfAny(name, reason)
       this.intentionalStops.delete(name)
       await this.updateAgent(name, { state: 'stopped', pid: null })
       return
@@ -2476,6 +2485,104 @@ export class Supervisor {
       this.intentionalStops.delete(name)
       throw err
     }
+  }
+
+  /**
+   * Detect and SIGTERM/SIGKILL an orphaned Agent process whose pid lock
+   * is still held but which the supervisor's `tracked` map does not
+   * know about. Orphans arise whenever the supervisor restarted while
+   * the Agent kept running (the lock survives because Agents auto-
+   * detach from the supervisor's lifecycle).
+   *
+   * No-op when the pid file is missing, the PID can't be parsed, the
+   * lock is stale (process already dead), or the PID doesn't resolve
+   * to a live process.
+   *
+   * Polls for graceful exit up to 2 seconds before escalating to
+   * SIGKILL. The lock directory is removed in either case so a fresh
+   * `startAgent` can acquire it cleanly.
+   */
+  private async killOrphanedAgentIfAny(name: string, reason: string): Promise<void> {
+    const ap = agentPaths(this.state.home, name)
+    let held: boolean
+    try {
+      held = await isLockHeld(ap.pidFile)
+    } catch {
+      return
+    }
+    if (!held) {
+      // No live orphan. The pid file or lock dir may be stale (post-
+      // crash leftovers); remove them so the next startAgent has a
+      // clean slate. Best-effort.
+      await this.cleanupStaleAgentLock(name)
+      return
+    }
+    // The lock is held. Read the pid file to get the PID.
+    let pid: number | null = null
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const raw = await readFile(ap.pidFile, 'utf-8')
+      const parsed = Number.parseInt(raw.trim(), 10)
+      if (Number.isInteger(parsed) && parsed > 0) pid = parsed
+    } catch {
+      // pid file unreadable — fall back to lock-only handling below.
+    }
+    if (pid === null) {
+      // Lock dir exists but no PID we can SIGTERM. Treat as stale —
+      // the lockfile library considers an empty lock dir "held"
+      // because its mtime is recent, but there's nothing live to
+      // signal. Clean up the leftover so the next startAgent has a
+      // fresh slate.
+      this.log.warn('Agent lock held but pid file unreadable; treating as stale', { name })
+      await this.cleanupStaleAgentLock(name)
+      return
+    }
+    this.log.info('orphaned Agent detected; signalling', { name, pid, reason })
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // Process already gone; fall through to cleanup.
+    }
+    // Poll up to 2s for the lock to clear (graceful exit + lock release).
+    const deadline = Date.now() + 2_000
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 100))
+      if (!(await isLockHeld(ap.pidFile).catch(() => true))) break
+    }
+    // Still held? SIGKILL the orphan.
+    if (await isLockHeld(ap.pidFile).catch(() => false)) {
+      try {
+        process.kill(pid, 'SIGKILL')
+        this.log.warn('orphaned Agent did not exit on SIGTERM; SIGKILLed', { name, pid })
+      } catch {
+        // Process already gone between checks.
+      }
+      // Give the OS a moment to reap before lock cleanup.
+      await new Promise<void>((r) => setTimeout(r, 200))
+    }
+    await this.cleanupStaleAgentLock(name)
+  }
+
+  /**
+   * Remove the Agent's pid file + lock directory. Used after killing
+   * an orphan or to recover from a leftover-empty-lock-dir case.
+   * Best-effort; logs but does not throw.
+   */
+  private async cleanupStaleAgentLock(name: string): Promise<void> {
+    const ap = agentPaths(this.state.home, name)
+    const { rm } = await import('node:fs/promises')
+    await rm(`${ap.pidFile}.lock`, { recursive: true, force: true }).catch((err: unknown) => {
+      this.log.warn('failed to remove stale Agent lock dir', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+    await rm(ap.pidFile, { force: true }).catch((err: unknown) => {
+      this.log.warn('failed to remove stale Agent pid file', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
   }
 
   /**
