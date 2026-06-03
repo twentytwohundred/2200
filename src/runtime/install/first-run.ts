@@ -28,6 +28,9 @@ import { startDaemon } from '../supervisor/daemon.js'
 import { connectUds } from '../control-plane/uds-client.js'
 import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig, userConfigPath } from '../config/loader.js'
+import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import { validateProviderKey } from '../llm/validate-key.js'
+import { defaultRuntimeEnvPath, upsertRuntimeEnvKey } from '../config/runtime-env.js'
 
 /**
  * Minimal I/O surface the orchestrator needs. The CLI implementation
@@ -175,6 +178,17 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   }
 
   // ------------------------------------------------------------------
+  // 5a. API-key provider setup (always offered).
+  //
+  // Operators can configure a SuperGrok subscription AND additional
+  // API-key providers (Anthropic, OpenAI, Gemini, DeepSeek, Kimi,
+  // OpenRouter, xAI API-key) in a single first-run pass. Operators
+  // without SuperGrok rely on this path to leave first-run with a
+  // working credential.
+  // ------------------------------------------------------------------
+  await runFirstRunApiKeyProviders(io)
+
+  // ------------------------------------------------------------------
   // 5b. MCP connector setup (optional, default NO).
   //
   // Exposes a narrow, read-only-first slice of the fleet to Grok and
@@ -300,6 +314,165 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
     io.warn('Continuing without Grok. You can retry with `2200 oauth xai login` later.')
     io.info('')
   }
+}
+
+/**
+ * API-key provider setup loop. Lists every paste-a-key provider in
+ * the registry, prompts the operator to pick one (or skip), validates
+ * the pasted key against the provider's `GET /v1/models` endpoint,
+ * and writes the key to `~/.config/2200/runtime.env` so the
+ * supervisor (and every Agent it spawns) picks it up at start time.
+ *
+ * Loops until the operator skips, so an operator can set up multiple
+ * providers in a single pass (e.g., Anthropic + DeepSeek as a fallback
+ * pair). The xai-subscription provider is filtered out — that path
+ * goes through the Grok sign-in step above.
+ *
+ * Errors:
+ *  - Invalid key (auth_failed): show the provider's error, offer
+ *    retry or skip this provider.
+ *  - Network error: surface the failure, save the key anyway with a
+ *    "couldn't verify" warning. The operator may be offline during
+ *    setup; refusing to save would block them from finishing.
+ *
+ * The supervisor reads runtime.env only at start, so the wizard
+ * tells the operator the key takes effect on the next `2200 daemon
+ * restart` (which is part of the natural "next session" workflow,
+ * not something they need to do right now).
+ */
+export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> {
+  const all = listKnownProviders()
+  // Surface only paste-a-key providers (`api-key` category). The
+  // `subscription` provider (xai-subscription) is reachable via the
+  // SuperGrok step above; `local` (Ollama / LM Studio) needs a
+  // different shape (base URL + optional key) and lives in a future
+  // first-run iteration.
+  const candidates = all.filter((p) => p.category === 'api-key')
+  if (candidates.length === 0) return // defensive; registry always has these
+
+  io.info('API-key provider setup (optional).')
+  io.info('')
+  io.info('Add an API key for Anthropic, OpenAI, DeepSeek, etc. Each Agent picks')
+  io.info('its provider when you build it (`2200 agent build`); having the keys')
+  io.info('available now means you can choose any of them at Agent-build time.')
+  io.info('')
+  io.info('You can add multiple providers; the loop ends when you skip.')
+  io.info('')
+
+  let added = 0
+  // Loop until the operator chooses to skip. Capped at the number of
+  // candidates so we cannot run forever even with weird inputs.
+  for (let i = 0; i < candidates.length + 1; i++) {
+    io.info(added === 0 ? 'Available providers:' : `Added ${String(added)} so far. Add another?`)
+    io.info('')
+    for (let j = 0; j < candidates.length; j++) {
+      const p = candidates[j]
+      if (!p) continue
+      io.info(`  ${String(j + 1)}) ${p.label}  (env: ${p.defaultEnvKey})`)
+    }
+    io.info(`  ${String(candidates.length + 1)}) Skip (done with API keys)`)
+    io.info('')
+    const choiceRaw = (await io.ask('Choice: ')).trim()
+    const choice = Number.parseInt(choiceRaw, 10)
+    if (!Number.isInteger(choice) || choice < 1 || choice > candidates.length + 1) {
+      io.warn(`"${choiceRaw}" is not a valid choice; please pick a number from the list.`)
+      continue
+    }
+    if (choice === candidates.length + 1) {
+      // Skip remaining.
+      break
+    }
+    const provider = candidates[choice - 1]
+    if (!provider) continue // defensive against ts type narrowing
+    const settled = await promptAndSaveApiKey(io, provider)
+    if (settled) added += 1
+    io.info('')
+  }
+
+  if (added > 0) {
+    io.success(
+      `Saved ${String(added)} API key${added === 1 ? '' : 's'} to ${userRuntimeEnvPath()}.`,
+    )
+    io.info('The key takes effect on the next supervisor restart (next 2200 launch, or')
+    io.info('run `2200 daemon restart` now). Agents pick their provider when you build them.')
+    io.info('')
+  } else {
+    io.info('No API keys configured. You can add them later from the CLI or Settings.')
+    io.info('')
+  }
+}
+
+/**
+ * Prompt for a single provider's API key, validate it via
+ * `validateProviderKey`, and persist via `upsertRuntimeEnvKey`.
+ * Returns `true` iff the key was saved (validated OR forced past a
+ * network error); `false` if the operator backed out.
+ *
+ * Retry policy: up to 3 paste attempts for auth_failed errors before
+ * giving up (operator may have a long key with a typo). Network
+ * errors get one offer to save-anyway-with-warning.
+ */
+async function promptAndSaveApiKey(
+  io: FirstRunIO,
+  provider: ProviderCatalogEntry,
+): Promise<boolean> {
+  io.info('')
+  io.info(`Setting up ${provider.label}.`)
+  io.info(`The key will be written to ${userRuntimeEnvPath()} as ${provider.defaultEnvKey}.`)
+  io.info('')
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const key = (await io.ask(`Paste your ${provider.label} API key (or empty to cancel): `)).trim()
+    if (key.length === 0) {
+      io.info('Canceled.')
+      return false
+    }
+    io.info('Verifying key against the provider...')
+    const result = await validateProviderKey({ provider, apiKey: key })
+    if (result.ok) {
+      await upsertRuntimeEnvKey(provider.defaultEnvKey, key)
+      io.success(`${provider.label} key verified and saved (${provider.defaultEnvKey}).`)
+      return true
+    }
+    if (result.reason === 'auth_failed') {
+      io.warn(
+        `${provider.label} rejected the key (HTTP ${String(result.status)}). ${result.message.slice(0, 200)}`,
+      )
+      io.warn(`Attempts left: ${String(2 - attempt)}.`)
+      continue
+    }
+    if (result.reason === 'network_error') {
+      io.warn(`Could not reach ${provider.label} to verify (${result.message}).`)
+      const saveAnyway = await io.ask('Save the key anyway? [y/N] ')
+      if (isYes(saveAnyway, false)) {
+        await upsertRuntimeEnvKey(provider.defaultEnvKey, key)
+        io.success(
+          `${provider.label} key saved unverified (${provider.defaultEnvKey}). It will be tested when an Agent first uses it.`,
+        )
+        return true
+      }
+      io.info('Discarded. You can retry online.')
+      return false
+    }
+    // `unexpected`: 5xx, throttling, etc. Surface verbatim.
+    io.warn(
+      `${provider.label} returned HTTP ${String(result.status)}: ${result.message.slice(0, 200)}`,
+    )
+    const saveAnyway = await io.ask('Save the key anyway? [y/N] ')
+    if (isYes(saveAnyway, false)) {
+      await upsertRuntimeEnvKey(provider.defaultEnvKey, key)
+      io.success(`${provider.label} key saved unverified (${provider.defaultEnvKey}).`)
+      return true
+    }
+    return false
+  }
+  io.warn(`Gave up after 3 attempts for ${provider.label}. You can retry later.`)
+  return false
+}
+
+/** ~/.config/2200/runtime.env (display-only; resolves via the loader). */
+function userRuntimeEnvPath(): string {
+  return defaultRuntimeEnvPath()
 }
 
 /**
