@@ -62,7 +62,10 @@ afterEach(async () => {
     await supervisor.shutdown()
     supervisor = undefined
   }
-  await rm(home, { recursive: true, force: true })
+  // createUserIdentity (setup) regenerates the shared-brain index
+  // asynchronously; a write landing mid-recursive-delete yields
+  // ENOTEMPTY (sibling file hit it on CI 2026-06-12). Retry absorbs it.
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 async function setup(): Promise<void> {
