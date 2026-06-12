@@ -122,13 +122,15 @@ export const HandoffBudgetSchema = z.object({
 export type HandoffBudget = z.infer<typeof HandoffBudgetSchema>
 
 /**
- * Schedule entries. Phase A enforces this list to be empty at parse
- * time (`schedules: []`). Phase A2 (small follow-on) wires schedule
- * entries into the existing ScheduleStore and lifts this constraint.
+ * Schedule entries. Phase A enforced this list to be empty; Phase B
+ * (the OpenClaw adapter, [[05-phase-b-openclaw-adapter]]) lifted the
+ * constraint as planned: the orchestrator imports entries via
+ * `createSchedule` after agent registration. Per-entry failures are
+ * non-fatal (reported in the summary notification + result), matching
+ * the SCUT-provisioning posture.
  *
- * The schema admits an array shape now so the orchestrator code path
- * that asks "do we have schedules to import?" can be written today
- * and flipped on later without a schema bump.
+ * `expr` is either a 5-field cron expression (with optional `tz`) or
+ * an interval of the form `"<N>s"` (e.g. `"300s"`, minimum 5s).
  */
 export const HandoffScheduleSchema = z.object({
   /** Free-form schedule id; the ScheduleStore generates one if omitted. */
@@ -181,13 +183,7 @@ export const HandoffFrontmatterSchema = z.object({
   identity: HandoffIdentitySchema,
   brain: HandoffBrainSchema.default({}),
   budget: HandoffBudgetSchema,
-  schedules: z
-    .array(HandoffScheduleSchema)
-    .max(0, {
-      message:
-        'Phase A requires schedules: []. Wire schedules post-migration via `2200 schedule add`.',
-    })
-    .default([]),
+  schedules: z.array(HandoffScheduleSchema).default([]),
   /**
    * External MCP servers to declare on the new Agent's Identity. Optional;
    * when present, the orchestrator pipes the entries through to the
@@ -235,6 +231,16 @@ export const HandoffFrontmatterSchema = z.object({
       model_id: z.string().min(1),
     })
     .optional(),
+  /**
+   * Persona markdown for the new Agent's Identity BODY. When present,
+   * `buildIdentityFromHandoff` uses it verbatim instead of the
+   * generated starting stub. This is how a migrating Agent keeps its
+   * voice: the OpenClaw adapter maps `SOUL.md` here; a future
+   * 2200-to-2200 export carries the source Identity body. The handoff
+   * BODY (continuity narrative) is unaffected ... it still becomes the
+   * `continuity-from-migration` brain note.
+   */
+  persona_body: z.string().min(1).optional(),
   provenance: HandoffProvenanceSchema.default({}),
 })
 export type HandoffFrontmatter = z.infer<typeof HandoffFrontmatterSchema>
