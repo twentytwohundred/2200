@@ -128,11 +128,18 @@ describe('end-to-end: schedule fires through running Supervisor', () => {
       expect(tasks[0]!.body.trim()).toBe('integration check')
       expect(tasks[0]!.frontmatter.state).toBe('pending')
 
-      // The schedule's last_fired_at is now set, and next_fire_at is
-      // shifted forward.
-      const reread = await readSchedule(home, 'hobby', added.id)
-      expect(reread.last_fired_at).not.toBeNull()
-      expect(reread.next_fire_at).not.toBeNull()
+      // The schedule's last_fired_at is set and next_fire_at shifted
+      // forward. The scheduler enqueues the task BEFORE it persists
+      // the updated schedule file, so under load there is a real gap
+      // between the task landing (observed above) and the file write
+      // ... poll instead of reading once (flaked locally 2026-06-12).
+      await eventually(
+        async () => {
+          const reread = await readSchedule(home, 'hobby', added.id)
+          return reread.last_fired_at !== null && reread.next_fire_at !== null
+        },
+        { intervalMs: 100, timeoutMs: 3000 },
+      )
     },
   )
 })

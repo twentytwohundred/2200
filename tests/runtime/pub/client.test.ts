@@ -39,6 +39,14 @@ describe('PubClient.connect', () => {
     const cred = await registerAndCred('hobby')
     const client = new PubClient({ baseUrl: pub.baseUrl, cred })
     await client.connect()
+    // connect() resolves on the welcome handshake; the room_state
+    // frame follows on the same socket but is not awaited by
+    // connect(). Poll briefly instead of asserting synchronously
+    // (flaked under parallel suite load 2026-06-12).
+    const deadline = Date.now() + 3000
+    while (client.roomState() === null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
     expect(client.roomState()).not.toBeNull()
     expect(client.roomState()?.pub_name).toBe('ops')
     await client.close()
