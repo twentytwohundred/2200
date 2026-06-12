@@ -96,13 +96,16 @@ async function maybeReloadSchedulerIfDaemonRunning(home: string): Promise<void> 
 /**
  * Load runtime.env and oauth-apps.env from ~/.config/2200/ into
  * process.env. The supervisor daemon already does this at start, but
- * fresh CLI invocations like `2200 oauth login` run in the user's bare
- * shell where those env vars aren't sourced. Without this helper, the
- * cred check fails even when the values are correctly stored on disk.
- * Values already present in process.env take precedence (so the
- * operator can override per-invocation by exporting before running).
+ * fresh CLI invocations run in the user's bare shell where those env
+ * vars aren't sourced. Without this helper, anything that reads a
+ * provider key (auto-pick in `agent build`, `oauth login` cred check,
+ * direct `resolveProvider` calls) fails even when the values are
+ * correctly stored on disk. Wired as a `preAction` hook on the program
+ * so every command sees it; values already present in process.env take
+ * precedence (so the operator can override per-invocation by
+ * exporting before running).
  */
-async function loadOAuthEnvFiles(): Promise<void> {
+export async function loadCliEnvFiles(): Promise<void> {
   const { loadRuntimeEnv, defaultRuntimeEnvPath } = await import('../runtime/config/runtime-env.js')
   const pathMod = await import('node:path')
   const runtimePath = defaultRuntimeEnvPath()
@@ -188,6 +191,15 @@ export function buildProgram(): Command {
       '--home <path>',
       'override 2200_HOME (defaults: $TWENTYTWOHUNDRED_HOME, then user config, then $XDG_DATA_HOME/2200/ -> ~/.local/share/2200/)',
     )
+
+  // Source ~/.config/2200/runtime.env (and oauth-apps.env) into
+  // process.env before any subcommand action runs. The supervisor
+  // already does this at its own startup; without it the CLI process
+  // sees only the user's shell env, so anything that reads a provider
+  // key fails despite the key being correctly saved on disk. Hook
+  // fires on the program and every subcommand action; `--help` and
+  // `--version` exit before action dispatch so they're unaffected.
+  program.hook('preAction', loadCliEnvFiles)
 
   // ---------------------------------------------------------------------------
   // Top-level: init
@@ -3139,7 +3151,7 @@ export function buildProgram(): Command {
         // the user's bare shell, which has neither sourced. Without
         // this, the cred check fails even when the creds are correctly
         // stored on disk (live regression 2026-05-13).
-        await loadOAuthEnvFiles()
+        await loadCliEnvFiles()
         const creds = readClientCredentials(providerName)
         if (!creds.clientId || !creds.clientSecret) {
           console.error(
