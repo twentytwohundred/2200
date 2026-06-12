@@ -27,27 +27,27 @@
     "verify": "pnpm generate:tokens && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.100.11",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "@tanstack/react-query": "^5.101.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "react-easy-crop": "^5.5.7",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.15.1",
+    "react-router-dom": "^7.17.0",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
-    "@types/react": "^19.2.15",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "eslint": "^10.4.0",
+    "eslint": "^10.4.1",
     "jsdom": "^25.0.1",
     "prettier": "^3.4.2",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.59.4",
+    "typescript-eslint": "^8.60.1",
     "vite": "^5.4.10",
     "vitest": "^2.1.8"
   }

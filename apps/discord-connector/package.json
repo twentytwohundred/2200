@@ -11,11 +11,11 @@
   },
   "dependencies": {
     "discord.js": "^14.16.0",
-    "undici": "^8.0.0"
+    "undici": "^8.4.1"
   },
   "devDependencies": {
-    "@types/node": "^22.19.19",
-    "tsx": "^4.22.3",
+    "@types/node": "^22.19.20",
+    "tsx": "^4.22.4",
     "typescript": "^5.6.0"
   }
 }
