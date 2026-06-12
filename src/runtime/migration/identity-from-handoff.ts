@@ -82,11 +82,18 @@ export function buildIdentityFromHandoff(args: BuildIdentityArgs): BuiltIdentity
   const fm = args.handoff.frontmatter
   const dateStr = formatYmd(args.today)
 
-  const body = renderIdentityBody({
-    agent_name: fm.agent_name,
-    agent_type: fm.agent_type,
-    handoff_source_path: args.handoff.source_path,
-  })
+  // A migrating Agent keeps its voice: when the handoff carries a
+  // persona_body (SOUL.md via the OpenClaw adapter, the source
+  // Identity body via a future 2200 export), it becomes the Identity
+  // body verbatim. The generated stub is the fallback for handoffs
+  // that bring continuity but no persona.
+  const body =
+    fm.persona_body ??
+    renderIdentityBody({
+      agent_name: fm.agent_name,
+      agent_type: fm.agent_type,
+      handoff_source_path: args.handoff.source_path,
+    })
 
   // The Identity expects schema_version literal `5`. Compose the
   // frontmatter and run it through the loader's validator so any

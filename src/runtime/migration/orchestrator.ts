@@ -44,7 +44,8 @@ import { BrainIndex } from '../brain/index-db.js'
 import { importFromDir, type ImportResult } from '../brain/import.js'
 import { emitNotification } from '../notifications/writer.js'
 import { buildIdentityFromHandoff } from './identity-from-handoff.js'
-import { CONTINUITY_NOTE_SLUG, type HandoffDocument } from './types.js'
+import { CONTINUITY_NOTE_SLUG, type HandoffDocument, type HandoffSchedule } from './types.js'
+import { createSchedule, type ScheduleTiming } from '../scheduler/schedule.js'
 import { TaskStore } from '../agent/task/store.js'
 import { newPendingTask } from '../agent/task/types.js'
 import { newTaskId } from '../util/id.js'
@@ -119,6 +120,10 @@ export interface MigrateResult {
   continuity_note_slug: string
   /** Id of the summary notification that the orchestrator emitted. */
   notification_id: string
+  /** Number of handoff schedules successfully created. */
+  schedules_imported_count: number
+  /** Per-entry schedule import failures ("<expr>: <reason>"). Non-fatal. */
+  schedule_errors: string[]
 }
 
 /**
@@ -240,6 +245,28 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
     continuityIndex.close()
   }
 
+  // Schedule import (Phase B). Per-entry failures are non-fatal,
+  // matching the SCUT posture: the Agent still lands with brain +
+  // continuity; the operator fixes a bad expression with
+  // `2200 schedule add` guided by the notification detail.
+  let schedulesImported = 0
+  const scheduleErrors: string[] = []
+  for (const entry of fm.schedules) {
+    try {
+      await createSchedule({
+        home: args.home,
+        agentName,
+        description: 'imported by migration',
+        prompt: entry.task,
+        timing: timingFromHandoffSchedule(entry),
+        ...(entry.id !== undefined ? { id: entry.id } : {}),
+      })
+      schedulesImported += 1
+    } catch (err) {
+      scheduleErrors.push(`${entry.expr}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   // Summary notification. Always Passive (the migration is itself a
   // calm event; it does not need to interrupt). Content describes what
   // landed plus, when applicable, the SCUT failure detail.
@@ -250,6 +277,8 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
     scutUri,
     scutError,
     provisionAttempted: args.provisionIdentity === true,
+    schedulesImported,
+    scheduleErrors,
   })
   const note = await emitNotification({
     home: args.home,
@@ -324,7 +353,22 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
     brain_skipped_count: skippedCount,
     continuity_note_slug: CONTINUITY_NOTE_SLUG,
     notification_id: note.id,
+    schedules_imported_count: schedulesImported,
+    schedule_errors: scheduleErrors,
   }
+}
+
+/**
+ * Map a handoff schedule entry to the scheduler's timing union.
+ * `expr` of the form `"<N>s"` is an interval; anything else is a
+ * 5-field cron expression validated by `createSchedule` itself.
+ */
+function timingFromHandoffSchedule(entry: HandoffSchedule): ScheduleTiming {
+  const intervalMatch = /^(\d+)s$/.exec(entry.expr.trim())
+  if (intervalMatch) {
+    return { kind: 'interval', interval_seconds: Number(intervalMatch[1]) }
+  }
+  return { kind: 'cron', expression: entry.expr, timezone: entry.tz ?? 'UTC' }
 }
 
 interface SummaryArgs {
@@ -334,6 +378,8 @@ interface SummaryArgs {
   scutUri: string | null
   scutError: string | null
   provisionAttempted: boolean
+  schedulesImported: number
+  scheduleErrors: string[]
 }
 
 function renderSummary(args: SummaryArgs): string {
@@ -344,6 +390,12 @@ function renderSummary(args: SummaryArgs): string {
   ]
   if (args.skippedCount > 0) {
     lines.push(`- Brain notes skipped: ${String(args.skippedCount)} (see import logs)`)
+  }
+  if (args.schedulesImported > 0) {
+    lines.push(`- Schedules imported: **${String(args.schedulesImported)}**`)
+  }
+  for (const e of args.scheduleErrors) {
+    lines.push(`- Schedule import failed: ${e} ... re-add with \`2200 schedule add\`.`)
   }
   if (args.provisionAttempted) {
     if (args.scutUri !== null) {

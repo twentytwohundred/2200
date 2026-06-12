@@ -823,9 +823,22 @@ export function buildProgram(): Command {
   agent
     .command('migrate')
     .description(
-      'migrate an Agent into 2200 from a handoff document (Epic 5 Phase A; see wiki/epics/05-migration.md)',
+      'migrate an Agent into 2200 from a handoff document or an OpenClaw home (Epic 5; see wiki/epics/05-migration.md + 05-phase-b-openclaw-adapter.md)',
     )
-    .requiredOption('--from-handoff <path>', 'path to the handoff markdown document')
+    .option('--from-handoff <path>', 'path to the handoff markdown document')
+    .option(
+      '--from-openclaw <dir>',
+      'path to an OpenClaw home directory (the one containing openclaw.json, usually ~/.openclaw)',
+    )
+    .option('--name <name>', 'override the migrated agent name (openclaw source only)')
+    .option(
+      '--daily-cap-usd <usd>',
+      'daily budget cap for the migrated Agent (openclaw source only; default 10)',
+    )
+    .option(
+      '--no-migrate-llm-keys',
+      'skip copying LLM provider API keys from the OpenClaw config into ~/.config/2200/runtime.env',
+    )
     .option(
       '--provision-identity',
       'after registration, run the SCUT identity provisioning pipeline (subject to OpenSCUT per-displayName-per-day rate limit)',
@@ -836,17 +849,45 @@ export function buildProgram(): Command {
     )
     .option(
       '--validate',
-      'parse + validate the handoff document and print a preview without writing anything',
+      'parse + validate the source and print a preview (the migration report, for openclaw) without writing anything',
     )
     .action(
       async (opts: {
-        fromHandoff: string
+        fromHandoff?: string
+        fromOpenclaw?: string
+        name?: string
+        dailyCapUsd?: string
+        migrateLlmKeys: boolean
         provisionIdentity?: boolean
         force?: boolean
         validate?: boolean
       }) => {
-        const { parseHandoffFile } = await import('../runtime/migration/parser.js')
-        const handoff = await parseHandoffFile(opts.fromHandoff)
+        if ((opts.fromHandoff === undefined) === (opts.fromOpenclaw === undefined)) {
+          console.error('pass exactly one of --from-handoff <path> or --from-openclaw <dir>')
+          process.exit(1)
+        }
+
+        let handoff
+        let openclawReport: string | null = null
+        if (opts.fromOpenclaw !== undefined) {
+          const { surveyOpenClawHome, openclawToHandoff } =
+            await import('../runtime/migration/openclaw.js')
+          const { hostname } = await import('node:os')
+          const survey = await surveyOpenClawHome(opts.fromOpenclaw)
+          const converted = openclawToHandoff(survey, {
+            ...(opts.name !== undefined ? { name: opts.name } : {}),
+            ...(opts.dailyCapUsd !== undefined ? { dailyCapUsd: Number(opts.dailyCapUsd) } : {}),
+            sourceHost: hostname(),
+          })
+          handoff = converted.handoff
+          openclawReport = converted.report
+          for (const w of converted.warnings) {
+            console.error(`warning: ${w}`)
+          }
+        } else {
+          const { parseHandoffFile } = await import('../runtime/migration/parser.js')
+          handoff = await parseHandoffFile(opts.fromHandoff ?? '')
+        }
         const fm = handoff.frontmatter
 
         if (opts.validate === true) {
@@ -862,7 +903,15 @@ export function buildProgram(): Command {
           )
           console.log(`  brain.inline:      ${String(fm.brain.inline_notes?.length ?? 0)} note(s)`)
           console.log(`  budget.daily_usd:  ${String(fm.budget.daily_cap_usd)}`)
+          console.log(`  schedules:         ${String(fm.schedules.length)}`)
+          console.log(
+            `  persona_body:      ${fm.persona_body !== undefined ? 'present' : '(stub)'}`,
+          )
           console.log(`  body bytes:        ${String(Buffer.byteLength(handoff.body, 'utf8'))}`)
+          if (openclawReport !== null) {
+            console.log('')
+            console.log(openclawReport)
+          }
           return
         }
 
@@ -898,7 +947,43 @@ export function buildProgram(): Command {
           if (result.brain_skipped_count > 0) {
             console.log(`  brain notes:        ${String(result.brain_skipped_count)} skipped`)
           }
+          if (result.schedules_imported_count > 0) {
+            console.log(`  schedules:          ${String(result.schedules_imported_count)} imported`)
+          }
+          for (const e of result.schedule_errors) {
+            console.log(`  schedule failed:    ${e}`)
+          }
           console.log(`  continuity note:    ${result.continuity_note_slug}`)
+
+          // OpenClaw extras: LLM provider keys move so the Agent works
+          // the moment it starts (Doug's 2026-06-12 call ... no re-auth
+          // wall on the adoption path). Existing 2200 keys are never
+          // overwritten. Then the disable-not-delete guidance.
+          if (opts.fromOpenclaw !== undefined) {
+            if (opts.migrateLlmKeys) {
+              const { collectOpenClawLlmEnv } = await import('../runtime/migration/openclaw.js')
+              const { loadRuntimeEnv, upsertRuntimeEnvKey } =
+                await import('../runtime/config/runtime-env.js')
+              const collected = await collectOpenClawLlmEnv(opts.fromOpenclaw)
+              const existing = await loadRuntimeEnv()
+              let copied = 0
+              for (const [k, v] of Object.entries(collected)) {
+                if (existing[k] !== undefined) {
+                  console.log(`  llm key:            ${k} already set in 2200; left untouched`)
+                  continue
+                }
+                await upsertRuntimeEnvKey(k, v)
+                copied += 1
+                console.log(`  llm key:            ${k} copied to runtime.env`)
+              }
+              if (copied === 0 && Object.keys(collected).length === 0) {
+                console.log('  llm keys:           none found in the OpenClaw config env block')
+              }
+            }
+            const { renderDisableInstructions } = await import('../runtime/migration/openclaw.js')
+            console.log('')
+            console.log(renderDisableInstructions({ sameHost: true }))
+          }
           if (result.scut_uri !== null) {
             console.log(`  scut identity:      ${result.scut_uri}`)
           } else if (opts.provisionIdentity === true) {

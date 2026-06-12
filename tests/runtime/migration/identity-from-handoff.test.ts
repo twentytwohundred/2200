@@ -286,4 +286,30 @@ body
       await rm(home, { recursive: true, force: true })
     }
   })
+
+  it('uses persona_body as the Identity body verbatim (the Agent keeps its voice)', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: skippy
+identity:
+  display_name: Skippy
+budget:
+  daily_cap_usd: 20
+persona_body: |
+  # SOUL.md — Skippy
+
+  Snarky, brilliant, never lets anyone forget it.
+---
+continuity narrative goes to the brain note, not the Identity
+`
+    const handoff = parseHandoffString(text, null)
+    const built = buildIdentityFromHandoff({
+      handoff,
+      home: HOME,
+      today: FIXED_DATE,
+    })
+    expect(built.body).toContain('Snarky, brilliant')
+    // The generated stub must NOT replace the persona.
+    expect(built.body).not.toContain('starting stub')
+  })
 })

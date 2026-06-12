@@ -27,6 +27,7 @@ import { parseHandoffString } from '../../../src/runtime/migration/parser.js'
 import { CONTINUITY_NOTE_SLUG } from '../../../src/runtime/migration/types.js'
 import { BrainStore } from '../../../src/runtime/brain/store.js'
 import { agentPaths, homePaths } from '../../../src/runtime/storage/layout.js'
+import { listSchedules } from '../../../src/runtime/scheduler/schedule.js'
 
 const FIXED_DATE = new Date('2026-04-29T12:00:00Z')
 
@@ -254,5 +255,49 @@ Once we move into build, default to deciding and telling.
         process.env['OPENSCUT_REGISTER_URL'] = prev
       }
     }
+  })
+})
+
+describe('migrateFromHandoff (Phase B: schedules)', () => {
+  it('imports cron + interval schedules; bad expressions are non-fatal and reported', async () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: skedge
+identity:
+  display_name: skedge
+budget:
+  daily_cap_usd: 5
+schedules:
+  - expr: "0 7 * * *"
+    tz: "America/Chicago"
+    task: "morning brief"
+  - expr: "300s"
+    task: "heartbeat"
+  - expr: "not a cron"
+    task: "broken"
+---
+continuity
+`
+    const handoff = parseHandoffString(text, null)
+    const result = await migrateFromHandoff({
+      handoff,
+      home,
+      supervisor,
+      today: FIXED_DATE,
+      provisionIdentity: false,
+    })
+    // The Agent must land with its working schedules even when one
+    // entry is malformed ... migration continuity beats all-or-nothing.
+    expect(result.schedules_imported_count).toBe(2)
+    expect(result.schedule_errors).toHaveLength(1)
+    expect(result.schedule_errors[0]).toContain('not a cron')
+
+    const entries = await listSchedules(home, 'skedge')
+    expect(entries).toHaveLength(2)
+    const cron = entries.find((e) => e.timing.kind === 'cron')
+    expect(cron?.prompt).toBe('morning brief')
+    expect(cron?.timing.kind === 'cron' && cron.timing.timezone).toBe('America/Chicago')
+    const interval = entries.find((e) => e.timing.kind === 'interval')
+    expect(interval?.timing.kind === 'interval' && interval.timing.interval_seconds).toBe(300)
   })
 })

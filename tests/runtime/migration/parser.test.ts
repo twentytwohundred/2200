@@ -151,7 +151,7 @@ body
     expect(() => parseHandoffString(text, null)).toThrow(/agent_name/)
   })
 
-  it('throws when schedules is non-empty (Phase A constraint)', () => {
+  it('accepts schedule entries (Phase B lifted the Phase A empty-list constraint)', () => {
     const text = `---
 handoff_schema_version: 1
 agent_name: x
@@ -161,11 +161,35 @@ budget:
   daily_cap_usd: 1
 schedules:
   - expr: "0 8 * * *"
+    tz: "America/Chicago"
     task: "morning briefing"
+  - expr: "300s"
+    task: "heartbeat"
 ---
 body
 `
-    expect(() => parseHandoffString(text, null)).toThrow(/Phase A requires schedules/)
+    const doc = parseHandoffString(text, null)
+    expect(doc.frontmatter.schedules).toHaveLength(2)
+    expect(doc.frontmatter.schedules[0]?.tz).toBe('America/Chicago')
+    expect(doc.frontmatter.schedules[1]?.expr).toBe('300s')
+  })
+
+  it('accepts persona_body and carries it through (a migrating Agent keeps its voice)', () => {
+    const text = `---
+handoff_schema_version: 1
+agent_name: x
+identity:
+  display_name: x
+budget:
+  daily_cap_usd: 1
+persona_body: |
+  # Skippy
+  Snarky, brilliant, trapped in a beer can.
+---
+body
+`
+    const doc = parseHandoffString(text, null)
+    expect(doc.frontmatter.persona_body).toContain('beer can')
   })
 
   it('throws on a non-positive daily cap', () => {
