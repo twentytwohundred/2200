@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **OpenClaw migration adapter (Epic 5 Phase B).** `2200 agent migrate --from-openclaw <dir>` takes an OpenClaw home (the directory with `openclaw.json`, usually `~/.openclaw`) and produces a working 2200 Agent with continuity: `SOUL.md` becomes the Identity body verbatim (the Agent keeps its voice, via the new optional `persona_body` handoff field), `IDENTITY.md` drives names, daily `workspace/memory/*.md` files bulk-import into the brain, operating docs (`USER`/`AGENTS`/`TOOLS`/`HEARTBEAT.md`) land as `openclaw-import`-tagged brain notes, enabled cron jobs map onto 2200 schedules (5-field cron + IANA timezone, 1:1), and the primary model binding carries over when the provider exists in 2200's catalog. LLM provider API keys are copied from the OC config into `runtime.env` by default (existing 2200 keys are never overwritten; `--no-migrate-llm-keys` opts out) so the migrated Agent works the moment it starts. Channel tokens never migrate ... the printed **migration report** (also appended to the Agent's continuity note) maps each unmigrated item to its 2200 path, and the flow ends with instructions to disable ... never delete ... the source OC instance so the operator isn't running two fleets. `--validate` previews the whole thing without touching state. Validated end-to-end against a live OpenClaw 2026.4.11 instance. Spec: wiki `05-phase-b-openclaw-adapter`.
+- **Handoff schema: `persona_body` + schedule import.** Migration handoffs can now carry a persona (used verbatim as the Identity body) and schedule entries (imported via the scheduler after registration; per-entry failures are non-fatal and reported). The Phase A `schedules: []` constraint is lifted exactly as its schema comment planned.
+
 ## [2026.612.2032] ... 2026-06-12
 
 Phase 1 hardening for first production installs. Second cut of the day ... the first same-day release under the extended CalVer scheme.
