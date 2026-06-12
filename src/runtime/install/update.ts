@@ -2,7 +2,7 @@
  * Self-upgrade logic for `2200 update`.
  *
  * The update command queries the npm registry for the latest published
- * version of `@twentytwohundred/2200`, compares it to the version
+ * version of `@twentytwohundred/2200-cli`, compares it to the version
  * embedded in this CLI, and (unless `--check` was passed) drops the
  * daemon, runs `npm install -g <package>@latest` in the user's shell,
  * and restarts the daemon.
@@ -28,7 +28,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 /** Package name as published on the npm registry. */
-export const PACKAGE_NAME = '@twentytwohundred/2200'
+export const PACKAGE_NAME = '@twentytwohundred/2200-cli'
 
 /** Stable URL for `npm view <pkg> dist-tags`-equivalent metadata. */
 const REGISTRY_URL = `https://registry.npmjs.org/${encodeURIComponent(PACKAGE_NAME)}`
@@ -110,7 +110,7 @@ export type InstallSource =
  * Source-checkout signal: the resolved module path contains no
  * `node_modules` segment. Anything else is treated as a managed
  * install ... npm-global, pnpm-global, or a project-local install
- * (`npm install @twentytwohundred/2200` then `npx 2200`).
+ * (`npm install @twentytwohundred/2200-cli` then `npx 2200`).
  */
 export function detectInstallSource(modulePath: string): InstallSource {
   const hasNodeModules = modulePath.split(/[\\/]/).includes('node_modules')

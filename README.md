@@ -23,7 +23,7 @@ This repository holds the runtime code. The full project knowledge base ... visi
 curl -fsSL https://2200.ai/install.sh | sh
 
 # npm directly (if you already have Node):
-npm install -g @twentytwohundred/2200
+npm install -g @twentytwohundred/2200-cli
 ```
 
 Then run:
@@ -59,7 +59,7 @@ The OAuth credential is fleet-wide: one sign-in covers every Agent in your fleet
 ### Uninstall
 
 ```bash
-npm uninstall -g @twentytwohundred/2200
+npm uninstall -g @twentytwohundred/2200-cli
 rm -rf ~/.local/share/2200/ ~/.config/2200/
 ```
 

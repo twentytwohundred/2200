@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2026.612.1857] ... 2026-06-12
+## [2026.612.1935] ... 2026-06-12
 
-First release published to the npm registry. Versioning extends to `YYYY.MDD.HHMM` (month+day packed into the minor slot, UTC time of the cut in the patch slot) per the v2 decision ... npm rejects four-segment versions, so `2026.612.1857` is the three-slot form of "June 12 2026, cut at 18:57 UTC". Same-day releases are now possible.
+First release published to the npm registry. Versioning extends to `YYYY.MDD.HHMM` (month+day packed into the minor slot, UTC time of the cut in the patch slot) per the v2 decision ... npm rejects four-segment versions, so `2026.612.1935` is the three-slot form of "June 12 2026, cut at 19:35 UTC". Same-day releases are now possible ... this cut supersedes the same-day `2026.612.1857` attempt, which npm's name filter rejected and which never reached any registry.
+
+### Changed
+
+- **Package renamed to `@twentytwohundred/2200-cli`.** npm's registry blocks new all-numeric package names ("That word is not allowed"), confirmed empirically: a minimal stub under `@twentytwohundred/2200` was rejected while `@twentytwohundred/2200-cli` and `@twentytwohundred/cli` both published cleanly. The `2200` binary name, the `curl https://2200.ai/install.sh | sh` one-liner, and all on-disk paths are unchanged ... only the npm package name moved. npm offers no allowlisting path for blocked names (their name-claim process covers trademark disputes only), so `2200-cli` is the permanent package name. `@twentytwohundred/cli` is held as a claimed alias.
 
 ### Fixed
 
