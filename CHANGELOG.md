@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.612.1857] ... 2026-06-12
+
+First release published to the npm registry. Versioning extends to `YYYY.MDD.HHMM` (month+day packed into the minor slot, UTC time of the cut in the patch slot) per the v2 decision ... npm rejects four-segment versions, so `2026.612.1857` is the three-slot form of "June 12 2026, cut at 18:57 UTC". Same-day releases are now possible.
+
+### Fixed
+
+- **`pnpm verify` builds before testing.** The release workflow's first-ever run exposed a deterministic ordering bug masquerading as the old chaos-test flake: `verify` ran tests before build, but `supervisor-bounce-survival` spawns a real Agent from `dist/runtime/agent/bootstrap.js`, which doesn't exist on a fresh runner. The Agent spawn died instantly and the registration predicate timed out at 20s ... three consecutive release failures. `ci.yml` was already immune via an explicit Build-before-Test step; local `verify` also no longer silently tests a stale `dist/`. (#268)
+
 ## [2026.6.12] ... 2026-06-12
 
 First published release ... the first 2200 version to reach the npm registry and GitHub Releases, and the first under calendar versioning.
