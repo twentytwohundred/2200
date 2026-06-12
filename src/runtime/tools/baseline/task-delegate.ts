@@ -132,7 +132,7 @@ const AwaitResponseArgsSchema = z.object({
     .describe(
       "Free-text reminder of what you're waiting for and why. Surfaces in your context " +
         'when the response arrives so you remember what to do with it (e.g. ' +
-        '"Doug asked in Discord channel X; I forwarded to Hobby and will relay back").',
+        '"the operator asked in Discord channel X; I forwarded to the team and will relay back").',
     ),
   timeout_seconds: z
     .number()

@@ -56,13 +56,13 @@ setInterval(() => {}, 1_000_000)`
 
 describe('composePubMd', () => {
   it('composes a v0.3-compatible PUB.md (PR F: matches openpub-server@0.3.3 schema)', () => {
-    const md = composePubMd({ name: 'ops' })
+    const md = composePubMd({ name: 'ops', owner: 'operator' })
     expect(md.startsWith('---\n')).toBe(true)
     // Required by pub-server v0.3.x: version, name, description, owner, model, capacity, entry.
     expect(md).toContain('version: "0.3"')
     expect(md).toContain('name: ops')
     expect(md).toContain('description: "ops pub"')
-    expect(md).toContain('owner: doug')
+    expect(md).toContain('owner: operator')
     expect(md).toContain('model:')
     expect(md).toContain('capacity: 10')
     expect(md).toContain('entry: open')
@@ -94,6 +94,7 @@ describe('composePubMd', () => {
   it('quotes values that contain whitespace or special chars', () => {
     const md = composePubMd({
       name: 'ops',
+      owner: 'operator',
       description: 'has "quotes" and a \\backslash',
     })
     // Backslashes and quotes are escaped in the YAML double-quoted form.
@@ -101,7 +102,7 @@ describe('composePubMd', () => {
   })
 
   it('does not quote values that are pure slug characters', () => {
-    const md = composePubMd({ name: 'pub_simple-1' })
+    const md = composePubMd({ name: 'pub_simple-1', owner: 'operator' })
     // pub_simple-1 contains an underscore so quoteIfNeeded would NOT quote
     // (regex includes underscore as safe). This test pins the heuristic.
     expect(md).toContain('name: pub_simple-1')
@@ -126,7 +127,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('starts a child, captures pid, writes stdio to per-pub log', async () => {
     fakeBin = await writeFakeBinary('sleep')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     const sp = launchPubProcess({
       name: 'ops',
@@ -152,7 +153,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('passes hub URL when issuer is hub', async () => {
     fakeBin = await writeFakeBinary('sleep')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     const sp = launchPubProcess({
       name: 'ops',
@@ -174,7 +175,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('stop() is a no-op once the child has already exited', async () => {
     fakeBin = await writeFakeBinary('exit-clean')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     const sp = launchPubProcess({
       name: 'ops',
@@ -190,7 +191,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('reports abnormal exit with non-zero code to the exited promise', async () => {
     fakeBin = await writeFakeBinary('exit-bad')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     const sp = launchPubProcess({
       name: 'ops',
@@ -206,7 +207,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('writes the per-pub log file inside the pub state dir', async () => {
     fakeBin = await writeFakeBinary('exit-clean')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     const sp = launchPubProcess({
       name: 'ops',
@@ -223,7 +224,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('throws when adminSecret is missing in LOCAL mode', async () => {
     fakeBin = await writeFakeBinary('sleep')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     expect(() =>
       launchPubProcess({
@@ -239,7 +240,7 @@ describe('launchPubProcess (using a fake binary)', () => {
 
   it('throws when signing keypair is missing', async () => {
     fakeBin = await writeFakeBinary('sleep')
-    await initPubDirs(home, 'ops', composePubMd({ name: 'ops' }))
+    await initPubDirs(home, 'ops', composePubMd({ name: 'ops', owner: 'operator' }))
     const port = await findFreePort()
     expect(() =>
       launchPubProcess({

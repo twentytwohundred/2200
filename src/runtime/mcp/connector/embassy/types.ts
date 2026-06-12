@@ -55,7 +55,7 @@ export const ConduitRecordSchema = z.object({
   embassy_agent: z.string().min(1),
   /** `dedicated`: agent created for this embassy. `attached`: existing agent took on the role. */
   mode: z.enum(['dedicated', 'attached']),
-  /** Free-form display name shown in operator UIs (e.g., "Grok (Doug's subscription)"). */
+  /** Free-form display name shown in operator UIs (e.g., "Grok (personal subscription)"). */
   display_name: z.string().min(1),
   registered_at: z.string().min(1),
   registered_by: z.string().min(1),

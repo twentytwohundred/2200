@@ -2888,11 +2888,25 @@ export class Supervisor {
       throw new Error(`Pub already exists: ${name}`)
     }
     const port = opts.port ?? (await findFreePort())
+    // The PUB.md owner is the operator's pub handle, derived from the
+    // user identity minted at first-run ... never a baked-in default.
+    // An explicit opts.owner (tests, advanced callers) overrides.
+    let owner = opts.owner
+    if (owner === undefined) {
+      const user = await loadUserIdentityIfExists(homePaths(this.state.home).configUserMd)
+      if (!user) {
+        throw new Error(
+          `cannot create pub "${name}": no user identity exists to derive the pub owner from. ` +
+            `Complete first-run (bare \`2200\`) or \`2200 user init\` first, or pass an explicit owner.`,
+        )
+      }
+      owner = user.frontmatter.pub.handle.replace(/^@/, '')
+    }
     const pubMd = composePubMd({
       name,
+      owner,
       ...(opts.description !== undefined ? { description: opts.description } : {}),
       ...(opts.capacity !== undefined ? { capacity: opts.capacity } : {}),
-      ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
     })
     await initPubDirs(this.state.home, name, pubMd)
     const paths = pubPaths(this.state.home, name)

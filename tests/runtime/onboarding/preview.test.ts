@@ -38,7 +38,7 @@ const GMAIL_TOOL: ToolSuggestion = {
     },
   },
   env_hint: 'set GMAIL_OAUTH_TOKEN_EMMA in your shell',
-  rationale: 'you mentioned watching doug@example.com',
+  rationale: 'you mentioned watching operator@example.com',
   source_tag: 'tool_email_account',
 }
 
@@ -69,7 +69,7 @@ describe('renderPreview', () => {
   it('renders tool suggestions with env_hint and rationale', () => {
     const text = renderPreview({ handoff: HANDOFF, tools: [GMAIL_TOOL], schedules: [] })
     expect(text).toContain('- gmail (set GMAIL_OAUTH_TOKEN_EMMA in your shell)')
-    expect(text).toContain('you mentioned watching doug@example.com')
+    expect(text).toContain('you mentioned watching operator@example.com')
   })
 
   it('shows "(none suggested)" when there are no schedule suggestions', () => {

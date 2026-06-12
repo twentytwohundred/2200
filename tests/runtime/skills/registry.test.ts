@@ -100,9 +100,9 @@ describe('readSkill', () => {
 
 describe('parseSkillContent', () => {
   it('preserves unknown frontmatter fields in extras', () => {
-    const text = '---\nname: x\ndescription: y\nauthor: doug\n---\n\nbody\n'
+    const text = '---\nname: x\ndescription: y\nauthor: operator\n---\n\nbody\n'
     const s = parseSkillContent(text, 'inline')
-    expect(s.extras['author']).toBe('doug')
+    expect(s.extras['author']).toBe('operator')
     expect(s.body).toBe('body')
   })
 

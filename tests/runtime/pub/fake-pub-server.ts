@@ -98,7 +98,7 @@ export async function startFakePub(
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(
           JSON.stringify({
-            pub: { id: pubId, name: pubName, owner: 'doug', capacity: 10, entry: 'open' },
+            pub: { id: pubId, name: pubName, owner: 'operator', capacity: 10, entry: 'open' },
             runtime: { version: '0.3.1' },
             agents: { connected: connectedAgents.size, capacity: 10 },
           }),

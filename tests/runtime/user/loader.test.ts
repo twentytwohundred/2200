@@ -25,10 +25,10 @@ afterEach(async () => {
 
 const sampleFrontmatter: UserIdentityFrontmatter = {
   schema_version: 1,
-  display_name: 'Doug',
+  display_name: 'Alice',
   pub: {
     identity: '01919c4f-7e3a-7000-8000-d4a984f2c1b3',
-    handle: '@doug',
+    handle: '@alice',
     credentials: { source: 'file', id: '/var/2200/config/user.pub.secret' },
     key_version: 1,
     issuer_url: 'local://localhost',
@@ -59,8 +59,8 @@ describe('writeUserIdentity + loadUserIdentity', () => {
     await writeUserIdentity(path, sampleFrontmatter)
     const raw = await readFile(path, 'utf8')
     expect(raw.startsWith('---\n')).toBe(true)
-    expect(raw).toContain('display_name: Doug')
-    expect(raw).toContain('handle: "@doug"')
+    expect(raw).toContain('display_name: Alice')
+    expect(raw).toContain('handle: "@alice"')
   })
 
   it('rejects writing an invalid frontmatter (missing required field)', async () => {
@@ -91,7 +91,7 @@ describe('loadUserIdentity error paths', () => {
 
   it('throws on schema mismatch with descriptive issues', async () => {
     const path = join(tmp, 'user.md')
-    await writeFile(path, '---\nschema_version: 1\ndisplay_name: Doug\n---\n', 'utf8')
+    await writeFile(path, '---\nschema_version: 1\ndisplay_name: Alice\n---\n', 'utf8')
     let caught: string | undefined
     try {
       await loadUserIdentity(path)
@@ -113,7 +113,7 @@ describe('loadUserIdentityIfExists', () => {
     const path = join(tmp, 'user.md')
     await writeUserIdentity(path, sampleFrontmatter)
     const result = await loadUserIdentityIfExists(path)
-    expect(result?.frontmatter.display_name).toBe('Doug')
+    expect(result?.frontmatter.display_name).toBe('Alice')
   })
 
   it('propagates non-not-found errors', async () => {
@@ -144,10 +144,10 @@ describe('directory and re-create', () => {
     await writeUserIdentity(path, sampleFrontmatter)
     const updated: UserIdentityFrontmatter = {
       ...sampleFrontmatter,
-      display_name: 'Doug Hardman',
+      display_name: 'Alice Hardman',
     }
     await writeUserIdentity(path, updated)
     const record = await loadUserIdentity(path)
-    expect(record.frontmatter.display_name).toBe('Doug Hardman')
+    expect(record.frontmatter.display_name).toBe('Alice Hardman')
   })
 })

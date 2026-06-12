@@ -20,7 +20,7 @@
  * Tokens are revoked by deleting the file.
  */
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -83,10 +83,24 @@ export class WebTokenStore {
     return tokens.sort((a, b) => a.created_at.localeCompare(b.created_at))
   }
 
-  /** Look up a token by its plaintext bearer value. Returns null if no match. */
+  /**
+   * Look up a token by its plaintext bearer value. Returns null if no
+   * match. Constant-time compare per candidate (same discipline as the
+   * connector listener's static-bearer check): `===` short-circuits on
+   * the first differing character, which leaks prefix-match timing to
+   * whoever can reach the HTTP listener. Length is not secret (always
+   * 64 hex chars), so the length pre-check leaks nothing.
+   */
   async findByValue(value: string): Promise<WebToken | null> {
     const tokens = await this.list()
-    return tokens.find((t) => t.value === value) ?? null
+    const candidate = Buffer.from(value, 'utf-8')
+    for (const t of tokens) {
+      const stored = Buffer.from(t.value, 'utf-8')
+      if (stored.length === candidate.length && timingSafeEqual(stored, candidate)) {
+        return t
+      }
+    }
+    return null
   }
 
   /** Delete a token by id. Returns true if a token was removed. */

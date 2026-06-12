@@ -50,8 +50,8 @@ export interface CatalogEntry {
  * Conventions in use:
  * - Anthropic: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`
  *   (per CLAUDE.md model IDs as of 2026-04-29).
- * - DeepSeek: `deepseek-chat`, `deepseek-reasoner`. Doug tracks v4
- *   shipped 2026-04-24 (project memory).
+ * - DeepSeek: `deepseek-chat`, `deepseek-reasoner`. v4 shipped
+ *   2026-04-24 (project memory).
  * - OpenAI: `gpt-5`, `gpt-5-mini` (placeholder names for the family
  *   structure; replace with real ids when v1 picks an OpenAI line).
  */
@@ -112,7 +112,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     tier: 'frontier',
     status: 'active',
     display_name: 'DeepSeek v4',
-    notes: 'Shipped 2026-04-24; Doug tracks parity-with-Opus claims for coding workloads.',
+    notes: 'Shipped 2026-04-24; parity-with-Opus claims for coding workloads worth watching.',
   },
 
   // Kimi (Moonshot)

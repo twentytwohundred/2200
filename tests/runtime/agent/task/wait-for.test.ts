@@ -149,7 +149,7 @@ describe('TaskStore.findWaiting (pub)', () => {
   it('does not match when expected_from differs', async () => {
     const store = new TaskStore(home, AGENT)
     await store.save(makeTask({ state: 'blocked_on_agent', wait_for: pubWait() }))
-    const match = await store.findWaiting({ kind: 'pub', pub: 'studio', sender: 'doug' })
+    const match = await store.findWaiting({ kind: 'pub', pub: 'studio', sender: 'operator' })
     expect(match).toBeNull()
   })
 

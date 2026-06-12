@@ -319,11 +319,11 @@ describe('shelf_curate_from_inbox', () => {
       notification_id: 'notif_abc',
       type: 'context',
       body: 'curated context',
-      curator: 'doug',
+      curator: 'operator',
     })
     const rec = await readShelfItem(home, embassy, out.shelf_item_id)
     expect(rec?.frontmatter.source_type).toBe('human_curated')
-    expect(rec?.frontmatter.source.curator).toBe('doug')
+    expect(rec?.frontmatter.source.curator).toBe('operator')
     expect(rec?.frontmatter.source.origin).toBe('inbox')
     expect(rec?.frontmatter.source.reference).toBe('notif_abc')
   })
