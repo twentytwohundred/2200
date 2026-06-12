@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.612.2032] ... 2026-06-12
+
+Phase 1 hardening for first production installs. Second cut of the day ... the first same-day release under the extended CalVer scheme.
+
+### Fixed
+
+- **Pub owners derive from the operator's identity, never a baked-in default.** `composePubMd` requires an owner; `Supervisor.createPub` reads the user identity's pub handle and fails loud with a fix-it message when no identity exists yet. Previously every install's pubs were created with `owner: doug`. (#271)
+- **Hardcoded `doug` swept from every shipped string**: starter-pack Agent guidance now uses `@<operator-handle>` and "the operator", agent-loop prompt examples, the `task_await_response` tool description, CLI help text, the web Embassies placeholder, and the model-catalog notes field are all neutral. Test fixtures moved to `alice`/`operator`. Dated design-decision attribution comments are deliberately retained as project history. (#271)
+- **Two test flakes root-caused**: the scheduler-integration test read the schedule file inside the enqueue-before-persist write gap; the pub-client test asserted `roomState()` synchronously while the `room_state` frame was still in flight behind the welcome handshake. Both now poll the actual condition. (#272)
+
+### Security
+
+- **Timing-safe bearer comparison** in the web token store's `findByValue` (was `===`, which leaks prefix-match timing). Same `timingSafeEqual` discipline the connector listener already uses. (#271)
+- **The permission evaluator and connector inbound router now have test coverage** (19 + 21 tests; both were previously untested). The router suite pins the secure defaults: unknown DM senders go to operator pairing, unknown groups are blocked, group activation requires a mention, self-echoes never wake an Agent, and a platform's `mentioned: false` beats substring matching. (#272)
+
+### Added
+
+- **Operator runbook sections in the README**: what `2200 update` does to a running fleet (stop → install → restart, checkpoint resume for non-destructive tasks, rollback attempt on failure), backup/restore for the two state directories, and a troubleshooting quick-reference. (#272)
+
 ## [2026.612.1935] ... 2026-06-12
 
 First release published to the npm registry. Versioning extends to `YYYY.MDD.HHMM` (month+day packed into the minor slot, UTC time of the cut in the patch slot) per the v2 decision ... npm rejects four-segment versions, so `2026.612.1935` is the three-slot form of "June 12 2026, cut at 19:35 UTC". Same-day releases are now possible ... this cut supersedes the same-day `2026.612.1857` attempt, which npm's name filter rejected and which never reached any registry.
