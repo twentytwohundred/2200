@@ -37,3 +37,6 @@ Thumbs.db
 state/
 brain_dir/
 *.log
+
+# npm pack output
+*.tgz

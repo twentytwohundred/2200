@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 0.1.0
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.6.12
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
 # Flags:

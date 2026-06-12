@@ -2,11 +2,22 @@
 
 All notable changes to 2200 are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow calendar versioning: `YYYY.M.D` (the UTC date of the cut, no leading zeros, at most one release per day), so an operator can read at a glance how far behind they are. Versions before 2026.6.12 followed semver; `0.1.0` below was never published.
 
 ## [Unreleased]
 
+## [2026.6.12] ... 2026-06-12
+
+First published release ... the first 2200 version to reach the npm registry and GitHub Releases, and the first under calendar versioning.
+
+### Fixed
+
+- **CLI sources `runtime.env` and `oauth-apps.env` on every invocation** via a commander `preAction` hook, so any command that reads a provider key (`agent build` auto-pick, `oauth login` cred checks, direct `resolveProvider` calls) works from a bare shell instead of failing despite correctly stored keys. Live regression 2026-06-03. (#265)
+- **`Supervisor.stopAgent` kills orphaned Agent processes when the tracked map is empty**, so a stop request can no longer leave an untracked Agent process running. (#263)
+
 ### Added
+
+- **Paste-a-key provider setup in first-run.** The first-run wizard offers an API-key path alongside the SuperGrok OAuth sign-in, so a new install can bind any supported provider without leaving the terminal. (#264)
 
 - **Embassy arc cleanup pass (Phase 2 / PR-B6).** Final piece of the embassy/shelf arc. Completes the `connector.embassy_*` audit family and validates the full chain end-to-end with an integration test.
   - **Three new audit events** (normal tier — operator-noteworthy lifecycle):
