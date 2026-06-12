@@ -207,7 +207,7 @@ function RegisterEmbassyForm({
           onChange={(e) => {
             setDisplayName(e.target.value)
           }}
-          placeholder="Grok (Doug's subscription)"
+          placeholder="Grok (personal subscription)"
         />
       </div>
       <div className={styles.formRow}>

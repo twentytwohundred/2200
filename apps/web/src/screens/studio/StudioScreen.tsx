@@ -1,8 +1,8 @@
 /**
  * Studio: a multi-agent room with composer + reactions.
  *
- * Doug, Hobby, Simon, and any other pub members all in one threaded
- * view. Routing: `/studio` redirects to the install's first running
+ * The operator, their Agents, and any other pub members all in one
+ * threaded view. Routing: `/studio` redirects to the install's first running
  * pub; `/studio/:pub` opens that pub specifically.
  *
  * Substrate: the supervisor's `SupervisorPubBridge` owns one

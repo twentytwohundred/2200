@@ -36,7 +36,7 @@ export type UserPubCredentials = z.infer<typeof UserPubCredentialsSchema>
 export const UserPubBlockSchema = z.object({
   /** UUID v7 from OpenPub. May be empty before `2200 user init` registers. */
   identity: z.string(),
-  /** The `@doug` style handle. Display-only; uniqueness enforced by pub-server. */
+  /** The `@alice` style handle. Display-only; uniqueness enforced by pub-server. */
   handle: z.string().min(1),
   credentials: UserPubCredentialsSchema,
   key_version: z.number().int().positive().default(1),

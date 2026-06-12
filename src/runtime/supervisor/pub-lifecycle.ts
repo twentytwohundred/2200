@@ -235,8 +235,13 @@ export interface PubMdOptions {
   name: string
   description?: string
   capacity?: number
-  /** Owner identifier. Per Epic 3 spec: the user's pub identity at v1. */
-  owner?: string
+  /**
+   * Owner identifier. Per Epic 3 spec: the user's pub identity at v1.
+   * Required: there is no sensible default at this layer. Supervisor
+   * derives it from the operator's user identity when the caller
+   * doesn't pass one (see `Supervisor.createPub`).
+   */
+  owner: string
   /** Bartender LLM model (`<provider>/<model_id>` per the locked format). */
   model?: string
 }
@@ -262,7 +267,7 @@ export interface PubMdOptions {
  */
 export function composePubMd(opts: PubMdOptions): string {
   const description = opts.description ?? `${opts.name} pub`
-  const owner = opts.owner ?? 'doug'
+  const owner = opts.owner
   const capacity = opts.capacity ?? 10
   const lines: string[] = ['---']
   // pub-server's PUB.md format version, NOT 2200's schema_version.

@@ -3931,7 +3931,7 @@ export function buildProgram(): Command {
     .requiredOption('--mode <mode>', 'dedicated | attached')
     .requiredOption(
       '--display-name <name>',
-      'human-readable name for the conduit (e.g., "Grok (Doug\'s subscription)")',
+      'human-readable name for the conduit (e.g., "Grok (personal subscription)")',
     )
     .option(
       '--model-tier <tier>',

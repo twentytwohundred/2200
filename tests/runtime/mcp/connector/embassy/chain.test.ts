@@ -199,7 +199,7 @@ describe('full embassy chain (PR-B6)', () => {
     // Operator approves.
     const approved = await sup.approveShelfPlacement({
       approvalToken: requested.approval_token,
-      operatorName: 'doug',
+      operatorName: 'operator',
     })
     expect(approved.embassyAgent).toBe(EMBASSY)
     // Approval-resolved lifecycle event.
@@ -209,7 +209,7 @@ describe('full embassy chain (PR-B6)', () => {
     const items = await listShelfItems(home, EMBASSY)
     expect(items.length).toBe(3)
     const humanCurated = items.find((i) => i.frontmatter.source_type === 'human_curated')
-    expect(humanCurated?.frontmatter.source.curator).toBe('doug')
+    expect(humanCurated?.frontmatter.source.curator).toBe('operator')
 
     // ---- Step 5: build the shelf_preview as Grok would see it.
     const preview = await buildShelfPreview(home, EMBASSY, registered.clientId)

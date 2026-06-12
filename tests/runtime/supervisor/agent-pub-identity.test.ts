@@ -152,6 +152,9 @@ afterEach(async () => {
 async function setup(): Promise<void> {
   supervisor = await Supervisor.create({ home })
   await supervisor.start()
+  // Pub creation derives its owner from the user identity (fail-fast
+  // when absent), so the harness mints one the way first-run does.
+  await supervisor.createUserIdentity({ display_name: 'Alice' })
   const conn = await connectUds(Supervisor.socketPath(home))
   client = new JsonRpcClient(conn)
 }

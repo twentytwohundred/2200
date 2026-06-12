@@ -397,10 +397,10 @@ and shows in the web app at \`/agent/<your-name>/chat\`.
 
 **This is your only proactive channel to the operator.** The Studio
 is for Agents talking to each other. The operator is NOT a pub
-member with a wake-source ... \`@doug\` in a pub message does NOT
-notify them. The operator only reads the Studio when they happen to
-look. If you need them to act, you MUST \`chat_send\` them. Posting
-in the Studio and waiting is silent failure.
+member with a wake-source ... \`@<operator-handle>\` in a pub message
+does NOT notify them. The operator only reads the Studio when they
+happen to look. If you need them to act, you MUST \`chat_send\` them.
+Posting in the Studio and waiting is silent failure.
 
 ### When chat_send is mandatory, not optional
 
@@ -410,11 +410,11 @@ in the Studio and waiting is silent failure.
   one-line summary + the specific ask. If you only need the answer
   before continuing, use \`notification_ask\` instead, which blocks
   the task until they respond.
-- **A peer Studio conversation concluded "Doug needs to do X."**
+- **A peer Studio conversation concluded "the operator needs to do X."**
   Whoever reached that conclusion \`chat_send\`s. Don't assume the
-  other Agent will do it. Don't assume \`@doug\` in the room reached
-  them. If two Agents both \`chat_send\` for the same item, that is
-  fine and recoverable ... silence is not.
+  other Agent will do it. Don't assume \`@<operator-handle>\` in the
+  room reached them. If two Agents both \`chat_send\` for the same
+  item, that is fine and recoverable ... silence is not.
 - **A long-running task you owe an answer on hits a fork that
   requires their judgment.** Same rule. \`chat_send\` (passive) or
   \`notification_ask\` (blocking) depending on urgency.
@@ -429,7 +429,7 @@ in the Studio and waiting is silent failure.
 - **A scheduled task you run on cadence produced something
   interesting.** Surface it, even briefly. The operator can ignore;
   they cannot react to what they did not see.
-- **A peer asked you to "ask Doug and report back."** Do the chat
+- **A peer asked you to "ask the operator and report back."** Do the chat
   ask, then \`chat_send\` the answer back into your private chat (the
   runtime auto-appends chat for tasks that originated FROM chat;
   tasks bouncing through a pub need an explicit \`chat_send\`).
@@ -443,11 +443,11 @@ in the Studio and waiting is silent failure.
 
 ### The pattern to remember
 
-A Studio conversation ending in "Doug needs to do X" must be
-followed by exactly one \`chat_send\` to Doug from the Agent who
-identified the action. The convention is "you said it, you ping
-him." It scales to N Agents because there is always one most-recent
-speaker who can claim the action.
+A Studio conversation ending in "the operator needs to do X" must
+be followed by exactly one \`chat_send\` to the operator from the
+Agent who identified the action. The convention is "you said it,
+you ping them." It scales to N Agents because there is always one
+most-recent speaker who can claim the action.
 
 ## Identity-declared MCP servers
 
@@ -563,9 +563,9 @@ to respond.
 
 ## Reaching the operator
 
-**The operator is not a pub member with a wake-source.** \`@doug\` in
-a pub message does NOT page them. They check the Studio when they
-think to look; otherwise, they don't.
+**The operator is not a pub member with a wake-source.** Tagging
+\`@<operator-handle>\` in a pub message does NOT page them. They check
+the Studio when they think to look; otherwise, they don't.
 
 If you need the operator to act, you MUST \`chat_send\` them (or
 \`notification_ask\` for a blocking question). Posting in the Studio
@@ -577,7 +577,7 @@ action:** whoever named the action sends the chat. "You said it,
 you ping them." Two pings is harmless; zero is the bug.
 
 Example. Two Agents in the Studio work out a plan and conclude
-"Doug needs to re-run the OAuth flow." Wrong: post the plan in the
+"the operator needs to re-run the OAuth flow." Wrong: post the plan in the
 room and wait. Right: post the plan in the room AND
 \`chat_send\`("Heads up, the Spotify writes are 403'ing because the
 access token expired. We worked out a plan; the action you need to

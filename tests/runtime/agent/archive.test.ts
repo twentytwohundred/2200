@@ -125,9 +125,9 @@ Body text that should not be touched.
   it('escapes single quotes in reason', () => {
     const out = applyArchiveEdit(sampleIdentity, {
       agent_name: 'jodin-archived-2026-05-14',
-      archived: { at: '2026-05-14T12:00:00.000Z', reason: "doug's call" },
+      archived: { at: '2026-05-14T12:00:00.000Z', reason: "operator's call" },
     })
-    expect(out).toContain("reason: 'doug''s call'")
+    expect(out).toContain("reason: 'operator''s call'")
   })
 })
 

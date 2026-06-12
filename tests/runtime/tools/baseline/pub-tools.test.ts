@@ -64,7 +64,7 @@ async function setup(agentName: string): Promise<ToolContext> {
   // 2. Supervisor with a pub record marked 'running' pointing at the fake.
   supervisor = await Supervisor.create({ home })
   await supervisor.start()
-  await supervisor.createPub('ops', { port: pub.port })
+  await supervisor.createPub('ops', { port: pub.port, owner: 'operator' })
   // Inject 'running' state via the underlying state edit. Bypassing
   // startPub because startPub would start a real openpub-server; the
   // fake server is what's actually listening.

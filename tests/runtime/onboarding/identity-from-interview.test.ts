@@ -20,7 +20,7 @@ function transcript(opts: {
   const entries = opts.entries ?? [
     { id: 'opening', tag: 'opening_purpose', answer: 'I want an email assistant' },
     { id: 'agent_name', tag: 'agent_name', answer: opts.agentName ?? 'emma' },
-    { id: 'email_account', tag: 'tool_email_account', answer: 'doug@example.com' },
+    { id: 'email_account', tag: 'tool_email_account', answer: 'operator@example.com' },
   ]
   return {
     interview_schema_version: 2,
@@ -33,7 +33,7 @@ function transcript(opts: {
       ...(e.tag !== undefined ? { intent_tag: e.tag } : {}),
       asked_at: '2026-04-29T12:00:00.000Z',
     })),
-    summary: opts.summary ?? 'I am Emma, an email Agent. I will watch doug@example.com.',
+    summary: opts.summary ?? 'I am Emma, an email Agent. I will watch operator@example.com.',
     started_at: '2026-04-29T12:00:00.000Z',
     finished_at: '2026-04-29T12:05:00.000Z',
   }

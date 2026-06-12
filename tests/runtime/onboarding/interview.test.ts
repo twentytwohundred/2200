@@ -137,7 +137,7 @@ describe('runInterview', () => {
           '{"kind":"question","text":"Which integrations?","covering":"tools"}',
           '{"kind":"done"}',
         ],
-        summary: 'I am Emma, an email Agent. I will watch doug@example.com.',
+        summary: 'I am Emma, an email Agent. I will watch operator@example.com.',
       }),
       modelId: 'claude-opus-4-7',
       input: fakeInput([

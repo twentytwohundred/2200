@@ -39,7 +39,7 @@ describe('suggestTools', () => {
     const t = makeTranscript([
       { id: 'opening', tag: 'opening_purpose', answer: 'email assistant' },
       { id: 'agent_name', tag: 'agent_name', answer: 'emma' },
-      { id: 'email_account', tag: 'tool_email_account', answer: 'doug@example.com' },
+      { id: 'email_account', tag: 'tool_email_account', answer: 'operator@example.com' },
     ])
     const suggestions = suggestTools(t, 'emma')
     expect(suggestions).toHaveLength(1)

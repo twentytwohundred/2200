@@ -268,8 +268,8 @@ export class PubWakeSource {
       //  (2) Message has explicit @-mentions for OTHER Agents but
       //      not us. The human picked their target(s); the router
       //      should not second-guess the explicit address. Catches
-      //      the case where Doug says "@simon, here is a question"
-      //      and the router would otherwise decide hobby should
+      //      the case where the operator says "@simon, here is a
+      //      question" and the router would otherwise decide another Agent should
       //      chime in too. Pre-Epic-3.8 hotfix this was the most
       //      visible source of unwanted Agent chatter.
       //

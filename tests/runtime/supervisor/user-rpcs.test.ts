@@ -117,7 +117,7 @@ async function setup(): Promise<void> {
 describe('cli.user.init (no pub yet)', () => {
   it('writes user.md and credential file with deferred registration', async () => {
     await setup()
-    const result = await client!.call('cli.user.init', { display_name: 'Doug' })
+    const result = await client!.call('cli.user.init', { display_name: 'Alice' })
     expect(result.ok).toBe(true)
     expect(result.agent_id).toBeNull()
     expect(result.registered_against).toBeNull()
@@ -125,19 +125,19 @@ describe('cli.user.init (no pub yet)', () => {
     expect(result.credentials_path).toBe(homePaths(home).configUserPubSecret)
 
     const cred = await readCredentialFile(result.credentials_path)
-    expect(cred.display_name).toBe('Doug')
+    expect(cred.display_name).toBe('Alice')
     expect(cred.agent_id).toBeNull()
     expect(cred.issuer_url).toBe('local://unregistered')
 
     const ident = await loadUserIdentity(result.user_md_path)
-    expect(ident.frontmatter.display_name).toBe('Doug')
-    expect(ident.frontmatter.pub.handle).toBe('@doug')
+    expect(ident.frontmatter.display_name).toBe('Alice')
+    expect(ident.frontmatter.pub.handle).toBe('@alice')
     expect(ident.frontmatter.pub.identity).toBe('')
   })
 
   it('credential file is mode 0600 on POSIX', async () => {
     await setup()
-    const result = await client!.call('cli.user.init', { display_name: 'Doug' })
+    const result = await client!.call('cli.user.init', { display_name: 'Alice' })
     if (process.platform !== 'win32') {
       const s = await stat(result.credentials_path)
       expect(s.mode & 0o777).toBe(0o600)
@@ -147,29 +147,29 @@ describe('cli.user.init (no pub yet)', () => {
   it('respects --handle override', async () => {
     await setup()
     const result = await client!.call('cli.user.init', {
-      display_name: 'Doug Hardman',
-      handle: '@mrdoug',
+      display_name: 'Alice Hartman',
+      handle: '@justalice',
     })
     const ident = await loadUserIdentity(result.user_md_path)
-    expect(ident.frontmatter.pub.handle).toBe('@mrdoug')
+    expect(ident.frontmatter.pub.handle).toBe('@justalice')
   })
 
   it('default handle: lowercased, whitespace stripped, leading @', async () => {
     await setup()
-    const result = await client!.call('cli.user.init', { display_name: 'Doug Hardman' })
+    const result = await client!.call('cli.user.init', { display_name: 'Alice Hartman' })
     const ident = await loadUserIdentity(result.user_md_path)
-    expect(ident.frontmatter.pub.handle).toBe('@doughardman')
+    expect(ident.frontmatter.pub.handle).toBe('@alicehartman')
   })
 })
 
 describe('cli.user.init (idempotent re-run)', () => {
   it('preserves keypair and created date on same display_name re-run', async () => {
     await setup()
-    const first = await client!.call('cli.user.init', { display_name: 'Doug' })
+    const first = await client!.call('cli.user.init', { display_name: 'Alice' })
     const cred1 = await readCredentialFile(first.credentials_path)
     const md1 = await readFile(first.user_md_path, 'utf8')
 
-    const second = await client!.call('cli.user.init', { display_name: 'Doug' })
+    const second = await client!.call('cli.user.init', { display_name: 'Alice' })
     expect(second.user_md_path).toBe(first.user_md_path)
     const cred2 = await readCredentialFile(second.credentials_path)
     expect(cred2.private_key).toBe(cred1.private_key)
@@ -182,9 +182,9 @@ describe('cli.user.init (idempotent re-run)', () => {
 
   it('refuses on display_name mismatch with a clear error', async () => {
     await setup()
-    await client!.call('cli.user.init', { display_name: 'Doug' })
+    await client!.call('cli.user.init', { display_name: 'Alice' })
     await expect(client!.call('cli.user.init', { display_name: 'Dana' })).rejects.toThrow(
-      /already exists with display_name "Doug"/,
+      /already exists with display_name "Alice"/,
     )
   })
 })
@@ -193,13 +193,16 @@ describe('cli.user.init (with a pub running)', () => {
   it('registers the user against a pub when that pub is in running state', async () => {
     await setup()
     const fake = await startFakePub()
-    await client!.call('cli.pub.create', { name: 'ops', port: fake.port })
+    // Direct createPub with explicit owner: this test exercises user
+    // init AFTER a pub exists, so no identity is present yet to derive
+    // an owner from (the RPC path would fail-fast by design).
+    await supervisor!.createPub('ops', { port: fake.port, owner: 'alice' })
     // Inject pub-running state by hand: use a long-sleeping fake binary
     // whose exit handler will not fire during the test window.
     const sleeperBin = await writeSleepBinary()
     await supervisor!.startPub('ops', { executablePath: sleeperBin })
 
-    const result = await client!.call('cli.user.init', { display_name: 'Doug' })
+    const result = await client!.call('cli.user.init', { display_name: 'Alice' })
     expect(result.agent_id).not.toBeNull()
     expect(result.registered_against).toBe('ops')
 

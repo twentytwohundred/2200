@@ -15,7 +15,7 @@
  *      OPENPUB_TRUST_MODE=local, OPENPUB_ADMIN_SECRET, PUB_SIGNING_*,
  *      PUB_MD_PATH, PORT, OPENPUB_STATE_DIR.
  *   4. Wait for /health or /info to respond.
- *   5. createUserIdentity('Doug') → mints keypair, registers via the
+ *   5. createUserIdentity('Alice') → mints keypair, registers via the
  *      real /admin/register-agent (X-OpenPub-Admin-Secret header).
  *   6. Write a poe Identity with a `pub:` block → createAgent('poe')
  *      mints + registers poe similarly, patches identity.md.
@@ -108,22 +108,22 @@ const itIfBinary = HAS_BINARY ? it : it.skip
 
 describe('Epic 3 PR F: Poe smoke test against real openpub-server@0.3.3', () => {
   itIfBinary(
-    'end-to-end: doug → @poe → wake → reply → doug receives',
+    'end-to-end: user → @poe → wake → reply → user receives',
     async () => {
       // 1. Supervisor up.
       supervisor = await Supervisor.create({ home })
       await supervisor.start()
 
       // 2. Create + 3. start the real pub.
-      await supervisor.createPub('ops')
+      await supervisor.createPub('ops', { owner: 'operator' })
       const startResult = await supervisor.startPub('ops')
 
       // 4. Wait for the real binary to come online.
       const baseUrl = `http://127.0.0.1:${String(startResult.port)}`
       await waitFor200(`${baseUrl}/info`, 10_000)
 
-      // 5. Doug.
-      const userInit = await supervisor.createUserIdentity({ display_name: 'Doug' })
+      // 5. The user.
+      const userInit = await supervisor.createUserIdentity({ display_name: 'Alice' })
       expect(userInit.agent_id).not.toBeNull()
       expect(userInit.registered_against).toBe('ops')
       const userId = await loadUserIdentity(homePaths(home).configUserMd)
@@ -171,10 +171,10 @@ describe('Epic 3 PR F: Poe smoke test against real openpub-server@0.3.3', () => 
       const poeCred = await readCredentialFile(agentPaths(home, 'poe').pubSecret)
       expect(poeCred.agent_id).toBe(poeIdentity.frontmatter.pub?.identity)
 
-      // 7. User PubClient (doug talks in the pub via PubClient directly).
-      const doug = new PubClient({ baseUrl, cred: userCred })
-      userClients.push(doug)
-      await doug.connect()
+      // 7. User PubClient (user talks in the pub via PubClient directly).
+      const user = new PubClient({ baseUrl, cred: userCred })
+      userClients.push(user)
+      await user.connect()
 
       // 8. Poe PubClient with a wake source + task store (we emulate
       //    AgentProcess.attachPubWakeSources() inline rather than spinning
@@ -194,13 +194,13 @@ describe('Epic 3 PR F: Poe smoke test against real openpub-server@0.3.3', () => 
       wake.start()
       wakeSources.push(wake)
 
-      // Capture reply content on doug's side. Pub-server (v0.3.x)
+      // Capture reply content on user's side. Pub-server (v0.3.x)
       // sends `'message'` events to mentioned agents and lightweight
       // `'conversation_event'` events to non-mentioned ones; the
       // sender also receives a fresh `room_state` whose conversation
       // includes the new message. Catch any of the three patterns.
       const replyContents: string[] = []
-      doug.onEvent((event) => {
+      user.onEvent((event) => {
         if (event.type === 'message' && event.data.agent_id !== userCred.agent_id) {
           replyContents.push(event.data.content)
         } else if (
@@ -217,9 +217,9 @@ describe('Epic 3 PR F: Poe smoke test against real openpub-server@0.3.3', () => 
         }
       })
 
-      // 9. Doug @-mentions poe.
-      await doug.send({
-        content: '@poe ping from doug',
+      // 9. the user @-mentions poe.
+      await user.send({
+        content: '@poe ping from user',
         mentions: [poeCred.agent_id!],
       })
 
@@ -244,7 +244,7 @@ describe('Epic 3 PR F: Poe smoke test against real openpub-server@0.3.3', () => 
       })
       expect(replyResult.message_id).toMatch(/^[0-9a-f-]{36}$/)
 
-      // 12. Doug receives the reply via WS broadcast.
+      // 12. the user receives the reply via WS broadcast.
       for (let i = 0; i < 50; i++) {
         if (replyContents.includes('pong from poe')) break
         await new Promise((r) => setTimeout(r, 100))

@@ -99,8 +99,8 @@ export interface MigrateArgs {
   seedFirstTask?: boolean
   /**
    * How to address the operator in the orientation task body.
-   * Defaults to "the operator". Onboarding can pass "Doug" or
-   * "@doug" if it captured the operator's preferred handle.
+   * Defaults to "the operator". Onboarding can pass a name or
+   * "@handle" if it captured the operator's preferred addressing.
    */
   operatorAddressing?: string
 }

@@ -9,10 +9,10 @@
  * the agent process.
  *
  * This bridge gives the supervisor a long-lived `PubClient` per pub,
- * authenticated as the local user (Doug, per `<home>/config/user.md`).
+ * authenticated as the local user (per `<home>/config/user.md`).
  * The web app's `/api/v1/pubs/...` routes read the bridge's rolling
  * buffer; POSTs (send + react) route through the same client so the
- * pub server attributes them to `@doug`.
+ * pub server attributes them to the operator's own handle.
  *
  * Lifecycle:
  *   - Bridges are lazy: the first call to `getMessages(pub)` (or
@@ -115,8 +115,8 @@ export class SupervisorPubBridge {
 
   /**
    * Send a message to the pub on behalf of the local user. The
-   * pub-server stamps the sender as `@doug` (or whatever the user
-   * identity declares) and broadcasts to all members.
+   * pub-server stamps the sender with whatever handle the user
+   * identity declares and broadcasts to all members.
    */
   async send(
     pubName: string,
