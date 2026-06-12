@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-const PACKAGE_NAME = '@twentytwohundred/2200'
+const PACKAGE_NAME = '@twentytwohundred/2200-cli'
 
 // Read the version directly from the published `package.json` so
 // `npm version <bump>` is the single source of truth and `2200 --version`

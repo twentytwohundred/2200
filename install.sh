@@ -2,13 +2,13 @@
 #
 # 2200 installer.
 #
-# Installs the @twentytwohundred/2200 CLI globally via npm. Idempotent:
+# Installs the @twentytwohundred/2200-cli CLI globally via npm. Idempotent:
 # re-running upgrades to the latest published version. macOS + Linux,
 # both arm64 and x86_64. Requires Node.js 22 or newer.
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.612.1857
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.612.1935
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
 # Flags:
@@ -32,7 +32,7 @@ set -eu
 # -----------------------------------------------------------------------------
 # CLI flag parsing.
 # -----------------------------------------------------------------------------
-PACKAGE_NAME="@twentytwohundred/2200"
+PACKAGE_NAME="@twentytwohundred/2200-cli"
 PACKAGE_VERSION="latest"
 DRY_RUN=0
 NO_BANNER=0

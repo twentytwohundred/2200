@@ -8,7 +8,7 @@
  *
  * Lifecycle (mirrors the stages in `upgrade-status.ts`):
  *   1. Wait for the daemon PID to disappear  ... stage: stopping_daemon
- *   2. `npm install -g @twentytwohundred/2200@<target>`  ... stage: installing
+ *   2. `npm install -g @twentytwohundred/2200-cli@<target>`  ... stage: installing
  *   3. Start the new daemon  ... stage: restarting
  *   4. Done  ... stage: completed
  *
@@ -93,7 +93,7 @@ function resolveConfig(): UpgradeConfig {
   const home = requireEnv('TWENTYTWOHUNDRED_HOME')
   const daemonPidStr = requireEnv('TWENTYTWOHUNDRED_DAEMON_PID')
   const targetVersion = requireEnv('TWENTYTWOHUNDRED_TARGET_VERSION')
-  const packageName = process.env['TWENTYTWOHUNDRED_PACKAGE_NAME'] ?? '@twentytwohundred/2200'
+  const packageName = process.env['TWENTYTWOHUNDRED_PACKAGE_NAME'] ?? '@twentytwohundred/2200-cli'
   const daemonPid = Number.parseInt(daemonPidStr, 10)
   if (!Number.isFinite(daemonPid) || daemonPid <= 0) {
     throw new Error(`TWENTYTWOHUNDRED_DAEMON_PID is not a positive integer: ${daemonPidStr}`)
