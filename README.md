@@ -56,6 +56,28 @@ The OAuth credential is fleet-wide: one sign-in covers every Agent in your fleet
 
 `2200 update` only replaces the global package binary; your 2200_HOME state is never touched.
 
+What happens to a running fleet during an update: the updater stops the daemon (which stops every Agent), installs the new version, and starts the daemon again. Agents come back with their on-disk task state: non-destructive tasks resume from their last checkpoint (in-flight LLM calls are abandoned and re-issued); destructive tasks never auto-resume and wait for the operator. If anything fails mid-update, the updater attempts to bring the daemon back up on the prior version so the fleet is not left down.
+
+### Backup and restore
+
+Everything that matters lives in two directories:
+
+```bash
+tar -czf 2200-backup.tar.gz ~/.local/share/2200/ ~/.config/2200/
+```
+
+`~/.local/share/2200/` (or your chosen 2200_HOME) holds Agents, brains, tasks, telemetry, and sealed credentials; `~/.config/2200/` holds `runtime.env` and `oauth-apps.env` (provider keys). Restore by stopping the daemon (`2200 daemon stop`), untarring both paths back into place, and starting it again. Backups taken while the daemon runs are usually fine (state files are written atomically), but a stopped-daemon backup is the guaranteed-consistent one. Sealed credentials decrypt only with the master key inside the backup itself, so a restored backup works on a new machine.
+
+### Troubleshooting
+
+```bash
+2200 daemon status    # is the supervisor up, which pid, which version
+2200 agent status     # per-Agent state, last heartbeat, tool health
+2200 web              # open the web app; Settings → Doctor runs substrate health checks
+```
+
+Logs live under `<2200_HOME>/state/` (daemon and per-Agent). The most common first-run issues: Node older than 22 (`node --version`), a non-writable npm prefix on Ubuntu/Debian (the installer auto-fixes this; re-run it), and a stale daemon from a previous version (`2200 daemon stop`, remove the reported stale pidfile, `2200 daemon start`). For everything else, the operator runbooks live in the [wiki](https://github.com/twentytwohundred/wiki) and bugs go to [issues](https://github.com/twentytwohundred/2200/issues).
+
 ### Uninstall
 
 ```bash
