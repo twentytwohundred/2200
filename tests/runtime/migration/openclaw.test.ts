@@ -245,3 +245,60 @@ describe('parseIdentityMd', () => {
     expect(parsed.name).toBe('Skippy')
   })
 })
+
+describe('minimal OpenClaw home (identity + one cron only)', () => {
+  it('converts cleanly with a generated-stub persona and a post-migration checklist', async () => {
+    // Barest viable OC home: a config with one model, IDENTITY.md, and
+    // a single enabled cron job. No SOUL, no memory dir, no operating
+    // docs, no channels. The adapter must still produce a valid handoff
+    // and a useful report rather than throwing on the absences.
+    const ws = join(ocHome, 'workspace')
+    await mkdir(join(ocHome, 'cron'), { recursive: true })
+    await mkdir(ws, { recursive: true })
+    await writeFile(
+      join(ocHome, 'openclaw.json'),
+      JSON.stringify({
+        agents: { defaults: { model: { primary: 'anthropic/claude-opus-4-7' }, workspace: ws } },
+        channels: {},
+        env: {},
+      }),
+    )
+    await writeFile(join(ws, 'IDENTITY.md'), '- **Name:** Lonely\n')
+    await writeFile(
+      join(ocHome, 'cron', 'jobs.json'),
+      JSON.stringify({
+        jobs: [
+          {
+            name: 'Solo',
+            enabled: true,
+            schedule: { kind: 'cron', expr: '0 6 * * *' },
+            payload: { kind: 'agentTurn', message: 'wake up' },
+          },
+        ],
+      }),
+    )
+
+    const survey = await surveyOpenClawHome(ocHome)
+    expect(survey.soulMd).toBeNull()
+    expect(survey.memoryFileCount).toBe(0)
+    expect(survey.operatingDocs).toEqual([])
+
+    const { handoff, report } = openclawToHandoff(survey, {
+      sourceHost: 'tiny',
+      now: FIXED_NOW,
+    })
+    expect(handoff.frontmatter.agent_name).toBe('lonely')
+    // No persona => generated stub (persona_body absent on the handoff).
+    expect(handoff.frontmatter.persona_body).toBeUndefined()
+    // No memory dir => no brain source_dir; no inline notes either.
+    expect(handoff.frontmatter.brain.source_dir).toBeUndefined()
+    expect(handoff.frontmatter.brain.inline_notes ?? []).toEqual([])
+    // The one enabled job still maps.
+    expect(handoff.frontmatter.schedules).toHaveLength(1)
+    expect(handoff.frontmatter.schedules[0]?.expr).toBe('0 6 * * *')
+    // The checklist must always be present and name the new Agent.
+    expect(report).toContain('Next steps (checklist)')
+    expect(report).toContain('2200 agent start lonely')
+    expect(report).toContain('disable the source OpenClaw instance')
+  })
+})

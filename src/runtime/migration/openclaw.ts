@@ -273,7 +273,7 @@ export function openclawToHandoff(
     body: d.content,
   }))
 
-  const report = renderReport({ survey, schedules, unmappedJobs, warnings })
+  const report = renderReport({ agentName, survey, schedules, unmappedJobs, warnings, model })
 
   const continuityBody = [
     `# Continuity: migrated from OpenClaw`,
@@ -457,10 +457,12 @@ async function readCronJobs(path: string): Promise<OpenClawCronJob[]> {
 }
 
 function renderReport(args: {
+  agentName: string
   survey: OpenClawSurvey
   schedules: HandoffSchedule[]
   unmappedJobs: string[]
   warnings: string[]
+  model: { tier: 'frontier'; provider: string; model_id: string } | undefined
 }): string {
   const s = args.survey
   const lines: string[] = [
@@ -491,6 +493,34 @@ function renderReport(args: {
     )
   }
   for (const w of args.warnings) lines.push(`- ${w}`)
+
+  // Post-migration checklist ... actionable, in the order it matters.
+  // Lives in both the printed CLI output and the Agent's continuity
+  // note, so neither the operator nor the Agent has to reconstruct
+  // "what now?" from the prose above.
+  lines.push('', '### Next steps (checklist)', '')
+  lines.push(
+    '- [ ] Bring the Agent up: `2200 daemon start` then `2200 agent start ' + args.agentName + '`',
+  )
+  lines.push(
+    '- [ ] Confirm an LLM credential is set ... the migrate flow copies OpenClaw provider keys into `~/.config/2200/runtime.env` by default; if you skipped that, sign in (`2200 oauth xai login`) or paste a key.',
+  )
+  if (args.model === undefined && s.primaryModel !== null) {
+    lines.push(
+      `- [ ] Rebind the model ... OpenClaw ran \`${s.primaryModel}\`, which has no direct 2200 provider; pick a model in the web app (\`2200 web\` → the Agent → model picker).`,
+    )
+  }
+  if (s.channels.length > 0) {
+    lines.push(
+      `- [ ] Re-wire channel(s) (${s.channels.join(', ')}) in the Extensions store so the Agent can talk where it used to.`,
+    )
+  }
+  lines.push(
+    '- [ ] Review the budget cap (defaulted on migration) via the web app or the Identity file; OpenClaw had no budget concept.',
+  )
+  lines.push(
+    '- [ ] Once the Agent is confirmed working, disable the source OpenClaw instance so you are not paying twice (commands printed at the end of the migration).',
+  )
   return lines.join('\n')
 }
 
