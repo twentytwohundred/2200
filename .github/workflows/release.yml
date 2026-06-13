@@ -146,6 +146,17 @@ jobs:
             echo "::warning::NPM_TOKEN secret is not set. Skipping npm publish; create the release manually with: npm publish --access public --provenance"
             exit 0
           fi
+          # Idempotent guard: a re-run of the workflow on an
+          # already-published version (or an accidental re-tag of the
+          # same CalVer minute) would otherwise fail late with an npm
+          # 403/409. Detect it up front and skip cleanly so the GitHub
+          # Release still attaches without a confusing publish error.
+          PKG=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.meta.outputs.version }}"
+          if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
+            echo "::warning::$PKG@$VERSION is already on the npm registry; skipping publish (idempotent re-run)."
+            exit 0
+          fi
           npm publish --access public --provenance
 
       - name: Dry-run summary
