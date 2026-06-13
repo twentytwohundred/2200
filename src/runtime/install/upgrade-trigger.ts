@@ -26,7 +26,15 @@ import {
   detectInstallSource,
   type VersionCheck,
 } from './update.js'
-import { writeUpgradeStatus } from './upgrade-status.js'
+import { readUpgradeStatus, writeUpgradeStatus } from './upgrade-status.js'
+
+/**
+ * How recent a non-terminal upgrade-status must be to count as "still
+ * in flight". Beyond this the prior runner is assumed dead (crashed
+ * mid-upgrade) and a fresh trigger is allowed to recover. Generous
+ * enough to cover the npm-install + daemon-boot window.
+ */
+const IN_FLIGHT_STALENESS_MS = 180_000
 
 /** Result of a trigger call. */
 export type TriggerResult =
@@ -35,6 +43,7 @@ export type TriggerResult =
   | { kind: 'source-checkout'; path: string }
   | { kind: 'registry-error'; message: string }
   | { kind: 'ahead'; current: string; latest: string }
+  | { kind: 'already-in-progress'; stage: string; version_to: string }
 
 /**
  * Trigger an upgrade. Returns immediately after spawning the helper;
@@ -59,6 +68,22 @@ export async function triggerUpgrade(opts: {
   const source = detectInstallSource(modulePath)
   if (source.kind === 'source-checkout') {
     return { kind: 'source-checkout', path: source.path }
+  }
+
+  // In-flight guard: a rapid second click (or a stuck UI) must not
+  // spawn a second detached runner racing the first. Refuse when a
+  // non-terminal upgrade was updated recently; allow a fresh attempt
+  // once it looks stale (the prior runner crashed).
+  const existing = await readUpgradeStatus(opts.home).catch(() => null)
+  if (existing && existing.stage !== 'completed' && existing.stage !== 'failed') {
+    const age = Date.now() - Date.parse(existing.updated_at)
+    if (Number.isFinite(age) && age < IN_FLIGHT_STALENESS_MS) {
+      return {
+        kind: 'already-in-progress',
+        stage: existing.stage,
+        version_to: existing.version_to,
+      }
+    }
   }
 
   const check = opts.versionCheck ?? (await checkLatestVersion(VERSION))
@@ -124,12 +149,37 @@ export async function triggerUpgrade(opts: {
 }
 
 /**
- * Resolve the bundled upgrade-runner.js path.
+ * Resolve the bundled `upgrade-runner.js` path.
  *
- * tsup writes `src/runtime/install/upgrade-runner.ts` to
- * `dist/runtime/install/upgrade-runner.js`. From this file's perspective
- * (also under `dist/runtime/install/`), the runner is a sibling.
+ * tsup emits the runner as a standalone entry at
+ * `<distRoot>/runtime/install/upgrade-runner.js`. This trigger module,
+ * however, is NOT emitted standalone ... tsup inlines it into the
+ * bundles that import it (`<distRoot>/cli/main.js` and, critically,
+ * `<distRoot>/runtime/supervisor/bootstrap.js`, which is the daemon
+ * process that actually calls `triggerUpgrade` from the HTTP route).
+ * So `import.meta.url` here points at the host bundle, NOT at
+ * `runtime/install/`, and a naive `dirname(modulePath)/upgrade-runner.js`
+ * resolves to a file that does not exist ... which silently bricked the
+ * web "click Upgrade" path (found in the 2026-06-13 update-mechanism
+ * audit). Instead, walk up from the host bundle to the dist root and
+ * resolve the runner at its known stable location.
  */
 function defaultRunnerPath(modulePath: string): string {
+  const RUNNER_REL = join('runtime', 'install', 'upgrade-runner.js')
+  // Walk up at most a few levels looking for <ancestor>/runtime/install/
+  // upgrade-runner.js. The daemon bundle is `<dist>/runtime/supervisor/
+  // bootstrap.js` (3 levels under dist) and the CLI bundle is
+  // `<dist>/cli/main.js` (2 levels), so a small bound covers both.
+  let dir = dirname(modulePath)
+  for (let i = 0; i < 6; i++) {
+    const candidate = join(dir, RUNNER_REL)
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  // Fall back to the legacy sibling guess so the existsSync check in
+  // the caller still produces a clear "runner not found" error rather
+  // than throwing here.
   return join(dirname(modulePath), 'upgrade-runner.js')
 }

@@ -418,6 +418,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         case 'registry-error':
           await reply.code(502).send({ error: 'registry-error', ...result })
           return
+        case 'already-in-progress':
+          // An upgrade is already running; do not spawn a second
+          // runner. The UI is already polling upgrade-status.
+          await reply.code(409).send({ error: 'already-in-progress', ...result })
+          return
       }
     },
   )
