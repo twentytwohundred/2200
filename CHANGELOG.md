@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.613.2149] ... 2026-06-13
+
+Update-mechanism hardening, for click-update dogfooding.
+
+### Fixed
+
+- **Web "click Upgrade" was broken** and now works. The daemon resolved the detached upgrade helper relative to its own bundled location, but the trigger code is inlined into the supervisor bundle (`dist/runtime/supervisor/`) while the helper ships at `dist/runtime/install/` — so every web upgrade returned "runner not found". The resolver now walks up to the dist root and finds the helper at its real path. **Note:** an instance already running an older build still has the broken web button; update it once via `2200 update` (CLI) to land on this version, after which the Settings → Upgrade button works.
+- **CalVer leading-zero could break npm publish.** A release cut in the morning via `date +%H%M` produces e.g. `0830`, which is invalid semver (no leading zeros) and npm rejects. The release workflow now validates semver-validity up front with a clear message. The scheme is `H*100+MM` with no padding (08:30 → 830, 00:05 → 5, 14:45 → 1445).
+
+### Changed
+
+- **In-flight guard on the upgrade trigger.** A second "Upgrade" click while one is already running returns `409 already-in-progress` instead of spawning a second runner racing the first. A status that hasn't advanced for over 3 minutes is treated as a crashed runner, so a fresh attempt can recover.
+- **Settings update tile refreshes promptly.** It now polls the published version every 60s and adds a "Check now" button, so a freshly-published release appears within a minute (was up to 5).
+
+### Verified (no change needed)
+
+- Version comparison is numeric, so CalVer orders correctly and a multi-version skip installs straight to latest. Identity files carry a complete lazy migrator chain (`0→1→2→3→4→5`), so skipping 2–3 versions migrates them correctly on load. The upgrade SIGTERMs the daemon (full stop), so the new daemon restarts every Agent on the new code ("reload everything"). **Forward-discipline note:** non-identity on-disk schemas are all at v1 with no migrator chain yet — safe today, but the first one to bump must add a chain (the identity migrators are the template).
+
 ## [2026.613.1445] ... 2026-06-13
 
 The first impression, rebuilt: a premium branded installer and zero-flag OpenClaw migration.
