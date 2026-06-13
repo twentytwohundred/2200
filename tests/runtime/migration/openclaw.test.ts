@@ -24,6 +24,7 @@ import {
   openclawToHandoff,
   collectOpenClawLlmEnv,
   looksLikeOpenClawHome,
+  detectOpenClawHome,
   parseIdentityMd,
   OpenClawSurveyError,
 } from '../../../src/runtime/migration/openclaw.js'
@@ -48,6 +49,10 @@ async function writeFixture(opts: { withSoul?: boolean; withCron?: boolean } = {
         XAI_API_KEY: 'xai-secret-123',
         MINIMAX_API_KEY: 'mm-secret-456',
         DISCORD_BOT_TOKEN: 'discord-secret-789',
+        // Non-LLM secrets that a suffix heuristic would wrongly sweep up.
+        GITHUB_TOKEN: 'ghp-secret-DO-NOT-MIGRATE',
+        AWS_SECRET_ACCESS_KEY: 'aws-secret-DO-NOT-MIGRATE',
+        STRIPE_API_KEY: 'sk-live-DO-NOT-MIGRATE',
         SOME_FLAG: 'true',
       },
     }),
@@ -223,12 +228,20 @@ describe('openclawToHandoff', () => {
 })
 
 describe('collectOpenClawLlmEnv', () => {
-  it('collects provider keys and refuses channel tokens + non-secrets', async () => {
+  it('copies only allowlisted LLM keys; refuses channel tokens, non-LLM secrets, and flags', async () => {
     await writeFixture()
     const env = await collectOpenClawLlmEnv(ocHome)
+    // LLM provider keys 2200 understands → copied.
     expect(env['XAI_API_KEY']).toBe('xai-secret-123')
     expect(env['MINIMAX_API_KEY']).toBe('mm-secret-456')
+    // Channel tokens → never.
     expect(env['DISCORD_BOT_TOKEN']).toBeUndefined()
+    // Non-LLM secrets that a `_KEY$`/`_TOKEN$` suffix heuristic would
+    // have wrongly swept up → must stay behind (the security fix).
+    expect(env['GITHUB_TOKEN']).toBeUndefined()
+    expect(env['AWS_SECRET_ACCESS_KEY']).toBeUndefined()
+    expect(env['STRIPE_API_KEY']).toBeUndefined()
+    // Non-secret config → never.
     expect(env['SOME_FLAG']).toBeUndefined()
   })
 })
@@ -243,6 +256,27 @@ describe('parseIdentityMd', () => {
   it('treats placeholder values as absent', () => {
     const parsed = parseIdentityMd('- **Name:** Skippy\n- **Avatar:** _(not set)_\n')
     expect(parsed.name).toBe('Skippy')
+  })
+})
+
+describe('detectOpenClawHome (the "only offer when present" gate)', () => {
+  it('returns null when there is no ~/.openclaw under the base dir (blank user)', async () => {
+    // The first-run wizard must NOT prompt a fresh user. Detection over
+    // a base dir with no .openclaw is the guarantee.
+    expect(await detectOpenClawHome(ocHome)).toBeNull()
+  })
+
+  it('returns the .openclaw path when an OpenClaw home is present', async () => {
+    const base = join(ocHome, 'fakehome')
+    await mkdir(join(base, '.openclaw'), { recursive: true })
+    await writeFile(join(base, '.openclaw', 'openclaw.json'), '{}')
+    expect(await detectOpenClawHome(base)).toBe(join(base, '.openclaw'))
+  })
+
+  it('returns null when ~/.openclaw exists but has no openclaw.json (not a real OC home)', async () => {
+    const base = join(ocHome, 'partial')
+    await mkdir(join(base, '.openclaw'), { recursive: true })
+    expect(await detectOpenClawHome(base)).toBeNull()
   })
 })
 

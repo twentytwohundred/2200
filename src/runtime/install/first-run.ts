@@ -30,7 +30,11 @@ import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig, userConfigPath } from '../config/loader.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
 import { validateProviderKey } from '../llm/validate-key.js'
-import { defaultRuntimeEnvPath, upsertRuntimeEnvKey } from '../config/runtime-env.js'
+import {
+  defaultRuntimeEnvPath,
+  loadRuntimeEnv,
+  upsertRuntimeEnvKey,
+} from '../config/runtime-env.js'
 
 /**
  * Minimal I/O surface the orchestrator needs. The CLI implementation
@@ -78,7 +82,17 @@ export async function shouldRunFirstRun(): Promise<boolean> {
  * writes, daemon spawn, and RPC happen only after the user has
  * answered every prompt. This means a ctrl-C at any prompt is safe.
  */
-export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
+export async function runFirstRun(
+  io: FirstRunIO,
+  opts: {
+    /**
+     * Probe for an OpenClaw home to offer migration. Defaults to the
+     * real `~/.openclaw` detector. Injectable so tests are
+     * deterministic (and can disable the offer with `() => null`).
+     */
+    detectOpenClaw?: () => Promise<string | null>
+  } = {},
+): Promise<FirstRunResult> {
   // ------------------------------------------------------------------
   // 1. Banner + confirmation.
   // ------------------------------------------------------------------
@@ -151,6 +165,24 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
     await rpc.close()
   }
   io.success(`User identity minted (display name: ${displayName})`)
+
+  // ------------------------------------------------------------------
+  // 4a. OpenClaw migration (only when OpenClaw is actually present).
+  //
+  // Offered automatically when ~/.openclaw is detected ... a blank
+  // user never sees this. Runs through the now-running daemon's
+  // cli.build.from-handoff RPC (avoiding the migrate-vs-daemon
+  // state-file race the standalone CLI guards against). Non-fatal:
+  // a failed or declined migration falls through to the normal
+  // fresh-setup steps and never aborts the wizard.
+  // ------------------------------------------------------------------
+  const detectOpenClaw =
+    opts.detectOpenClaw ??
+    (async () => {
+      const { detectOpenClawHome } = await import('../migration/openclaw.js')
+      return detectOpenClawHome()
+    })
+  await runFirstRunOpenClawMigration(io, home, detectOpenClaw)
 
   // ------------------------------------------------------------------
   // 5. Grok-First sign-in (optional, default yes).
@@ -234,6 +266,141 @@ export async function runFirstRun(io: FirstRunIO): Promise<FirstRunResult> {
   io.info('')
 
   return { status: 'completed', home, displayName }
+}
+
+/**
+ * Offer to migrate an existing OpenClaw Agent into 2200, inline during
+ * first-run. Detection is injected; when it returns null (no OpenClaw),
+ * this is a silent no-op so a fresh user never sees the prompt.
+ *
+ * On acceptance it surveys the OpenClaw home, converts it to a handoff,
+ * and materializes the Agent through the running daemon's
+ * `cli.build.from-handoff` RPC (which runs the same orchestrator the
+ * `2200 agent migrate` command uses, inside the daemon's Supervisor so
+ * there is no state-file race). It then copies the OpenClaw LLM provider
+ * keys into `runtime.env` (never overwriting an existing 2200 key) so
+ * the migrated Agent works without re-auth, prints the migration report,
+ * and shows the disable-not-delete guidance for the source instance.
+ *
+ * Every failure path is non-fatal: the operator keeps a working install
+ * and can retry with `2200 agent migrate --from-openclaw <dir>`.
+ */
+export async function runFirstRunOpenClawMigration(
+  io: FirstRunIO,
+  home: string,
+  detect: () => Promise<string | null>,
+): Promise<void> {
+  let ocHome: string | null
+  try {
+    ocHome = await detect()
+  } catch {
+    ocHome = null
+  }
+  if (ocHome === null) return // no OpenClaw → never prompt
+
+  io.info('')
+  io.info(`I found an OpenClaw install at ${ocHome}.`)
+  io.info('I can bring your OpenClaw Agent over right now ... its persona, daily')
+  io.info('memories, schedules, and LLM provider keys come with it. Your OpenClaw')
+  io.info('install is left untouched; you disable it at the end so you are not')
+  io.info('paying for two fleets.')
+  io.info('')
+  const reply = await io.ask('Migrate your OpenClaw Agent into 2200 now? [Y/n] ')
+  if (!isYes(reply, true)) {
+    io.info(`Skipped. You can migrate any time with:`)
+    io.info(`  2200 agent migrate --from-openclaw ${ocHome}`)
+    io.info('')
+    return
+  }
+
+  const {
+    surveyOpenClawHome,
+    openclawToHandoff,
+    collectOpenClawLlmEnv,
+    renderDisableInstructions,
+  } = await import('../migration/openclaw.js')
+
+  // Survey + convert. A parse failure must not abort setup.
+  let converted: Awaited<ReturnType<typeof openclawToHandoff>> | undefined
+  try {
+    const survey = await surveyOpenClawHome(ocHome)
+    const { hostname } = await import('node:os')
+    converted = openclawToHandoff(survey, { sourceHost: hostname() })
+  } catch (err) {
+    io.warn(
+      `Could not read the OpenClaw install: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    io.warn(`Skipping migration. Retry later with: 2200 agent migrate --from-openclaw ${ocHome}`)
+    io.info('')
+    return
+  }
+  for (const w of converted.warnings) io.warn(w)
+
+  // Materialize through the running daemon.
+  const sock = Supervisor.socketPath(home)
+  let transport
+  try {
+    transport = await connectWithRetry(sock, 10_000)
+  } catch (err) {
+    io.warn(
+      `Could not reach the daemon to migrate: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    io.info('')
+    return
+  }
+  const rpc = new JsonRpcClient(transport)
+  let migrated = false
+  try {
+    const result = await rpc.call('cli.build.from-handoff', { handoff: converted.handoff })
+    io.success(
+      `Migrated "${result.agent_name}" into 2200 (${String(result.brain_imported_count)} brain notes imported).`,
+    )
+    migrated = true
+  } catch (err) {
+    io.warn(`Migration failed: ${err instanceof Error ? err.message : String(err)}`)
+    io.warn(`Retry later with: 2200 agent migrate --from-openclaw ${ocHome}`)
+  } finally {
+    await rpc.close()
+  }
+  if (!migrated) {
+    io.info('')
+    return
+  }
+
+  // Copy OpenClaw LLM provider keys so the migrated Agent works without
+  // re-auth. Existing 2200 keys are never overwritten. Per-key isolation:
+  // a single odd key name (upsert validates key shape) must not lose the
+  // rest, so each write is guarded independently.
+  try {
+    const collected = await collectOpenClawLlmEnv(ocHome)
+    const existing = await loadRuntimeEnv()
+    let copied = 0
+    for (const [k, v] of Object.entries(collected)) {
+      if (existing[k] !== undefined) continue
+      try {
+        await upsertRuntimeEnvKey(k, v)
+        copied += 1
+      } catch {
+        io.warn(`Skipped an OpenClaw key with an unexpected name shape: ${k}`)
+      }
+    }
+    if (copied > 0) {
+      io.success(
+        `Copied ${String(copied)} LLM provider key${copied === 1 ? '' : 's'} from OpenClaw (effective on the next daemon restart).`,
+      )
+    }
+  } catch (err) {
+    io.warn(
+      `Could not copy LLM keys from OpenClaw: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  // The migration report (what mapped / didn't) + disable-the-source guidance.
+  io.info('')
+  io.info(converted.report)
+  io.info('')
+  io.info(renderDisableInstructions({ sameHost: true }))
+  io.info('')
 }
 
 /**
