@@ -29,6 +29,7 @@
  * the systemd user unit directly; otherwise we print the commands.
  */
 import { readFile, readdir, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { HandoffFrontmatterSchema, type HandoffDocument, type HandoffSchedule } from './types.js'
 
@@ -88,6 +89,21 @@ export async function looksLikeOpenClawHome(dir: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Probe for an OpenClaw home in the conventional location
+ * (`<baseDir>/.openclaw`, default `~/.openclaw`). Returns the absolute
+ * path when it looks like a real OpenClaw home, else null.
+ *
+ * Used by the first-run wizard to offer migration ONLY when OpenClaw is
+ * actually installed ... a blank user never sees the prompt. `baseDir`
+ * is injectable so tests are deterministic instead of probing the real
+ * home directory.
+ */
+export async function detectOpenClawHome(baseDir: string = homedir()): Promise<string | null> {
+  const candidate = join(baseDir, '.openclaw')
+  return (await looksLikeOpenClawHome(candidate)) ? candidate : null
 }
 
 export async function surveyOpenClawHome(ocHome: string): Promise<OpenClawSurvey> {
@@ -322,17 +338,42 @@ export function openclawToHandoff(
  * Collect the LLM provider env vars from the OC config's `env` block.
  * Per Doug's 2026-06-12 direction these migrate as-is into
  * `~/.config/2200/runtime.env` so the Agent's model binding works the
- * moment it lands ... no re-auth wall on the adoption path. Returns
- * only key=value pairs whose names look like provider credentials;
- * channel tokens and anything else stay behind.
+ * moment it lands ... no re-auth wall on the adoption path.
+ *
+ * Security: this is an explicit ALLOWLIST of known LLM-provider env-key
+ * names, NOT a suffix heuristic. A suffix match like `_KEY$`/`_TOKEN$`
+ * would sweep up unrelated secrets that happen to live in the same env
+ * block (GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, STRIPE_API_KEY, channel
+ * tokens, ...). We copy only the credentials for LLM providers 2200
+ * actually understands; anything else stays in OpenClaw.
  */
+const LLM_ENV_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'OPENROUTER_API_KEY',
+  'XAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_GENERATIVE_AI_API_KEY',
+  'KIMI_API_KEY',
+  'MOONSHOT_API_KEY',
+  'MINIMAX_API_KEY',
+  'GROQ_API_KEY',
+  'MISTRAL_API_KEY',
+  'TOGETHER_API_KEY',
+  'FIREWORKS_API_KEY',
+  'PERPLEXITY_API_KEY',
+  'COHERE_API_KEY',
+])
+
 export async function collectOpenClawLlmEnv(ocHome: string): Promise<Record<string, string>> {
   const config = await readJsonTolerant(join(ocHome, 'openclaw.json'))
   const env = asRecord(config['env'])
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(env)) {
     if (typeof v !== 'string' || v === '') continue
-    if (/_API_KEY$|_KEY$|_TOKEN$/.test(k) && !/DISCORD|SLACK|TELEGRAM|WHATSAPP/i.test(k)) {
+    if (LLM_ENV_KEY_ALLOWLIST.has(k.toUpperCase())) {
       out[k] = v
     }
   }

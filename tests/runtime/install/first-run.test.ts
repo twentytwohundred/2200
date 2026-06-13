@@ -16,7 +16,11 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runFirstRun, type FirstRunIO } from '../../../src/runtime/install/first-run.js'
+import {
+  runFirstRun,
+  runFirstRunOpenClawMigration,
+  type FirstRunIO,
+} from '../../../src/runtime/install/first-run.js'
 
 interface RecordingIO extends FirstRunIO {
   readonly infoLines: string[]
@@ -121,5 +125,44 @@ describe('runFirstRun', () => {
       expect(result.reason).toBe('empty-display-name')
     }
     expect(io.warnLines.filter((l) => /cannot be empty/i.test(l))).toHaveLength(3)
+  })
+})
+
+describe('runFirstRunOpenClawMigration', () => {
+  it('is a silent no-op for a blank user (no OpenClaw detected)', async () => {
+    // The core "never prompt blank users" guarantee: when detection
+    // returns null, the step asks nothing and prints nothing about
+    // OpenClaw. A regression here would surface a migration prompt to
+    // every fresh installer.
+    const io = makeIO([])
+    await runFirstRunOpenClawMigration(io, '/unused', () => Promise.resolve(null))
+    expect(io.prompts).toHaveLength(0)
+    expect(io.infoLines.join('\n')).not.toMatch(/OpenClaw/i)
+  })
+
+  it('coerces a detector exception to "no OpenClaw" and stays silent', async () => {
+    const io = makeIO([])
+    await runFirstRunOpenClawMigration(io, '/unused', () =>
+      Promise.reject(new Error('probe blew up')),
+    )
+    expect(io.prompts).toHaveLength(0)
+    expect(io.infoLines.join('\n')).not.toMatch(/OpenClaw/i)
+  })
+
+  it('on decline, prints the manual migrate command and never touches the daemon', async () => {
+    // Detection succeeds, the user says no. The step must return before
+    // any survey / RPC, leaving a working install and a copy-paste path
+    // to migrate later. (No daemon is running in this unit test, so
+    // reaching the RPC would hang/throw ... the decline path must not.)
+    const io = makeIO(['n'])
+    await runFirstRunOpenClawMigration(io, '/unused', () =>
+      Promise.resolve('/home/someone/.openclaw'),
+    )
+    expect(io.prompts.some((p) => /Migrate your OpenClaw Agent/i.test(p))).toBe(true)
+    expect(io.infoLines.join('\n')).toMatch(
+      /2200 agent migrate --from-openclaw \/home\/someone\/\.openclaw/,
+    )
+    // No success line (nothing was migrated).
+    expect(io.successLines).toHaveLength(0)
   })
 })

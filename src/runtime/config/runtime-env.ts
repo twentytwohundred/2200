@@ -45,7 +45,7 @@
  *   - No multi-line values, no command substitution, no variable
  *     interpolation. This is a config file, not a shell script.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -213,6 +213,11 @@ export async function upsertRuntimeEnvKey(
   let serialized = out.join('\n')
   if (!serialized.endsWith('\n')) serialized += '\n'
   await writeFile(target, serialized, { mode: 0o600 })
+  // `writeFile`'s mode only applies when the file is CREATED; on an
+  // existing runtime.env it is ignored, so an earlier loose-perm file
+  // would keep its mode while we write provider secrets into it. Force
+  // 0600 explicitly. Best-effort on platforms without POSIX modes.
+  await chmod(target, 0o600).catch(() => undefined)
 }
 
 /**
