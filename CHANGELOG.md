@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.613.1445] ... 2026-06-13
+
+The first impression, rebuilt: a premium branded installer and zero-flag OpenClaw migration.
+
+### Added
+
+- **Premium installer (`install.sh` rewrite).** Brand-accurate "green-for-alive" terminal UI: a block `2200` wordmark + green-dot `green for alive` tagline in truecolor `#22c97a` (256-color fallback), a braille install spinner over captured npm output, and a `✓`/`✗`/`!` glyph triad matching the app's fleet-state palette. Correctly gated: the full art renders only on an interactive UTF-8 terminal; piped/CI output is a clean one-liner with zero escape leakage; `NO_COLOR`/`FORCE_COLOR` are honored (presence-based). Validated in clean `node:22` containers across the piped, non-root prefix-fix, and full TTY/truecolor paths.
+- **Zero-flag OpenClaw auto-migration.** The installer detects `~/.openclaw` and seeds the banner (non-TTY safe); the bare-`2200` first-run wizard then offers to migrate **automatically, only when OpenClaw is present** — a blank user never sees it, and no flag is required. It runs through the daemon's `cli.build.from-handoff` RPC (no migrate-vs-daemon state-file race), copies the OpenClaw LLM provider keys into `runtime.env` so the Agent works without re-auth, and prints the migration report + post-migration checklist + disable-not-delete guidance. Every failure path is non-fatal.
+- **Post-migration checklist** appended to the OpenClaw migration report (printed and in the Agent's continuity note): start the Agent, confirm an LLM key, rebind the model if the provider didn't map, re-wire channels, review the budget cap, disable the source.
+
+### Security
+
+- **`collectOpenClawLlmEnv` is now an explicit LLM-provider allowlist**, not a `_KEY$`/`_TOKEN$` suffix heuristic. It no longer sweeps up unrelated secrets that share an env block (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `STRIPE_API_KEY`, channel tokens) — only credentials for LLM providers 2200 understands are copied.
+- **`upsertRuntimeEnvKey` enforces `0600` on every write.** `writeFile`'s mode only applied on file creation, so an existing `runtime.env` kept its prior (possibly looser) permissions while provider secrets were written into it. Now chmod'd explicitly on every write.
+
+### Fixed
+
+- **Eight installer correctness bugs** surfaced by an adversarial review: `--help` was broken under `curl|sh` (it `sed`'d `$0`, which is the shell name over a pipe); a `null` npm prefix could send the script editing dotfiles against a phantom path; the bash banner told users to `source ~/.bashrc ~/.profile` (which only sources the first file); the npm-prefix-change consent now actually prompts via `/dev/tty` on the `curl|sh` path (the old `[ -t 0 ]` guard was always false there, so it silently edited shell init files); plus guarded command substitutions under `set -e`, a numeric Node-version guard, exact-line PATH idempotency, macOS `.bash_profile` precedence, cursor restoration on every exit path including `SIGHUP`, a `--version=` empty guard, and a private umask on the temp-log fallback.
+- **Release publish is idempotent**: the npm publish step skips cleanly when the version is already on the registry instead of failing late with a 403/409.
+
 ## [2026.612.2230] ... 2026-06-12
 
 Third cut of the day: the OpenClaw migration adapter ships.
