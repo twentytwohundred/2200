@@ -82,6 +82,22 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           PKG_VERSION=$(node -p "require('./package.json').version")
           echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          # Semver-validity guard. CalVer is YYYY.MDD.HHMM computed as
+          # H*100+MM with NO zero-padding ... but a release cut with a
+          # naive `date +%H%M` zero-pads (e.g. 08:30 -> 0830), which is
+          # an INVALID semver numeric identifier (no leading zeros) and
+          # npm would reject it LATE at publish. Catch it here with a
+          # clear message instead. Each of major.minor.patch must be
+          # `0` or a non-zero-leading integer.
+          node -e '
+            const v = process.argv[1];
+            const core = v.split("-")[0].split("+")[0];
+            const ok = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(core);
+            if (!ok) {
+              console.error("::error::Version " + v + " is not valid semver (leading zero?). For CalVer use H*100+MM with no padding, e.g. 08:30 -> 830, 00:05 -> 5, 14:45 -> 1445.");
+              process.exit(1);
+            }
+          ' "$PKG_VERSION"
           if [ "${{ github.event_name }}" = "push" ]; then
             EXPECTED="v$PKG_VERSION"
             if [ "$TAG" != "$EXPECTED" ]; then

@@ -51,10 +51,17 @@ export function SystemUpdateSection(): ReactElement {
   const versionQuery = useQuery({
     queryKey: ['system', 'version'],
     queryFn: () => apiSystem.version(),
-    // 5-minute stale-time is plenty; the user gets a fresh read by
-    // clicking Check for updates.
-    staleTime: 5 * 60_000,
+    // Poll so a freshly-published release shows up within a minute for
+    // an operator sitting on this tab (the dogfooding loop: push a
+    // release, then click-update the running instance). The manual
+    // "Check now" button forces an immediate read.
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   })
+
+  const refreshVersion = (): void => {
+    void qc.invalidateQueries({ queryKey: ['system', 'version'] })
+  }
 
   // Continuously poll upgrade-status. When stage is terminal, slow
   // the poll to nearly-never (the tile still picks up new triggers
@@ -164,7 +171,7 @@ export function SystemUpdateSection(): ReactElement {
       ) : v.status === 'ahead' ? (
         <AheadNote current={v.current} latest={v.latest ?? '?'} />
       ) : v.status === 'up-to-date' ? (
-        <UpToDateNote />
+        <UpToDateNote onCheck={refreshVersion} checking={versionQuery.isFetching} />
       ) : v.install_source === 'source-checkout' ? (
         <SourceCheckoutNote />
       ) : (
@@ -224,10 +231,22 @@ function StatusPill({
   }
 }
 
-function UpToDateNote(): ReactElement {
+function UpToDateNote({
+  onCheck,
+  checking,
+}: {
+  onCheck: () => void
+  checking: boolean
+}): ReactElement {
   return (
     <div className={styles.systemNote}>
-      You are running the latest published version. New releases will appear here automatically.
+      <div>
+        You are running the latest published version. New releases appear here automatically within
+        a minute.
+      </div>
+      <button type="button" className={styles.providerBtn} onClick={onCheck} disabled={checking}>
+        {checking ? 'CHECKING…' : 'CHECK NOW'}
+      </button>
     </div>
   )
 }
