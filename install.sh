@@ -12,13 +12,16 @@
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --yes
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
+# By default this is one fluid path: install, set up, and print a web
+# URL to open ... no "now run this" stops. `--no-setup` installs the CLI
+# only.
+#
 # This script never uses sudo. If the system's npm prefix is not
 # writable (the typical case on Ubuntu/Debian where Node was installed
-# via apt), it offers to reconfigure npm to install to ~/.npm-global ...
-# the same fix npm itself recommends. Interactive runs (including
-# curl | sh on a real terminal) get a confirm prompt via /dev/tty;
-# genuinely headless runs auto-apply with full narration. The change is
-# reversible with `npm config delete prefix`.
+# via apt), it reconfigures npm to install to ~/.npm-global (the same
+# fix npm itself recommends), narrating exactly what changes. That keeps
+# the one-line install from stopping for a yes/no; it is reversible with
+# `npm config delete prefix`, and `--no-prefix-fix` opts out entirely.
 
 set -eu
 
