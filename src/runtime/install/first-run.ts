@@ -148,6 +148,12 @@ export async function runFirstRun(
   await Supervisor.create({ home })
   io.success(`Initialized 2200_HOME at ${home}`)
 
+  // Bind the web server to the LAN so the access URL printed at the end
+  // is reachable from another device. Set BEFORE the daemon starts (it
+  // reads the host from the environment at boot) and persist it.
+  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '0.0.0.0')
+  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '0.0.0.0'
+
   const pid = await startDaemon({ home })
   io.success(`Supervisor daemon started (pid ${String(pid)})`)
 
@@ -182,7 +188,7 @@ export async function runFirstRun(
       const { detectOpenClawHome } = await import('../migration/openclaw.js')
       return detectOpenClawHome()
     })
-  await runFirstRunOpenClawMigration(io, home, detectOpenClaw)
+  const ocResult = await runFirstRunOpenClawMigration(io, home, detectOpenClaw)
 
   // ------------------------------------------------------------------
   // 5. Grok-First sign-in (optional, default yes).
@@ -249,21 +255,21 @@ export async function runFirstRun(
   }
 
   // ------------------------------------------------------------------
-  // 6. Next step.
+  // 6. End at the web URL ... not at a "now run this" instruction. If an
+  //    OpenClaw Agent was migrated, we do NOT push the user toward
+  //    building a "first Agent" they already have.
   // ------------------------------------------------------------------
-  io.info('Setup complete. Next:')
-  io.info('')
-  io.info('  2200 agent build')
-  io.info('')
-  io.info('That command starts the conversational wizard for your first Agent.')
-  io.info('If you signed in with Grok above, the wizard will offer Grok as the')
-  io.info('default; you can still pick any other provider.')
-  io.info('')
-  io.info('Other useful commands:')
-  io.info('  2200 --help          show all commands')
-  io.info('  2200 daemon status   confirm the daemon is up')
-  io.info('  2200 update          check for and install a newer version')
-  io.info('')
+  const { ensureWebTokenForHome, printWebAccess, webPortFromEnv } = await import('./quick-setup.js')
+  const token = await ensureWebTokenForHome(home)
+  printWebAccess({
+    port: webPortFromEnv(),
+    token,
+    migratedAgent: ocResult.agentName,
+    freshInstall: ocResult.agentName === null,
+    out: (l) => {
+      io.info(l)
+    },
+  })
 
   return { status: 'completed', home, displayName }
 }
@@ -289,14 +295,15 @@ export async function runFirstRunOpenClawMigration(
   io: FirstRunIO,
   home: string,
   detect: () => Promise<string | null>,
-): Promise<void> {
+): Promise<{ migrated: boolean; agentName: string | null }> {
+  const noMigration = { migrated: false as const, agentName: null }
   let ocHome: string | null
   try {
     ocHome = await detect()
   } catch {
     ocHome = null
   }
-  if (ocHome === null) return // no OpenClaw → never prompt
+  if (ocHome === null) return noMigration // no OpenClaw → never prompt
 
   io.info('')
   io.info(`I found an OpenClaw install at ${ocHome}.`)
@@ -310,7 +317,7 @@ export async function runFirstRunOpenClawMigration(
     io.info(`Skipped. You can migrate any time with:`)
     io.info(`  2200 agent migrate --from-openclaw ${ocHome}`)
     io.info('')
-    return
+    return noMigration
   }
 
   const {
@@ -332,7 +339,7 @@ export async function runFirstRunOpenClawMigration(
     )
     io.warn(`Skipping migration. Retry later with: 2200 agent migrate --from-openclaw ${ocHome}`)
     io.info('')
-    return
+    return noMigration
   }
   for (const w of converted.warnings) io.warn(w)
 
@@ -346,25 +353,25 @@ export async function runFirstRunOpenClawMigration(
       `Could not reach the daemon to migrate: ${err instanceof Error ? err.message : String(err)}`,
     )
     io.info('')
-    return
+    return noMigration
   }
   const rpc = new JsonRpcClient(transport)
-  let migrated = false
+  let migratedName: string | null = null
   try {
     const result = await rpc.call('cli.build.from-handoff', { handoff: converted.handoff })
     io.success(
       `Migrated "${result.agent_name}" into 2200 (${String(result.brain_imported_count)} brain notes imported).`,
     )
-    migrated = true
+    migratedName = result.agent_name
   } catch (err) {
     io.warn(`Migration failed: ${err instanceof Error ? err.message : String(err)}`)
     io.warn(`Retry later with: 2200 agent migrate --from-openclaw ${ocHome}`)
   } finally {
     await rpc.close()
   }
-  if (!migrated) {
+  if (migratedName === null) {
     io.info('')
-    return
+    return noMigration
   }
 
   // Copy OpenClaw LLM provider keys so the migrated Agent works without
@@ -401,6 +408,7 @@ export async function runFirstRunOpenClawMigration(
   io.info('')
   io.info(renderDisableInstructions({ sameHost: true }))
   io.info('')
+  return { migrated: true, agentName: migratedName }
 }
 
 /**

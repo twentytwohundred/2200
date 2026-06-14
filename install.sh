@@ -30,6 +30,8 @@ PACKAGE_VERSION="latest"
 DRY_RUN=0
 NO_BANNER=0
 ASSUME_YES=0
+NO_PREFIX_FIX=0
+NO_SETUP=0
 
 usage() {
   printf '%s\n' \
@@ -44,14 +46,16 @@ usage() {
     "  curl -fsSL https://2200.ai/install.sh | sh -s -- [options]" \
     "" \
     "Options:" \
-    "  --version <v>   install a specific version (default: latest)" \
-    "  --yes, -y       assume yes to prompts (scripted / headless installs)" \
-    "  --dry-run       print what would be done and exit" \
-    "  --no-banner     skip the post-install banner" \
-    "  -h, --help      show this help" \
+    "  --version <v>     install a specific version (default: latest)" \
+    "  --no-setup        install only; do not run setup or print the web URL" \
+    "  --no-prefix-fix   never reconfigure the npm prefix (fail instead)" \
+    "  --yes, -y         assume yes (reserved; setup is already non-interactive)" \
+    "  --dry-run         print what would be done and exit" \
+    "  --no-banner       skip banners" \
+    "  -h, --help        show this help" \
     "" \
-    "After install, run:" \
-    "  2200            guided first-run setup"
+    "By default this installs, sets up, and prints a web URL to open ... one" \
+    "fluid path, no stops. Use --no-setup to install the CLI only."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -76,6 +80,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --yes|-y)
       ASSUME_YES=1
+      ;;
+    --no-prefix-fix)
+      NO_PREFIX_FIX=1
+      ;;
+    --no-setup)
+      NO_SETUP=1
       ;;
     --dry-run)
       DRY_RUN=1
@@ -318,47 +328,21 @@ if [ ! -w "$NPM_PREFIX" ]; then
   printf '%snpm is installed somewhere that needs admin access:%s\n' "$BOLD" "$RESET"
   printf '  current prefix:  %s\n' "$NPM_PREFIX"
   printf '\n'
-  printf '2200 does not need admin access. The standard npm-recommended fix is\n'
-  printf 'to point npm at your home directory instead. This is fully reversible\n'
-  printf '(%snpm config delete prefix%s undoes it). Here is exactly what changes:\n' "$DIM" "$RESET"
+  printf '2200 does not need admin access, so I am pointing npm at your home\n'
+  printf 'directory instead (the standard npm-recommended fix). This is fully\n'
+  printf 'reversible ... %snpm config delete prefix%s undoes it. What changes:\n' "$DIM" "$RESET"
   printf '  1. npm prefix  ->  %s\n' "$USER_NPM_PREFIX"
   printf '  2. add %s/bin to your PATH (one line, in your shell init file)\n' "$USER_NPM_PREFIX"
   printf '  3. export it for this session so 2200 works immediately\n'
   printf '\n'
-
-  # tty_usable: /dev/tty must be openable for BOTH read and write. The
-  # write check matters under set -e ... a tty that is readable but not
-  # writable (a half-open/detached controlling terminal) would make the
-  # prompt's `> /dev/tty` redirect fail and abort the whole installer.
-  # Gating here sends that case to the narrated auto-apply path instead.
-  tty_usable=0
-  if { true >/dev/tty; } 2>/dev/null && [ -r /dev/tty ]; then
-    tty_usable=1
-  fi
-
-  do_fix=0
-  if [ "$ASSUME_YES" -eq 1 ]; then
-    do_fix=1
-    step "Applying the npm-prefix fix (--yes)."
-  elif [ "$tty_usable" -eq 1 ]; then
-    printf '%sSet this up now?%s [Y/n] ' "$BOLD" "$RESET" > /dev/tty
-    read -r reply < /dev/tty || reply=n
-    case "$reply" in
-      n|N|no|No|NO) do_fix=0 ;;
-      *) do_fix=1 ;;
-    esac
-  else
-    do_fix=1
-    warn "No terminal available to confirm; applying automatically (see below)."
-  fi
-
-  if [ "$do_fix" -eq 0 ]; then
-    err ""
-    err "Skipped. To do it yourself later:"
+  # Apply it automatically (narrated above, reversible) ... a yes/no stop
+  # here is friction on the one-line install path, and this is install
+  # plumbing, not a product choice. `--no-prefix-fix` opts out.
+  if [ "$NO_PREFIX_FIX" -eq 1 ]; then
+    err "Refusing to reconfigure the npm prefix (--no-prefix-fix). Do it yourself:"
     err "  npm config set prefix \"\$HOME/.npm-global\""
     err "  echo 'export PATH=\"\$HOME/.npm-global/bin:\$PATH\"' >> ~/.profile"
-    err "  exec \$SHELL   # or open a new terminal"
-    err "  curl -fsSL https://2200.ai/install.sh | sh"
+    err "  exec \$SHELL   # or open a new terminal, then re-run the installer"
     exit 1
   fi
 
@@ -463,37 +447,40 @@ ok "Installed ${BOLD}2200 ${INSTALLED_VERSION}${RESET}"
 dim "  $(command -v 2200)"
 
 # -----------------------------------------------------------------------------
-# Post-install banner: one confident screen.
+# Setup: keep going to a running 2200 + a web URL. One fluid path, no
+# "now run this" stop. `--no-setup` installs the CLI only.
 # -----------------------------------------------------------------------------
-if [ "$NO_BANNER" -ne 1 ]; then
-  # If the user is migrating from OpenClaw, surface it now ... the
-  # first-run wizard will offer to bring the Agent over (no flag
-  # needed). This only fires when an OpenClaw home is actually present.
-  if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+if [ "$NO_SETUP" -eq 1 ]; then
+  if [ "$NO_BANNER" -ne 1 ]; then
     printf '\n'
-    ok "OpenClaw detected at ~/.openclaw"
-    printf '  %sRun %s2200%s%s and it will offer to bring your Agent over.%s\n' \
-      "$DIM" "$RESET$BOLD" "$RESET" "$DIM" "$RESET"
-  fi
-
-  printf '\n'
-  if [ "$DID_PREFIX_FIX" -eq 1 ]; then
-    printf '%sOne step to finish:%s open a new terminal, or run:\n' "$BOLD" "$RESET"
-    for f in $SOURCE_HINT_FILES; do
-      printf '  %ssource %s%s\n' "$BOLD" "$f" "$RESET"
-    done
-    printf '%s  (new terminals pick this up automatically)%s\n' "$DIM" "$RESET"
+    printf 'Installed (setup skipped). When ready:\n'
+    printf '  %s2200 setup%s     %sset up and print your web URL%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
+    printf '  %s2200 --help%s    %sall commands%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
     printf '\n'
   fi
+  exit 0
+fi
 
-  printf 'Get started:\n'
-  printf '  %s2200%s            %sguided first-run setup%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
-  printf '  %s2200 --help%s     %sall commands%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
-  printf '  %s2200 update%s     %supgrade later%s\n' "$BOLD" "$RESET" "$DIM" "$RESET"
-  printf '\n'
-  dim "Docs: https://github.com/twentytwohundred/2200"
-  if [ "$DID_PREFIX_FIX" -eq 1 ]; then
-    dim "Undo the npm-prefix change: npm config delete prefix (and remove the PATH line)."
-  fi
+printf '\n'
+step "Setting up 2200..."
+printf '\n'
+
+# `2200 setup` is non-interactive: it inits, starts the daemon, migrates
+# OpenClaw if present, and prints the web URL + token as its final
+# output ... which becomes the end of this installer. The PATH was
+# exported above (prefix-fix path) so the binary resolves here even
+# before the user opens a new shell.
+if ! 2200 setup; then
+  err ""
+  err "Setup did not complete. Your install is fine; finish it with:"
+  err "  2200 setup        # retry"
+  err "  2200              # or the guided wizard"
+  exit 1
+fi
+
+if [ "$NO_BANNER" -ne 1 ] && [ "$DID_PREFIX_FIX" -eq 1 ]; then
+  printf '%sNote:%s new terminals will have %s2200%s on PATH automatically.\n' \
+    "$DIM" "$RESET" "$BOLD" "$RESET"
+  printf '%s(to undo the npm-prefix change: npm config delete prefix)%s\n' "$DIM" "$RESET"
   printf '\n'
 fi
