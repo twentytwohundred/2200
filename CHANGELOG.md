@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.614.1828] ... 2026-06-14
+
+### Added
+
+- **Tailscale-aware access URL.** When the machine is on a Tailscale network, setup now detects the tailnet IP (the 100.64.0.0/10 address) and shows `http://<tailscale-ip>:2200/?token=...` as the recommended URL — reachable from any of your devices anywhere, not just the local subnet — with the LAN IP and localhost listed as alternates. No prompt: the web server binds to all interfaces, so every URL resolves and you click whichever fits. A machine not on a tailnet just sees the LAN + localhost URLs as before.
+
 ## [2026.614.1818] ... 2026-06-14
 
 One fluid install path: paste the command, end at a web URL.

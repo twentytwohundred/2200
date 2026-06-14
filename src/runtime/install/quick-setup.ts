@@ -18,8 +18,9 @@
  *   4. If an OpenClaw install is present, migrate it automatically ...
  *      the Agents come over, so we never walk the operator through
  *      building a "first Agent" they already have.
- *   5. Print the access block: the LAN URL with the bearer token
- *      embedded (one-click), plus the localhost fallback.
+ *   5. Print the access block: the reachable URLs with the bearer token
+ *      embedded (one-click). Tailscale IP preferred when the machine is
+ *      on a tailnet (reachable anywhere), then the LAN IP, then localhost.
  *
  * Idempotent: a second run (config already exists) just ensures the
  * daemon is up and reprints the access URL.
@@ -38,7 +39,7 @@ import { upsertRuntimeEnvKey } from '../config/runtime-env.js'
 import { homePaths } from '../storage/layout.js'
 import { WebTokenStore } from '../http/tokens.js'
 import { readLivePid } from '../supervisor/pidfile.js'
-import { primaryLanIp } from '../util/lan-ip.js'
+import { primaryLanIp, tailscaleIp } from '../util/lan-ip.js'
 import { runFirstRunOpenClawMigration, type FirstRunIO } from './first-run.js'
 
 export interface QuickSetupResult {
@@ -178,11 +179,37 @@ function finish(args: {
 }
 
 /**
- * Print the final "open 2200 here" access block: the LAN URL with the
- * token embedded (one-click, reachable from another device), the
- * localhost fallback, and the bare token. Shared by `2200 setup` and
- * the interactive first-run so both end the same way ... at a URL, not
- * at a "now run this" instruction.
+ * Order the reachable web URLs most-useful first: Tailscale (works from
+ * anywhere on the tailnet), then LAN (same network), then localhost. The
+ * web server binds to 0.0.0.0, so all of these resolve. Pure + injectable
+ * so the ordering is testable without a live network.
+ */
+export function buildAccessUrls(args: {
+  tailscaleIp: string | null
+  lanIp: string | null
+  port: number
+  token: string
+}): { label: string; href: string }[] {
+  const url = (host: string): string => `http://${host}:${String(args.port)}/?token=${args.token}`
+  const options: { label: string; href: string }[] = []
+  if (args.tailscaleIp) {
+    options.push({
+      label: 'on your Tailscale network (reachable anywhere)',
+      href: url(args.tailscaleIp),
+    })
+  }
+  if (args.lanIp) {
+    options.push({ label: 'on your local network', href: url(args.lanIp) })
+  }
+  options.push({ label: 'on this machine', href: url('localhost') })
+  return options
+}
+
+/**
+ * Print the final "open 2200 here" access block: the reachable URLs
+ * (Tailscale preferred, then LAN, then localhost) with the bearer token
+ * embedded, and the bare token. Shared by `2200 setup` and the
+ * interactive first-run so both end at a URL, not a "now run this".
  */
 export function printWebAccess(args: {
   port: number
@@ -192,21 +219,27 @@ export function printWebAccess(args: {
   out: (line: string) => void
 }): void {
   const { port, token, migratedAgent, freshInstall, out } = args
-  const lan = primaryLanIp()
-  const localUrl = `http://localhost:${String(port)}/?token=${token}`
-  const lanUrl = lan ? `http://${lan}:${String(port)}/?token=${token}` : null
+  const options = buildAccessUrls({
+    tailscaleIp: tailscaleIp(),
+    lanIp: primaryLanIp(),
+    port,
+    token,
+  })
 
   out('')
   out('2200 is ready.')
   out('')
-  out('  Open 2200 in your browser:')
-  if (lanUrl) {
-    out(`  ${lanUrl}`)
+  const primary = options[0]
+  if (primary) {
+    out(`  Open 2200 in your browser (${primary.label}):`)
+    out(`  ${primary.href}`)
+  }
+  if (options.length > 1) {
     out('')
-    out(`  (on this machine: http://localhost:${String(port)}/)`)
-  } else {
-    // No LAN address found (isolated host / container). Loopback only.
-    out(`  ${localUrl}`)
+    out('  Also reachable:')
+    for (const o of options.slice(1)) {
+      out(`  ${o.href}  ${'(' + o.label + ')'}`)
+    }
   }
   out('')
   if (migratedAgent) {
