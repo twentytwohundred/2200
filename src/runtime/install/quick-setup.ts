@@ -30,8 +30,9 @@
  * shown only to the operator. This matches the "home/office LAN" target
  * the operator opted into by asking for a LAN URL.
  */
+import { readFile } from 'node:fs/promises'
 import { Supervisor } from '../supervisor/supervisor.js'
-import { startDaemon } from '../supervisor/daemon.js'
+import { startDaemon, killDaemon, logFilePath } from '../supervisor/daemon.js'
 import { connectUds } from '../control-plane/uds-client.js'
 import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig } from '../config/loader.js'
@@ -41,6 +42,46 @@ import { WebTokenStore } from '../http/tokens.js'
 import { readLivePid } from '../supervisor/pidfile.js'
 import { primaryLanIp, tailscaleIp } from '../util/lan-ip.js'
 import { runFirstRunOpenClawMigration, type FirstRunIO } from './first-run.js'
+
+const WEB_HOST = '0.0.0.0'
+
+/**
+ * The host the running daemon actually bound its web server to, read
+ * from the last "http server up" line in the supervisor log. Null when
+ * the log is unreadable or no such line exists. Used to detect a daemon
+ * still listening on loopback so setup can restart it onto the LAN.
+ */
+async function boundWebHost(home: string): Promise<string | null> {
+  try {
+    const raw = await readFile(logFilePath(home), 'utf8')
+    const lines = raw.split('\n').filter((l) => l.includes('http server up'))
+    const last = lines[lines.length - 1]
+    if (!last) return null
+    const m = /"host":"([^"]+)"/.exec(last)
+    return m?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Make sure the daemon is running AND bound to the LAN host. Starts it
+ * when down; restarts it when it is up but still on loopback (the case
+ * where a prior `2200`/`daemon start` bound 127.0.0.1 before the LAN
+ * default existed, so the printed LAN/Tailscale URL would refuse).
+ */
+async function ensureDaemonOnLan(home: string, out: (l: string) => void): Promise<void> {
+  if ((await readLivePid(home)) === null) {
+    await startDaemon({ home })
+    return
+  }
+  const host = await boundWebHost(home)
+  if (host !== WEB_HOST) {
+    out('  Restarting the daemon to listen on your network (was loopback-only)...')
+    await killDaemon(home)
+    await startDaemon({ home })
+  }
+}
 
 export interface QuickSetupResult {
   home: string
@@ -101,14 +142,15 @@ export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<Quick
   const out = opts.out ?? ((l: string) => process.stdout.write(l + '\n'))
   const port = webPortFromEnv()
 
-  // Idempotent path: already set up. Make sure the daemon is up, then
-  // just resurface the access URL.
+  // Idempotent path: already set up. Persist the LAN bind, ensure the
+  // daemon is up AND actually listening on the LAN (restart it if a
+  // prior run left it on loopback), then resurface the access URL.
   const existing = await tryLoadUserConfig()
   if (existing) {
     const home = existing.home
-    if ((await readLivePid(home)) === null) {
-      await startDaemon({ home })
-    }
+    await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', WEB_HOST)
+    process.env['TWENTYTWOHUNDRED_WEB_HOST'] = WEB_HOST
+    await ensureDaemonOnLan(home, out)
     const token = await ensureWebTokenForHome(home)
     return finish({ home, port, token, migratedAgent: null, freshInstall: false, out })
   }
@@ -118,8 +160,8 @@ export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<Quick
 
   // Bind the web server to the LAN BEFORE the daemon starts (it reads
   // the host from the environment at boot). Persist so restarts keep it.
-  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '0.0.0.0')
-  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '0.0.0.0'
+  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', WEB_HOST)
+  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = WEB_HOST
 
   await saveUserConfig({ schema_version: 1, home })
   await Supervisor.create({ home })
@@ -249,5 +291,12 @@ export function printWebAccess(args: {
   }
   out('')
   out(`  Bearer token (if a client asks for it): ${token}`)
+  // Only relevant when we are advertising a non-loopback URL the user
+  // might open from another device.
+  if (options.some((o) => !o.href.includes('localhost'))) {
+    out('')
+    out("  Can't reach it from another device? Allow incoming connections for")
+    out('  Node in your OS firewall (macOS: System Settings → Network → Firewall).')
+  }
   out('')
 }
