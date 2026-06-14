@@ -188,7 +188,9 @@ export async function runFirstRun(
       const { detectOpenClawHome } = await import('../migration/openclaw.js')
       return detectOpenClawHome()
     })
-  const ocResult = await runFirstRunOpenClawMigration(io, home, detectOpenClaw)
+  const ocResult = await runFirstRunOpenClawMigration(io, home, detectOpenClaw, {
+    interactive: true,
+  })
 
   // ------------------------------------------------------------------
   // 5. Grok-First sign-in (optional, default yes).
@@ -295,6 +297,12 @@ export async function runFirstRunOpenClawMigration(
   io: FirstRunIO,
   home: string,
   detect: () => Promise<string | null>,
+  opts: {
+    /** Skip the "migrate now?" prompt and just migrate (the setup path). */
+    autoAccept?: boolean
+    /** Allow asking, and acting on, the "disable OpenClaw?" question. */
+    interactive?: boolean
+  } = {},
 ): Promise<{ migrated: boolean; agentName: string | null }> {
   const noMigration = { migrated: false as const, agentName: null }
   let ocHome: string | null
@@ -307,17 +315,18 @@ export async function runFirstRunOpenClawMigration(
 
   io.info('')
   io.info(`I found an OpenClaw install at ${ocHome}.`)
-  io.info('I can bring your OpenClaw Agent over right now ... its persona, daily')
-  io.info('memories, schedules, and LLM provider keys come with it. Your OpenClaw')
-  io.info('install is left untouched; you disable it at the end so you are not')
-  io.info('paying for two fleets.')
+  io.info('Bringing your OpenClaw Agent over ... its persona, daily memories,')
+  io.info('schedules, and LLM provider keys come with it. Your OpenClaw install')
+  io.info('is left running for now; you can disable it at the end.')
   io.info('')
-  const reply = await io.ask('Migrate your OpenClaw Agent into 2200 now? [Y/n] ')
-  if (!isYes(reply, true)) {
-    io.info(`Skipped. You can migrate any time with:`)
-    io.info(`  2200 agent migrate --from-openclaw ${ocHome}`)
-    io.info('')
-    return noMigration
+  if (!opts.autoAccept) {
+    const reply = await io.ask('Migrate your OpenClaw Agent into 2200 now? [Y/n] ')
+    if (!isYes(reply, true)) {
+      io.info(`Skipped. You can migrate any time with:`)
+      io.info(`  2200 agent migrate --from-openclaw ${ocHome}`)
+      io.info('')
+      return noMigration
+    }
   }
 
   const {
@@ -402,11 +411,38 @@ export async function runFirstRunOpenClawMigration(
     )
   }
 
-  // The migration report (what mapped / didn't) + disable-the-source guidance.
+  // The migration report (what mapped / didn't).
   io.info('')
   io.info(converted.report)
   io.info('')
-  io.info(renderDisableInstructions({ sameHost: true }))
+
+  // Offer to disable (NOT delete) the source OpenClaw instance, so it
+  // stops running alongside 2200 and the operator isn't paying twice.
+  // We only ACT on an explicit yes (default no) and only when we can
+  // ask ... never auto-disable; the operator owns that decision. When
+  // we can't ask (non-interactive), print the manual command instead.
+  if (opts.interactive) {
+    const reply = await io.ask(
+      'Disable your OpenClaw instance now so it stops running alongside 2200? It will NOT be deleted. [y/N] ',
+    )
+    if (isYes(reply, false)) {
+      const { disableOpenClaw } = await import('../migration/openclaw.js')
+      const result = await disableOpenClaw()
+      if (result.ok) {
+        io.success(`OpenClaw disabled: ${result.detail}. (Not deleted; re-enable any time.)`)
+      } else {
+        io.warn(`Could not disable OpenClaw automatically: ${result.detail}.`)
+        io.info('Disable it by hand when ready (it will NOT be deleted):')
+        io.info(renderDisableInstructions({ sameHost: true }))
+      }
+    } else {
+      io.info('Left OpenClaw running. To disable it later (it will NOT be deleted):')
+      io.info(renderDisableInstructions({ sameHost: true }))
+    }
+  } else {
+    io.info('To stop OpenClaw running alongside 2200 (it will NOT be deleted):')
+    io.info(renderDisableInstructions({ sameHost: true }))
+  }
   io.info('')
   return { migrated: true, agentName: migratedName }
 }

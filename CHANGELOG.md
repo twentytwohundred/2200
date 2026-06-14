@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.614.1910] ... 2026-06-14
+
+### Added
+
+- **Setup asks whether to disable the migrated OpenClaw instance** (and acts on it). After bringing an OpenClaw Agent over, setup now offers to disable the source OpenClaw so it stops running alongside 2200 — it is **never deleted**, and we **never auto-disable**: the question only appears when a terminal is attached (the installer reattaches `/dev/tty` for it), defaults to no, and on yes runs the disable (systemd-user service on Linux, the `openclaw` CLI's gateway-stop on macOS/non-systemd), reporting what happened. With no terminal it just prints the disable command. The migration itself is still automatic (no "migrate now?" prompt on the setup path).
+
 ## [2026.614.1856] ... 2026-06-14
 
 ### Fixed

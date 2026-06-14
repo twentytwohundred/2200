@@ -31,6 +31,7 @@
  * the operator opted into by asking for a LAN URL.
  */
 import { readFile } from 'node:fs/promises'
+import * as readline from 'node:readline'
 import { Supervisor } from '../supervisor/supervisor.js'
 import { startDaemon, killDaemon, logFilePath } from '../supervisor/daemon.js'
 import { connectUds } from '../control-plane/uds-client.js'
@@ -175,12 +176,22 @@ export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<Quick
     await rpc.close()
   }
 
-  // Auto-migrate OpenClaw when present. A console-backed IO whose `ask`
-  // returns '' makes the single migrate offer default to yes, so this is
-  // fully non-interactive. A blank user (no ~/.openclaw) is a silent
-  // no-op inside the migration step.
+  // Auto-migrate OpenClaw when present (autoAccept), but ASK before
+  // disabling the source ... the operator owns that decision. Setup is
+  // otherwise non-interactive; we ask only when a real terminal is
+  // attached (the installer runs `2200 setup < /dev/tty`). With no tty,
+  // `ask` returns '' and the disable step just prints the command.
+  const interactive = process.stdin.isTTY
+  const rl = interactive
+    ? readline.createInterface({ input: process.stdin, output: process.stdout })
+    : null
   const io: FirstRunIO = {
-    ask: () => Promise.resolve(''),
+    ask: (prompt: string) =>
+      rl
+        ? new Promise<string>((resolve) => {
+            rl.question(prompt, resolve)
+          })
+        : Promise.resolve(''),
     info: out,
     success: out,
     warn: out,
@@ -191,7 +202,12 @@ export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<Quick
       const { detectOpenClawHome } = await import('../migration/openclaw.js')
       return detectOpenClawHome()
     })
-  const mig = await runFirstRunOpenClawMigration(io, home, detect)
+  const mig = await runFirstRunOpenClawMigration(io, home, detect, {
+    autoAccept: true,
+    interactive,
+  }).finally(() => {
+    rl?.close()
+  })
 
   const token = await ensureWebTokenForHome(home)
   return finish({

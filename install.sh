@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.614.1856
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.614.1910
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --yes
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
@@ -468,12 +468,22 @@ printf '\n'
 step "Setting up 2200..."
 printf '\n'
 
-# `2200 setup` is non-interactive: it inits, starts the daemon, migrates
-# OpenClaw if present, and prints the web URL + token as its final
-# output ... which becomes the end of this installer. The PATH was
-# exported above (prefix-fix path) so the binary resolves here even
-# before the user opens a new shell.
-if ! 2200 setup; then
+# `2200 setup` inits, starts the daemon, migrates OpenClaw if present,
+# and prints the web URL + token as its final output ... which becomes
+# the end of this installer. It is non-interactive EXCEPT for one
+# question (whether to disable a migrated OpenClaw instance), which it
+# only asks when a terminal is attached. Under `curl | sh`, fd 0 is the
+# pipe carrying this script, so we reattach /dev/tty to let that one
+# question reach the user; without a tty it stays fully non-interactive.
+# The PATH was exported above (prefix-fix path) so the binary resolves
+# here before the user opens a new shell.
+setup_rc=0
+if [ -r /dev/tty ]; then
+  2200 setup < /dev/tty || setup_rc=$?
+else
+  2200 setup || setup_rc=$?
+fi
+if [ "$setup_rc" -ne 0 ]; then
   err ""
   err "Setup did not complete. Your install is fine; finish it with:"
   err "  2200 setup        # retry"
