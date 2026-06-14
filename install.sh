@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.614.1818
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.614.1828
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --yes
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #

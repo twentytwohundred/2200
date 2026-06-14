@@ -1,18 +1,24 @@
 /**
- * Best-effort detection of the machine's primary LAN IPv4 address.
+ * Best-effort detection of the machine's reachable IPv4 addresses, for
+ * printing web URLs the operator can open from another device.
  *
- * Used by the setup flow to print a web URL the operator can open from
- * another device on the same network (a phone, a laptop), since most
- * 2200 installs live on a home/office LAN behind a private IP rather
- * than a public hostname.
- *
- * Selection: the first non-internal IPv4 in a private range
- * (10/8, 172.16/12, 192.168/16), preferring 192.168 (the common home
- * range) then 10, then 172. Falls back to any non-internal IPv4, then
- * null when only loopback exists (e.g. an isolated container), in which
- * case the caller shows the loopback URL.
+ * `primaryLanIp` returns a same-network (LAN) address; `tailscaleIp`
+ * returns the node's Tailscale address when the machine is on a tailnet
+ * (reachable from anywhere, not just the local subnet). The setup flow
+ * prefers Tailscale when present, then LAN, then loopback.
  */
 import { networkInterfaces } from 'node:os'
+
+/**
+ * True for the Tailscale CGNAT range 100.64.0.0/10 (100.64.x – 100.127.x).
+ * A local interface holding such an address is, in practice, Tailscale.
+ */
+function isTailscaleRange(ip: string): boolean {
+  const m = /^100\.(\d+)\./.exec(ip)
+  if (!m) return false
+  const second = Number(m[1])
+  return second >= 64 && second <= 127
+}
 
 function privateRank(ip: string): number {
   if (ip.startsWith('192.168.')) return 0
@@ -26,18 +32,33 @@ function privateRank(ip: string): number {
   return 3 // non-private but routable (e.g. a flat office /24)
 }
 
-export function primaryLanIp(): string | null {
+function nonInternalV4(): string[] {
   const ifaces = networkInterfaces()
-  const candidates: string[] = []
+  const out: string[] = []
   for (const addrs of Object.values(ifaces)) {
     if (!addrs) continue
     for (const a of addrs) {
       // `family` is 'IPv4' on modern Node; older Node used the number 4.
       const isV4 = a.family === 'IPv4' || (a.family as unknown) === 4
       if (!isV4 || a.internal) continue
-      candidates.push(a.address)
+      out.push(a.address)
     }
   }
+  return out
+}
+
+/** The node's Tailscale IPv4 (100.64.0.0/10), or null when not on a tailnet. */
+export function tailscaleIp(): string | null {
+  return nonInternalV4().find(isTailscaleRange) ?? null
+}
+
+/**
+ * A same-network LAN IPv4, preferring the common home ranges. Excludes
+ * the Tailscale range (that is surfaced separately) so "LAN" means the
+ * physical local network.
+ */
+export function primaryLanIp(): string | null {
+  const candidates = nonInternalV4().filter((ip) => !isTailscaleRange(ip))
   if (candidates.length === 0) return null
   candidates.sort((x, y) => privateRank(x) - privateRank(y))
   return candidates[0] ?? null
