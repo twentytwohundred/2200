@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.614.1856] ... 2026-06-14
+
+### Fixed
+
+- **The web URL printed by setup is now actually reachable.** When a daemon was already running bound to loopback (`127.0.0.1`) from a prior `2200`/`daemon start`, setup's idempotent path printed the LAN/Tailscale URL without rebinding — so the URL refused/timed out. Setup now detects a loopback-bound daemon (reading the daemon's actually-bound host from its log) and restarts it onto `0.0.0.0` so the printed URL works. The LAN bind is also persisted on the idempotent path, not just the fresh one. Verified in a container: a daemon on `127.0.0.1` → `2200 setup` → rebound to `0.0.0.0`, LAN IP returns HTTP 200.
+- **Firewall hint in the access block.** When a non-localhost URL is shown, setup now notes that an OS firewall (e.g. the macOS application firewall) can block incoming connections from other devices, and where to allow Node.
+
 ## [2026.614.1828] ... 2026-06-14
 
 ### Added
