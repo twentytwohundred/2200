@@ -25,6 +25,7 @@ import {
   collectOpenClawLlmEnv,
   looksLikeOpenClawHome,
   detectOpenClawHome,
+  disableOpenClaw,
   parseIdentityMd,
   OpenClawSurveyError,
 } from '../../../src/runtime/migration/openclaw.js'
@@ -256,6 +257,17 @@ describe('parseIdentityMd', () => {
   it('treats placeholder values as absent', () => {
     const parsed = parseIdentityMd('- **Name:** Skippy\n- **Avatar:** _(not set)_\n')
     expect(parsed.name).toBe('Skippy')
+  })
+})
+
+describe('disableOpenClaw (never deletes; best-effort, non-fatal)', () => {
+  it('reports failure cleanly when no systemd service and no openclaw CLI exist', async () => {
+    // CI has neither an `openclaw` systemd user service nor the
+    // `openclaw` CLI on PATH, so the executor must return a graceful
+    // ok:false with a useful detail ... never throw, never delete.
+    const result = await disableOpenClaw()
+    expect(result.ok).toBe(false)
+    expect(result.detail).toMatch(/could not stop/i)
   })
 })
 

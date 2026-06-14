@@ -397,6 +397,52 @@ export function renderDisableInstructions(opts: { sameHost: boolean }): string {
   return [header, ...cmds.map((c) => `  ${c}`)].join('\n')
 }
 
+/**
+ * Actually disable (NOT delete) the local OpenClaw instance, so it stops
+ * running alongside 2200 and the operator isn't paying for two fleets.
+ * Tries systemd-user first (Linux), then the `openclaw` CLI's own stop
+ * (macOS / non-systemd). Best-effort and non-fatal: returns a summary of
+ * what ran. Re-enable later with `systemctl --user enable --now openclaw`
+ * or by relaunching OpenClaw ... nothing here removes data.
+ */
+export async function disableOpenClaw(): Promise<{ ok: boolean; detail: string }> {
+  const { spawn } = await import('node:child_process')
+  const run = (cmd: string, args: string[]): Promise<number> =>
+    new Promise((resolve) => {
+      try {
+        const child = spawn(cmd, args, { stdio: 'ignore' })
+        child.on('error', () => {
+          resolve(127)
+        })
+        child.on('exit', (code) => {
+          resolve(code ?? 1)
+        })
+      } catch {
+        resolve(127)
+      }
+    })
+
+  // systemd user service (Linux). `disable` first so it does not come
+  // back on next login; then `stop` to end the current run.
+  const sysDisable = await run('systemctl', ['--user', 'disable', 'openclaw'])
+  const sysStop = await run('systemctl', ['--user', 'stop', 'openclaw'])
+  if (sysStop === 0 || sysDisable === 0) {
+    return { ok: true, detail: 'stopped and disabled the openclaw systemd user service' }
+  }
+
+  // Fallback: the openclaw CLI's own gateway stop (macOS / no systemd).
+  const cliStop = await run('openclaw', ['gateway', 'stop'])
+  if (cliStop === 0) {
+    return { ok: true, detail: 'stopped the OpenClaw gateway via the openclaw CLI' }
+  }
+
+  return {
+    ok: false,
+    detail:
+      'could not stop OpenClaw automatically (no systemd user service and no openclaw CLI on PATH)',
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
