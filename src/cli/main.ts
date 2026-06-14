@@ -202,6 +202,26 @@ export function buildProgram(): Command {
   program.hook('preAction', loadCliEnvFiles)
 
   // ---------------------------------------------------------------------------
+  // Top-level: setup (the installer's one-shot, non-interactive path)
+  // ---------------------------------------------------------------------------
+
+  program
+    .command('setup')
+    .description(
+      'one-shot non-interactive setup: init, start the daemon, migrate OpenClaw if present, and print the web URL + token (used by the installer)',
+    )
+    .action(async () => {
+      const { runQuickSetup } = await import('../runtime/install/quick-setup.js')
+      try {
+        await runQuickSetup()
+      } catch (err) {
+        console.error(`setup failed: ${err instanceof Error ? err.message : String(err)}`)
+        console.error('You can retry with `2200 setup`, or run `2200` for the guided wizard.')
+        process.exit(1)
+      }
+    })
+
+  // ---------------------------------------------------------------------------
   // Top-level: init
   // ---------------------------------------------------------------------------
 

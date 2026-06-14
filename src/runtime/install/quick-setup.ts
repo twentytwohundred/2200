@@ -1,0 +1,220 @@
+/**
+ * One-shot, non-interactive setup ... the "paste the install command and
+ * end at a URL" path.
+ *
+ * The installer runs this immediately after `npm install -g`, so the
+ * whole experience is a single fluid flow with no stopping points:
+ *
+ *   curl -fsSL https://2200.ai/install.sh | sh
+ *     → install → setup → "open http://<lan-ip>:2200/?token=..."
+ *
+ * What it does, all with sensible defaults and zero prompts:
+ *   1. Resolve 2200_HOME (default) and initialize the layout.
+ *   2. Bind the web server to the LAN (0.0.0.0) and persist that, so the
+ *      printed URL is reachable from a phone or another laptop ... most
+ *      installs live behind a private IP, not a public hostname.
+ *   3. Start the daemon and mint a user identity (display name defaults
+ *      to $USER; the operator renames it later in the web app).
+ *   4. If an OpenClaw install is present, migrate it automatically ...
+ *      the Agents come over, so we never walk the operator through
+ *      building a "first Agent" they already have.
+ *   5. Print the access block: the LAN URL with the bearer token
+ *      embedded (one-click), plus the localhost fallback.
+ *
+ * Idempotent: a second run (config already exists) just ensures the
+ * daemon is up and reprints the access URL.
+ *
+ * Security posture: binding to 0.0.0.0 exposes the web API to the local
+ * network, but every route requires the bearer token, and the token is
+ * shown only to the operator. This matches the "home/office LAN" target
+ * the operator opted into by asking for a LAN URL.
+ */
+import { Supervisor } from '../supervisor/supervisor.js'
+import { startDaemon } from '../supervisor/daemon.js'
+import { connectUds } from '../control-plane/uds-client.js'
+import { JsonRpcClient } from '../control-plane/client.js'
+import { defaultHome, saveUserConfig, tryLoadUserConfig } from '../config/loader.js'
+import { upsertRuntimeEnvKey } from '../config/runtime-env.js'
+import { homePaths } from '../storage/layout.js'
+import { WebTokenStore } from '../http/tokens.js'
+import { readLivePid } from '../supervisor/pidfile.js'
+import { primaryLanIp } from '../util/lan-ip.js'
+import { runFirstRunOpenClawMigration, type FirstRunIO } from './first-run.js'
+
+export interface QuickSetupResult {
+  home: string
+  port: number
+  token: string
+  /** LAN URL with the token embedded, or null when only loopback exists. */
+  lanUrl: string | null
+  /** localhost URL with the token embedded (same-machine access). */
+  localUrl: string
+  /** Name of the Agent migrated from OpenClaw, when one was. */
+  migratedAgent: string | null
+  /** False when a prior setup was found and we only re-surfaced the URL. */
+  freshInstall: boolean
+}
+
+export function webPortFromEnv(): number {
+  const raw = process.env['TWENTYTWOHUNDRED_WEB_PORT']
+  const n = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(n) && n > 0 ? n : 2200
+}
+
+function defaultDisplayName(): string {
+  const u = (process.env['USER'] ?? process.env['LOGNAME'] ?? '').trim()
+  return u.length > 0 ? u : 'operator'
+}
+
+async function connectWithRetry(socketPath: string, timeoutMs: number): Promise<JsonRpcClient> {
+  const deadline = Date.now() + timeoutMs
+  let lastErr: unknown = null
+  while (Date.now() < deadline) {
+    try {
+      return new JsonRpcClient(await connectUds(socketPath))
+    } catch (err) {
+      lastErr = err
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(`daemon socket never came up: ${socketPath}`)
+}
+
+/** Read (or lazily create) the web bearer token for this home. */
+export async function ensureWebTokenForHome(home: string): Promise<string> {
+  const store = new WebTokenStore(homePaths(home).stateWebTokens)
+  const t = await store.ensure('default')
+  return t.value
+}
+
+export interface QuickSetupOptions {
+  /** Sink for progress lines. Defaults to stdout. */
+  out?: (line: string) => void
+  /** Injected OpenClaw detector (tests). Defaults to the real ~/.openclaw probe. */
+  detectOpenClaw?: () => Promise<string | null>
+  /** Override the default ($USER) display name. */
+  displayName?: string
+}
+
+export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<QuickSetupResult> {
+  const out = opts.out ?? ((l: string) => process.stdout.write(l + '\n'))
+  const port = webPortFromEnv()
+
+  // Idempotent path: already set up. Make sure the daemon is up, then
+  // just resurface the access URL.
+  const existing = await tryLoadUserConfig()
+  if (existing) {
+    const home = existing.home
+    if ((await readLivePid(home)) === null) {
+      await startDaemon({ home })
+    }
+    const token = await ensureWebTokenForHome(home)
+    return finish({ home, port, token, migratedAgent: null, freshInstall: false, out })
+  }
+
+  // Fresh install.
+  const home = defaultHome()
+
+  // Bind the web server to the LAN BEFORE the daemon starts (it reads
+  // the host from the environment at boot). Persist so restarts keep it.
+  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '0.0.0.0')
+  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '0.0.0.0'
+
+  await saveUserConfig({ schema_version: 1, home })
+  await Supervisor.create({ home })
+  await startDaemon({ home })
+
+  // Mint the user identity (default display name; renamed later in-app).
+  const rpc = await connectWithRetry(Supervisor.socketPath(home), 15_000)
+  try {
+    await rpc.call('cli.user.init', { display_name: opts.displayName ?? defaultDisplayName() })
+  } finally {
+    await rpc.close()
+  }
+
+  // Auto-migrate OpenClaw when present. A console-backed IO whose `ask`
+  // returns '' makes the single migrate offer default to yes, so this is
+  // fully non-interactive. A blank user (no ~/.openclaw) is a silent
+  // no-op inside the migration step.
+  const io: FirstRunIO = {
+    ask: () => Promise.resolve(''),
+    info: out,
+    success: out,
+    warn: out,
+  }
+  const detect =
+    opts.detectOpenClaw ??
+    (async () => {
+      const { detectOpenClawHome } = await import('../migration/openclaw.js')
+      return detectOpenClawHome()
+    })
+  const mig = await runFirstRunOpenClawMigration(io, home, detect)
+
+  const token = await ensureWebTokenForHome(home)
+  return finish({
+    home,
+    port,
+    token,
+    migratedAgent: mig.agentName,
+    freshInstall: true,
+    out,
+  })
+}
+
+function finish(args: {
+  home: string
+  port: number
+  token: string
+  migratedAgent: string | null
+  freshInstall: boolean
+  out: (line: string) => void
+}): QuickSetupResult {
+  const { home, port, token, migratedAgent, freshInstall, out } = args
+  const lan = primaryLanIp()
+  const localUrl = `http://localhost:${String(port)}/?token=${token}`
+  const lanUrl = lan ? `http://${lan}:${String(port)}/?token=${token}` : null
+  printWebAccess({ port, token, migratedAgent, freshInstall, out })
+  return { home, port, token, lanUrl, localUrl, migratedAgent, freshInstall }
+}
+
+/**
+ * Print the final "open 2200 here" access block: the LAN URL with the
+ * token embedded (one-click, reachable from another device), the
+ * localhost fallback, and the bare token. Shared by `2200 setup` and
+ * the interactive first-run so both end the same way ... at a URL, not
+ * at a "now run this" instruction.
+ */
+export function printWebAccess(args: {
+  port: number
+  token: string
+  migratedAgent: string | null
+  freshInstall: boolean
+  out: (line: string) => void
+}): void {
+  const { port, token, migratedAgent, freshInstall, out } = args
+  const lan = primaryLanIp()
+  const localUrl = `http://localhost:${String(port)}/?token=${token}`
+  const lanUrl = lan ? `http://${lan}:${String(port)}/?token=${token}` : null
+
+  out('')
+  out('2200 is ready.')
+  out('')
+  out('  Open 2200 in your browser:')
+  if (lanUrl) {
+    out(`  ${lanUrl}`)
+    out('')
+    out(`  (on this machine: http://localhost:${String(port)}/)`)
+  } else {
+    // No LAN address found (isolated host / container). Loopback only.
+    out(`  ${localUrl}`)
+  }
+  out('')
+  if (migratedAgent) {
+    out(`  Your migrated Agent "${migratedAgent}" is already there.`)
+  } else if (freshInstall) {
+    out('  The web app will walk you through creating your first Agent.')
+  }
+  out('')
+  out(`  Bearer token (if a client asks for it): ${token}`)
+  out('')
+}

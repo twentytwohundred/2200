@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.614.1818] ... 2026-06-14
+
+One fluid install path: paste the command, end at a web URL.
+
+### Added
+
+- **`2200 setup`** — a one-shot, non-interactive setup the installer runs as its final step, so `curl -fsSL https://2200.ai/install.sh | sh` flows straight through to a running 2200 with **no intermediate "now run this" stops**. It inits `2200_HOME`, mints a user identity (display name defaults to `$USER`, renamed later in-app), starts the daemon, auto-migrates OpenClaw when `~/.openclaw` is present, and prints the access block. Idempotent: a second run just re-surfaces the URL.
+- **The setup ends at a LAN web URL with the token embedded**: `http://<lan-ip>:2200/?token=<bearer>` (the web app reads `?token=` from the URL, persists it, and strips the param), with the localhost fallback and the bare token shown beneath. The web server now binds to the LAN (`0.0.0.0`, persisted) so the URL is reachable from a phone or another laptop — most installs live behind a private IP, not localhost. Every route still requires the bearer token.
+
+### Changed
+
+- **A migrated OpenClaw user is no longer walked through building a "first Agent"** they already have — setup (and the interactive `2200` first-run) detect the migration and instead say "your migrated Agent is already there."
+- **The interactive `2200` first-run also ends at the web URL** now, not at a `2200 agent build` instruction.
+- **The installer's npm-prefix fix auto-applies with narration** instead of a yes/no prompt (it's reversible install plumbing, and a stop on the one-line install path is friction). `--no-prefix-fix` opts out; `--no-setup` installs the CLI only.
+
 ## [2026.613.2149] ... 2026-06-13
 
 Update-mechanism hardening, for click-update dogfooding.
