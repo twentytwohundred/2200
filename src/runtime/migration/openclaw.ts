@@ -380,6 +380,55 @@ export async function collectOpenClawLlmEnv(ocHome: string): Promise<Record<stri
   return out
 }
 
+export interface OpenClawDiscordConfig {
+  /** The Discord bot token (the same bot/identity the Agent already uses). */
+  botToken: string
+  /** Allowlisted channel ids (the conversation surface for the per-Agent bot). */
+  channelIds: string[]
+  /** Allowlisted DM user ids, when stored as strings (see note below). */
+  userIds: string[]
+}
+
+/**
+ * Read the Discord channel config out of an OpenClaw home so the migration
+ * can carry the connection over (the bot token + allowlist), rather than
+ * leaving the operator to hunt for their token and re-paste it. Returns
+ * null when OpenClaw has no enabled Discord channel.
+ *
+ * Note on ids: Discord snowflake ids are ~18 digits, larger than JS's
+ * safe-integer range. Channel ids survive intact because they are object
+ * KEYS in openclaw.json (always strings). User ids stored as bare JSON
+ * NUMBERS would be silently corrupted by JSON.parse, so we only carry user
+ * ids that are already strings; the per-Agent Discord binding is gated by
+ * the channel anyway (dm_policy defaults to open), so an empty DM allowlist
+ * is harmless.
+ */
+export async function collectOpenClawDiscord(
+  ocHome: string,
+): Promise<OpenClawDiscordConfig | null> {
+  const config = await readJsonTolerant(join(ocHome, 'openclaw.json'))
+  const discord = asRecord(asRecord(config['channels'])['discord'])
+  if (Object.keys(discord).length === 0) return null
+  if (discord['enabled'] === false) return null
+  const token = typeof discord['token'] === 'string' ? discord['token'] : ''
+  if (token === '') return null
+
+  const channelIds = new Set<string>()
+  const userIds = new Set<string>()
+  for (const g of Object.values(asRecord(discord['guilds']))) {
+    const guild = asRecord(g)
+    const users = Array.isArray(guild['users']) ? guild['users'] : []
+    for (const u of users) {
+      // Only strings are safe; bare numbers this large lose precision.
+      if (typeof u === 'string' && /^\d+$/.test(u)) userIds.add(u)
+    }
+    for (const [cid, cval] of Object.entries(asRecord(guild['channels']))) {
+      if (/^\d+$/.test(cid) && asRecord(cval)['enabled'] !== false) channelIds.add(cid)
+    }
+  }
+  return { botToken: token, channelIds: [...channelIds], userIds: [...userIds] }
+}
+
 /**
  * Commands that disable (never delete) a source OpenClaw instance so
  * the operator isn't running two fleets. Printed in the report and by
@@ -405,42 +454,90 @@ export function renderDisableInstructions(opts: { sameHost: boolean }): string {
  * what ran. Re-enable later with `systemctl --user enable --now openclaw`
  * or by relaunching OpenClaw ... nothing here removes data.
  */
-export async function disableOpenClaw(): Promise<{ ok: boolean; detail: string }> {
+/** Run a command silently, resolving to its exit code (127 on spawn error). */
+async function runSilently(cmd: string, args: string[]): Promise<number> {
   const { spawn } = await import('node:child_process')
-  const run = (cmd: string, args: string[]): Promise<number> =>
-    new Promise((resolve) => {
-      try {
-        const child = spawn(cmd, args, { stdio: 'ignore' })
-        child.on('error', () => {
-          resolve(127)
-        })
-        child.on('exit', (code) => {
-          resolve(code ?? 1)
-        })
-      } catch {
+  return new Promise<number>((resolve) => {
+    try {
+      const child = spawn(cmd, args, { stdio: 'ignore' })
+      child.on('error', () => {
         resolve(127)
+      })
+      child.on('exit', (code) => {
+        resolve(code ?? 1)
+      })
+    } catch {
+      resolve(127)
+    }
+  })
+}
+
+// The OpenClaw gateway runs as a per-user service. Its systemd unit is
+// `openclaw-gateway` (older layouts used `openclaw`), and the `openclaw` CLI
+// knows how to stop/start it across systemd/launchd/schtasks. We act through
+// all of these so the cutover works regardless of layout ... and crucially
+// DISABLE the unit, because `openclaw gateway stop` only stops it (the unit
+// stays enabled) and a stopped-but-enabled gateway reappears on the next
+// login/boot, putting two of the same bot back on Discord.
+const OC_SYSTEMD_UNITS = ['openclaw-gateway', 'openclaw']
+
+export async function disableOpenClaw(): Promise<{ ok: boolean; detail: string }> {
+  // Stop now: prefer the openclaw CLI (it knows the unit + service manager),
+  // else stop the systemd unit directly.
+  let stopped = (await runSilently('openclaw', ['gateway', 'stop'])) === 0
+  if (!stopped) {
+    for (const unit of OC_SYSTEMD_UNITS) {
+      if ((await runSilently('systemctl', ['--user', 'stop', unit])) === 0) {
+        stopped = true
+        break
       }
-    })
-
-  // systemd user service (Linux). `disable` first so it does not come
-  // back on next login; then `stop` to end the current run.
-  const sysDisable = await run('systemctl', ['--user', 'disable', 'openclaw'])
-  const sysStop = await run('systemctl', ['--user', 'stop', 'openclaw'])
-  if (sysStop === 0 || sysDisable === 0) {
-    return { ok: true, detail: 'stopped and disabled the openclaw systemd user service' }
+    }
   }
-
-  // Fallback: the openclaw CLI's own gateway stop (macOS / no systemd).
-  const cliStop = await run('openclaw', ['gateway', 'stop'])
-  if (cliStop === 0) {
-    return { ok: true, detail: 'stopped the OpenClaw gateway via the openclaw CLI' }
+  // Disable so it does NOT restart on next login/boot. Disabling a unit that
+  // isn't present is a harmless no-op.
+  let disabled = false
+  for (const unit of OC_SYSTEMD_UNITS) {
+    if ((await runSilently('systemctl', ['--user', 'disable', unit])) === 0) disabled = true
   }
-
+  if (stopped) {
+    return {
+      ok: true,
+      detail: disabled
+        ? 'stopped the OpenClaw gateway and disabled its service (no restart on boot)'
+        : 'stopped the OpenClaw gateway',
+    }
+  }
   return {
     ok: false,
-    detail:
-      'could not stop OpenClaw automatically (no systemd user service and no openclaw CLI on PATH)',
+    detail: 'could not stop OpenClaw automatically (no openclaw CLI on PATH and no systemd unit)',
   }
+}
+
+/**
+ * Re-enable (restart) the local OpenClaw instance. Used to ROLL BACK a
+ * Discord cutover that failed to verify, so the operator is never left with
+ * their Agent dark on Discord. Re-enables the systemd unit (so a disabled
+ * gateway comes back) and starts it via the CLI or systemd. Best-effort.
+ */
+export async function enableOpenClaw(): Promise<{ ok: boolean; detail: string }> {
+  for (const unit of OC_SYSTEMD_UNITS) {
+    await runSilently('systemctl', ['--user', 'enable', unit])
+  }
+  let started = (await runSilently('openclaw', ['gateway', 'start'])) === 0
+  if (!started) {
+    for (const unit of OC_SYSTEMD_UNITS) {
+      if ((await runSilently('systemctl', ['--user', 'start', unit])) === 0) {
+        started = true
+        break
+      }
+    }
+  }
+  return started
+    ? { ok: true, detail: 're-enabled and restarted the OpenClaw gateway' }
+    : {
+        ok: false,
+        detail: 'could not restart OpenClaw automatically (no openclaw CLI, no systemd)',
+      }
 }
 
 // ---------------------------------------------------------------------------
@@ -565,9 +662,15 @@ function renderReport(args: {
   ]
   for (const u of args.unmappedJobs) lines.push(`- Schedule ${u}`)
   for (const c of s.channels) {
-    lines.push(
-      `- Channel \`${c}\`: tokens stay in OpenClaw. Reconnect via 2200's Extensions store (the ${c} connector) ... takes a minute, and the Agent keeps the same ${c} presence.`,
-    )
+    if (c === 'discord') {
+      lines.push(
+        `- Channel \`discord\`: carried over automatically on an interactive migration (same bot, same channel) and OpenClaw stepped down so only one Agent answers. If you migrated non-interactively, reconnect via 2200's Extensions store (the discord connector).`,
+      )
+    } else {
+      lines.push(
+        `- Channel \`${c}\`: tokens stay in OpenClaw. Reconnect via 2200's Extensions store (the ${c} connector) ... takes a minute, and the Agent keeps the same ${c} presence.`,
+      )
+    }
   }
   if (s.skills.length > 0) {
     lines.push(
