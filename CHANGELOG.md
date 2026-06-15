@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.2043] ... 2026-06-15
+
+### Added
+
+- **The Build-an-Agent interview now reads what you actually said.** The suggestion engine only fired for three scripted archetypes (email / project / ops); a free-form Agent (e.g. a daily-playlist publisher) produced a great interview but 0 suggested schedules, tools, and capabilities. A new LLM extraction pass runs when the interview finishes and (1) parses the stated cadence into a real, validated cron + IANA timezone ("6:30am EDT daily" → `30 6 * * *`, `America/New_York`) and (2) extracts the external services the Agent needs that 2200 has no connector for yet (Spotify, Instagram, X, ...), records each as a catalog gap (a real demand signal for what to build next), and surfaces them in the preview as "needed integrations" instead of a blank "0 tools". Best-effort: a malformed model response never blocks the preview. (Schedules are still suggested, not auto-written — auto-applying on confirm is a follow-up.)
+
 ## [2026.615.1958] ... 2026-06-15
 
 ### Fixed
