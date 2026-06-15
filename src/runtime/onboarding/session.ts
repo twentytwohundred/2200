@@ -40,6 +40,7 @@ import { buildHandoffFromTranscript } from './identity-from-interview.js'
 import type { HandoffDocument } from '../migration/types.js'
 import { suggestTools, type ToolSuggestion } from './tool-suggestions.js'
 import { suggestSchedules, type ScheduleSuggestion } from './schedule-suggestions.js'
+import { extractScheduleAndIntegrations, type NeededIntegration } from './interview-extract.js'
 import { loadCapabilities, resolveCatalogDir } from './capability-loader.js'
 import {
   findUnmatchedTags,
@@ -127,6 +128,14 @@ export interface SessionPreview {
    * the web wizard's picker UI (operator opts in).
    */
   capabilities: CapabilitySuggestion[]
+  /**
+   * External services the Agent needs that the curated tool table doesn't
+   * cover (Spotify, Instagram, ...), extracted from the free-form
+   * interview. Each is also recorded as a catalog gap (demand signal).
+   * The preview surfaces these so the operator sees what was heard instead
+   * of a blank "0 tools".
+   */
+  needed_integrations: NeededIntegration[]
   /** The name the handoff builder normalized; what `confirm()` produces. */
   agent_name: string
 }
@@ -393,8 +402,46 @@ Produce the next JSON message now.`
     const dryHandoff = buildHandoffFromTranscript({ transcript })
     const agentName = dryHandoff.frontmatter.agent_name
     const tools = suggestTools(transcript, agentName)
-    const schedules = suggestSchedules(transcript)
+    const curatedSchedules = suggestSchedules(transcript)
     const capabilities = await this.suggestCapabilitiesFromTranscript(transcript)
+
+    // The curated tables only fire for the scripted archetypes. For the
+    // free-form (llm_driven) path they produce nothing, so read the actual
+    // interview: parse the stated cadence into a real schedule, and extract
+    // the named external integrations. Best-effort ... never blocks the
+    // preview.
+    const extracted = await extractScheduleAndIntegrations({
+      provider: this.provider,
+      modelId: this.modelId,
+      transcript: transcriptText,
+      summary: summaryText,
+    }).catch(() => ({ schedules: [], integrations: [] }))
+
+    const schedules = [...curatedSchedules]
+    for (const s of extracted.schedules) {
+      if (schedules.some((m) => m.cron === s.cron && m.task === s.task)) continue
+      schedules.push(s)
+    }
+
+    // Record each needed integration as a catalog gap (real demand signal
+    // for what to build next) and surface it in the preview. Idempotent
+    // per (description) via if_exists:'skip'; gap-write failure is non-fatal
+    // ... showing the operator what we heard is the load-bearing part.
+    const needed_integrations: NeededIntegration[] = []
+    for (const integ of extracted.integrations) {
+      needed_integrations.push(integ)
+      try {
+        await recordCatalogGap({
+          operator_description: `${integ.name}: ${integ.purpose}`,
+          id: slugifyGapId(`${integ.name} ${integ.purpose}`),
+          context: 'onboarding',
+          agent_name: agentName,
+          if_exists: 'skip',
+        })
+      } catch {
+        // best-effort
+      }
+    }
     // Auto-apply every high-confidence (default_on) suggestion. The
     // suggester's threshold (>= 2 tag overlaps by default) is the
     // filter; we trust it. Lower-confidence entries stay in the
@@ -421,6 +468,7 @@ Produce the next JSON message now.`
       tools,
       schedules,
       capabilities,
+      needed_integrations,
       agent_name: agentName,
     }
     this.state = 'done'
