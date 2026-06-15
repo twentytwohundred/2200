@@ -477,8 +477,22 @@ printf '\n'
 # question reach the user; without a tty it stays fully non-interactive.
 # The PATH was exported above (prefix-fix path) so the binary resolves
 # here before the user opens a new shell.
+#
+# We must ACTUALLY open /dev/tty to decide, not just test `-r`: on a
+# session with no controlling terminal (headless SSH `ssh host '...'`,
+# CI, cron) the device node exists and passes the `-r` permission test,
+# but open(2) returns ENXIO ("No such device or address") ... which would
+# abort the whole install right before setup.
+#
+# The probe runs in a SUBSHELL `( ... )` on purpose. A redirection error
+# on a POSIX special built-in (`exec`) makes a non-interactive shell exit
+# outright ... in dash (Ubuntu's /bin/sh) that exit is NOT caught by the
+# enclosing `if`/`||`, so a bare `exec < /dev/tty` would kill the whole
+# installer with status 2. The subshell contains that exit: the child
+# dies, the `if` simply sees a non-zero status, and we fall back to a
+# fully non-interactive `2200 setup`.
 setup_rc=0
-if [ -r /dev/tty ]; then
+if (exec < /dev/tty) 2>/dev/null; then
   2200 setup < /dev/tty || setup_rc=$?
 else
   2200 setup || setup_rc=$?
