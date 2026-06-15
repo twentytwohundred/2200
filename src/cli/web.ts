@@ -11,9 +11,30 @@ import { homePaths } from '../runtime/storage/layout.js'
 import { WebTokenStore } from '../runtime/http/tokens.js'
 import { resolveHome } from '../runtime/config/loader.js'
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
+import { buildAccessUrls } from '../runtime/install/quick-setup.js'
+import { primaryLanIp, tailscaleIp } from '../runtime/util/lan-ip.js'
 
 interface WebOpts {
   home?: string
+}
+
+/**
+ * Print the clickable access URL(s) with the token embedded ... the same
+ * Tailscale/LAN/localhost block `2200 setup` ends at. A bare token alone
+ * isn't actionable: the operator wants a URL to open, especially after a
+ * rotate that just invalidated the one they had bookmarked.
+ */
+function printAccessUrls(token: string): void {
+  const options = buildAccessUrls({
+    tailscaleIp: tailscaleIp(),
+    lanIp: primaryLanIp(),
+    port: getEffectivePort(),
+    token,
+  })
+  process.stdout.write('\nOpen 2200 in your browser:\n')
+  for (const o of options) {
+    process.stdout.write(`  ${o.href}  (${o.label})\n`)
+  }
 }
 
 function getEffectiveHost(): string {
@@ -56,6 +77,7 @@ export function registerWebCommands(program: Command): void {
       if (latest) {
         process.stdout.write(`active token: ${latest.id} (label="${latest.label}")\n`)
         process.stdout.write(`bearer value: ${latest.value}\n`)
+        printAccessUrls(latest.value)
       } else {
         process.stdout.write(`no token issued yet (one will be created on supervisor start)\n`)
       }
@@ -94,6 +116,7 @@ export function registerWebCommands(program: Command): void {
       process.stdout.write(
         `issued ${t.id}  label="${t.label}"  created_at=${t.created_at}\nvalue: ${t.value}\n`,
       )
+      printAccessUrls(t.value)
     })
 
   token
@@ -107,6 +130,7 @@ export function registerWebCommands(program: Command): void {
         `rotated; new token ${t.id} label="${t.label}" issued at ${t.created_at}\nvalue: ${t.value}\n` +
           `note: every previous token is invalid. Update any clients that hold a bearer.\n`,
       )
+      printAccessUrls(t.value)
     })
 
   token
