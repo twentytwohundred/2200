@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1958] ... 2026-06-15
+
+### Fixed
+
+- **A new update no longer gets hidden behind a finished upgrade card.** The upgrade status is persisted and survives the daemon restart, so a completed (or failed) upgrade lingered and took render priority in the System Update tile — hiding the "Upgrade to <new>" button when a newer release landed (you'd see "UPDATE AVAILABLE" up top with no way to act on it). Now an actively-running upgrade still shows its live progress, but a newly-available update supersedes a finished card so the Upgrade action surfaces; a finished card otherwise stays for post-upgrade confirmation / failure visibility. The upgrade engine itself was never affected.
+
 ## [2026.615.1813] ... 2026-06-15
 
 ### Fixed
