@@ -40,6 +40,7 @@ import {
   type OnboardingSessionResponse,
   type OnboardingToolSuggestion,
   type OnboardingTranscriptEntry,
+  type ProviderSettingsItem,
 } from '../../lib/api'
 import { Button, Card, Pill, Screen, ScreenNavLink, SectionHeader, cx } from '../../primitives'
 import { pickDefaultProvider } from './pickDefaultProvider'
@@ -113,16 +114,17 @@ export function OnboardingScreen(): ReactElement {
     models: string[]
   }
   const pickableOptions = useMemo<PickableOption[]>(() => {
-    const providers = (providersQuery.data?.items ?? [])
-      .filter((p) => p.key_set || p.keyOptional)
-      .map(
-        (p): PickableOption => ({
-          kind: 'provider',
-          name: p.name,
-          label: p.label,
-          models: p.suggested_models,
-        }),
-      )
+    const items = providersQuery.data?.items ?? []
+    const toProviderOption = (p: ProviderSettingsItem): PickableOption => ({
+      kind: 'provider',
+      name: p.name,
+      label: p.label,
+      models: p.suggested_models,
+    })
+    // Only providers with a credential actually configured. The keyless
+    // `local` (Ollama / LM Studio) placeholder is noise once real
+    // connections exist; it's offered only as a cold-start fallback below.
+    const providers = items.filter((p) => p.key_set).map(toProviderOption)
     const endpoints = (endpointsQuery.data?.items ?? []).map((e, i): PickableOption => {
       const live = liveEndpointQueries[i]?.data
       const liveModels = live && 'ok' in live && live.ok ? live.models.map((m) => m.id) : []
@@ -150,7 +152,11 @@ export function OnboardingScreen(): ReactElement {
         models: merged,
       }
     })
-    return [...providers, ...endpoints]
+    const pickable = [...providers, ...endpoints]
+    if (pickable.length > 0) return pickable
+    // Cold start: nothing configured yet. Offer keyless providers (local
+    // Ollama / LM Studio) so a fresh instance can still build an Agent.
+    return items.filter((p) => p.keyOptional).map(toProviderOption)
   }, [providersQuery.data, endpointsQuery.data, liveEndpointQueries])
 
   // Auto-pick a sensible default so the user can hit Begin without touching
