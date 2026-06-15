@@ -14,6 +14,8 @@ export default tseslint.config(
       'tests/**/fixtures/**',
       // Workspace members own their own ESLint config and verify pipeline.
       'apps/**',
+      // Build/release helper scripts (plain Node .mjs, not in the TS project).
+      'scripts/**',
     ],
   },
   eslint.configs.recommended,

@@ -203,15 +203,24 @@ function resolveStaticDir(override?: string): string | null {
   if (override) {
     return existsSync(join(override, 'index.html')) ? override : null
   }
-  // The compiled bundle lives at <repo>/dist/runtime/http/server.js. From
-  // there, apps/web/dist is two levels up + apps/web/dist. We resolve it
-  // both from the source path and the compiled path so dev (tsx) and prod
-  // (built bundle) both find it.
-  const here = dirname(fileURLToPath(import.meta.url))
-  // src/runtime/http/server.ts -> ../../../apps/web/dist
-  // dist/runtime/http/server.js -> ../../../apps/web/dist
-  const candidate = resolvePath(here, '..', '..', '..', 'apps', 'web', 'dist')
-  if (existsSync(join(candidate, 'index.html'))) return candidate
+  // The web app is served from two places depending on context:
+  //   - PROD (published package): bundled into `<dist>/web` at pack time
+  //     (the `bundle:web` build step), since only `dist/` is shipped.
+  //   - DEV: the web workspace's own build output, `apps/web/dist`.
+  // The server code is inlined into different bundles (the supervisor
+  // bootstrap, the CLI), so `import.meta.url` points at varying depths.
+  // Walk up from the module dir checking both layouts at each ancestor,
+  // which is robust to wherever the bundler placed this code.
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 8; i++) {
+    const prod = join(dir, 'web')
+    if (existsSync(join(prod, 'index.html'))) return prod
+    const dev = join(dir, 'apps', 'web', 'dist')
+    if (existsSync(join(dev, 'index.html'))) return dev
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
   return null
 }
 
