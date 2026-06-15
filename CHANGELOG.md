@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1725] ... 2026-06-15
+
+### Added
+
+- **Recover web access by pasting your token.** When the web app has no token, or the stored one no longer authenticates (after `2200 web token rotate`, or an instance reset), it now shows a paste-your-token screen instead of a broken app — paste the value the CLI printed and you're back in, no `?token=...` URL surgery. A non-auth failure (daemon down / network) is not treated as a token problem, so a valid token is never discarded over a transient outage.
+- **`2200 web token rotate` / `issue` / `status` print the access URL.** They used to print only the bare token; now they print the clickable Tailscale/LAN/localhost URL(s) with the token embedded — the same block `2200 setup` ends at — so a rotate hands you a URL to open, not a token to graft into a URL yourself.
+
 ## [2026.615.1630] ... 2026-06-15
 
 Connectors ship to production, and OpenClaw migration carries Discord over.
