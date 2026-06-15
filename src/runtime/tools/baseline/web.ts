@@ -9,17 +9,13 @@
  * (POST/PUT/DELETE land in a future tool because they're destructive
  * and need explicit perm-check treatment).
  *
- * web.search delegates to the configured WebSearchProvider per
- * [[2026-04-26-web-search-provider]] (Tavily v1 default + Brave fallback,
- * abstraction first). The provider is constructed at Agent boot from
- * the user's `provider_secret` config; the tool reads it via context.
- *
- * v1 web.search is a stub that returns no results when no provider is
- * registered. The Agent loop or Identity wires the real provider in a
- * follow-up PR; the tool ships now to lock the dispatch shape.
+ * web.search delegates to the Brave Search API (`searchWeb`), keyed by
+ * BRAVE_API_KEY in the runtime env. When no key is configured it returns a
+ * clear, actionable status (how to enable) rather than silently empty.
  */
 import { z } from 'zod'
 import { defineTool, type ToolDefinition } from '../../mcp/tool.js'
+import { searchWeb } from '../web-search.js'
 
 // ---------------------------------------------------------------------------
 // web.fetch
@@ -85,20 +81,19 @@ const WebSearchArgsSchema = z.object({
 export const webSearch = defineTool({
   name: 'web_search',
   description:
-    'Search the web. v1 returns an empty result set if no provider is configured; provider wiring lands with the Agent loop integration PR.',
+    'Search the web via the Brave Search API and return ranked results (url, title, snippet). ' +
+    'If web search is not configured, the result `status` explains how to enable it.',
   idempotency: 'pure',
   argsSchema: WebSearchArgsSchema,
-  execute: (args) => {
-    // v1: no provider plumbed through ctx yet; return empty results
-    // and a status note so the call is observable in records. The
-    // Tavily/Brave wiring per the locked decision lands when the Agent
-    // loop integrates the provider into the tool dispatch context.
-    return Promise.resolve({
-      results: [] as { url: string; title: string; snippet: string; rank: number }[],
-      status: 'no provider configured at v1; see web-search-provider decision record',
+  execute: async (args) => {
+    const outcome = await searchWeb(args.query, args.max_results)
+    return {
+      results: outcome.results,
+      provider: outcome.provider,
+      status: outcome.status,
       query: args.query,
       max_results: args.max_results,
-    })
+    }
   },
 })
 
