@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1813] ... 2026-06-15
+
+### Fixed
+
+- **The Build-an-Agent picker shows only configured connections.** It listed every provider with a credential OR a keyless fallback, so the `local` (Ollama / LM Studio) placeholder always appeared even when real connections were configured. It now shows only providers with a credential actually set (plus custom endpoints), falling back to the keyless providers only when nothing else is configured (so a cold-start instance can still build an Agent).
+
 ## [2026.615.1751] ... 2026-06-15
 
 ### Fixed
