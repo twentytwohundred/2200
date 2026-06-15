@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1301] ... 2026-06-15
+
+### Fixed
+
+- **The web app is now actually served.** The published package never included the built web UI, so `2200 web` (and the URL setup prints) showed only "The web app has not been built yet" with a bare API. The package now bundles the built web app into `dist/web` at pack time (a new `bundle:web` step in `prepack`, since `dist/` is what ships and tsup cleans it), and the server's static-dir resolver finds it robustly regardless of which bundle the server code was inlined into. Verified in a container: a fresh install serves the real app (`<title>2200</title>` + the JS/CSS assets), not the placeholder.
+
 ## [2026.614.1910] ... 2026-06-14
 
 ### Added
