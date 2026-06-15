@@ -780,6 +780,29 @@ function PreviewView({
         </Card>
       </section>
 
+      {preview.needed_integrations && preview.needed_integrations.length > 0 ? (
+        <section>
+          <SectionHeader
+            title={`NEEDED INTEGRATIONS · ${String(preview.needed_integrations.length)}`}
+          />
+          <Card padding={20}>
+            <div className={styles.suggestionMeta}>
+              Services this Agent needs that 2200 doesn&rsquo;t have a connector for yet. Each is
+              logged as a catalog gap (so it&rsquo;s on the build list); wire them via the
+              Extensions store or 2200 agent edit once available.
+            </div>
+            <div className={styles.suggestionList}>
+              {preview.needed_integrations.map((n) => (
+                <div key={n.name} className={styles.suggestion}>
+                  <div className={styles.suggestionTitle}>{n.name}</div>
+                  <div className={styles.suggestionRationale}>{n.purpose}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </section>
+      ) : null}
+
       {error ? (
         <Card padding={20}>
           <div className={styles.errorMessage}>{formatError(error)}</div>

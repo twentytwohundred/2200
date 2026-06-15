@@ -688,6 +688,17 @@ export interface OnboardingCapabilitySuggestion {
   default_on: boolean
 }
 
+/**
+ * An external service the Agent needs that 2200 doesn't have a connector
+ * for yet (Spotify, Instagram, ...), extracted from the free-form
+ * interview. The runtime also records each as a catalog gap (demand
+ * signal). Surfaced so the operator sees what was heard, not a blank "0".
+ */
+export interface OnboardingNeededIntegration {
+  name: string
+  purpose: string
+}
+
 export interface OnboardingPreview {
   transcript: OnboardingTranscript
   /** Opaque to the web client; surfaced via summary + agent_name. */
@@ -695,6 +706,7 @@ export interface OnboardingPreview {
   tools: OnboardingToolSuggestion[]
   schedules: OnboardingScheduleSuggestion[]
   capabilities: OnboardingCapabilitySuggestion[]
+  needed_integrations?: OnboardingNeededIntegration[]
   agent_name: string
 }
 
