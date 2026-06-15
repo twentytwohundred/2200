@@ -42,6 +42,7 @@ import {
   type OnboardingTranscriptEntry,
 } from '../../lib/api'
 import { Button, Card, Pill, Screen, ScreenNavLink, SectionHeader, cx } from '../../primitives'
+import { pickDefaultProvider } from './pickDefaultProvider'
 import styles from './OnboardingScreen.module.css'
 
 type Phase =
@@ -152,16 +153,17 @@ export function OnboardingScreen(): ReactElement {
     return [...providers, ...endpoints]
   }, [providersQuery.data, endpointsQuery.data, liveEndpointQueries])
 
-  // Auto-pick the first option's first model so the user can hit
-  // Begin without touching the dropdowns. They can override before
-  // clicking Begin.
+  // Auto-pick a sensible default so the user can hit Begin without touching
+  // the dropdowns ... preferring a provider the instance actually has
+  // credentials for (and that an existing Agent already uses) over a generic
+  // keyOptional provider. They can override before clicking Begin.
   useEffect(() => {
     if (providerName !== '' || pickableOptions.length === 0) return
-    const first = pickableOptions[0]
-    if (!first) return
-    setProviderName(first.name)
-    setModelId(first.models[0] ?? '')
-  }, [pickableOptions, providerName])
+    const choice = pickDefaultProvider(providersQuery.data?.items ?? [], pickableOptions)
+    if (!choice) return
+    setProviderName(choice.name)
+    setModelId(choice.model)
+  }, [pickableOptions, providerName, providersQuery.data])
 
   const selectedOption = useMemo(
     () => pickableOptions.find((p) => p.name === providerName),
