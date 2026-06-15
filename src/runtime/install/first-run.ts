@@ -23,8 +23,12 @@
  * config file as the single signal. That file is the artifact that
  * `2200 init` produces; absent file means we've never been here.
  */
+import { existsSync } from 'node:fs'
+import { cp, mkdir, readFile } from 'node:fs/promises'
+import { dirname, join, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Supervisor } from '../supervisor/supervisor.js'
-import { startDaemon } from '../supervisor/daemon.js'
+import { killDaemon, startDaemon } from '../supervisor/daemon.js'
 import { connectUds } from '../control-plane/uds-client.js'
 import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig, userConfigPath } from '../config/loader.js'
@@ -35,6 +39,7 @@ import {
   loadRuntimeEnv,
   upsertRuntimeEnvKey,
 } from '../config/runtime-env.js'
+import type { DiscordCutoverEffects } from '../migration/discord-cutover.js'
 
 /**
  * Minimal I/O surface the orchestrator needs. The CLI implementation
@@ -315,9 +320,11 @@ export async function runFirstRunOpenClawMigration(
 
   io.info('')
   io.info(`I found an OpenClaw install at ${ocHome}.`)
-  io.info('Bringing your OpenClaw Agent over ... its persona, daily memories,')
-  io.info('schedules, and LLM provider keys come with it. Your OpenClaw install')
-  io.info('is left running for now; you can disable it at the end.')
+  io.info('I can bring your Agent fully into 2200 ... its persona, daily memories,')
+  io.info('schedules, LLM provider keys, and your Discord connection (the same bot,')
+  io.info('the same channel). Once 2200 is verified live ... including Discord ... I')
+  io.info('stop OpenClaw so you are not left with two of the same Agent answering.')
+  io.info('OpenClaw is stopped, never deleted, and restarted if anything fails.')
   io.info('')
   if (!opts.autoAccept) {
     const reply = await io.ask('Migrate your OpenClaw Agent into 2200 now? [Y/n] ')
@@ -329,12 +336,8 @@ export async function runFirstRunOpenClawMigration(
     }
   }
 
-  const {
-    surveyOpenClawHome,
-    openclawToHandoff,
-    collectOpenClawLlmEnv,
-    renderDisableInstructions,
-  } = await import('../migration/openclaw.js')
+  const { surveyOpenClawHome, openclawToHandoff, collectOpenClawLlmEnv } =
+    await import('../migration/openclaw.js')
 
   // Survey + convert. A parse failure must not abort setup.
   let converted: Awaited<ReturnType<typeof openclawToHandoff>> | undefined
@@ -416,35 +419,214 @@ export async function runFirstRunOpenClawMigration(
   io.info(converted.report)
   io.info('')
 
-  // Offer to disable (NOT delete) the source OpenClaw instance, so it
-  // stops running alongside 2200 and the operator isn't paying twice.
-  // We only ACT on an explicit yes (default no) and only when we can
-  // ask ... never auto-disable; the operator owns that decision. When
-  // we can't ask (non-interactive), print the manual command instead.
+  // Cut Discord (and the rest of OpenClaw) over to 2200. The operator
+  // consented up front (the migrate question disclosed that OpenClaw is
+  // disabled after a verified migration), so for an interactive run we DO
+  // the cutover automatically rather than asking again. Headless runs
+  // (no consent surface) never auto-disable; they print the manual steps.
   if (opts.interactive) {
-    const reply = await io.ask(
-      'Disable your OpenClaw instance now so it stops running alongside 2200? It will NOT be deleted. [y/N] ',
-    )
-    if (isYes(reply, false)) {
-      const { disableOpenClaw } = await import('../migration/openclaw.js')
-      const result = await disableOpenClaw()
-      if (result.ok) {
-        io.success(`OpenClaw disabled: ${result.detail}. (Not deleted; re-enable any time.)`)
-      } else {
-        io.warn(`Could not disable OpenClaw automatically: ${result.detail}.`)
-        io.info('Disable it by hand when ready (it will NOT be deleted):')
-        io.info(renderDisableInstructions({ sameHost: true }))
-      }
-    } else {
-      io.info('Left OpenClaw running. To disable it later (it will NOT be deleted):')
-      io.info(renderDisableInstructions({ sameHost: true }))
-    }
+    await finishInteractiveCutover(io, home, ocHome, migratedName)
   } else {
+    const { renderDisableInstructions } = await import('../migration/openclaw.js')
     io.info('To stop OpenClaw running alongside 2200 (it will NOT be deleted):')
     io.info(renderDisableInstructions({ sameHost: true }))
+    io.info('Reconnect Discord on 2200 from the Extensions store when ready.')
   }
   io.info('')
   return { migrated: true, agentName: migratedName }
+}
+
+/**
+ * After a successful interactive migration, carry the Discord connection
+ * over and step OpenClaw down. With Discord present this is the ordered
+ * cutover (stop OpenClaw → wire + verify 2200 → rollback on failure); with
+ * no Discord, just disable OpenClaw (the operator already consented).
+ */
+async function finishInteractiveCutover(
+  io: FirstRunIO,
+  home: string,
+  ocHome: string,
+  agentName: string,
+): Promise<void> {
+  const { collectOpenClawDiscord, disableOpenClaw, renderDisableInstructions } =
+    await import('../migration/openclaw.js')
+
+  // The migration copied OpenClaw's LLM provider keys into runtime.env, but
+  // the supervisor loaded its env at startup, so the Agent can't actually
+  // run a turn (answer a Discord message, anything) until the daemon reloads
+  // it. Restart now ... BEFORE wiring Discord ... so the Agent comes back
+  // cred-equipped and the gateway we start next survives (no later restart).
+  await restartDaemonForMigratedKeys(io, home)
+
+  let discord: Awaited<ReturnType<typeof collectOpenClawDiscord>>
+  try {
+    discord = await collectOpenClawDiscord(ocHome)
+  } catch {
+    discord = null
+  }
+
+  if (discord && discord.channelIds.length > 0) {
+    const { carryDiscordWithCutover } = await import('../migration/discord-cutover.js')
+    await carryDiscordWithCutover(buildCutoverEffects(io, home, agentName), discord)
+    return
+  }
+
+  // No Discord to carry. Still step OpenClaw down (consent was given).
+  io.info(
+    discord
+      ? 'Your OpenClaw Discord has no enabled channel to carry.'
+      : 'No Discord connection found in OpenClaw.',
+  )
+  const stop = await disableOpenClaw()
+  if (stop.ok) {
+    io.success(`OpenClaw disabled (${stop.detail}). Not deleted ... re-enable any time.`)
+  } else {
+    io.warn(`Could not disable OpenClaw automatically (${stop.detail}).`)
+    io.info(renderDisableInstructions({ sameHost: true }))
+  }
+}
+
+/**
+ * Restart the supervisor so a just-migrated Agent's LLM provider keys
+ * (written to runtime.env during migration) are actually loaded into the
+ * env every Agent inherits. Waits for the HTTP server to accept requests
+ * again, since the Discord cutover POSTs to it next. Best-effort: a failed
+ * health probe still returns (the daemon is up; the cutover will retry).
+ */
+async function restartDaemonForMigratedKeys(io: FirstRunIO, home: string): Promise<void> {
+  io.info('Restarting 2200 so your migrated provider keys take effect...')
+  await killDaemon(home)
+  await startDaemon({ home })
+  const { webPortFromEnv } = await import('./quick-setup.js')
+  const port = webPortFromEnv()
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${String(port)}/api/v1/runtime/health`)
+      if (res.ok) return
+    } catch {
+      /* HTTP not back yet */
+    }
+    await new Promise((r) => setTimeout(r, 300))
+  }
+}
+
+/**
+ * Wire the real side effects for the Discord cutover: OpenClaw stop/start,
+ * the connector setup HTTP call (seal token + binding + start gateway), and
+ * verification by polling the gateway's on-connect info file.
+ */
+function buildCutoverEffects(
+  io: FirstRunIO,
+  home: string,
+  agentName: string,
+): DiscordCutoverEffects {
+  return {
+    stopOpenClaw: async () => {
+      const { disableOpenClaw } = await import('../migration/openclaw.js')
+      return disableOpenClaw()
+    },
+    startOpenClaw: async () => {
+      const { enableOpenClaw } = await import('../migration/openclaw.js')
+      return enableOpenClaw()
+    },
+    wireDiscord: async ({ botToken, channelIds, userIds }) => {
+      // Best-effort: materialize the connector manifest into the home so
+      // the Store UI reflects it. The gateway itself runs from the bundle,
+      // so this is cosmetic, not load-bearing.
+      await installBuiltinConnectorManifest(home, 'discord').catch(() => undefined)
+      const { ensureWebTokenForHome, webPortFromEnv } = await import('./quick-setup.js')
+      const port = webPortFromEnv()
+      const token = await ensureWebTokenForHome(home)
+      const res = await fetch(
+        `http://127.0.0.1:${String(port)}/api/v1/extensions/discord/agents/${agentName}/setup`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            credentials: { bot_token: botToken },
+            allowlist_group: channelIds,
+            allowlist_dm: userIds,
+          }),
+        },
+      )
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new Error(`setup endpoint returned ${String(res.status)}: ${body.slice(0, 200)}`)
+      }
+    },
+    verifyConnected: async () => {
+      const infoPath = join(
+        home,
+        'state',
+        'extensions',
+        'discord',
+        'agents',
+        agentName,
+        'gateway.json',
+      )
+      const deadline = Date.now() + 30_000
+      while (Date.now() < deadline) {
+        try {
+          const raw = await readFile(infoPath, 'utf8')
+          const info = JSON.parse(raw) as { bot_user_id?: string; bot_username?: string }
+          if (info.bot_user_id) {
+            return {
+              connected: true,
+              botUsername: info.bot_username ?? null,
+              detail: 'the gateway reported a live Discord connection',
+            }
+          }
+        } catch {
+          /* not connected yet */
+        }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      return {
+        connected: false,
+        botUsername: null,
+        detail:
+          'no Discord connection within 30s (check the bot token and the MessageContent intent)',
+      }
+    },
+    log: (level, message) => {
+      if (level === 'success') io.success(message)
+      else if (level === 'warn') io.warn(message)
+      else io.info(message)
+    },
+  }
+}
+
+/**
+ * Copy a built-in connector's manifest (+ icon) into `<home>/extensions/<id>/`
+ * so the Store UI lists it as installed. Source is the shipped bundle dir
+ * (`dist/connectors/<id>/`, found by walking up) or the dev workspace.
+ * Best-effort: the gateway runs from the bundle regardless of this copy.
+ */
+async function installBuiltinConnectorManifest(home: string, id: string): Promise<void> {
+  let src: string | null = null
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'connectors', id, 'manifest.json'))) {
+      src = join(dir, 'connectors', id)
+      break
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  if (!src) {
+    const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+    const workspace = join(repoRoot, 'apps', `${id}-connector`)
+    if (existsSync(join(workspace, 'manifest.json'))) src = workspace
+  }
+  if (!src) return
+
+  const dest = join(home, 'extensions', id)
+  await mkdir(dest, { recursive: true })
+  for (const f of ['manifest.json', 'icon.svg', 'icon.png']) {
+    if (existsSync(join(src, f))) await cp(join(src, f), join(dest, f))
+  }
 }
 
 /**

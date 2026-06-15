@@ -202,8 +202,13 @@ export async function runQuickSetup(opts: QuickSetupOptions = {}): Promise<Quick
       const { detectOpenClawHome } = await import('../migration/openclaw.js')
       return detectOpenClawHome()
     })
+  // When a real terminal is attached, explain what comes over (Agent +
+  // Discord) and that OpenClaw is disabled after a verified migration, then
+  // let the operator choose ... so the destructive cutover always follows
+  // an informed yes. With no terminal we can't ask, so we auto-accept the
+  // (non-destructive) migration and print the manual disable/re-wire steps.
   const mig = await runFirstRunOpenClawMigration(io, home, detect, {
-    autoAccept: true,
+    autoAccept: !interactive,
     interactive,
   }).finally(() => {
     rl?.close()
