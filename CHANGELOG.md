@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1751] ... 2026-06-15
+
+### Fixed
+
+- **The Build-an-Agent interview now defaults to a provider you have credentials for.** It used to default the provider/model to the first pickable option — a keyOptional provider (OpenRouter) with a free-text model box — even when the instance already had configured credentials (migrated API keys, an xAI/SuperGrok sign-in). It now ranks the default: a configured provider an existing Agent already uses (matching the fleet) → a configured subscription credential → any provider with a key set → the first pickable option. So a migrated operator lands on, e.g., the same xAI/Grok provider their migrated Agent uses, with a real model, instead of OpenRouter + free text.
+
 ## [2026.615.1725] ... 2026-06-15
 
 ### Added
