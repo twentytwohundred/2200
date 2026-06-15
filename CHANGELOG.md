@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The one-line installer no longer aborts before setup on a session with no controlling terminal** (headless SSH `ssh host '...'`, CI, cron). `install.sh` decided whether to reattach `/dev/tty` for the one interactive question with `[ -r /dev/tty ]`, which passes the permission test even when there is no controlling terminal; the subsequent `2200 setup < /dev/tty` then died with `ENXIO` ("No such device or address"), killing the install right before setup. The check now actually *attempts* the open, inside a subshell so dash's special-built-in redirection-error exit can't take the whole script down, and falls back to a fully non-interactive `2200 setup`. Verified end-to-end from scratch on a real Ubuntu/dash box over headless SSH: install → OpenClaw migration → web URL, exit 0. (Installer script only; not part of the npm package. 2200.ai must redeploy install.sh to pick it up.)
+
 ## [2026.615.1301] ... 2026-06-15
 
 ### Fixed
