@@ -353,11 +353,17 @@ describe('time tools', () => {
   })
 })
 
-describe('web.search (v1 stub)', () => {
-  it('returns empty results with an explanatory status', async () => {
-    const result = await webSearch.execute({ query: 'foo', max_results: 5 }, ctx())
-    expect(result.results).toEqual([])
-    expect(result.status).toMatch(/no provider configured/)
+describe('web.search', () => {
+  it('returns an actionable status when no search key is configured', async () => {
+    const prev = process.env['BRAVE_API_KEY']
+    delete process.env['BRAVE_API_KEY']
+    try {
+      const result = await webSearch.execute({ query: 'foo', max_results: 5 }, ctx())
+      expect(result.results).toEqual([])
+      expect(result.status).toMatch(/BRAVE_API_KEY/)
+    } finally {
+      if (prev !== undefined) process.env['BRAVE_API_KEY'] = prev
+    }
   })
 })
 
