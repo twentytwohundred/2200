@@ -24,6 +24,7 @@ import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, NetworkError, apiSystem, type UpgradeStatus } from '../../lib/api'
 import { Card, ErrorState, KV, LoadingState, Pill, cx } from '../../primitives'
+import { shouldShowUpgradeProgress } from './upgradeProgress'
 import styles from './SettingsScreen.module.css'
 
 function formatError(err: unknown): string {
@@ -159,7 +160,12 @@ export function SystemUpdateSection(): ReactElement {
         <KV k="STATUS" v={<StatusPill version={v} active={upgradeActive} />} />
       </div>
 
-      {upgradeStatus ? (
+      {upgradeStatus &&
+      shouldShowUpgradeProgress({
+        hasStatus: true,
+        versionStatus: v.status,
+        active: upgradeActive,
+      }) ? (
         <UpgradeProgress status={upgradeStatus} />
       ) : v.status === 'registry-error' ? (
         <RegistryErrorView
