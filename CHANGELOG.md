@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.1630] ... 2026-06-15
+
+Connectors ship to production, and OpenClaw migration carries Discord over.
+
+### Added
+
+- **Connectors now run from a published install.** The connector/extensions subsystem was dev-only: the gateway launched only from a repo `workspace` via `tsx`, and neither the connector app nor the catalog shipped in the npm package — so on a normal install the Discord gateway could not start (inbound Discord was silently broken). Each connector's gateway is now esbuild-bundled into one self-contained CommonJS file at `dist/connectors/<id>/gateway.cjs` (discord.js inlined), the catalog ships in the package, and `GatewayManager` runs the bundled gateway with plain `node` (dev still uses workspace + `tsx`). Verified in a clean container: the shipped gateway connects to Discord.
+- **The OpenClaw migration carries your Discord connection.** Instead of leaving you to find a bot token and re-paste it, an interactive migration brings Discord over automatically and steps OpenClaw down so exactly one Agent answers. It explains up front (Agent + Discord come over; OpenClaw is disabled after a verified migration), then does an **ordered cutover with rollback**: stop OpenClaw (frees the bot token — the same token live in two places means both Agents answer), wire 2200's Discord, verify the gateway actually reached Discord, and on failure restart OpenClaw so you are never left dark. The migration also restarts the daemon first so the just-migrated LLM keys are loaded (the Agent can answer immediately). Verified end-to-end on a real box: install → migrate → OpenClaw disabled → 2200 live on Discord as the same bot, sole holder of the connection.
+
+### Fixed
+
+- **`disableOpenClaw` now disables the real systemd unit** (`openclaw-gateway`, not `openclaw`), so a stopped gateway does not restart on the next boot and put two of the same bot back on Discord. (Found live: the old name never matched, so OpenClaw was stopped-but-enabled.)
+
 ## [2026.615.1332] ... 2026-06-15
 
 ### Fixed
