@@ -5,6 +5,7 @@ import { Router } from './router'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { LiveSignalProvider } from './ws/useLiveSignal'
 import { LiveFavicon } from './favicon/LiveFavicon'
+import { AuthGate } from './auth/AuthGate'
 import { bootstrapAuth } from './lib/auth'
 import './tokens/generated/tokens.css'
 import './tokens/generated/theme-default-dark.css'
@@ -31,10 +32,12 @@ createRoot(rootElement).render(
   <StrictMode>
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
-        <LiveSignalProvider>
-          <LiveFavicon />
-          <Router />
-        </LiveSignalProvider>
+        <AuthGate>
+          <LiveSignalProvider>
+            <LiveFavicon />
+            <Router />
+          </LiveSignalProvider>
+        </AuthGate>
       </QueryClientProvider>
     </ThemeProvider>
   </StrictMode>,
