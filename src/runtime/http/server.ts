@@ -190,10 +190,28 @@ type AuthedRequest = FastifyRequest & { principal: Principal }
 
 function resolveCatalogPath(override?: string): string {
   if (override) return override
-  // src/runtime/http/server.ts → ../../../extensions-catalog/v1.json
-  // dist/runtime/http/server.js → ../../../extensions-catalog/v1.json
-  const here = dirname(fileURLToPath(import.meta.url))
-  return resolvePath(here, '..', '..', '..', 'extensions-catalog', 'v1.json')
+  // The catalog ships at `<packageRoot>/extensions-catalog/v1.json` (dev:
+  // repo root). This module is inlined into the supervisor bundle at a
+  // varying depth, so walk up from here until the catalog is found rather
+  // than assuming a fixed `../../../` (same reason resolveStaticDir walks).
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 8; i++) {
+    const candidate = resolvePath(dir, 'extensions-catalog', 'v1.json')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  // Fall back to the historical fixed path so the error message points
+  // somewhere sensible when the catalog genuinely isn't shipped.
+  return resolvePath(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    'extensions-catalog',
+    'v1.json',
+  )
 }
 
 function resolveStaticDir(override?: string): string | null {

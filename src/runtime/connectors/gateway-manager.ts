@@ -85,30 +85,7 @@ export class GatewayManager {
     const catalog = await loadCatalog(this.opts.catalogPath)
     const entry = catalog.extensions.find((e) => e.id === extensionId)
     if (!entry) throw new Error(`catalog has no entry for "${extensionId}"`)
-    if (entry.source.type !== 'workspace') {
-      throw new Error(
-        `gateway start for source.type="${entry.source.type}" not implemented yet; use workspace source for dev`,
-      )
-    }
-    const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-    const workspaceDir = resolvePath(repoRoot, entry.source.path)
-    const tsxPath = join(workspaceDir, 'node_modules', '.bin', 'tsx')
-    if (!existsSync(tsxPath)) {
-      throw new Error(`tsx not found at ${tsxPath}; run \`pnpm install\` in ${entry.source.path}`)
-    }
-    const { readFile } = await import('node:fs/promises')
-    const manifestText = await readFile(join(workspaceDir, 'manifest.json'), 'utf-8')
-    const manifest = JSON.parse(manifestText) as {
-      hooks?: { gateway?: { script?: string } }
-    }
-    const scriptRel = manifest.hooks?.gateway?.script
-    if (!scriptRel) {
-      throw new Error(`extension ${extensionId} declares no hooks.gateway in its manifest`)
-    }
-    const scriptPath = join(workspaceDir, scriptRel)
-    if (!existsSync(scriptPath)) {
-      throw new Error(`gateway script not found at ${scriptPath}`)
-    }
+    const launch = await resolveGatewayLaunch(extensionId, entry)
     const port = await allocPort()
     const credentialEnv = await this.resolveCredentialEnv(entry, agentName)
     const stateBase = agentName
@@ -129,8 +106,8 @@ export class GatewayManager {
       ...credentialEnv,
     }
 
-    const child = spawn(tsxPath, [scriptPath], {
-      cwd: workspaceDir,
+    const child = spawn(launch.command, launch.args, {
+      cwd: launch.cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -256,6 +233,76 @@ export class GatewayManager {
     }
     return env
   }
+}
+
+/**
+ * Resolve HOW to launch a connector's gateway, in priority order:
+ *
+ *  1. Dev checkout: the connector workspace and its `tsx` are present, so
+ *     run the TypeScript gateway directly (live edits, no rebundle).
+ *  2. Published install: a self-contained CommonJS gateway was shipped to
+ *     `dist/connectors/<id>/gateway.cjs` (see scripts/bundle-connectors.mjs).
+ *     Run it with plain `node` — no tsx, no workspace, no per-connector
+ *     node_modules. This is the path a normal `npm install` takes.
+ *
+ * Throws a clear error when neither is available.
+ */
+export async function resolveGatewayLaunch(
+  extensionId: string,
+  entry: CatalogEntry,
+  moduleDir: string = dirname(fileURLToPath(import.meta.url)),
+): Promise<{ command: string; args: string[]; cwd: string }> {
+  // 1. Dev: workspace source + its tsx. We only treat a workspace as
+  //    usable when tsx is actually installed there; a prod package ships
+  //    the catalog (so source.type is still "workspace") but not the
+  //    workspace itself, in which case we fall through to the bundle.
+  if (entry.source.type === 'workspace') {
+    const repoRoot = resolvePath(moduleDir, '..', '..', '..')
+    const workspaceDir = resolvePath(repoRoot, entry.source.path)
+    const tsxPath = join(workspaceDir, 'node_modules', '.bin', 'tsx')
+    if (existsSync(tsxPath)) {
+      const { readFile } = await import('node:fs/promises')
+      const manifestText = await readFile(join(workspaceDir, 'manifest.json'), 'utf-8')
+      const manifest = JSON.parse(manifestText) as { hooks?: { gateway?: { script?: string } } }
+      const scriptRel = manifest.hooks?.gateway?.script
+      if (!scriptRel) {
+        throw new Error(`extension ${extensionId} declares no hooks.gateway in its manifest`)
+      }
+      const scriptPath = join(workspaceDir, scriptRel)
+      if (!existsSync(scriptPath)) throw new Error(`gateway script not found at ${scriptPath}`)
+      return { command: tsxPath, args: [scriptPath], cwd: workspaceDir }
+    }
+  }
+  // 2. Published install: the bundled gateway.
+  const bundled = resolveBundledGateway(extensionId, moduleDir)
+  if (bundled) {
+    return { command: process.execPath, args: [bundled], cwd: dirname(bundled) }
+  }
+  throw new Error(
+    `no runnable gateway for "${extensionId}": neither a workspace checkout (with tsx) nor a ` +
+      `bundled gateway (dist/connectors/${extensionId}/gateway.cjs) was found`,
+  )
+}
+
+/**
+ * Locate the bundled gateway by walking up from `startDir` toward the
+ * `dist` root. The supervisor bundle inlines this code at a varying depth,
+ * so a fixed relative path is unreliable (same reason the web static-dir
+ * resolver walks up).
+ */
+export function resolveBundledGateway(
+  extensionId: string,
+  startDir: string = dirname(fileURLToPath(import.meta.url)),
+): string | null {
+  let dir = startDir
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, 'connectors', extensionId, 'gateway.cjs')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
 }
 
 /** Allocate an ephemeral local TCP port by binding-then-closing. */
