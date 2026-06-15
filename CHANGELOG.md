@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.615.2259] ... 2026-06-15
+
+### Added
+
+- **Web search works.** `web_search` was a stub that always returned empty results with "no provider configured", so no Agent could research the web. It's now backed by the Brave Search API: set `BRAVE_API_KEY` in `~/.config/2200/runtime.env` (free tier ~2000 queries/mo at brave.com/search/api) and restart the daemon, and Agents get ranked `{url, title, snippet}` results. With no key set, the tool returns an actionable status explaining how to enable it instead of a silent empty. Network/HTTP errors surface as status, never throw. (xAI's keyless Live Search was the original plan but xAI deprecated it; an in-product setup affordance for the key, and a Grok-native path on xAI's new Agent Tools API, are follow-ups.)
+
 ## [2026.615.2043] ... 2026-06-15
 
 ### Added
