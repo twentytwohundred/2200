@@ -380,6 +380,40 @@ export async function collectOpenClawLlmEnv(ocHome: string): Promise<Record<stri
   return out
 }
 
+// Web-search keys 2200 understands, by their 2200 env-var names. Carried
+// from OpenClaw when present so a migrated Agent keeps the ability to search.
+const SEARCH_ENV_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
+  'BRAVE_API_KEY',
+  'GOOGLE_SEARCH_API_KEY',
+  'GOOGLE_SEARCH_CX',
+])
+
+/**
+ * Carry OpenClaw's web-search config: the Brave / Google keys (when present
+ * under 2200's env-var names) and the chosen provider (`tools.web.search.provider`),
+ * mapped to 2200's `WEB_SEARCH_PROVIDER`. Brave stays the default; OpenClaw's
+ * `gemini`/`google` both map to 2200's `google` provider. Returns an env map
+ * to upsert into runtime.env (empty when OpenClaw has no search config).
+ */
+export async function collectOpenClawSearchEnv(ocHome: string): Promise<Record<string, string>> {
+  const config = await readJsonTolerant(join(ocHome, 'openclaw.json'))
+  const out: Record<string, string> = {}
+
+  const env = asRecord(config['env'])
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v === 'string' && v !== '' && SEARCH_ENV_KEY_ALLOWLIST.has(k.toUpperCase())) {
+      out[k.toUpperCase()] = v
+    }
+  }
+
+  const search = asRecord(asRecord(asRecord(config['tools'])['web'])['search'])
+  const provider = typeof search['provider'] === 'string' ? search['provider'].toLowerCase() : ''
+  if (provider === 'brave') out['WEB_SEARCH_PROVIDER'] = 'brave'
+  else if (provider === 'google' || provider === 'gemini') out['WEB_SEARCH_PROVIDER'] = 'google'
+
+  return out
+}
+
 export interface OpenClawDiscordConfig {
   /** The Discord bot token (the same bot/identity the Agent already uses). */
   botToken: string

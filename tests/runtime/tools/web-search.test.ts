@@ -8,7 +8,12 @@
  * and maxResults is honored.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseBraveResults, searchWeb } from '../../../src/runtime/tools/web-search'
+import {
+  parseBraveResults,
+  parseGoogleResults,
+  resolveSearchProvider,
+  searchWeb,
+} from '../../../src/runtime/tools/web-search'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -105,5 +110,81 @@ describe('searchWeb', () => {
     const out = await searchWeb('q', 5, { BRAVE_API_KEY: 'k' })
     expect(out.results).toEqual([])
     expect(out.status).toMatch(/request failed: ECONNREFUSED/)
+  })
+
+  it('uses Google when only Google keys are configured', async () => {
+    const googleBody = {
+      items: [
+        { link: 'https://g1.com', title: 'G1', snippet: 's1' },
+        { link: 'https://g2.com', title: 'G2', snippet: 's2' },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: unknown): Promise<Response> => {
+        expect(String(url)).toContain('customsearch')
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(googleBody),
+          text: () => Promise.resolve(''),
+        } as unknown as Response)
+      }),
+    )
+    const out = await searchWeb('q', 5, {
+      GOOGLE_SEARCH_API_KEY: 'gk',
+      GOOGLE_SEARCH_CX: 'cx123',
+    })
+    expect(out.provider).toBe('google')
+    expect(out.results.map((r) => r.url)).toEqual(['https://g1.com', 'https://g2.com'])
+  })
+})
+
+describe('resolveSearchProvider', () => {
+  it('prefers Brave by default, then Google, then null', () => {
+    expect(resolveSearchProvider({ BRAVE_API_KEY: 'b' })).toBe('brave')
+    expect(resolveSearchProvider({ GOOGLE_SEARCH_API_KEY: 'g', GOOGLE_SEARCH_CX: 'c' })).toBe(
+      'google',
+    )
+    expect(
+      resolveSearchProvider({
+        BRAVE_API_KEY: 'b',
+        GOOGLE_SEARCH_API_KEY: 'g',
+        GOOGLE_SEARCH_CX: 'c',
+      }),
+    ).toBe('brave')
+    expect(resolveSearchProvider({})).toBeNull()
+  })
+
+  it('honors a pinned provider when its key is present, else falls through', () => {
+    expect(
+      resolveSearchProvider({
+        WEB_SEARCH_PROVIDER: 'google',
+        BRAVE_API_KEY: 'b',
+        GOOGLE_SEARCH_API_KEY: 'g',
+        GOOGLE_SEARCH_CX: 'c',
+      }),
+    ).toBe('google')
+    // pinned google but no google keys -> fall through to brave
+    expect(resolveSearchProvider({ WEB_SEARCH_PROVIDER: 'google', BRAVE_API_KEY: 'b' })).toBe(
+      'brave',
+    )
+    // google needs BOTH key and cx
+    expect(resolveSearchProvider({ GOOGLE_SEARCH_API_KEY: 'g' })).toBeNull()
+  })
+})
+
+describe('parseGoogleResults', () => {
+  it('maps Google items into ranked {url,title,snippet}', () => {
+    const got = parseGoogleResults(
+      { items: [{ link: 'https://x.com', title: 'X', snippet: 'sx' }, { title: 'no link' }] },
+      10,
+    )
+    expect(got).toEqual([{ url: 'https://x.com', title: 'X', snippet: 'sx', rank: 1 }])
+  })
+
+  it('returns [] for malformed shapes', () => {
+    expect(parseGoogleResults(null, 5)).toEqual([])
+    expect(parseGoogleResults({ items: 'nope' }, 5)).toEqual([])
   })
 })

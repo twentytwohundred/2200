@@ -789,6 +789,23 @@ export interface ProviderSettingsItem {
   category: 'subscription' | 'api-key' | 'local'
 }
 
+/** Web-search settings: Brave (default) + Google, bring-your-own-key. */
+export interface WebSearchSettings {
+  /** Operator-pinned provider, or null (auto: Brave preferred, then Google). */
+  provider: 'brave' | 'google' | null
+  /** The provider that would actually serve a search now (null = none configured). */
+  active_provider: 'brave' | 'google' | null
+  brave: { key_set: boolean; key_masked: string | null }
+  google: { key_set: boolean; key_masked: string | null; cx_set: boolean; cx: string | null }
+}
+
+export interface WebSearchUpdate {
+  provider?: 'brave' | 'google' | null
+  brave_api_key?: string
+  google_search_api_key?: string
+  google_search_cx?: string
+}
+
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
@@ -1158,6 +1175,12 @@ export const api = {
       '/api/v1/settings/providers/local/url',
       { method: 'PUT', body: { base_url: baseUrl } },
     ),
+  settingsWebSearchGet: () => request<WebSearchSettings>('/api/v1/settings/web-search'),
+  settingsWebSearchSet: (body: WebSearchUpdate) =>
+    request<WebSearchSettings & { restart_required: boolean }>('/api/v1/settings/web-search', {
+      method: 'PUT',
+      body,
+    }),
   taskCreate: (name: string, body: TaskCreateBody) =>
     request<TaskCreateResponse>(`/api/v1/agents/${encodeURIComponent(name)}/tasks`, {
       method: 'POST',

@@ -1157,6 +1157,57 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { provider: 'local', base_url: body.base_url, restart_required: true }
   })
 
+  // -- settings/web-search (Brave default + Google; BYO key like OpenClaw) ----
+  // web_search keys live in runtime.env. The CX (Google search-engine id) is
+  // an identifier, not a secret, so it's returned plain; API keys are masked.
+  async function buildWebSearchDto(): Promise<Record<string, unknown>> {
+    const env = await loadRuntimeEnv()
+    const brave = env['BRAVE_API_KEY'] ?? ''
+    const gKey = env['GOOGLE_SEARCH_API_KEY'] ?? ''
+    const gCx = env['GOOGLE_SEARCH_CX'] ?? ''
+    const pinned = (env['WEB_SEARCH_PROVIDER'] ?? '').trim().toLowerCase()
+    const { resolveSearchProvider } = await import('../tools/web-search.js')
+    return {
+      provider: pinned === 'brave' || pinned === 'google' ? pinned : null,
+      active_provider: resolveSearchProvider(env),
+      brave: { key_set: brave.length > 0, key_masked: brave.length > 0 ? maskKey(brave) : null },
+      google: {
+        key_set: gKey.length > 0,
+        key_masked: gKey.length > 0 ? maskKey(gKey) : null,
+        cx_set: gCx.length > 0,
+        cx: gCx.length > 0 ? gCx : null,
+      },
+    }
+  }
+
+  fastify.get('/api/v1/settings/web-search', async () => {
+    return buildWebSearchDto()
+  })
+
+  const PutWebSearchBody = z.object({
+    provider: z.enum(['brave', 'google']).nullable().optional(),
+    brave_api_key: z.string().optional(),
+    google_search_api_key: z.string().optional(),
+    google_search_cx: z.string().optional(),
+  })
+
+  fastify.put('/api/v1/settings/web-search', async (req) => {
+    const body = PutWebSearchBody.parse(req.body)
+    const setOrRemove = async (envKey: string, val: string | undefined): Promise<void> => {
+      if (val === undefined) return
+      if (val === '') await removeRuntimeEnvKey(envKey)
+      else await upsertRuntimeEnvKey(envKey, val)
+    }
+    await setOrRemove('BRAVE_API_KEY', body.brave_api_key)
+    await setOrRemove('GOOGLE_SEARCH_API_KEY', body.google_search_api_key)
+    await setOrRemove('GOOGLE_SEARCH_CX', body.google_search_cx)
+    if (body.provider !== undefined) {
+      if (body.provider === null) await removeRuntimeEnvKey('WEB_SEARCH_PROVIDER')
+      else await upsertRuntimeEnvKey('WEB_SEARCH_PROVIDER', body.provider)
+    }
+    return { ...(await buildWebSearchDto()), restart_required: true }
+  })
+
   // -- settings/endpoints (custom OpenAI-compatible servers) -----------------
   // Operators can register N homelab / appliance LLM endpoints. Each
   // entry persists to <home>/config/endpoints.json (mode 0600) and the
