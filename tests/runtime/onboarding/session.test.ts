@@ -200,7 +200,11 @@ describe('OnboardingSession (v2)', () => {
     expect(session.getPreview()).toBe(r.preview)
   })
 
-  it('transitions to errored on LLM failure during summary', async () => {
+  // Resilience: a flaky / local model must NOT 500 onboarding. On any LLM
+  // failure the operator still reaches a confirmable preview (built from the
+  // transcript), with a synthesized fallback summary they can refine. This is
+  // the fix for Dana's "Q7 of 6 -> internal server error" on a local Gemma.
+  it('LLM failure during summary degrades to a preview, not a 500', async () => {
     const session = new OnboardingSession({
       id: 'onb_6',
       script: SCRIPT,
@@ -210,11 +214,15 @@ describe('OnboardingSession (v2)', () => {
       }),
       modelId: 'm',
     })
-    await expect(session.submitAnswer('email')).rejects.toThrow(/llm down/)
-    expect(session.getState()).toBe('errored')
+    const r = await session.submitAnswer('email')
+    expect(r.kind).toBe('done')
+    expect(session.getState()).toBe('done')
+    expect(session.getPreview()).not.toBeNull()
+    // fallback summary is synthesized from the operator's own answer
+    expect(session.getPreview()?.transcript.summary).toContain('email')
   })
 
-  it('transitions to errored on empty summary', async () => {
+  it('empty summary degrades to a preview with a synthesized summary', async () => {
     const session = new OnboardingSession({
       id: 'onb_7',
       script: SCRIPT,
@@ -224,8 +232,29 @@ describe('OnboardingSession (v2)', () => {
       }),
       modelId: 'm',
     })
-    await expect(session.submitAnswer('email')).rejects.toThrow(/empty summary/)
-    expect(session.getState()).toBe('errored')
+    const r = await session.submitAnswer('a research Agent')
+    expect(r.kind).toBe('done')
+    expect(session.getState()).toBe('done')
+    expect(session.getPreview()?.transcript.summary).toContain('research Agent')
+  })
+
+  it('interviewer LLM error mid-interview forces done, reaching a preview', async () => {
+    const session = new OnboardingSession({
+      id: 'onb_6b',
+      script: SCRIPT,
+      // The interviewer call throws on the first follow-up turn ... the session
+      // must force-done and build a preview rather than surface a 500.
+      provider: scriptedProvider({
+        directives: [],
+        errorOnInterviewerTurn: 1,
+        summary: 'I am here.',
+      }),
+      modelId: 'm',
+    })
+    const r = await session.submitAnswer('I want a scheduling Agent')
+    expect(r.kind).toBe('done')
+    expect(session.getState()).toBe('done')
+    expect(session.getPreview()).not.toBeNull()
   })
 
   it('refuses submitAnswer in terminal states', async () => {

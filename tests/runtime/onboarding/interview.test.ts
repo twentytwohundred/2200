@@ -183,34 +183,33 @@ describe('runInterview', () => {
     expect(transcript.summary).toBe('forced summary')
   })
 
-  it('throws when the LLM returns an empty summary', async () => {
-    await expect(
-      runInterview({
-        script: SCRIPT,
-        provider: scriptedProvider({
-          directives: ['{"kind":"done"}'],
-          summary: '',
-        }),
-        modelId: 'claude-opus-4-7',
-        input: fakeInput(['I want an Agent']),
-        now: fixedNow,
-      }),
-    ).rejects.toThrow(/empty summary/)
+  // Resilience: an empty/failed summary must NOT dead-end the interview. The
+  // operator still gets a transcript (with a synthesized fallback summary) so
+  // the preview is confirmable ... never a 500. (Fix for Dana's local Gemma.)
+  it('synthesizes a fallback summary when the LLM returns an empty one', async () => {
+    const transcript = await runInterview({
+      script: SCRIPT,
+      provider: scriptedProvider({ directives: ['{"kind":"done"}'], summary: '' }),
+      modelId: 'claude-opus-4-7',
+      input: fakeInput(['I want an Agent']),
+      now: fixedNow,
+    })
+    expect(transcript.summary.length).toBeGreaterThan(0)
+    expect(transcript.summary).toContain('I want an Agent')
   })
 
-  it('propagates LLM errors during the interview', async () => {
-    await expect(
-      runInterview({
-        script: SCRIPT,
-        provider: scriptedProvider({
-          directives: ['{"kind":"question","text":"q","covering":"purpose"}'],
-          throwOnTurn: 1,
-        }),
-        modelId: 'claude-opus-4-7',
-        input: fakeInput(['I want an Agent']),
-        now: fixedNow,
+  it('survives an LLM error mid-interview and still produces a transcript', async () => {
+    const transcript = await runInterview({
+      script: SCRIPT,
+      provider: scriptedProvider({
+        directives: ['{"kind":"question","text":"q","covering":"purpose"}'],
+        throwOnTurn: 1,
       }),
-    ).rejects.toThrow(/rate limited/)
+      modelId: 'claude-opus-4-7',
+      input: fakeInput(['I want an Agent']),
+      now: fixedNow,
+    })
+    expect(transcript.entries.length).toBeGreaterThan(0)
   })
 
   it('snapshots question_text and intent_tag at ask-time', async () => {

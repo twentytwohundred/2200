@@ -207,7 +207,9 @@ export class OnboardingSession {
     if (!q) return null
     return {
       index: this.entries.length + 1,
-      total: this.script.target_turns,
+      // Soft target, but never less than the current index ... the LLM may run
+      // a couple past target_turns (up to max_turns), and "Q7 of 6" reads as a bug.
+      total: Math.max(this.script.target_turns, this.entries.length + 1),
       question: q,
     }
   }
@@ -264,7 +266,9 @@ export class OnboardingSession {
       kind: 'next',
       question: {
         index: this.entries.length + 1,
-        total: this.script.target_turns,
+        // Soft target, but never less than the current index ... the LLM may run
+        // a couple past target_turns (up to max_turns), and "Q7 of 6" reads as a bug.
+        total: Math.max(this.script.target_turns, this.entries.length + 1),
         question: nextQ,
       },
     }
@@ -328,16 +332,18 @@ Produce the next JSON message now.`
       maxTokens: 400,
     }
 
-    let raw: string
+    let raw = ''
     try {
       const response = await this.provider.complete(request)
       raw = response.text
-    } catch (err) {
-      this.state = 'errored'
-      throw err
+    } catch {
+      // Provider error mid-interview (a flaky/local model, a timeout). Do NOT
+      // 500 ... fall through to the reprompt, then to the forced-done path
+      // below, so the operator still reaches a preview. (Previously this
+      // re-threw and surfaced to the operator as an internal server error.)
     }
 
-    let directive = parseDirective(raw)
+    let directive = raw !== '' ? parseDirective(raw) : null
     if (!directive) {
       // One re-prompt with explicit shape reminder.
       const repromptMsg =
@@ -383,17 +389,20 @@ Produce the next JSON message now.`
       temperature: 0.4,
       maxTokens: 800,
     }
-    let summaryText: string
+    let summaryText = ''
     try {
       const response = await this.provider.complete(request)
       summaryText = response.text.trim()
-    } catch (err) {
-      this.state = 'errored'
-      throw err
+    } catch {
+      // Provider error on the summary call (a flaky/local model). Fall back
+      // below ... never 500; the Agent is built from the transcript, not this
+      // prose, so a synthesized summary is enough to reach a confirmable preview.
     }
     if (summaryText.length === 0) {
-      this.state = 'errored'
-      throw new OnboardingSessionError(this.id, this.state, 'LLM returned an empty summary')
+      // The model failed or returned nothing. Synthesize a minimal summary from
+      // the operator's own answers so they still reach a preview they can
+      // confirm and refine, rather than a dead 500.
+      summaryText = fallbackSummary(this.entries)
     }
     this.summary = summaryText
     this.finishedAt = this.nowFn().toISOString()
@@ -576,6 +585,22 @@ function renderInterviewerSystemPrompt(script: QuestionScript): string {
     .replace('{goals}', goalsBlock)
     .replace('{target_turns}', String(script.target_turns))
     .replace('{max_turns}', String(script.max_turns))
+}
+
+/**
+ * A minimal interview summary synthesized from the operator's own answers,
+ * used when the summary LLM call fails or returns nothing ... so a flaky or
+ * local model never dead-ends onboarding with a 500. The Agent is built from
+ * the transcript, not this prose; this is just a persona seed the operator can
+ * refine afterward.
+ */
+function fallbackSummary(entries: readonly TranscriptEntry[]): string {
+  const answers = entries.map((e) => e.answer.trim()).filter((a) => a.length > 0)
+  if (answers.length === 0) return 'Agent created from your onboarding interview.'
+  return `Agent created from your onboarding interview. In the operator's own words: ${answers.join(' ')}`.slice(
+    0,
+    1000,
+  )
 }
 
 function renderTranscriptForInterviewer(entries: readonly TranscriptEntry[]): string {
