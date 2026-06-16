@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "slack",
+  "version": "0.1.0",
+  "display_name": "Slack",
+  "description": "Per-Agent Slack bots via Socket Mode. Each Agent gets its own Slack app/bot identity; message it (DM or in a channel) and it replies with its own identity. Setup: create a Slack app, enable Socket Mode, add an app-level token (xapp-) and a bot token (xoxb-), subscribe to message events, paste both tokens.",
+  "author": "2200",
+  "homepage": "https://2200.ai/docs/connectors/slack",
+  "permissions": ["network", "tools", "notifications", "fs.scratch"],
+  "schedules": [],
+  "tools": [
+    {
+      "name": "slack_send",
+      "description": "Send a Slack message to a channel the Agent's bot can reach (a channel id, or a DM channel id from an inbound task)."
+    }
+  ],
+  "hooks": {
+    "install": "./install.mjs",
+    "gateway": {
+      "script": "./src/gateway.ts",
+      "restart_policy": "always"
+    }
+  },
+  "connector": {
+    "id": "slack",
+    "label": "Slack",
+    "blurb": "Give each Agent its own Slack bot. Message it (DM or channel); it replies with its own identity, over Socket Mode (no public URL).",
+    "docs_path": "design/connectors/slack",
+    "auth_model": "bot_token",
+    "account_scope": "agent",
+    "tos_acknowledgment": "Slack apps are subject to the Slack API Terms of Service and the Slack Acceptable Use Policy. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Slack. 2200 is not a party to your relationship with Slack."
+  }
+}

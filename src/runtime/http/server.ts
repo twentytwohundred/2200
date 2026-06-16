@@ -4773,11 +4773,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
      * Group/channel allowlist. Required for Discord (per-Agent bots are
      * pinned to a dedicated channel ... users can't DM bots, so the channel
      * is the only viable conversation surface). Optional for connectors whose
-     * users CAN DM the bot (Telegram). Ids are all-digit for Discord
-     * snowflakes; Telegram group/supergroup chat ids are NEGATIVE, so the
-     * regex allows a leading `-`.
+     * users CAN DM the bot (Telegram, Slack). Id shapes vary by platform:
+     * Discord all-digit snowflakes, Telegram NEGATIVE chat ids, Slack
+     * alphanumeric (`C…`/`G…`/`D…`) ... so the regex is a permissive id token.
      */
-    allowlist_group: z.array(z.string().regex(/^-?\d+$/)).optional(),
+    allowlist_group: z.array(z.string().regex(/^-?[A-Za-z0-9_]{1,64}$/)).optional(),
   })
 
   fastify.post<{ Params: { id: string; agent: string } }>(
@@ -4856,10 +4856,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           message: 'Discord setup requires at least one channel id in allowlist_group',
         })
       }
-      // Telegram users CAN DM the bot, and a personal bot's @username isn't
-      // discoverable unless shared, so `dm_policy: 'open'` lets the operator's
-      // DMs wake the Agent immediately (pairing has no approval UI yet, so it
-      // would silently drop DMs). Groups still require an explicit @mention.
+      // Telegram + Slack users CAN DM the bot, so `dm_policy: 'open'` lets the
+      // operator's DMs wake the Agent immediately (pairing has no approval UI
+      // yet, so it would silently drop DMs). Groups/channels still require an
+      // explicit @mention. Discord can't be DM'd, so its channel allowlist is
+      // the gate and no mention is required there.
       const defaultPolicies =
         id === 'discord'
           ? {
@@ -4867,7 +4868,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
               group_policy: 'allowlist' as const,
               require_mention: false,
             }
-          : id === 'telegram'
+          : id === 'telegram' || id === 'slack'
             ? {
                 dm_policy: 'open' as const,
                 group_policy: 'allowlist' as const,
@@ -4936,8 +4937,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // ----------------------------------------------------------------------
   const PatchAgentBindingBodySchema = z.object({
     allowlist_dm: z.array(z.string()).optional(),
-    // All-digit for Discord snowflakes; Telegram group ids are negative.
-    allowlist_group: z.array(z.string().regex(/^-?\d+$/)).optional(),
+    // Discord all-digit, Telegram negative, Slack alphanumeric ... permissive token.
+    allowlist_group: z.array(z.string().regex(/^-?[A-Za-z0-9_]{1,64}$/)).optional(),
   })
   fastify.patch<{ Params: { id: string; agent: string } }>(
     '/api/v1/extensions/:id/agents/:agent/policy',

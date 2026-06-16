@@ -29,6 +29,13 @@ const CONNECTORS = [
     entry: 'apps/telegram-connector/src/gateway.ts',
     assetDir: 'apps/telegram-connector',
   },
+  {
+    // Dependency-free too: Socket Mode over the Node global WebSocket + raw
+    // Web API over fetch. No SDK, so it bundles cleanly and ships in npm.
+    id: 'slack',
+    entry: 'apps/slack-connector/src/gateway.ts',
+    assetDir: 'apps/slack-connector',
+  },
 ]
 
 // discord.js pulls optional native accelerators (zlib-sync, bufferutil,
