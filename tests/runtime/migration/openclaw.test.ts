@@ -423,6 +423,18 @@ describe('collectOpenClawSecrets (vault-everything migration)', () => {
     expect(await collectOpenClawSecrets(ocHome)).toEqual([])
   })
 
+  it("skips ${ENV_VAR} interpolation references (found in Skippy's real config)", () => {
+    // OpenClaw's models.providers.*.apiKey hold `${XAI_API_KEY}` references, not
+    // literal keys ... the real value lives in env. Vaulting the reference is noise.
+    const config = {
+      env: { XAI_API_KEY: 'xai-real-value' },
+      models: { providers: { xai: { apiKey: '${XAI_API_KEY}' } } },
+    }
+    const paths = discoverOpenClawSecretPaths(config).map((r) => r.sourcePath)
+    expect(paths).toContain('env.XAI_API_KEY')
+    expect(paths).not.toContain('models.providers.xai.apiKey')
+  })
+
   it('survey.credentialCount + report tell the operator what got vaulted', async () => {
     const ws = join(ocHome, 'workspace')
     await mkdir(ws, { recursive: true })
