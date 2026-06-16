@@ -789,19 +789,21 @@ export interface ProviderSettingsItem {
   category: 'subscription' | 'api-key' | 'local'
 }
 
-/** Web-search settings: Brave (default) + Google, bring-your-own-key. */
+/** Web-search settings: Brave (default) + Gemini + Google, bring-your-own-key. */
 export interface WebSearchSettings {
-  /** Operator-pinned provider, or null (auto: Brave preferred, then Google). */
-  provider: 'brave' | 'google' | null
+  /** Operator-pinned provider, or null (auto: Brave preferred, then Gemini, then Google). */
+  provider: 'brave' | 'gemini' | 'google' | null
   /** The provider that would actually serve a search now (null = none configured). */
-  active_provider: 'brave' | 'google' | null
+  active_provider: 'brave' | 'gemini' | 'google' | null
   brave: { key_set: boolean; key_masked: string | null }
+  gemini: { key_set: boolean; key_masked: string | null }
   google: { key_set: boolean; key_masked: string | null; cx_set: boolean; cx: string | null }
 }
 
 export interface WebSearchUpdate {
-  provider?: 'brave' | 'google' | null
+  provider?: 'brave' | 'gemini' | 'google' | null
   brave_api_key?: string
+  gemini_search_api_key?: string
   google_search_api_key?: string
   google_search_cx?: string
 }

@@ -23,6 +23,7 @@ import {
   surveyOpenClawHome,
   openclawToHandoff,
   collectOpenClawLlmEnv,
+  collectOpenClawSearchEnv,
   looksLikeOpenClawHome,
   detectOpenClawHome,
   disableOpenClaw,
@@ -244,6 +245,113 @@ describe('collectOpenClawLlmEnv', () => {
     expect(env['STRIPE_API_KEY']).toBeUndefined()
     // Non-secret config → never.
     expect(env['SOME_FLAG']).toBeUndefined()
+  })
+})
+
+describe('collectOpenClawSearchEnv (OpenClaw web-search parity)', () => {
+  // Write just an openclaw.json with the given config into the temp ocHome.
+  const writeConfig = async (config: unknown): Promise<void> => {
+    await writeFile(join(ocHome, 'openclaw.json'), JSON.stringify(config))
+  }
+
+  it("carries a gemini key from OpenClaw's real plugin path (Doug's valkyrie shape)", async () => {
+    // This is the exact shape on the live box: provider "gemini", key under
+    // plugins.entries.google.config.webSearch.apiKey, NO cx. The old code
+    // looked at env.* and mis-mapped gemini→google; this pins the fix.
+    await writeConfig({
+      tools: { web: { search: { enabled: true, provider: 'gemini' } } },
+      plugins: { entries: { google: { config: { webSearch: { apiKey: 'AIzaSyTEST-gemini' } } } } },
+    })
+    const env = await collectOpenClawSearchEnv(ocHome)
+    expect(env['GEMINI_SEARCH_API_KEY']).toBe('AIzaSyTEST-gemini')
+    expect(env['WEB_SEARCH_PROVIDER']).toBe('gemini')
+    // NOT mapped to the Custom Search (google) slot, and no bogus cx.
+    expect(env['GOOGLE_SEARCH_API_KEY']).toBeUndefined()
+    expect(env['GOOGLE_SEARCH_CX']).toBeUndefined()
+  })
+
+  it('carries a brave key from the plugin path and pins brave', async () => {
+    await writeConfig({
+      tools: { web: { search: { enabled: true, provider: 'brave' } } },
+      plugins: { entries: { brave: { config: { webSearch: { apiKey: 'BSA-test' } } } } },
+    })
+    const env = await collectOpenClawSearchEnv(ocHome)
+    expect(env['BRAVE_API_KEY']).toBe('BSA-test')
+    expect(env['WEB_SEARCH_PROVIDER']).toBe('brave')
+  })
+
+  it('reads brave from the mirrored top-level apiKey when the plugin entry is absent', async () => {
+    await writeConfig({
+      tools: { web: { search: { enabled: true, provider: 'brave', apiKey: 'BSA-toplevel' } } },
+    })
+    const env = await collectOpenClawSearchEnv(ocHome)
+    expect(env['BRAVE_API_KEY']).toBe('BSA-toplevel')
+  })
+
+  it('carries nothing for a provider 2200 does not support yet (e.g. grok/perplexity)', async () => {
+    await writeConfig({
+      tools: { web: { search: { enabled: true, provider: 'grok' } } },
+      plugins: { entries: { xai: { config: { webSearch: { apiKey: 'xai-key' } } } } },
+    })
+    // The grok key must NOT be swept into any 2200 search slot ... the report
+    // names it instead. (Pin: no silent pin to a dead provider.)
+    expect(await collectOpenClawSearchEnv(ocHome)).toEqual({})
+  })
+
+  // Minimal buildable OC home (workspace + IDENTITY) plus the given config,
+  // for exercising the migration report's web-search line end to end.
+  const writeReportFixture = async (extra: Record<string, unknown>): Promise<void> => {
+    const ws = join(ocHome, 'workspace')
+    await mkdir(ws, { recursive: true })
+    await writeFile(join(ws, 'IDENTITY.md'), '- **Name:** Searcher\n')
+    await writeConfig({
+      agents: { defaults: { model: { primary: 'xai/grok-4.3' }, workspace: ws } },
+      channels: {},
+      env: {},
+      ...extra,
+    })
+  }
+
+  it('carries nothing AND the report does not claim a carry when the provider is named but keyless', async () => {
+    // Fail-loud: an OC home that names a supported provider but has no key
+    // must not write a false "your key carried" into the Agent's continuity
+    // note. It carries nothing and the report sends the operator to Settings.
+    await writeReportFixture({ tools: { web: { search: { enabled: true, provider: 'brave' } } } })
+    expect(await collectOpenClawSearchEnv(ocHome)).toEqual({})
+    const survey = await surveyOpenClawHome(ocHome)
+    expect(survey.searchProvider).toBe('brave')
+    expect(survey.searchKeyPresent).toBe(false)
+    const { report } = openclawToHandoff(survey, { sourceHost: 'valkyrie', now: FIXED_NOW })
+    expect(report).toMatch(/no key set, so nothing carried/)
+    expect(report).not.toMatch(/your key carried/)
+  })
+
+  it('the report confirms a carry only when a key was actually present', async () => {
+    await writeReportFixture({
+      tools: { web: { search: { enabled: true, provider: 'gemini' } } },
+      plugins: { entries: { google: { config: { webSearch: { apiKey: 'AIzaSyTEST' } } } } },
+    })
+    const survey = await surveyOpenClawHome(ocHome)
+    expect(survey.searchKeyPresent).toBe(true)
+    const { report } = openclawToHandoff(survey, { sourceHost: 'valkyrie', now: FIXED_NOW })
+    expect(report).toMatch(/your key carried into 2200/)
+  })
+
+  it('returns {} when search is disabled or unconfigured', async () => {
+    await writeConfig({ tools: { web: { search: { enabled: false, provider: 'gemini' } } } })
+    expect(await collectOpenClawSearchEnv(ocHome)).toEqual({})
+    await writeConfig({})
+    expect(await collectOpenClawSearchEnv(ocHome)).toEqual({})
+  })
+
+  it('auto-detects brave from a key-only config (no explicit provider)', async () => {
+    await writeConfig({
+      tools: { web: { search: { enabled: true } } },
+      plugins: { entries: { brave: { config: { webSearch: { apiKey: 'BSA-auto' } } } } },
+    })
+    const env = await collectOpenClawSearchEnv(ocHome)
+    expect(env['WEB_SEARCH_PROVIDER']).toBe('brave')
+    expect(env['BRAVE_API_KEY']).toBe('BSA-auto')
   })
 })
 

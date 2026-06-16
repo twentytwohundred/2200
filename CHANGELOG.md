@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1257] ... 2026-06-16
+
+### Added
+
+- **Gemini web search (Google-Search grounding), for full OpenClaw parity.** `web_search` now also supports Gemini grounding ... a single Gemini API key, no `cx`. This is the provider OpenClaw actually uses for its "google" search (grounding, not the Custom Search JSON API), so an OpenClaw migration now carries that key straight into 2200, from OpenClaw's real config path. Settings → Web Search gains a Gemini card alongside Brave and Google. Note: Gemini grounding is billed per query beyond a small free tier.
+
+### Changed
+
+- **OpenClaw search migration now maps providers faithfully.** It reads each provider's key from OpenClaw's real plugin path and maps `gemini → gemini` / `brave → brave` (the previous `gemini → google` was the wrong API). Providers 2200 doesn't implement yet (grok, perplexity, exa, ...) carry nothing and are named in the migration report instead of silently pinning a dead provider.
+
+### Fixed
+
+- The migration report no longer claims "your key carried" when OpenClaw named a provider but had no key set ... it now tells the truth (nothing carried) and points to Settings.
+- Settings → Web Search: the Google card no longer pins Google as the active provider unless both the key and the engine id (`cx`) are present (a key-only pin was silently inert), and the engine-id field no longer holds a stale value across background refreshes.
+
 ## [2026.616.9] ... 2026-06-16
 
 ### Added
