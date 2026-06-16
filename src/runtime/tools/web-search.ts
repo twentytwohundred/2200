@@ -73,6 +73,36 @@ export function resolveSearchProvider(env: NodeJS.ProcessEnv): WebSearchProvider
   return null
 }
 
+/** The env vars the search providers read ... kept in sync with `searchWeb`/`resolveSearchProvider`. */
+export const LIVE_SEARCH_KEYS = [
+  'BRAVE_API_KEY',
+  'GEMINI_SEARCH_API_KEY',
+  'GEMINI_SEARCH_MODEL',
+  'GOOGLE_SEARCH_API_KEY',
+  'GOOGLE_SEARCH_CX',
+  'WEB_SEARCH_PROVIDER',
+] as const
+
+/**
+ * Overlay the search keys from a freshly-read runtime.env (`fileEnv`) onto a
+ * base env (the agent's spawn-time `process.env`). runtime.env is the source
+ * of truth for these keys, so a key added in Settings takes effect on the
+ * NEXT search with no daemon/agent restart. Only the search keys are overlaid;
+ * everything else in `base` is untouched. Add/change hot-applies; a key
+ * *removed* from the file stays until restart (the rarer, lower-stakes case).
+ */
+export function mergeLiveSearchKeys(
+  base: NodeJS.ProcessEnv,
+  fileEnv: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...base }
+  for (const k of LIVE_SEARCH_KEYS) {
+    const v = fileEnv[k]
+    if (typeof v === 'string' && v !== '') out[k] = v
+  }
+  return out
+}
+
 /** Resolve the configured backend and run the query. Best-effort: network / API errors surface as status, never throw. */
 export async function searchWeb(
   query: string,

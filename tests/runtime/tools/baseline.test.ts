@@ -6,7 +6,7 @@
  * tests cover the wrapping and path resolution; these focus on the
  * tool's own behavior.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -355,14 +355,60 @@ describe('time tools', () => {
 
 describe('web.search', () => {
   it('returns an actionable status when no search key is configured', async () => {
-    const prev = process.env['BRAVE_API_KEY']
+    const prevBrave = process.env['BRAVE_API_KEY']
+    const prevPath = process.env['TWENTYTWOHUNDRED_RUNTIME_ENV']
     delete process.env['BRAVE_API_KEY']
+    // Point the live runtime.env read at a nonexistent path so this is hermetic
+    // (independent of the dev machine's real ~/.config/2200/runtime.env).
+    process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = join(tmpdir(), 'no-such-2200-runtime.env')
     try {
       const result = await webSearch.execute({ query: 'foo', max_results: 5 }, ctx())
       expect(result.results).toEqual([])
       expect(result.status).toMatch(/BRAVE_API_KEY/)
     } finally {
-      if (prev !== undefined) process.env['BRAVE_API_KEY'] = prev
+      if (prevBrave !== undefined) process.env['BRAVE_API_KEY'] = prevBrave
+      if (prevPath === undefined) delete process.env['TWENTYTWOHUNDRED_RUNTIME_ENV']
+      else process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = prevPath
+    }
+  })
+
+  it('picks up a key added to runtime.env without a restart (the live-read fix)', async () => {
+    // The agent process was spawned WITHOUT a Brave key; the operator then
+    // pasted one in Settings (which writes runtime.env). The next search must
+    // use it ... no daemon/agent restart.
+    const prevBrave = process.env['BRAVE_API_KEY']
+    const prevPath = process.env['TWENTYTWOHUNDRED_RUNTIME_ENV']
+    delete process.env['BRAVE_API_KEY']
+    const tmp = await mkdtemp(join(tmpdir(), '2200-rtenv-'))
+    const envFile = join(tmp, 'runtime.env')
+    await writeFile(envFile, 'export BRAVE_API_KEY=live-key\n')
+    process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = envFile
+    const fetchMock = vi.fn(
+      (_url: unknown, _init: unknown): Promise<Response> =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              web: { results: [{ url: 'https://x', title: 'X', description: 'd' }] },
+            }),
+          text: () => Promise.resolve(''),
+        } as unknown as Response),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const result = await webSearch.execute({ query: 'foo', max_results: 5 }, ctx())
+      expect(result.provider).toBe('brave')
+      expect(result.results.map((r) => r.url)).toEqual(['https://x'])
+      // and it used the key from the file, not process.env
+      const init = fetchMock.mock.calls[0]?.[1] as { headers: Record<string, string> }
+      expect(init.headers['x-subscription-token']).toBe('live-key')
+    } finally {
+      vi.unstubAllGlobals()
+      if (prevBrave !== undefined) process.env['BRAVE_API_KEY'] = prevBrave
+      if (prevPath === undefined) delete process.env['TWENTYTWOHUNDRED_RUNTIME_ENV']
+      else process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = prevPath
+      await rm(tmp, { recursive: true, force: true })
     }
   })
 })

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1447] ... 2026-06-16
+
+### Changed
+
+- **Web search keys now apply without a restart.** The `web_search` tool reads its keys (`BRAVE_API_KEY`, `GEMINI_SEARCH_API_KEY`, `GOOGLE_SEARCH_API_KEY` / `GOOGLE_SEARCH_CX`, `WEB_SEARCH_PROVIDER`) from `runtime.env` at search time, not just at spawn. Paste a key in Settings → Web Search and the next search uses it ... no `2200 daemon restart`, no Agent restart. Previously a freshly-added key sat unused until the whole fleet was bounced (an Agent only read its environment once, at start). The Settings save confirmation and the API's `restart_required` flag are updated to reflect this. (A key _removed_ from the file still takes effect on the next restart ... the rarer case.) The runtime.env path can be overridden for the search read via `TWENTYTWOHUNDRED_RUNTIME_ENV`.
+
 ## [2026.616.1257] ... 2026-06-16
 
 ### Added

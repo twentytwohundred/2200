@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  mergeLiveSearchKeys,
   parseBraveResults,
   parseGeminiResults,
   parseGoogleResults,
@@ -354,6 +355,38 @@ describe('parseGeminiResults', () => {
     expect(parseGeminiResults(body, 5)).toEqual([
       { url: 'https://u', title: 'T', snippet: '', rank: 1 },
     ])
+  })
+})
+
+describe('mergeLiveSearchKeys', () => {
+  it('overlays a search key present only in the file (the no-restart fix)', () => {
+    // process.env has no Brave key (agent spawned before it was added); the
+    // file (runtime.env, just written by Settings) does ... it must win.
+    const merged = mergeLiveSearchKeys({ PATH: '/bin' }, { BRAVE_API_KEY: 'from-file' })
+    expect(merged['BRAVE_API_KEY']).toBe('from-file')
+    expect(merged['PATH']).toBe('/bin')
+  })
+
+  it('the file value wins over a stale spawn-time value', () => {
+    const merged = mergeLiveSearchKeys(
+      { BRAVE_API_KEY: 'old', WEB_SEARCH_PROVIDER: 'brave' },
+      { BRAVE_API_KEY: 'new', WEB_SEARCH_PROVIDER: 'gemini' },
+    )
+    expect(merged['BRAVE_API_KEY']).toBe('new')
+    expect(merged['WEB_SEARCH_PROVIDER']).toBe('gemini')
+  })
+
+  it('only touches search keys; ignores non-search keys in the file and never clobbers with empties', () => {
+    const merged = mergeLiveSearchKeys(
+      { BRAVE_API_KEY: 'keep', SECRET: 'process-only' },
+      { ANTHROPIC_API_KEY: 'ignored', BRAVE_API_KEY: '' },
+    )
+    // empty file value does not wipe the live key
+    expect(merged['BRAVE_API_KEY']).toBe('keep')
+    // a non-search key in the file is not pulled in
+    expect(merged['ANTHROPIC_API_KEY']).toBeUndefined()
+    // unrelated base keys survive untouched
+    expect(merged['SECRET']).toBe('process-only')
   })
 })
 
