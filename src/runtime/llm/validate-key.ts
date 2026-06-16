@@ -77,6 +77,55 @@ export async function validateProviderKey(args: ValidateKeyArgs): Promise<Valida
   }
 }
 
+/**
+ * Validate a local / self-hosted OpenAI-compatible endpoint (Ollama, LM
+ * Studio, vLLM, llama.cpp, ...) by hitting its `/v1/models`. The key is
+ * OPTIONAL: a tailnet/LAN-hosted server is usually authed at the network
+ * layer, so we send no `Authorization` header when no key is given. A `401/
+ * 403` means the server actually wants a key. Normalizes the two base-URL
+ * shapes (`…:11434` and `…:11434/v1`) the way the OpenAI provider does.
+ */
+export async function validateLocalEndpoint(args: {
+  baseUrl: string
+  apiKey?: string
+  fetchImpl?: typeof fetch
+}): Promise<ValidateKeyResult> {
+  const fetchImpl = args.fetchImpl ?? fetch
+  const base = args.baseUrl.trim().replace(/\/+$/, '')
+  if (base.length === 0) {
+    return { ok: false, reason: 'unexpected', status: 0, message: 'empty base URL' }
+  }
+  const url = base.endsWith('/v1') ? `${base}/models` : `${base}/v1/models`
+  const headers: Record<string, string> = {}
+  const key = (args.apiKey ?? '').trim()
+  if (key.length > 0) headers['Authorization'] = `Bearer ${key}`
+  let resp: Response
+  try {
+    resp = await fetchImpl(url, { method: 'GET', headers })
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'network_error',
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
+  if (resp.ok) return { ok: true }
+  if (resp.status === 401 || resp.status === 403) {
+    return {
+      ok: false,
+      reason: 'auth_failed',
+      status: resp.status,
+      message: await readBodySnippet(resp),
+    }
+  }
+  return {
+    ok: false,
+    reason: 'unexpected',
+    status: resp.status,
+    message: await readBodySnippet(resp),
+  }
+}
+
 async function readBodySnippet(resp: Response): Promise<string> {
   try {
     const text = await resp.text()

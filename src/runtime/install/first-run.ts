@@ -33,7 +33,7 @@ import { connectUds } from '../control-plane/uds-client.js'
 import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig, userConfigPath } from '../config/loader.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
-import { validateProviderKey } from '../llm/validate-key.js'
+import { validateProviderKey, validateLocalEndpoint } from '../llm/validate-key.js'
 import {
   defaultRuntimeEnvPath,
   loadRuntimeEnv,
@@ -799,19 +799,19 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
  */
 export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> {
   const all = listKnownProviders()
-  // Surface only paste-a-key providers (`api-key` category). The
-  // `subscription` provider (xai-subscription) is reachable via the
-  // SuperGrok step above; `local` (Ollama / LM Studio) needs a
-  // different shape (base URL + optional key) and lives in a future
-  // first-run iteration.
-  const candidates = all.filter((p) => p.category === 'api-key')
+  // Surface paste-a-key providers (`api-key`) AND self-hosted (`local`).
+  // The `subscription` provider (xai-subscription) is reachable via the
+  // SuperGrok step above (the preferred path). Local has a different shape
+  // (base URL + OPTIONAL key) so it's prompted differently below.
+  const candidates = all.filter((p) => p.category === 'api-key' || p.category === 'local')
   if (candidates.length === 0) return // defensive; registry always has these
 
-  io.info('API-key provider setup (optional).')
+  io.info('Other LLM providers (optional ... Grok above is the easy path).')
   io.info('')
-  io.info('Add an API key for Anthropic, OpenAI, DeepSeek, etc. Each Agent picks')
-  io.info('its provider when you build it (`2200 agent build`); having the keys')
-  io.info('available now means you can choose any of them at Agent-build time.')
+  io.info('Add an API key for Anthropic, OpenAI, DeepSeek, etc., OR point 2200 at a')
+  io.info('local / self-hosted model (Ollama, LM Studio, vLLM ... a base URL, key')
+  io.info('optional). Each Agent picks its provider when you build it (`2200 agent')
+  io.info('build`); configuring them now means you can choose any at build time.')
   io.info('')
   io.info('You can add multiple providers; the loop ends when you skip.')
   io.info('')
@@ -825,9 +825,10 @@ export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> 
     for (let j = 0; j < candidates.length; j++) {
       const p = candidates[j]
       if (!p) continue
-      io.info(`  ${String(j + 1)}) ${p.label}  (env: ${p.defaultEnvKey})`)
+      const hint = p.category === 'local' ? 'base URL + optional key' : `env: ${p.defaultEnvKey}`
+      io.info(`  ${String(j + 1)}) ${p.label}  (${hint})`)
     }
-    io.info(`  ${String(candidates.length + 1)}) Skip (done with API keys)`)
+    io.info(`  ${String(candidates.length + 1)}) Skip (done with providers)`)
     io.info('')
     const choiceRaw = (await io.ask('Choice: ')).trim()
     const choice = Number.parseInt(choiceRaw, 10)
@@ -841,7 +842,10 @@ export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> 
     }
     const provider = candidates[choice - 1]
     if (!provider) continue // defensive against ts type narrowing
-    const settled = await promptAndSaveApiKey(io, provider)
+    const settled =
+      provider.category === 'local'
+        ? await promptAndSaveLocalProvider(io, provider)
+        : await promptAndSaveApiKey(io, provider)
     if (settled) added += 1
     io.info('')
   }
@@ -921,6 +925,76 @@ async function promptAndSaveApiKey(
       io.success(`${provider.label} key saved unverified (${provider.defaultEnvKey}).`)
       return true
     }
+    return false
+  }
+  io.warn(`Gave up after 3 attempts for ${provider.label}. You can retry later.`)
+  return false
+}
+
+/**
+ * Prompt for a local / self-hosted OpenAI-compatible endpoint: a base URL
+ * (required) + an OPTIONAL key. A tailnet/LAN-hosted server (Ollama, LM
+ * Studio, vLLM, llama.cpp) is usually authed at the network layer, so the
+ * key is left blank for keyless; paste one only if the server requires it.
+ * Writes `LOCAL_BASE_URL` (+ `LOCAL_API_KEY` when a key is given). Validated
+ * against the endpoint's `/v1/models`.
+ */
+async function promptAndSaveLocalProvider(
+  io: FirstRunIO,
+  provider: ProviderCatalogEntry,
+): Promise<boolean> {
+  const baseUrlEnvKey = provider.baseUrlEnvKey !== '' ? provider.baseUrlEnvKey : 'LOCAL_BASE_URL'
+  const example = 'http://localhost:11434/v1'
+  const save = async (baseUrl: string, key: string): Promise<void> => {
+    await upsertRuntimeEnvKey(baseUrlEnvKey, baseUrl)
+    if (key.length > 0) await upsertRuntimeEnvKey(provider.defaultEnvKey, key)
+  }
+
+  io.info('')
+  io.info(`Setting up ${provider.label}.`)
+  io.info('Point 2200 at your OpenAI-compatible server. Examples:')
+  io.info(`  ${example}        (Ollama on this machine)`)
+  io.info('  http://100.x.x.x:8000/v1      (a tailnet host ... reachable, network-authed)')
+  io.info('')
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const baseUrl = (await io.ask('Base URL (empty to cancel): ')).trim()
+    if (baseUrl.length === 0) {
+      io.info('Canceled.')
+      return false
+    }
+    io.info('')
+    io.info('API key is OPTIONAL ... a tailnet/LAN server is usually network-authed, so')
+    io.info('leave it blank for keyless. Paste a key only if your server requires one.')
+    const key = (await io.ask('API key (blank = keyless): ')).trim()
+    io.info(`Checking ${baseUrl} ...`)
+    const result = await validateLocalEndpoint({ baseUrl, apiKey: key })
+    if (result.ok) {
+      await save(baseUrl, key)
+      io.success(
+        `${provider.label} reachable and saved (${baseUrlEnvKey}${key.length > 0 ? ` + ${provider.defaultEnvKey}` : ', keyless'}).`,
+      )
+      return true
+    }
+    if (result.reason === 'auth_failed') {
+      io.warn(
+        `The server returned HTTP ${String(result.status)} ... it wants a key. Paste one and try again.`,
+      )
+      io.warn(`Attempts left: ${String(2 - attempt)}.`)
+      continue
+    }
+    const reachLabel =
+      result.reason === 'network_error'
+        ? `Could not reach ${baseUrl} (${result.message})`
+        : `${baseUrl} returned HTTP ${String(result.status)}: ${result.message.slice(0, 160)}`
+    io.warn(reachLabel + '.')
+    const saveAnyway = await io.ask('Save it anyway (e.g. the server is not up yet)? [y/N] ')
+    if (isYes(saveAnyway, false)) {
+      await save(baseUrl, key)
+      io.success(`Saved unverified (${baseUrlEnvKey}). It is tested when an Agent first uses it.`)
+      return true
+    }
+    io.info('Discarded. Check the URL and that the server is reachable, then retry.')
     return false
   }
   io.warn(`Gave up after 3 attempts for ${provider.label}. You can retry later.`)

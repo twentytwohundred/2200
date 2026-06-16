@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1918] ... 2026-06-16
+
+### Added
+
+- **First-run install now offers a local / self-hosted model, key optional.** The installer's provider step previously only took cloud API keys (or Grok sign-in); pointing 2200 at a local OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp) was deferred to Settings. Now "Local (Ollama / LM Studio / vLLM)" is a first-run choice: paste a base URL (e.g. `http://localhost:11434/v1` or a tailnet host like `http://100.x.x.x:8000/v1`) and **leave the key blank for keyless** ... a LAN/tailnet server is authed at the network layer ... or paste a key if the server requires one. The endpoint is validated against its `/v1/models` (no `Authorization` header sent when keyless), with the same save-anyway-on-network-error path as cloud keys. Writes `LOCAL_BASE_URL` (+ `LOCAL_API_KEY` only when given). Grok/OAuth remains the preferred path; cloud-key and local sit alongside it. (The web Settings → Endpoints panel already supported local endpoints with an optional bearer; this brings the CLI installer to parity.)
+
 ## [2026.616.1830] ... 2026-06-16
 
 ### Added
