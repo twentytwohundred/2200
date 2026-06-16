@@ -265,7 +265,7 @@ function WebSearchCard({ settings }: { settings: WebSearchSettings }): ReactElem
           {save.isError ? <ErrorState title="Save failed" body={formatError(save.error)} /> : null}
           {save.isSuccess ? (
             <div className={styles.saved}>
-              Saved. Restart the daemon (or it applies on next launch) for Agents to use it.
+              Saved. Live on your Agents' next search ... no restart needed.
             </div>
           ) : null}
         </div>

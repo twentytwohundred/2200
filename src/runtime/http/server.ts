@@ -1212,7 +1212,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       if (body.provider === null) await removeRuntimeEnvKey('WEB_SEARCH_PROVIDER')
       else await upsertRuntimeEnvKey('WEB_SEARCH_PROVIDER', body.provider)
     }
-    return { ...(await buildWebSearchDto()), restart_required: true }
+    // No restart needed: the web_search tool reads these keys from runtime.env
+    // at call time, so a change applies on the next search.
+    return { ...(await buildWebSearchDto()), restart_required: false }
   })
 
   // -- settings/endpoints (custom OpenAI-compatible servers) -----------------
