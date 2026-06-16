@@ -89,6 +89,12 @@ export interface OpenClawSurvey {
    * about whether search carried, instead of inferring from the name alone.
    */
   searchKeyPresent: boolean
+  /**
+   * How many credential-shaped values (API keys, tokens, passwords) the
+   * OpenClaw config holds ... what the migration seals into the Agent's vault.
+   * Count only; never the names or values here.
+   */
+  credentialCount: number
 }
 
 export class OpenClawSurveyError extends Error {}
@@ -169,6 +175,7 @@ export async function surveyOpenClawHome(ocHome: string): Promise<OpenClawSurvey
   const envKeyNames = Object.keys(asRecord(config['env']))
   const ocSearchProvider = ocActiveSearchProvider(config)
   const ocSearchKeyPresent = ocHasCarriableSearchKey(config)
+  const ocCredentialCount = discoverOpenClawSecretPaths(config).length
 
   let skills: string[] = []
   try {
@@ -201,6 +208,7 @@ export async function surveyOpenClawHome(ocHome: string): Promise<OpenClawSurvey
     envKeyNames,
     searchProvider: ocSearchProvider === '' ? null : ocSearchProvider,
     searchKeyPresent: ocSearchKeyPresent,
+    credentialCount: ocCredentialCount,
   }
 }
 
@@ -511,6 +519,116 @@ export async function collectOpenClawSearchEnv(ocHome: string): Promise<Record<s
   return out
 }
 
+// Final key-segment names (lowercased) that mark a secret value worth vaulting.
+// Exact match (not substring) so `maxTokens`, `tokenLimit`, etc. are NOT swept.
+const SECRET_KEY_NAMES: ReadonlySet<string> = new Set([
+  'apikey',
+  'api_key',
+  'apitoken',
+  'apisecret',
+  'token',
+  'authtoken',
+  'auth_token',
+  'accesstoken',
+  'access_token',
+  'refreshtoken',
+  'refresh_token',
+  'bottoken',
+  'bot_token',
+  'secret',
+  'clientsecret',
+  'client_secret',
+  'signingsecret',
+  'webhooksecret',
+  'password',
+  'passphrase',
+  'privatekey',
+  'private_key',
+])
+
+export interface OpenClawSecretRef {
+  /** Vault credential name (a valid `^[a-z][a-z0-9-]*$` slug), e.g. `oc-channels-discord-token`. */
+  name: string
+  /** Dot-path in `openclaw.json` the secret came from (for vault notes + the report). */
+  sourcePath: string
+}
+
+export interface OpenClawSecret extends OpenClawSecretRef {
+  /** The secret value. Read only at migrate time, like the LLM/search collectors. */
+  value: string
+}
+
+/** Slug a config dot-path into a vault credential name (`oc-` + lowercased path). */
+function ocSecretName(sourcePath: string): string {
+  const slug = sourcePath
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `oc-${slug === '' ? 'secret' : slug}`
+}
+
+/**
+ * Every secret-shaped scalar in an OpenClaw config: the WHOLE `env` block plus
+ * any string leaf whose key is a known secret name (`apiKey`, `token`,
+ * `secret`, ...). Returns NAMES + source paths only ... never the values ...
+ * so the survey can count and the report can describe them safely. Names are
+ * de-duplicated (a collision gets a `-2`/`-3` suffix) and are valid vault
+ * credential slugs.
+ */
+export function discoverOpenClawSecretPaths(config: Record<string, unknown>): OpenClawSecretRef[] {
+  const paths: string[] = []
+  const visit = (node: unknown, path: string[]): void => {
+    if (typeof node === 'string') {
+      if (node === '') return
+      const last = (path[path.length - 1] ?? '').toLowerCase()
+      if (path[0] === 'env' || SECRET_KEY_NAMES.has(last)) paths.push(path.join('.'))
+      return
+    }
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => {
+        visit(v, [...path, String(i)])
+      })
+      return
+    }
+    if (typeof node === 'object' && node !== null) {
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) visit(v, [...path, k])
+    }
+  }
+  visit(config, [])
+
+  const used = new Set<string>()
+  const out: OpenClawSecretRef[] = []
+  for (const p of paths) {
+    let name = ocSecretName(p)
+    if (used.has(name)) {
+      let n = 2
+      while (used.has(`${name}-${String(n)}`)) n++
+      name = `${name}-${String(n)}`
+    }
+    used.add(name)
+    out.push({ name, sourcePath: p })
+  }
+  return out
+}
+
+/**
+ * Read every OpenClaw secret VALUE for the migration vault sweep. Per Doug's
+ * 2026-06-16 call: capture every key/token/secret an OpenClaw user had so it
+ * ALL moves to 2200 (sealed in the Agent's encrypted vault for whatever future
+ * integration needs it), not just the LLM/search keys 2200 uses today. Like
+ * `collectOpenClawLlmEnv`, this is the value-reading half ... called at migrate
+ * time with the operator's consent.
+ */
+export async function collectOpenClawSecrets(ocHome: string): Promise<OpenClawSecret[]> {
+  const config = await readJsonTolerant(join(ocHome, 'openclaw.json'))
+  const out: OpenClawSecret[] = []
+  for (const ref of discoverOpenClawSecretPaths(config)) {
+    const value = readStringPath(config, ref.sourcePath)
+    if (value !== '') out.push({ ...ref, value })
+  }
+  return out
+}
+
 export interface OpenClawDiscordConfig {
   /** The Discord bot token (the same bot/identity the Agent already uses). */
   botToken: string
@@ -807,6 +925,11 @@ function renderReport(args: {
     `- Memories: ${String(s.memoryFileCount)} daily files → brain (searchable)`,
     `- Operating docs: ${s.operatingDocs.length > 0 ? s.operatingDocs.map((d) => d.file).join(', ') + ' → brain, tagged `openclaw-import`' : 'none found'}`,
     `- Schedules: ${String(args.schedules.length)} imported`,
+    `- Credentials: ${
+      s.credentialCount > 0
+        ? `${String(s.credentialCount)} OpenClaw credential${s.credentialCount === 1 ? '' : 's'} (API keys, tokens) → sealed in your Agent's vault (\`2200 credential list\`)`
+        : 'none found in the OpenClaw config'
+    }`,
     '',
     '### Not migrated (and what to do)',
     '',

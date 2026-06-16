@@ -436,6 +436,48 @@ export async function runFirstRunOpenClawMigration(
     /* best-effort; the operator can set web search in Settings */
   }
 
+  // Vault EVERYTHING else OpenClaw had ... every API key, token, and secret in
+  // its config ... sealed into the migrated Agent's encrypted vault, so nothing
+  // is lost when a future 2200 integration needs it (Doug's 2026-06-16 call).
+  // The functional keys (LLM, search) also went to runtime.env above so they
+  // work now; this is the complete archive. Sealed, per-Agent, NOT exposed to
+  // the Agent/LLM (no tool reads arbitrary vault values). Per-secret isolation:
+  // one odd entry must never lose the rest.
+  try {
+    const { collectOpenClawSecrets } = await import('../migration/openclaw.js')
+    const { CredentialVault } = await import('../credentials/vault.js')
+    const secrets = await collectOpenClawSecrets(ocHome)
+    if (secrets.length > 0) {
+      const vault = new CredentialVault(home, migratedName)
+      const createdAt = new Date().toISOString()
+      let vaulted = 0
+      for (const s of secrets) {
+        try {
+          await vault.set(s.name, {
+            value: s.value,
+            metadata: {
+              created_at: createdAt,
+              provider: 'openclaw',
+              notes: `migrated from openclaw ${s.sourcePath}`,
+            },
+          })
+          vaulted += 1
+        } catch {
+          /* one odd entry must not lose the rest */
+        }
+      }
+      if (vaulted > 0) {
+        io.success(
+          `Vaulted ${String(vaulted)} credential${vaulted === 1 ? '' : 's'} from OpenClaw, sealed (\`2200 credential list ${migratedName}\`).`,
+        )
+      }
+    }
+  } catch (err) {
+    io.warn(
+      `Could not vault OpenClaw credentials: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
   // The migration report (what mapped / didn't).
   io.info('')
   io.info(converted.report)

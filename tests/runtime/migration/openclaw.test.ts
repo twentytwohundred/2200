@@ -24,12 +24,15 @@ import {
   openclawToHandoff,
   collectOpenClawLlmEnv,
   collectOpenClawSearchEnv,
+  collectOpenClawSecrets,
+  discoverOpenClawSecretPaths,
   looksLikeOpenClawHome,
   detectOpenClawHome,
   disableOpenClaw,
   parseIdentityMd,
   OpenClawSurveyError,
 } from '../../../src/runtime/migration/openclaw.js'
+import { CREDENTIAL_NAME_RE } from '../../../src/runtime/credentials/types.js'
 
 let ocHome: string
 
@@ -352,6 +355,88 @@ describe('collectOpenClawSearchEnv (OpenClaw web-search parity)', () => {
     const env = await collectOpenClawSearchEnv(ocHome)
     expect(env['WEB_SEARCH_PROVIDER']).toBe('brave')
     expect(env['BRAVE_API_KEY']).toBe('BSA-auto')
+  })
+})
+
+describe('collectOpenClawSecrets (vault-everything migration)', () => {
+  // Mirrors the real shape surveyed on valkyrie: secrets live in env, models,
+  // channels, gateway, skills, and plugins ... not just the LLM env block.
+  const secretConfig = {
+    env: { XAI_API_KEY: 'xai-1', SOME_FLAG: 'true' },
+    models: {
+      providers: { xai: { apiKey: 'xai-2', models: [{ id: 'grok-4.3', maxTokens: 1000 }] } },
+    },
+    channels: { discord: { token: 'discord-tok' } },
+    gateway: { auth: { token: 'gw-tok' } },
+    skills: { entries: { goplaces: { apiKey: 'gp-key' } } },
+    plugins: { entries: { google: { config: { webSearch: { apiKey: 'gem-key' } } } } },
+  }
+
+  const writeSecretConfig = async (config: unknown): Promise<void> => {
+    await writeFile(join(ocHome, 'openclaw.json'), JSON.stringify(config))
+  }
+
+  it('discovers the whole env block + every secret-named leaf, excluding non-secrets', () => {
+    const paths = discoverOpenClawSecretPaths(secretConfig)
+      .map((r) => r.sourcePath)
+      .sort()
+    expect(paths).toEqual([
+      'channels.discord.token',
+      'env.SOME_FLAG', // whole env block ... "every key, no matter what"
+      'env.XAI_API_KEY',
+      'gateway.auth.token',
+      'models.providers.xai.apiKey',
+      'plugins.entries.google.config.webSearch.apiKey',
+      'skills.entries.goplaces.apiKey',
+    ])
+    // maxTokens / model id must NOT be swept (exact secret-name match, not substring)
+    expect(paths.some((p) => p.includes('maxTokens') || p.endsWith('.id'))).toBe(false)
+  })
+
+  it('names every secret as a valid vault credential slug', () => {
+    for (const ref of discoverOpenClawSecretPaths(secretConfig)) {
+      expect(ref.name).toMatch(CREDENTIAL_NAME_RE)
+    }
+    const byPath = Object.fromEntries(
+      discoverOpenClawSecretPaths(secretConfig).map((r) => [r.sourcePath, r.name]),
+    )
+    expect(byPath['channels.discord.token']).toBe('oc-channels-discord-token')
+    expect(byPath['plugins.entries.google.config.webSearch.apiKey']).toBe(
+      'oc-plugins-entries-google-config-websearch-apikey',
+    )
+  })
+
+  it('reads the values at migrate time (the vault payload)', async () => {
+    await writeSecretConfig(secretConfig)
+    const secrets = await collectOpenClawSecrets(ocHome)
+    const byName = Object.fromEntries(secrets.map((s) => [s.name, s.value]))
+    expect(byName['oc-env-xai-api-key']).toBe('xai-1')
+    expect(byName['oc-models-providers-xai-apikey']).toBe('xai-2')
+    expect(byName['oc-channels-discord-token']).toBe('discord-tok')
+    expect(byName['oc-gateway-auth-token']).toBe('gw-tok')
+    expect(byName['oc-skills-entries-goplaces-apikey']).toBe('gp-key')
+    expect(secrets).toHaveLength(7)
+  })
+
+  it('skips empty values and returns [] for a config with no secrets', async () => {
+    await writeSecretConfig({ models: { providers: { xai: { apiKey: '' } } }, env: {} })
+    expect(await collectOpenClawSecrets(ocHome)).toEqual([])
+  })
+
+  it('survey.credentialCount + report tell the operator what got vaulted', async () => {
+    const ws = join(ocHome, 'workspace')
+    await mkdir(ws, { recursive: true })
+    await writeFile(join(ws, 'IDENTITY.md'), '- **Name:** Vaulted\n')
+    await writeSecretConfig({
+      agents: { defaults: { model: { primary: 'xai/grok-4.3' }, workspace: ws } },
+      ...secretConfig,
+    })
+    const survey = await surveyOpenClawHome(ocHome)
+    expect(survey.credentialCount).toBe(7)
+    // the survey must never carry the credential VALUES
+    expect(JSON.stringify(survey)).not.toContain('discord-tok')
+    const { report } = openclawToHandoff(survey, { sourceHost: 'valkyrie', now: FIXED_NOW })
+    expect(report).toMatch(/7 OpenClaw credentials .* sealed in your Agent's vault/)
   })
 })
 

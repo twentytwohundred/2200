@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1518] ... 2026-06-16
+
+### Added
+
+- **OpenClaw migration now vaults every credential, not just the ones 2200 uses today.** A migration sweeps every secret-shaped value in `openclaw.json` ... the whole `env` block plus every `apiKey`/`token`/`secret`/`password` leaf wherever it lives (`models.providers.*`, `skills.entries.*`, `channels.*`, `gateway.auth`, `plugins.*`) ... and seals each into the migrated Agent's encrypted per-Agent vault (`oc-<source-path>` names, e.g. `oc-channels-discord-token`). So nothing an OpenClaw user had is lost on the way over; a future 2200 integration can pull what it needs by name. The functional keys (LLM, web search) still also land in `runtime.env` so they work immediately ... the vault is the complete archive on top. The migration report and `2200 credential list <agent>` show what was sealed. Exact secret-name matching means non-secrets like `maxTokens` are never swept. (The vault is sealed per-Agent and not exposed to the Agent/LLM; hardening the vault's master key is tracked as a pre-public item.)
+
 ## [2026.616.1447] ... 2026-06-16
 
 ### Changed
