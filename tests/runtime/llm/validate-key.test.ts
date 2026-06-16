@@ -9,8 +9,24 @@
  * UX silently.
  */
 import { describe, expect, it } from 'vitest'
-import { validateProviderKey } from '../../../src/runtime/llm/validate-key.js'
+import {
+  validateProviderKey,
+  validateLocalEndpoint,
+} from '../../../src/runtime/llm/validate-key.js'
 import type { ProviderCatalogEntry } from '../../../src/runtime/llm/registry.js'
+
+function capturingFetch(status: number): {
+  fetchImpl: typeof fetch
+  captured: { url: string | null; init: RequestInit | null }
+} {
+  const captured: { url: string | null; init: RequestInit | null } = { url: null, init: null }
+  const fetchImpl = ((url: string, init?: RequestInit) => {
+    captured.url = url
+    captured.init = init ?? null
+    return Promise.resolve(new Response('{"data":[]}', { status }))
+  }) as unknown as typeof fetch
+  return { fetchImpl, captured }
+}
 
 function anthropic(): ProviderCatalogEntry {
   return {
@@ -170,5 +186,44 @@ describe('validateProviderKey', () => {
       expect(result.message.length).toBeLessThanOrEqual(403)
       expect(result.message.endsWith('...')).toBe(true)
     }
+  })
+})
+
+describe('validateLocalEndpoint', () => {
+  it('keyless: sends NO Authorization header and hits <base>/models when base ends in /v1', async () => {
+    const { fetchImpl, captured } = capturingFetch(200)
+    const result = await validateLocalEndpoint({
+      baseUrl: 'http://100.64.0.5:11434/v1',
+      fetchImpl,
+    })
+    expect(result.ok).toBe(true)
+    expect(captured.url).toBe('http://100.64.0.5:11434/v1/models') // not /v1/v1/models
+    const headers = (captured.init?.headers ?? {}) as Record<string, string>
+    expect(headers['Authorization']).toBeUndefined() // keyless ... the tailnet is the auth
+  })
+
+  it('appends /v1/models when the base URL has no /v1 suffix', async () => {
+    const { fetchImpl, captured } = capturingFetch(200)
+    await validateLocalEndpoint({ baseUrl: 'http://localhost:8000', fetchImpl })
+    expect(captured.url).toBe('http://localhost:8000/v1/models')
+  })
+
+  it('sends a Bearer token when a key IS provided', async () => {
+    const { fetchImpl, captured } = capturingFetch(200)
+    await validateLocalEndpoint({ baseUrl: 'http://host:11434/v1', apiKey: 'sk-local', fetchImpl })
+    const headers = (captured.init?.headers ?? {}) as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-local')
+  })
+
+  it('classifies 401 as auth_failed (the server wants a key)', async () => {
+    const { fetchImpl } = capturingFetch(401)
+    const result = await validateLocalEndpoint({ baseUrl: 'http://host:11434/v1', fetchImpl })
+    expect(result).toMatchObject({ ok: false, reason: 'auth_failed', status: 401 })
+  })
+
+  it('classifies a fetch throw as network_error (server not up)', async () => {
+    const fetchImpl = (() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof fetch
+    const result = await validateLocalEndpoint({ baseUrl: 'http://host:11434/v1', fetchImpl })
+    expect(result).toMatchObject({ ok: false, reason: 'network_error' })
   })
 })
