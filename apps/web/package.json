@@ -30,7 +30,7 @@
     "@tanstack/react-query": "^5.101.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-easy-crop": "^5.5.7",
+    "react-easy-crop": "^6.0.2",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.17.0",
     "remark-gfm": "^4.0.1"
