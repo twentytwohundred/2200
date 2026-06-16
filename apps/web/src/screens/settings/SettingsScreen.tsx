@@ -45,6 +45,7 @@ import { EndpointsSection } from './EndpointsSection'
 import { GrokAuthSection } from './GrokAuthSection'
 import { SkillsSection } from './SkillsSection'
 import { SystemUpdateSection } from './SystemUpdateSection'
+import { WebSearchSection } from './WebSearchSection'
 import styles from './SettingsScreen.module.css'
 
 const CLI_REFERENCE: { command: string; description: string }[] = [
@@ -233,6 +234,13 @@ export function SettingsScreen(): ReactElement {
         <Meta>models &amp; api keys</Meta>
         <div className={styles.blockBody}>
           <ProvidersSection />
+        </div>
+      </section>
+
+      <section className={styles.block}>
+        <Meta>web search</Meta>
+        <div className={styles.blockBody}>
+          <WebSearchSection />
         </div>
       </section>
 

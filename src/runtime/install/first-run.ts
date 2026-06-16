@@ -336,7 +336,7 @@ export async function runFirstRunOpenClawMigration(
     }
   }
 
-  const { surveyOpenClawHome, openclawToHandoff, collectOpenClawLlmEnv } =
+  const { surveyOpenClawHome, openclawToHandoff, collectOpenClawLlmEnv, collectOpenClawSearchEnv } =
     await import('../migration/openclaw.js')
 
   // Survey + convert. A parse failure must not abort setup.
@@ -412,6 +412,28 @@ export async function runFirstRunOpenClawMigration(
     io.warn(
       `Could not copy LLM keys from OpenClaw: ${err instanceof Error ? err.message : String(err)}`,
     )
+  }
+
+  // Carry OpenClaw's web-search config (Brave/Google keys + chosen provider)
+  // so a migrated Agent keeps web search. Best-effort; same per-key isolation.
+  try {
+    const search = await collectOpenClawSearchEnv(ocHome)
+    const existing = await loadRuntimeEnv()
+    let copied = 0
+    for (const [k, v] of Object.entries(search)) {
+      if (existing[k] !== undefined) continue
+      try {
+        await upsertRuntimeEnvKey(k, v)
+        copied += 1
+      } catch {
+        /* odd key shape; skip */
+      }
+    }
+    if (copied > 0) {
+      io.success(`Carried your OpenClaw web-search settings over (set in Settings → Web Search).`)
+    }
+  } catch {
+    /* best-effort; the operator can set web search in Settings */
   }
 
   // The migration report (what mapped / didn't).
