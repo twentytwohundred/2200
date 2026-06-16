@@ -22,6 +22,13 @@ const CONNECTORS = [
     entry: 'apps/discord-connector/src/gateway.ts',
     assetDir: 'apps/discord-connector',
   },
+  {
+    // Dependency-free (raw Bot API over global fetch), so it bundles to a
+    // self-contained CJS cleanly ... no native externals like discord.js.
+    id: 'telegram',
+    entry: 'apps/telegram-connector/src/gateway.ts',
+    assetDir: 'apps/telegram-connector',
+  },
 ]
 
 // discord.js pulls optional native accelerators (zlib-sync, bufferutil,

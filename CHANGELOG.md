@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1748] ... 2026-06-16
+
+### Added
+
+- **Telegram connector ... per-Agent bots, the most-used self-hoster chat surface.** Each Agent gets its own Telegram bot (create one with @BotFather, paste the token, message it). A human can DM the Agent ... or add it to a group ... and the Agent wakes and replies with its own identity, the same Discord-grade experience. The gateway is dependency-free (raw Bot API over `getUpdates` long-polling + `sendMessage`, no SDK), so it bundles into the npm package and runs behind NAT with no public URL. Install it per-Agent from the Extensions Store; the bot token is sealed to that Agent's vault. DMs are open by default (a personal bot's @username isn't discoverable); groups require an @mention. Long replies auto-chunk at Telegram's 4096-char limit, and negative group chat ids are handled throughout. Adds the `telegram_send` baseline tool.
+
 ## [2026.616.1702] ... 2026-06-16
 
 ### Fixed

@@ -28,6 +28,7 @@ import { credentialTools } from './credential.js'
 import { httpTools } from './http.js'
 import { whatsappTools } from './whatsapp.js'
 import { discordTools } from './discord.js'
+import { telegramTools } from './telegram.js'
 import { agentControlTools } from './agent-control.js'
 import { SHELF_TOOL_NAMES, shelfTools } from './shelf.js'
 import type { TaskBlockerRegistry } from '../../agent/blockers.js'
@@ -97,6 +98,7 @@ export const BASELINE_TOOL_NAMES: readonly string[] = [
   'http_request',
   'whatsapp_send',
   'discord_send',
+  'telegram_send',
   'restart_self',
   // Phase 2 / PR-B2: embassy shelf tools. Implementation lives in the
   // baseline registry so the dispatcher knows them, but the dispatcher's
@@ -166,6 +168,7 @@ export function baselineServers(opts: BaselineServersOptions = {}): McpServer[] 
     createInProcessServer('http', httpTools),
     createInProcessServer('whatsapp', whatsappTools),
     createInProcessServer('discord', discordTools),
+    createInProcessServer('telegram', telegramTools),
     // server prefix matches the tool name's prefix (`restart_*`).
     createInProcessServer('restart', agentControlTools(getSupervisorRpc)),
     // Phase 2 / PR-B2: embassy shelf tools. Tools live in the registry

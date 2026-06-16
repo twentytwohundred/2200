@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "telegram",
+  "version": "0.1.0",
+  "display_name": "Telegram",
+  "description": "Per-Agent Telegram bots. Each Agent gets its own Telegram bot identity; you DM each one (or add it to a group). Setup: create a bot with @BotFather, paste the bot token, message it, done.",
+  "author": "2200",
+  "homepage": "https://2200.ai/docs/connectors/telegram",
+  "permissions": ["network", "tools", "notifications", "fs.scratch"],
+  "schedules": [],
+  "tools": [
+    {
+      "name": "telegram_send",
+      "description": "Send a Telegram message to a chat the Agent's bot can reach (a DM chat id, or a group chat id)."
+    }
+  ],
+  "hooks": {
+    "install": "./install.mjs",
+    "gateway": {
+      "script": "./src/gateway.ts",
+      "restart_policy": "always"
+    }
+  },
+  "connector": {
+    "id": "telegram",
+    "label": "Telegram",
+    "blurb": "Give each Agent its own Telegram bot. DM them, or add them to a group; they reply with their own identity.",
+    "docs_path": "design/connectors/telegram",
+    "auth_model": "bot_token",
+    "account_scope": "agent",
+    "tos_acknowledgment": "Telegram bots are subject to the Telegram Bot Terms of Service and the Telegram Terms of Service. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Telegram. 2200 is not a party to your relationship with Telegram."
+  }
+}

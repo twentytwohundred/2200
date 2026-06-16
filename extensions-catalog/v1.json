@@ -38,6 +38,25 @@
         "type": "workspace",
         "path": "apps/whatsapp-connector"
       }
+    },
+    {
+      "id": "telegram",
+      "label": "Telegram",
+      "blurb": "Give each Agent its own Telegram bot. Create a bot with @BotFather (one minute), paste the bot token, message it, and DM each Agent independently ... or add it to a group. The most-used chat surface among self-hosters.",
+      "icon": "/api/v1/extensions/telegram/icon",
+      "category": "connector",
+      "auth_model": "bot_token",
+      "account_scope": "agent",
+      "permissions": ["network", "tools", "notifications", "fs.scratch"],
+      "tos_acknowledgment": "Telegram bots are subject to the Telegram Bot Terms of Service and the Telegram Terms of Service. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Telegram. 2200 is not a party to your relationship with Telegram.",
+      "docs_url": "https://github.com/twentytwohundred/wiki/blob/main/design/connectors/telegram.md",
+      "screenshots": [],
+      "current_version": "0.1.0",
+      "min_2200_version": "0.7.0",
+      "source": {
+        "type": "workspace",
+        "path": "apps/telegram-connector"
+      }
     }
   ]
 }
