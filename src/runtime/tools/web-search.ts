@@ -1,15 +1,22 @@
 /**
  * Web search backend for the `web_search` baseline tool.
  *
- * Backed by the Brave Search API (a free tier covers ~2000 queries/mo).
- * The key is read from `BRAVE_API_KEY` in the runtime env (the supervisor
- * loads runtime.env at start and Agents inherit it), so enabling search is
- * "add the key + restart the daemon". When no key is set the tool returns a
+ * Three bring-your-own-key providers, the OpenClaw model: Brave (the default,
+ * a free tier covers ~2000 queries/mo), Google Programmable Search (key + a
+ * `cx` engine id), and Gemini Google-Search grounding (a single Gemini API
+ * key, no `cx`). Keys live in the runtime env (the supervisor loads
+ * runtime.env at start and Agents inherit it), so enabling search is "add the
+ * key + restart the daemon". When nothing is configured the tool returns a
  * clear, actionable status instead of silently empty results.
  *
- * Grok-native keyless search was the original plan, but xAI deprecated its
- * Live Search API in favor of a heavier Agent Tools API; that path is a
- * separate future build. Brave is the universal, reliable default.
+ * The Gemini provider exists for OpenClaw parity: OpenClaw's `gemini` web
+ * search (its "google" provider) is grounding, NOT the Custom Search JSON
+ * API, and stores a single key with no `cx`. Migrating an OpenClaw home that
+ * used `gemini` carries that key straight into this provider.
+ *
+ * Grok-native keyless search (xAI subscription) is the highest-value follow-up
+ * ... xAI deprecated its Live Search API for a heavier Agent Tools API, so
+ * that path is a separate future build.
  */
 
 export interface WebSearchResult {
@@ -20,7 +27,10 @@ export interface WebSearchResult {
   rank: number
 }
 
-export type WebSearchProviderName = 'brave' | 'google'
+export type WebSearchProviderName = 'brave' | 'google' | 'gemini'
+
+/** Default Gemini model for grounding; override with GEMINI_SEARCH_MODEL. */
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
 
 export interface WebSearchOutcome {
   results: WebSearchResult[]
@@ -35,25 +45,30 @@ const NOT_CONFIGURED: WebSearchOutcome = {
   provider: null,
   status:
     'web search is not configured. Add a provider in Settings → Web Search: a Brave Search ' +
-    'API key (BRAVE_API_KEY, free tier at https://brave.com/search/api/) or a Google ' +
-    'Programmable Search key + engine id (GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX), then ' +
-    'restart the daemon.',
+    'API key (BRAVE_API_KEY, free tier at https://brave.com/search/api/), a Gemini API key ' +
+    '(GEMINI_SEARCH_API_KEY, Google-Search grounding, https://aistudio.google.com/apikey), or ' +
+    'a Google Programmable Search key + engine id (GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX), ' +
+    'then restart the daemon.',
 }
 
 /**
  * Which search backend to use, given the env. The operator may pin one with
- * WEB_SEARCH_PROVIDER ("brave" | "google"); otherwise Brave is preferred
- * (the default), then Google. Returns null when nothing is configured.
+ * WEB_SEARCH_PROVIDER ("brave" | "google" | "gemini"); otherwise the fallback
+ * order mirrors OpenClaw's auto-detect: Brave (the default), then Gemini, then
+ * Google. Returns null when nothing is configured.
  */
 export function resolveSearchProvider(env: NodeJS.ProcessEnv): WebSearchProviderName | null {
   const haveBrave = (env['BRAVE_API_KEY']?.trim() ?? '') !== ''
+  const haveGemini = (env['GEMINI_SEARCH_API_KEY']?.trim() ?? '') !== ''
   const haveGoogle =
     (env['GOOGLE_SEARCH_API_KEY']?.trim() ?? '') !== '' &&
     (env['GOOGLE_SEARCH_CX']?.trim() ?? '') !== ''
   const pinned = env['WEB_SEARCH_PROVIDER']?.trim().toLowerCase()
   if (pinned === 'brave' && haveBrave) return 'brave'
+  if (pinned === 'gemini' && haveGemini) return 'gemini'
   if (pinned === 'google' && haveGoogle) return 'google'
   if (haveBrave) return 'brave'
+  if (haveGemini) return 'gemini'
   if (haveGoogle) return 'google'
   return null
 }
@@ -67,6 +82,15 @@ export async function searchWeb(
   const provider = resolveSearchProvider(env)
   if (provider === 'brave') {
     return braveSearch(env['BRAVE_API_KEY']?.trim() ?? '', query, maxResults)
+  }
+  if (provider === 'gemini') {
+    const model = env['GEMINI_SEARCH_MODEL']?.trim()
+    return geminiSearch(
+      env['GEMINI_SEARCH_API_KEY']?.trim() ?? '',
+      query,
+      maxResults,
+      model !== undefined && model !== '' ? model : DEFAULT_GEMINI_MODEL,
+    )
   }
   if (provider === 'google') {
     return googleSearch(
@@ -212,6 +236,146 @@ export function parseGoogleResults(data: unknown, maxResults: number): WebSearch
       url,
       title: typeof rec['title'] === 'string' ? rec['title'] : '',
       snippet: typeof rec['snippet'] === 'string' ? rec['snippet'] : '',
+      rank: out.length + 1,
+    })
+    if (out.length >= maxResults) break
+  }
+  return out
+}
+
+/**
+ * Gemini "Google Search grounding": one generateContent call with the
+ * `google_search` tool. The model searches, answers, and returns the sources
+ * it grounded on under `candidates[0].groundingMetadata`. We surface those
+ * sources as the result list (there is no separate SERP) ... see
+ * `parseGeminiResults` for the source→result mapping. A single Gemini API key,
+ * no `cx`. Note: grounding is billed per request beyond a small free tier.
+ */
+async function geminiSearch(
+  key: string,
+  query: string,
+  maxResults: number,
+  model: string,
+): Promise<WebSearchOutcome> {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}` +
+    `:generateContent?key=${encodeURIComponent(key)}`
+  const body = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: query }] }],
+    tools: [{ google_search: {} }],
+  })
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body,
+    })
+  } catch (err) {
+    return {
+      results: [],
+      provider: 'gemini',
+      status: `gemini search request failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    return {
+      results: [],
+      provider: 'gemini',
+      status: `gemini search returned HTTP ${String(res.status)}${
+        text === '' ? '' : `: ${geminiErrorMessage(text)}`
+      }`,
+    }
+  }
+  let data: unknown
+  try {
+    data = await res.json()
+  } catch {
+    return { results: [], provider: 'gemini', status: 'gemini search returned unparseable JSON' }
+  }
+  const results = parseGeminiResults(data, maxResults)
+  return {
+    results,
+    provider: 'gemini',
+    status: `ok (${String(results.length)} result${results.length === 1 ? '' : 's'} via gemini)`,
+  }
+}
+
+/** Pull a concise error message out of a Gemini error body, else the raw head. */
+function geminiErrorMessage(text: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (typeof parsed === 'object' && parsed !== null) {
+      const err = (parsed as Record<string, unknown>)['error']
+      if (typeof err === 'object' && err !== null) {
+        const msg = (err as Record<string, unknown>)['message']
+        if (typeof msg === 'string' && msg !== '') return msg.slice(0, 200)
+      }
+    }
+  } catch {
+    // not JSON; fall through
+  }
+  return text.slice(0, 200)
+}
+
+/**
+ * Map a Gemini grounding response to ranked results. Each
+ * `groundingChunks[i].web` becomes a result (uri→url, title→title) in array
+ * order (Gemini's relevance order). The snippet is the answer segment that
+ * cites that chunk ... from `groundingSupports`, whose `groundingChunkIndices`
+ * point back at the chunk ... or empty when nothing cites it (we never duplicate
+ * the whole grounded answer across results). Pure + exported for tests.
+ */
+export function parseGeminiResults(data: unknown, maxResults: number): WebSearchResult[] {
+  if (typeof data !== 'object' || data === null) return []
+  const candidates = (data as Record<string, unknown>)['candidates']
+  if (!Array.isArray(candidates) || candidates.length === 0) return []
+  const first = (candidates as unknown[])[0]
+  if (typeof first !== 'object' || first === null) return []
+  const meta = (first as Record<string, unknown>)['groundingMetadata']
+  if (typeof meta !== 'object' || meta === null) return []
+  const chunksRaw = (meta as Record<string, unknown>)['groundingChunks']
+  if (!Array.isArray(chunksRaw)) return []
+  const chunks = chunksRaw as unknown[]
+
+  // chunk index → first supporting answer segment, for snippets.
+  const snippetByChunk = new Map<number, string>()
+  const supports = (meta as Record<string, unknown>)['groundingSupports']
+  if (Array.isArray(supports)) {
+    for (const sup of supports) {
+      if (typeof sup !== 'object' || sup === null) continue
+      const rec = sup as Record<string, unknown>
+      const seg = rec['segment']
+      const text =
+        typeof seg === 'object' &&
+        seg !== null &&
+        typeof (seg as Record<string, unknown>)['text'] === 'string'
+          ? ((seg as Record<string, unknown>)['text'] as string)
+          : ''
+      if (text === '') continue
+      const idxs = rec['groundingChunkIndices']
+      if (!Array.isArray(idxs)) continue
+      for (const idx of idxs) {
+        if (typeof idx === 'number' && !snippetByChunk.has(idx)) snippetByChunk.set(idx, text)
+      }
+    }
+  }
+
+  const out: WebSearchResult[] = []
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i]
+    if (typeof c !== 'object' || c === null) continue
+    const web = (c as Record<string, unknown>)['web']
+    if (typeof web !== 'object' || web === null) continue
+    const rec = web as Record<string, unknown>
+    const url = typeof rec['uri'] === 'string' ? rec['uri'] : ''
+    if (url === '') continue
+    out.push({
+      url,
+      title: typeof rec['title'] === 'string' ? rec['title'] : '',
+      snippet: snippetByChunk.get(i) ?? '',
       rank: out.length + 1,
     })
     if (out.length >= maxResults) break

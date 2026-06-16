@@ -1163,14 +1163,19 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   async function buildWebSearchDto(): Promise<Record<string, unknown>> {
     const env = await loadRuntimeEnv()
     const brave = env['BRAVE_API_KEY'] ?? ''
+    const gemini = env['GEMINI_SEARCH_API_KEY'] ?? ''
     const gKey = env['GOOGLE_SEARCH_API_KEY'] ?? ''
     const gCx = env['GOOGLE_SEARCH_CX'] ?? ''
     const pinned = (env['WEB_SEARCH_PROVIDER'] ?? '').trim().toLowerCase()
     const { resolveSearchProvider } = await import('../tools/web-search.js')
     return {
-      provider: pinned === 'brave' || pinned === 'google' ? pinned : null,
+      provider: pinned === 'brave' || pinned === 'gemini' || pinned === 'google' ? pinned : null,
       active_provider: resolveSearchProvider(env),
       brave: { key_set: brave.length > 0, key_masked: brave.length > 0 ? maskKey(brave) : null },
+      gemini: {
+        key_set: gemini.length > 0,
+        key_masked: gemini.length > 0 ? maskKey(gemini) : null,
+      },
       google: {
         key_set: gKey.length > 0,
         key_masked: gKey.length > 0 ? maskKey(gKey) : null,
@@ -1185,8 +1190,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   })
 
   const PutWebSearchBody = z.object({
-    provider: z.enum(['brave', 'google']).nullable().optional(),
+    provider: z.enum(['brave', 'gemini', 'google']).nullable().optional(),
     brave_api_key: z.string().optional(),
+    gemini_search_api_key: z.string().optional(),
     google_search_api_key: z.string().optional(),
     google_search_cx: z.string().optional(),
   })
@@ -1199,6 +1205,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       else await upsertRuntimeEnvKey(envKey, val)
     }
     await setOrRemove('BRAVE_API_KEY', body.brave_api_key)
+    await setOrRemove('GEMINI_SEARCH_API_KEY', body.gemini_search_api_key)
     await setOrRemove('GOOGLE_SEARCH_API_KEY', body.google_search_api_key)
     await setOrRemove('GOOGLE_SEARCH_CX', body.google_search_cx)
     if (body.provider !== undefined) {

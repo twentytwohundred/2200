@@ -77,6 +77,18 @@ export interface OpenClawSurvey {
   sessionCount: number
   /** Env var NAMES from the config `env` block. Values are never read here. */
   envKeyNames: string[]
+  /**
+   * OpenClaw's active web-search provider name (e.g. 'gemini', 'brave'), or
+   * null when search is off/unset. Name only ... the key value is read at
+   * migrate time by `collectOpenClawSearchEnv`, never here.
+   */
+  searchProvider: string | null
+  /**
+   * Whether a key for that provider actually exists in the OpenClaw config
+   * (boolean only, never the value). Lets the migration report tell the truth
+   * about whether search carried, instead of inferring from the name alone.
+   */
+  searchKeyPresent: boolean
 }
 
 export class OpenClawSurveyError extends Error {}
@@ -155,6 +167,8 @@ export async function surveyOpenClawHome(ocHome: string): Promise<OpenClawSurvey
 
   const channels = Object.keys(asRecord(config['channels']))
   const envKeyNames = Object.keys(asRecord(config['env']))
+  const ocSearchProvider = ocActiveSearchProvider(config)
+  const ocSearchKeyPresent = ocHasCarriableSearchKey(config)
 
   let skills: string[] = []
   try {
@@ -185,6 +199,8 @@ export async function surveyOpenClawHome(ocHome: string): Promise<OpenClawSurvey
     skills,
     sessionCount,
     envKeyNames,
+    searchProvider: ocSearchProvider === '' ? null : ocSearchProvider,
+    searchKeyPresent: ocSearchKeyPresent,
   }
 }
 
@@ -380,36 +396,117 @@ export async function collectOpenClawLlmEnv(ocHome: string): Promise<Record<stri
   return out
 }
 
-// Web-search keys 2200 understands, by their 2200 env-var names. Carried
-// from OpenClaw when present so a migrated Agent keeps the ability to search.
-const SEARCH_ENV_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
-  'BRAVE_API_KEY',
-  'GOOGLE_SEARCH_API_KEY',
-  'GOOGLE_SEARCH_CX',
-])
+/** Read a dot-path of string keys out of a parsed config; '' when absent. */
+function readStringPath(root: Record<string, unknown>, path: string): string {
+  let cur: unknown = root
+  for (const seg of path.split('.')) {
+    if (typeof cur !== 'object' || cur === null) return ''
+    cur = (cur as Record<string, unknown>)[seg]
+  }
+  return typeof cur === 'string' ? cur : ''
+}
+
+function firstNonEmpty(...vals: string[]): string {
+  for (const v of vals) if (v.trim() !== '') return v.trim()
+  return ''
+}
+
+/** OpenClaw web-search providers 2200 implements today (others are reported, not carried). */
+const OC_SEARCH_PROVIDERS_SUPPORTED: ReadonlySet<string> = new Set(['brave', 'gemini'])
 
 /**
- * Carry OpenClaw's web-search config: the Brave / Google keys (when present
- * under 2200's env-var names) and the chosen provider (`tools.web.search.provider`),
- * mapped to 2200's `WEB_SEARCH_PROVIDER`. Brave stays the default; OpenClaw's
- * `gemini`/`google` both map to 2200's `google` provider. Returns an env map
- * to upsert into runtime.env (empty when OpenClaw has no search config).
+ * OpenClaw's active web-search provider name (lowercased), or '' when search
+ * is disabled. `tools.web.search.provider` names it explicitly; when unset,
+ * OpenClaw auto-detects by key presence. We mirror its provider registry's
+ * autoDetectOrder (brave before gemini, surveyed from OpenClaw 2026.4.11) so a
+ * key-only config still resolves to a provider. (Both-keys-but-no-provider
+ * lands on brave, which is also 2200's own default fallback.)
+ */
+export function ocActiveSearchProvider(config: Record<string, unknown>): string {
+  const search = asRecord(asRecord(asRecord(config['tools'])['web'])['search'])
+  if (search['enabled'] === false) return ''
+  const explicit =
+    typeof search['provider'] === 'string' ? search['provider'].trim().toLowerCase() : ''
+  if (explicit !== '') return explicit
+  if (
+    readStringPath(config, 'plugins.entries.brave.config.webSearch.apiKey') !== '' ||
+    readStringPath(config, 'tools.web.search.apiKey') !== ''
+  ) {
+    return 'brave'
+  }
+  if (readStringPath(config, 'plugins.entries.google.config.webSearch.apiKey') !== '') {
+    return 'gemini'
+  }
+  return ''
+}
+
+/**
+ * The API key for OpenClaw's given web-search provider, read from OpenClaw's
+ * real config paths (plugin entry, scoped override, or env), or '' when none
+ * is present / the provider is one 2200 doesn't carry. Shared by the carry
+ * (which writes the value) and the survey (which only checks presence), so the
+ * two can never disagree about whether a key exists.
+ */
+function ocSearchKeyForProvider(config: Record<string, unknown>, provider: string): string {
+  if (provider === 'brave') {
+    return firstNonEmpty(
+      readStringPath(config, 'plugins.entries.brave.config.webSearch.apiKey'),
+      readStringPath(config, 'tools.web.search.brave.apiKey'),
+      readStringPath(config, 'tools.web.search.apiKey'),
+      readStringPath(config, 'env.BRAVE_API_KEY'),
+    )
+  }
+  if (provider === 'gemini') {
+    return firstNonEmpty(
+      readStringPath(config, 'plugins.entries.google.config.webSearch.apiKey'),
+      readStringPath(config, 'tools.web.search.gemini.apiKey'),
+      readStringPath(config, 'env.GEMINI_API_KEY'),
+    )
+  }
+  return ''
+}
+
+/**
+ * Whether OpenClaw has a key 2200 would actually carry for its active search
+ * provider ... a boolean only, no value retained (safe to store in the survey
+ * and the migration report). Drives the report so it never claims a carry that
+ * didn't happen.
+ */
+export function ocHasCarriableSearchKey(config: Record<string, unknown>): boolean {
+  return ocSearchKeyForProvider(config, ocActiveSearchProvider(config)) !== ''
+}
+
+/**
+ * Carry OpenClaw's ACTIVE web-search provider + key into 2200's runtime.env.
+ *
+ * OpenClaw keeps each provider's key under its plugin entry (e.g.
+ * `plugins.entries.google.config.webSearch.apiKey` for `gemini`, `…brave…`
+ * for `brave`), NOT a flat env var ... see the OpenClaw 2026.4.11 survey.
+ * 2200 implements Brave and Gemini-grounding today, so for those we copy the
+ * key and pin `WEB_SEARCH_PROVIDER`. Gemini is OpenClaw's "google": it's
+ * Google-Search GROUNDING (single key, no `cx`), not the Custom Search JSON
+ * API, so its key maps to 2200's `GEMINI_SEARCH_API_KEY`. Providers 2200
+ * doesn't support yet (grok, perplexity, exa, ...) carry nothing here; the
+ * migration report names them so the operator can wire one up in Settings.
+ *
+ * Returns the env map to upsert (empty when nothing maps).
  */
 export async function collectOpenClawSearchEnv(ocHome: string): Promise<Record<string, string>> {
   const config = await readJsonTolerant(join(ocHome, 'openclaw.json'))
+  const provider = ocActiveSearchProvider(config)
+  const key = ocSearchKeyForProvider(config, provider)
   const out: Record<string, string> = {}
+  if (key === '') return out
 
-  const env = asRecord(config['env'])
-  for (const [k, v] of Object.entries(env)) {
-    if (typeof v === 'string' && v !== '' && SEARCH_ENV_KEY_ALLOWLIST.has(k.toUpperCase())) {
-      out[k.toUpperCase()] = v
-    }
+  if (provider === 'brave') {
+    out['BRAVE_API_KEY'] = key
+    out['WEB_SEARCH_PROVIDER'] = 'brave'
+  } else if (provider === 'gemini') {
+    out['GEMINI_SEARCH_API_KEY'] = key
+    out['WEB_SEARCH_PROVIDER'] = 'gemini'
+    const model = readStringPath(config, 'tools.web.search.gemini.model')
+    if (model !== '') out['GEMINI_SEARCH_MODEL'] = model
   }
-
-  const search = asRecord(asRecord(asRecord(config['tools'])['web'])['search'])
-  const provider = typeof search['provider'] === 'string' ? search['provider'].toLowerCase() : ''
-  if (provider === 'brave') out['WEB_SEARCH_PROVIDER'] = 'brave'
-  else if (provider === 'google' || provider === 'gemini') out['WEB_SEARCH_PROVIDER'] = 'google'
 
   return out
 }
@@ -674,6 +771,26 @@ async function readCronJobs(path: string): Promise<OpenClawCronJob[]> {
   })
 }
 
+/**
+ * One migration-report bullet describing what actually happened to web search.
+ * Driven by BOTH the provider name and whether a key was truly found ... never
+ * claims a carry that didn't happen (the Agent's continuity note must not lie).
+ */
+function renderSearchReportLine(searchProvider: string | null, keyPresent: boolean): string {
+  const addOne =
+    'Add Brave (free tier) or a Gemini API key in Settings → Web Search to give the Agent search.'
+  if (searchProvider === null) {
+    return `OpenClaw had no web search configured. ${addOne}`
+  }
+  if (OC_SEARCH_PROVIDERS_SUPPORTED.has(searchProvider)) {
+    if (keyPresent) {
+      return `OpenClaw used \`${searchProvider}\` ... your key carried into 2200. Confirm it under Settings → Web Search; it's live after a restart.`
+    }
+    return `OpenClaw named \`${searchProvider}\` for search but had no key set, so nothing carried. ${addOne}`
+  }
+  return `OpenClaw used \`${searchProvider}\` for search, which 2200 doesn't support yet ... your OpenClaw key stays in OpenClaw. ${addOne.replace('to give the Agent search.', 'to keep searching.')}`
+}
+
 function renderReport(args: {
   agentName: string
   survey: OpenClawSurvey
@@ -717,6 +834,11 @@ function renderReport(args: {
     )
   }
   for (const w of args.warnings) lines.push(`- ${w}`)
+
+  // Web search ... what carried over, and what to do when it didn't. Brave
+  // and Gemini (OpenClaw's "google" grounding) carry; everything else is
+  // surfaced, not silently dropped.
+  lines.push('', '### Web search', '', renderSearchReportLine(s.searchProvider, s.searchKeyPresent))
 
   // Post-migration checklist ... actionable, in the order it matters.
   // Lives in both the printed CLI output and the Agent's continuity
