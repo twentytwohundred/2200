@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.616.2242
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.616.2255
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --yes
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
@@ -325,9 +325,11 @@ case "$NODE_MAJOR" in
     ;;
 esac
 if [ "$NODE_MAJOR" -lt 22 ]; then
-  err "Node.js $NODE_VERSION detected; 2200 requires 22 or newer."
-  err "Upgrade Node, then re-run this installer:"
+  err "Your Node.js is out of date: you have $NODE_VERSION, and 2200 needs version 22 or newer."
+  err "Update Node with the command below that matches how it's installed on your machine:"
   print_node_upgrade
+  err "Then come back here and run this installer again:"
+  err "  curl -fsSL https://2200.ai/install.sh | sh"
   exit 1
 fi
 ok "Node.js ${BOLD}${NODE_VERSION}${RESET}"
