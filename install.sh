@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://2200.ai/install.sh | sh
-#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.616.1918
+#   curl -fsSL https://2200.ai/install.sh | sh -s -- --version 2026.616.2141
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --yes
 #   curl -fsSL https://2200.ai/install.sh | sh -s -- --dry-run
 #
@@ -260,6 +260,50 @@ case "$UNAME_S" in
     ;;
 esac
 
+# Print the most relevant "how to upgrade Node to 22+" command(s) for THIS
+# machine: prefer a version manager the user already has (nvm/fnm/asdf), else
+# the OS package manager, else a sane fallback. POSIX sh; each line via err().
+print_node_upgrade() {
+  _np=0
+  if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+    err "  nvm:       nvm install 22 && nvm alias default 22 && nvm use 22"
+    _np=1
+  fi
+  if command -v fnm >/dev/null 2>&1; then
+    err "  fnm:       fnm install 22 && fnm default 22 && fnm use 22"
+    _np=1
+  fi
+  if command -v asdf >/dev/null 2>&1 || [ -d "$HOME/.asdf" ]; then
+    err "  asdf:      asdf install nodejs latest:22 && asdf global nodejs latest:22"
+    _np=1
+  fi
+  case "$UNAME_S" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        err "  Homebrew:  brew install node@22 && brew link --overwrite --force node@22"
+        _np=1
+      fi
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        err "  apt (Debian/Ubuntu):"
+        err "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs"
+        _np=1
+      elif command -v dnf >/dev/null 2>&1; then
+        err "  dnf (Fedora/RHEL):"
+        err "    curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - && sudo dnf install -y nodejs"
+        _np=1
+      fi
+      ;;
+  esac
+  if [ "$_np" -eq 0 ]; then
+    err "  Install nvm, then Node 22:"
+    err "    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
+    err "    nvm install 22 && nvm alias default 22"
+    err "  Or download Node 22+ from https://nodejs.org/"
+  fi
+}
+
 # Node.js: required, >= 22.
 if ! command -v node >/dev/null 2>&1; then
   err "Node.js is not installed (or not on \$PATH)."
@@ -282,7 +326,8 @@ case "$NODE_MAJOR" in
 esac
 if [ "$NODE_MAJOR" -lt 22 ]; then
   err "Node.js $NODE_VERSION detected; 2200 requires 22 or newer."
-  err "Upgrade Node, then re-run this installer."
+  err "Upgrade Node, then re-run this installer:"
+  print_node_upgrade
   exit 1
 fi
 ok "Node.js ${BOLD}${NODE_VERSION}${RESET}"
