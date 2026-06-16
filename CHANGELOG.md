@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.2255] ... 2026-06-16
+
+### Fixed
+
+- **Studio enrollment no longer fails for an Agent whose name matches the operator's.** On a host named after its Agent (e.g. `skippy@valkyrie`, where the operator identity is also `skippy`), the operator registers in the Studio first and claims the display name, so the Agent's own registration hit `pub display name "skippy" already in use` and it was silently left out of the Studio. `enrollAgentInPub` now catches that name conflict and retries with a disambiguated label (`<name> (agent)`), so the Agent still enrolls and gets its `pub.identity`. Applies to both fresh and OpenClaw-migrated Agents (the migrated `skippy` was the one hitting this).
+- **The Node-too-old installer message now tells you what to do, in plain words.** It previously printed the upgrade commands under a terse "upgrade Node, then re-run". Now it leads with "Your Node.js is out of date: you have vX, and 2200 needs version 22 or newer", shows the matching update command, then "Then come back here and run this installer again:" with the exact `curl … | sh` line ... no guessing what the bare command was for.
+
 ## [2026.616.2242] ... 2026-06-16
 
 ### Fixed

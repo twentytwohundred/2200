@@ -50,6 +50,7 @@ import { generateKeypair } from '../pub/keypair-generate.js'
 import {
   createIdentityClient,
   ensureRegistered,
+  RegisterAgentConflict,
   type IdentityClient,
 } from '../pub/identity-client.js'
 import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
@@ -2397,7 +2398,21 @@ export class Supervisor {
       adminSecret: paths.adminSecret,
       signingKey: paths.signingKey,
     })
-    const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, pubName)
+    let updated
+    try {
+      updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, pubName)
+    } catch (err) {
+      if (err instanceof RegisterAgentConflict) {
+        // The pub display name is taken ... e.g. the operator's own identity
+        // shares this Agent's name (common on a host named after the Agent,
+        // like `skippy@valkyrie`). Retry with a disambiguated label so the
+        // Agent still gets enrolled rather than left out of the room.
+        const relabeled = { ...cred, display_name: `${pubBlock.display_name} (agent)` }
+        updated = await ensureRegistered(client, relabeled, pubSecrets.adminSecret, pubName)
+      } else {
+        throw err
+      }
+    }
     await writeCredentialFile(credPath, updated)
     const registeredId = updated.pub_agent_ids?.[pubName] ?? updated.agent_id ?? null
 
