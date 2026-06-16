@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2026.616.2222] ... 2026-06-16
+## [2026.616.2242] ... 2026-06-16
+
+### Fixed
+
+- **The Studio is auto-provisioned again, and creating a room no longer dead-ends on `agent_pub_unprovisioned`.** Two halves of one root cause: an Agent created fresh OR imported from OpenClaw before any pub existed was left with an empty `pub.identity` (provisioning only fills it by registering against a _running_ pub), and there was no pub to register against ... a chicken-and-egg. (1) **Room creation now enrolls its own members**: instead of rejecting members without `pub.identity`, it creates+starts the pub and then mints/registers each member against it, filling in `pub.identity` ... so adding any Agent (fresh or migrated) to a room/Studio just works. (2) **A default `studio` pub is auto-created on boot** with _every_ Agent enrolled (regardless of origin, including OpenClaw-migrated and Agents added after the Studio already existed), run before Agents are revived so they attach the Studio wake source on first start. Both paths share one idempotent `enrollAgentInPub`; the Studio bootstrap is fully best-effort and never blocks boot.
 
 ### Fixed
 

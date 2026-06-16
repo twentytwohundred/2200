@@ -3152,32 +3152,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       throw new ApiError(409, 'pub_exists', `pub "${body.name}" already exists`)
     }
 
-    // Validate every named agent exists AND has pub.identity set so
-    // its wake-source attach loop will actually fire.
+    // Validate every named agent exists. We no longer require a pre-existing
+    // `pub.identity` ... an Agent created fresh OR imported from OpenClaw before
+    // any pub existed has an empty pub.identity, and `enrollAgentInPub` (below)
+    // provisions it against this just-created pub. Requiring it up front was a
+    // chicken-and-egg: no identity without a pub, no pub without identity.
     const unknown: string[] = []
-    const unprovisioned: string[] = []
     for (const m of body.members) {
-      const rec = snap.agents[m]
-      if (!rec) {
-        unknown.push(m)
-        continue
-      }
-      try {
-        const id = await loadIdentity(rec.identity_path)
-        if (!id.frontmatter.pub?.identity) unprovisioned.push(m)
-      } catch {
-        unprovisioned.push(m)
-      }
+      if (!snap.agents[m]) unknown.push(m)
     }
     if (unknown.length > 0) {
       throw new ApiError(404, 'agent_not_found', `unknown Agent(s): ${unknown.join(', ')}`)
-    }
-    if (unprovisioned.length > 0) {
-      throw new ApiError(
-        409,
-        'agent_pub_unprovisioned',
-        `Agent(s) missing pub.identity in Identity (run identity provisioning first): ${unprovisioned.join(', ')}`,
-      )
     }
 
     // Create + start the pub.
@@ -3260,21 +3245,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       )
     }
     for (const m of body.members) {
-      const agentCredPath = agentPathsHelper(home, m).pubSecret
       try {
-        const cred = await readCredentialFile(agentCredPath)
-        const updated = await ensureRegistered(
-          newPubClient,
-          cred,
-          newPubSecrets.adminSecret,
-          body.name,
-        )
-        await writeCredentialFile(agentCredPath, updated)
+        // Enrolls the Agent into the running pub: mints a keypair if needed,
+        // registers, and fills in identity.md pub.identity on first
+        // registration (so a fresh- OR OpenClaw-imported Agent that never had
+        // a pub gets provisioned here, not rejected up front).
+        await supervisor.enrollAgentInPub(m, body.name)
       } catch (err) {
         throw new ApiError(
           500,
           'agent_pub_register_failed',
-          `pub started but ${m} registration failed: ${err instanceof Error ? err.message : String(err)}`,
+          `pub started but enrolling ${m} failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     }

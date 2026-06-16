@@ -611,6 +611,10 @@ export class Supervisor {
     // processes from leftover on-disk state. Production bootstrap
     // opts in (`recoverFromState: true`).
     if (options.recoverFromState === true) {
+      // Ensure the default "studio" pub exists with every Agent enrolled BEFORE
+      // reviving Agents, so they attach the studio wake source on their first
+      // start (no double-restart, no race). Best-effort: never throws.
+      await this.ensureStudioPub()
       void this.recoverFromState()
     }
     // Regenerate Fleet.md at boot so agents that come online during
@@ -2346,6 +2350,181 @@ export class Supervisor {
           error: err instanceof Error ? err.message : String(err),
         })
       }
+    }
+  }
+
+  /**
+   * Enroll an EXISTING Agent into an already-running pub: mint a keypair if it
+   * has none yet, register against the pub (idempotent ... `ensureRegistered`
+   * no-ops if already registered), fill in identity.md `pub.identity` on first
+   * registration, and upsert the routing roster.
+   *
+   * This is the on-demand provisioning path. An Agent created fresh OR imported
+   * from OpenClaw before any pub existed has a pub block with an empty
+   * `pub.identity` (provisioning at create time only fills it when a pub was
+   * already running). Room creation and the Studio bootstrap call this so those
+   * Agents ... whatever their origin ... get provisioned the moment a pub exists
+   * to register against. The pub must be running.
+   */
+  async enrollAgentInPub(agentName: string, pubName: string): Promise<void> {
+    const rec = this.state.agents[agentName]
+    if (!rec) throw new Error(`no Agent record for "${agentName}"`)
+    const pub = this.state.pubs[pubName]
+    if (!pub) throw new Error(`no pub record for "${pubName}"`)
+    if (pub.state !== 'running') {
+      throw new Error(`pub "${pubName}" is not running; start it before enrolling Agents`)
+    }
+    const loaded = await loadIdentity(rec.identity_path)
+    const pubBlock = loaded.frontmatter.pub
+    if (!pubBlock) return // No pub-identity surface in this Identity; nothing to enroll.
+
+    const credPath = agentPaths(this.state.home, agentName).pubSecret
+    let cred
+    try {
+      cred = await readCredentialFile(credPath)
+    } catch {
+      // Created/migrated before any pub existed and never minted a keypair.
+      cred = generateKeypair({
+        display_name: pubBlock.display_name,
+        issuer_url: `local://127.0.0.1:${String(pub.port)}`,
+      })
+      await writeCredentialFile(credPath, cred)
+    }
+
+    const client = createIdentityClient({ baseUrl: `http://127.0.0.1:${String(pub.port)}` })
+    const paths = pubPaths(this.state.home, pubName)
+    const pubSecrets = await readPubSecrets({
+      adminSecret: paths.adminSecret,
+      signingKey: paths.signingKey,
+    })
+    const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, pubName)
+    await writeCredentialFile(credPath, updated)
+    const registeredId = updated.pub_agent_ids?.[pubName] ?? updated.agent_id ?? null
+
+    // Fill in pub.identity the FIRST time an Agent is registered anywhere (was
+    // empty for an Agent created/migrated before a pub existed). Later pubs keep
+    // the canonical id; their per-pub ids live in the credential's pub_agent_ids.
+    if (registeredId && !pubBlock.identity) {
+      await writeIdentity(
+        rec.identity_path,
+        { ...loaded.frontmatter, pub: { ...pubBlock, identity: registeredId } },
+        loaded.body,
+      )
+    }
+    if (registeredId) {
+      try {
+        await upsertRosterEntry(this.state.home, pubName, {
+          agent_id: registeredId,
+          agent_name: agentName,
+          display_name: pubBlock.display_name,
+          role_blurb: loaded.frontmatter.agent_role,
+        })
+      } catch (err) {
+        this.log.warn('roster upsert failed during enroll; ambient routing degrades', {
+          agent: agentName,
+          pub: pubName,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+  }
+
+  /**
+   * Ensure a default "studio" pub exists with EVERY Agent enrolled ... the
+   * shared room "everyone is in." Run at boot BEFORE Agents are revived (so
+   * they attach the studio wake source on their first start, no extra restart).
+   *
+   * Idempotent + self-healing: creates the studio pub only if missing, and
+   * enrolls every Agent every boot (enrollAgentInPub + addPubToAgentFile both
+   * no-op when already done). It iterates EVERY Agent in state regardless of
+   * origin, so an Agent created fresh OR imported from OpenClaw ... including one
+   * added after the studio already existed ... gets enrolled. FULLY best-effort:
+   * any failure is logged and swallowed so it can never break boot.
+   */
+  private async ensureStudioPub(): Promise<void> {
+    const STUDIO = 'studio'
+    try {
+      const agentNames = Object.keys(this.state.agents)
+      if (agentNames.length === 0) return // nothing to put in a studio yet
+      // createPub derives the owner from the user identity; defer if it doesn't
+      // exist yet (fresh instance pre-user-init) ... a later boot will create it.
+      const user = await loadUserIdentityIfExists(homePaths(this.state.home).configUserMd)
+      if (!user) {
+        this.log.info('studio bootstrap deferred: no user identity yet')
+        return
+      }
+
+      let port = this.state.pubs[STUDIO]?.port
+      if (!this.state.pubs[STUDIO]) {
+        const created = await this.createPub(STUDIO, {
+          description: 'The shared studio ... every Agent on this instance is here.',
+        })
+        port = created.port
+      }
+      await this.startPub(STUDIO)
+      port ??= this.state.pubs[STUDIO]?.port
+      if (port === undefined) {
+        this.log.warn('studio bootstrap: no port for studio pub; skipping')
+        return
+      }
+
+      // Wait for the pub-server HTTP listener to bind before registering.
+      const baseUrl = `http://127.0.0.1:${String(port)}`
+      const deadline = Date.now() + 5_000
+      let ready = false
+      while (Date.now() < deadline) {
+        try {
+          await fetch(baseUrl, { method: 'GET' })
+          ready = true
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 200))
+        }
+      }
+      if (!ready) {
+        this.log.warn('studio bootstrap: pub listener never bound; skipping')
+        return
+      }
+
+      // Register the operator's user identity (the pub bridge needs it to
+      // mint a token to read room state). Best-effort + idempotent.
+      try {
+        const paths = pubPaths(this.state.home, STUDIO)
+        const pubSecrets = await readPubSecrets({
+          adminSecret: paths.adminSecret,
+          signingKey: paths.signingKey,
+        })
+        const client = createIdentityClient({ baseUrl })
+        const userCredPath = homePaths(this.state.home).configUserPubSecret
+        const userCred = await readCredentialFile(userCredPath)
+        const updated = await ensureRegistered(client, userCred, pubSecrets.adminSecret, STUDIO)
+        await writeCredentialFile(userCredPath, updated)
+      } catch (err) {
+        this.log.warn('studio bootstrap: user registration failed (continuing)', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      // Enroll every Agent + add the studio to its pubs.md (both idempotent).
+      const { addPubToAgentFile } = await import('../agent/pubs-file.js')
+      for (const name of agentNames) {
+        try {
+          await this.enrollAgentInPub(name, STUDIO)
+          await addPubToAgentFile(agentPaths(this.state.home, name).pubsFile, name, STUDIO, {
+            seedIfMissing: [],
+          })
+        } catch (err) {
+          this.log.warn('studio bootstrap: enrolling Agent failed (continuing)', {
+            agent: name,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      this.log.info('studio pub ensured', { members: agentNames.length })
+    } catch (err) {
+      this.log.warn('studio bootstrap failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
