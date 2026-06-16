@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2026.616.2141] ... 2026-06-16
+## [2026.616.2222] ... 2026-06-16
+
+### Fixed
+
+- **Onboarding no longer 500s when the model hiccups, and "Q7 of 6" is gone.** A fresh user on a local model got an internal server error partway through the build-an-Agent interview. Two bugs: (1) the interviewer + summary LLM calls re-threw any provider error (or an empty summary) straight into an unhandled 500 ... they now degrade gracefully (force the interview to a finish, synthesize a fallback summary from the operator's own answers) so you always reach a confirmable preview, never a dead end. This matters most for flaky/local models. (2) The question counter showed "Q7 of 6": the web added 1 to an already-1-based index, and the displayed total wasn't clamped to the (sometimes-exceeded) soft target. Both fixed ... it now reads correctly and never shows the index above the total.
 
 ### Fixed
 

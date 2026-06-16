@@ -392,7 +392,8 @@ export function OnboardingScreen(): ReactElement {
             <div className={styles.cardStack}>
               <div className={styles.questionMeta}>
                 <span>
-                  Q{String(phase.question.index + 1)}
+                  {/* index is already 1-based from the server (opening = 1). */}Q
+                  {String(phase.question.index)}
                   {phase.question.total !== null
                     ? ` of ${String(phase.question.total)}`
                     : ' (routing)'}
