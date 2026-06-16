@@ -30,6 +30,7 @@ import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
 import { writeFile as fsWriteFile } from 'node:fs/promises'
 import { timeNow, timeSleep } from '../../../src/runtime/tools/baseline/time.js'
 import { webSearch } from '../../../src/runtime/tools/baseline/web.js'
+import { telegramTools } from '../../../src/runtime/tools/baseline/telegram.js'
 import { baselineServers, BASELINE_TOOL_NAMES } from '../../../src/runtime/tools/baseline/index.js'
 import type { ToolContext } from '../../../src/runtime/mcp/tool.js'
 
@@ -54,7 +55,7 @@ afterEach(async () => {
 })
 
 describe('baseline tool registry', () => {
-  it('exports exactly 52 tools (43 prior + 9 embassy shelf tools)', () => {
+  it('exports exactly 53 tools (44 prior + 9 embassy shelf tools)', () => {
     // 2026-05-15 v1 scope: bumped to 37 with `credential_request`,
     // 38 with `credential_has`, 39 with `http_request`. 2026-05-16
     // bumped to 40 with `whatsapp_send` and 41 with `discord_send`
@@ -74,10 +75,12 @@ describe('baseline tool registry', () => {
     // are registered in the global baseline so the dispatcher can
     // resolve them, but the identity-level `tools:` allowlist
     // restricts actual call permission to embassy Agents.
-    expect(BASELINE_TOOL_NAMES).toHaveLength(52)
+    // 2026-06-16: bumped 52 -> 53 with `telegram_send` ... the outbound
+    // tool for the Telegram connector (mirrors discord_send/whatsapp_send).
+    expect(BASELINE_TOOL_NAMES).toHaveLength(53)
   })
 
-  it('baselineServers() builds eighteen servers (adds shelf)', () => {
+  it('baselineServers() builds nineteen servers (adds telegram)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -95,6 +98,7 @@ describe('baseline tool registry', () => {
       'shell',
       'system',
       'task',
+      'telegram',
       'time',
       'web',
       'whatsapp',
@@ -409,6 +413,51 @@ describe('web.search', () => {
       if (prevPath === undefined) delete process.env['TWENTYTWOHUNDRED_RUNTIME_ENV']
       else process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = prevPath
       await rm(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('telegram.send', () => {
+  const tool = telegramTools.find((t) => t.name === 'telegram_send')
+
+  it('fails fast with gateway_not_running when the Agent has no telegram gateway', async () => {
+    await expect(
+      tool!.execute({ to: '12345', body: 'hi' }, ctx({ home: dir, callingAgent: 'tg-a' })),
+    ).rejects.toThrow(/gateway_not_running/)
+  })
+
+  it('reads the per-Agent gateway.json and posts to its outbound listener', async () => {
+    const gwPath = join(dir, 'state', 'extensions', 'telegram', 'agents', 'tg-a', 'gateway.json')
+    await mkdir(join(gwPath, '..'), { recursive: true })
+    await writeFile(
+      gwPath,
+      JSON.stringify({ port: 54321, agent: 'tg-a', bot_user_id: '1', bot_username: 'tgbot' }),
+    )
+    const fetchMock = vi.fn((url: unknown, init: unknown): Promise<Response> => {
+      expect(String(url)).toBe('http://127.0.0.1:54321/outbound')
+      const body = JSON.parse((init as { body: string }).body) as { to: string; body: string }
+      expect(body).toEqual({ to: '-100999', body: 'hello group' })
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, message_id: '77' }),
+        text: () => Promise.resolve(''),
+      } as unknown as Response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const result = (await tool!.execute(
+        { to: '-100999', body: 'hello group' },
+        ctx({ home: dir, callingAgent: 'tg-a' }),
+      )) as { status: string; message_id: string | null; to: string; bot_username: string }
+      expect(result).toEqual({
+        status: 'sent',
+        message_id: '77',
+        to: '-100999',
+        bot_username: 'tgbot',
+      })
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 })
