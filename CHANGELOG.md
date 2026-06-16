@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.9] ... 2026-06-16
+
+### Added
+
+- **Web search is now a real, configurable feature: Brave + Google, bring-your-own-key.** Building on the Brave backend, `web_search` now also supports Google Programmable Search, with a provider resolver (pin one via `WEB_SEARCH_PROVIDER`, else Brave preferred then Google). A new **Settings → Web Search** panel lets you paste a Brave key or a Google key + engine id, see which provider is active, and prefer one when both are set — no runtime.env editing. And an OpenClaw migration now carries your search keys + provider choice over (mapping OpenClaw's `gemini`/`google` to Google), the same as it does LLM keys.
+
 ## [2026.615.2259] ... 2026-06-15
 
 ### Added
