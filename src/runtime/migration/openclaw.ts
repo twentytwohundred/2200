@@ -558,6 +558,17 @@ export interface OpenClawSecret extends OpenClawSecretRef {
   value: string
 }
 
+/**
+ * A pure `${ENV_VAR}` interpolation reference, not a literal secret. OpenClaw
+ * uses these in `models.providers.*.apiKey` to point at the `env` block (where
+ * the real value lives, and which we already capture). Vaulting the literal
+ * `${XAI_API_KEY}` string would be useless noise ... found in Skippy's real
+ * config on the 2026-06-16 dry run.
+ */
+function isInterpolationPlaceholder(value: string): boolean {
+  return /^\s*\$\{[^}]+\}\s*$/.test(value)
+}
+
 /** Slug a config dot-path into a vault credential name (`oc-` + lowercased path). */
 function ocSecretName(sourcePath: string): string {
   const slug = sourcePath
@@ -579,7 +590,7 @@ export function discoverOpenClawSecretPaths(config: Record<string, unknown>): Op
   const paths: string[] = []
   const visit = (node: unknown, path: string[]): void => {
     if (typeof node === 'string') {
-      if (node === '') return
+      if (node === '' || isInterpolationPlaceholder(node)) return
       const last = (path[path.length - 1] ?? '').toLowerCase()
       if (path[0] === 'env' || SECRET_KEY_NAMES.has(last)) paths.push(path.join('.'))
       return

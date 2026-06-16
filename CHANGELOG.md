@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1702] ... 2026-06-16
+
+### Fixed
+
+- **The OpenClaw credential sweep no longer vaults `${ENV_VAR}` interpolation references.** A dry run against a real OpenClaw config showed `models.providers.*.apiKey` hold `${XAI_API_KEY}`-style references (the actual value lives in the `env` block, already captured), not literal keys ... so the sweep was sealing useless placeholder strings. Pure `${...}` values are now skipped.
+
 ## [2026.616.1518] ... 2026-06-16
 
 ### Added
