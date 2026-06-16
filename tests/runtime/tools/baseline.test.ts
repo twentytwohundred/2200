@@ -31,6 +31,7 @@ import { writeFile as fsWriteFile } from 'node:fs/promises'
 import { timeNow, timeSleep } from '../../../src/runtime/tools/baseline/time.js'
 import { webSearch } from '../../../src/runtime/tools/baseline/web.js'
 import { telegramTools } from '../../../src/runtime/tools/baseline/telegram.js'
+import { slackTools } from '../../../src/runtime/tools/baseline/slack.js'
 import { baselineServers, BASELINE_TOOL_NAMES } from '../../../src/runtime/tools/baseline/index.js'
 import type { ToolContext } from '../../../src/runtime/mcp/tool.js'
 
@@ -75,12 +76,13 @@ describe('baseline tool registry', () => {
     // are registered in the global baseline so the dispatcher can
     // resolve them, but the identity-level `tools:` allowlist
     // restricts actual call permission to embassy Agents.
-    // 2026-06-16: bumped 52 -> 53 with `telegram_send` ... the outbound
-    // tool for the Telegram connector (mirrors discord_send/whatsapp_send).
-    expect(BASELINE_TOOL_NAMES).toHaveLength(53)
+    // 2026-06-16: bumped 52 -> 53 with `telegram_send`, then -> 54 with
+    // `slack_send` ... outbound tools for the Telegram + Slack connectors
+    // (mirror discord_send/whatsapp_send).
+    expect(BASELINE_TOOL_NAMES).toHaveLength(54)
   })
 
-  it('baselineServers() builds nineteen servers (adds telegram)', () => {
+  it('baselineServers() builds twenty servers (adds slack)', () => {
     const servers = baselineServers()
     expect(servers.map((s) => s.name).sort()).toEqual([
       'brain',
@@ -96,6 +98,7 @@ describe('baseline tool registry', () => {
       'schedule',
       'shelf',
       'shell',
+      'slack',
       'system',
       'task',
       'telegram',
@@ -455,6 +458,51 @@ describe('telegram.send', () => {
         message_id: '77',
         to: '-100999',
         bot_username: 'tgbot',
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('slack.send', () => {
+  const tool = slackTools.find((t) => t.name === 'slack_send')
+
+  it('fails fast with gateway_not_running when the Agent has no slack gateway', async () => {
+    await expect(
+      tool!.execute({ to: 'C0123', body: 'hi' }, ctx({ home: dir, callingAgent: 'sl-a' })),
+    ).rejects.toThrow(/gateway_not_running/)
+  })
+
+  it('reads the per-Agent gateway.json and posts to its outbound listener', async () => {
+    const gwPath = join(dir, 'state', 'extensions', 'slack', 'agents', 'sl-a', 'gateway.json')
+    await mkdir(join(gwPath, '..'), { recursive: true })
+    await writeFile(
+      gwPath,
+      JSON.stringify({ port: 55001, agent: 'sl-a', bot_user_id: 'U1', bot_username: 'slackbot' }),
+    )
+    const fetchMock = vi.fn((url: unknown, init: unknown): Promise<Response> => {
+      expect(String(url)).toBe('http://127.0.0.1:55001/outbound')
+      const body = JSON.parse((init as { body: string }).body) as { to: string; body: string }
+      expect(body).toEqual({ to: 'C0ABC', body: 'hello channel' })
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, message_id: '1718.0001' }),
+        text: () => Promise.resolve(''),
+      } as unknown as Response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const result = (await tool!.execute(
+        { to: 'C0ABC', body: 'hello channel' },
+        ctx({ home: dir, callingAgent: 'sl-a' }),
+      )) as { status: string; message_id: string | null; to: string; bot_username: string }
+      expect(result).toEqual({
+        status: 'sent',
+        message_id: '1718.0001',
+        to: 'C0ABC',
+        bot_username: 'slackbot',
       })
     } finally {
       vi.unstubAllGlobals()

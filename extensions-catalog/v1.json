@@ -57,6 +57,25 @@
         "type": "workspace",
         "path": "apps/telegram-connector"
       }
+    },
+    {
+      "id": "slack",
+      "label": "Slack",
+      "blurb": "Give each Agent its own Slack bot. Create a Slack app, enable Socket Mode, add an app token (xapp-) and bot token (xoxb-), subscribe to message events, and DM the Agent or @-mention it in a channel. No public URL needed.",
+      "icon": "/api/v1/extensions/slack/icon",
+      "category": "connector",
+      "auth_model": "bot_token",
+      "account_scope": "agent",
+      "permissions": ["network", "tools", "notifications", "fs.scratch"],
+      "tos_acknowledgment": "Slack apps are subject to the Slack API Terms of Service and the Slack Acceptable Use Policy. Each bot must comply with platform rules ... no spam, no harassment, no scraping. By installing this connector, you accept responsibility for your bots' behavior on Slack. 2200 is not a party to your relationship with Slack.",
+      "docs_url": "https://github.com/twentytwohundred/wiki/blob/main/design/connectors/slack.md",
+      "screenshots": [],
+      "current_version": "0.1.0",
+      "min_2200_version": "0.7.0",
+      "source": {
+        "type": "workspace",
+        "path": "apps/slack-connector"
+      }
     }
   ]
 }

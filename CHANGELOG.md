@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.616.1830] ... 2026-06-16
+
+### Added
+
+- **Slack connector ... brings Slack to Discord/Telegram parity.** Slack previously had only the `slack_api` tool (an Agent could send + poll), but no connector ... a human couldn't DM the Agent and have it wake. Now each Agent gets its own Slack bot over **Socket Mode** (a WebSocket; no public URL, like Telegram's long-poll). DM the Agent or @-mention it in a channel and it wakes and replies with its own identity. The gateway is dependency-free (raw Web API + the Node global `WebSocket`), so it bundles into the npm package. Setup needs two tokens ... an app-level token (`xapp-…`) for the socket and a bot token (`xoxb-…`) for sending ... both sealed to the Agent's vault. DMs open by default, channels require an @mention. Adds the `slack_send` baseline tool (distinct from the `slack_api` passthrough).
+
 ## [2026.616.1748] ... 2026-06-16
 
 ### Added
