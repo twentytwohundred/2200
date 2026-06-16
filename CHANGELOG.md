@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2026.616.1918] ... 2026-06-16
+## [2026.616.2141] ... 2026-06-16
+
+### Fixed
+
+- **The installer now tells you how to upgrade Node instead of dead-ending.** When `install.sh` finds Node older than 22, it used to just say "upgrade Node, then re-run" with no how. Now it detects the machine's actual Node manager and prints the exact command: `nvm`/`fnm`/`asdf` if present, else Homebrew (macOS) or the NodeSource one-liner for apt/dnf (Linux), else an nvm-bootstrap + nodejs.org fallback. POSIX `sh`, verified against `dash`.
+
+### Changed
+
+- Dependency bumps merged from Dependabot: commander 14 → 15, react-easy-crop 5 → 6, plus a grouped batch of 10 minor/patch updates. `verify:all` green across the combination (this release brings the published package back in line with `main`).
 
 ### Added
 
