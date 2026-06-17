@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.121] ... 2026-06-17
+
+### Fixed
+
+- **`2200 update` now reliably brings the daemon back up ... it no longer leaves you with a stopped daemon and a non-responsive web.** `2200 update` stops the daemon, runs `npm install -g`, then restarts it. The restart was calling `startDaemon()` _in-process_, but `npm install -g` has just overwritten that very process's files underneath it ... the classic self-upgrade hazard, where the half-replaced parent can die before the restart lands, leaving the daemon down with no signal. The restart now runs from the freshly-installed binary in a clean child process (`2200 daemon start`), waits for the supervisor lock to confirm it's actually up, and ... if it still doesn't come up ... prints a loud, unmistakable `Run: 2200 daemon start` instead of failing silently. (The installer path was never affected: it runs the install and `2200 setup` as separate processes.)
+
 ## [2026.617.54] ... 2026-06-17
 
 ### Fixed

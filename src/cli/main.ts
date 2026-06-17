@@ -266,6 +266,7 @@ export function buildProgram(): Command {
         detectInstallSource,
         currentModulePath,
         runNpmGlobalInstall,
+        restartDaemonFresh,
       } = await import('../runtime/install/update.js')
 
       const source = detectInstallSource(currentModulePath(import.meta))
@@ -355,8 +356,20 @@ export function buildProgram(): Command {
       }
 
       if (stoppedDaemon) {
-        const pid = await startDaemon({ home })
-        console.log(`Restarted supervisor daemon (pid ${String(pid)}).`)
+        // Restart from the freshly-installed binary in a clean child process.
+        // `npm install -g` just overwrote this process's own files, so calling
+        // startDaemon() in-process is the self-upgrade hazard ... a
+        // half-replaced parent can die before the restart lands, leaving the
+        // daemon down + the web non-responsive with no signal. The child waits
+        // for the supervisor lock and exits non-zero if it doesn't come up.
+        const code = await restartDaemonFresh({ mainPath: currentModulePath(import.meta), home })
+        if (code !== 0) {
+          console.error('')
+          console.error('⚠ The new version installed, but the supervisor daemon did not restart.')
+          console.error('  Bring it back up with:  2200 daemon start')
+          process.exit(1)
+        }
+        console.log('Restarted supervisor daemon.')
       }
       console.log(`Upgraded to ${PACKAGE_NAME}@${check.latest}.`)
     })

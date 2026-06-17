@@ -147,6 +147,39 @@ export async function runNpmGlobalInstall(opts: {
 }
 
 /**
+ * Restart the daemon by invoking the freshly-installed CLI as a clean child
+ * process (`<node> <mainPath> --home <home> daemon start`).
+ *
+ * Why not call startDaemon() in-process: `npm install -g` above just
+ * overwrote THIS process's own files underneath it. Continuing to run the
+ * old, half-replaced code to orchestrate the restart is the classic
+ * self-upgrade hazard ... the parent can die before the restart lands,
+ * leaving the daemon down and the web non-responsive with no signal. A fresh
+ * child loads the NEW code from scratch and is immune to that.
+ *
+ * Awaits the child so its exit code is a real "daemon is up" (0) / "did not
+ * come up" (non-zero) signal: the child's own startDaemon waits for the
+ * supervisor lock before exiting. stdio is inherited so the operator sees
+ * the start output (or the failure) in their terminal.
+ */
+export async function restartDaemonFresh(opts: {
+  mainPath: string
+  home: string
+  nodePath?: string
+}): Promise<number> {
+  const node = opts.nodePath ?? process.execPath
+  return new Promise<number>((resolve, reject) => {
+    const child = spawn(node, [opts.mainPath, '--home', opts.home, 'daemon', 'start'], {
+      stdio: 'inherit',
+    })
+    child.on('error', reject)
+    child.on('exit', (code) => {
+      resolve(code ?? 1)
+    })
+  })
+}
+
+/**
  * Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b.
  *
  * Handles the subset of semver we care about: `MAJOR.MINOR.PATCH` with
