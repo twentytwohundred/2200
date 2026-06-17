@@ -254,11 +254,15 @@ function ensurePubServerPatched(log: Logger): void {
   }
   if (current.includes(PUB_SERVER_PATCH_MARKER)) return // already patched (dev pnpm, or a prior overlay)
 
-  const shipped = [
-    resolve(here, '..', 'vendor', 'openpub-pub-server', 'server.js'), // from dist/cli/main.js
-    resolve(here, '..', '..', '..', 'vendor', 'openpub-pub-server', 'server.js'), // from dist/runtime/supervisor/*
-    resolve(here, 'vendor', 'openpub-pub-server', 'server.js'),
-  ].find((p) => existsSync(p))
+  // The shipped patch lives at <dist>/vendor/openpub-pub-server/server.js. The
+  // bundled entry that contains this code varies (dist/cli/main.js -> up 1;
+  // dist/runtime/supervisor/bootstrap.js -> up 2), so probe each depth and take
+  // the first that exists rather than hardcoding one entry's layout.
+  const shipped = [0, 1, 2, 3]
+    .map((up) =>
+      resolve(here, ...Array<string>(up).fill('..'), 'vendor', 'openpub-pub-server', 'server.js'),
+    )
+    .find((p) => existsSync(p))
   if (!shipped) {
     log.warn(
       'pub-server is unpatched and no shipped patch found; Agents may be dropped from rooms',

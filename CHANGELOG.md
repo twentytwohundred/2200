@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.342] ... 2026-06-17
+
+### Fixed
+
+- **The pub-server patch overlay now actually finds its shipped copy.** 2026.617.327 shipped the patched `server.js` and the overlay logic, but the path it probed for the shipped file (`dist/vendor/...`) was wrong for the daemon's bundled entry (`dist/runtime/supervisor/bootstrap.js`), so the overlay logged "no shipped patch found" and the pub-server stayed unpatched (agents still dropped at ~60s). Probe each entry depth and take the first that exists. (The Bartender-off half of 327 was already working.)
+
 ## [2026.617.327] ... 2026-06-17
 
 ### Fixed
