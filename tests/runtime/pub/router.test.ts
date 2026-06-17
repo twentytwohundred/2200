@@ -47,12 +47,38 @@ function failingProvider(): LLMProvider {
   }
 }
 
+/** Fails the first `failures` calls with `code`, then returns `successText`. */
+function flakyProvider(failures: number, code: 'AUTH_FAILED', successText: string): LLMProvider {
+  let calls = 0
+  return {
+    name: 'fake',
+    baseUrl: 'fake://',
+    complete(): Promise<CompletionResponse> {
+      calls += 1
+      if (calls <= failures) {
+        return Promise.reject(new LlmError(code, 'simulated transient', 'fake', 'm'))
+      }
+      return Promise.resolve({
+        text: successText,
+        finishReason: 'stop',
+        costMetrics: { inputTokens: 1, outputTokens: 1 },
+        providerResponseId: 'flaky',
+      })
+    },
+  }
+}
+
+// Keep router tests fast + deterministic: no real stagger/backoff sleeps and a
+// zero stagger jitter.
+const noSleep = (): Promise<void> => Promise.resolve()
+const noJitter = (): number => 0
+
 describe('Router.route', () => {
   it('parses a clean JSON decision and returns the named agent_ids', async () => {
     const provider = fakeProvider(
       '{"woken_agent_ids": ["a-hobby"], "rationale": "addressed by name"}',
     )
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm1',
       sender_display_name: 'Doug',
@@ -68,7 +94,7 @@ describe('Router.route', () => {
     const provider = fakeProvider(
       '{"woken_agent_ids": ["a-hobby", "a-simon"], "rationale": "needs both lanes"}',
     )
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm2',
       sender_display_name: 'Doug',
@@ -80,7 +106,7 @@ describe('Router.route', () => {
 
   it('returns empty when the model picks no one', async () => {
     const provider = fakeProvider('{"woken_agent_ids": [], "rationale": "off-topic chatter"}')
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm3',
       sender_display_name: 'Doug',
@@ -100,7 +126,7 @@ describe('Router.route', () => {
         return Promise.reject(new Error('should not be called'))
       },
     }
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm4',
       sender_display_name: 'Doug',
@@ -115,7 +141,7 @@ describe('Router.route', () => {
     const provider = fakeProvider(
       'Sure! Here is the decision:\n\n```json\n{"woken_agent_ids": ["a-simon"]}\n```\n',
     )
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm5',
       sender_display_name: 'Doug',
@@ -127,7 +153,7 @@ describe('Router.route', () => {
 
   it('drops agent_ids the model invents that are not in the roster', async () => {
     const provider = fakeProvider('{"woken_agent_ids": ["a-hobby", "a-not-in-roster"]}')
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm6',
       sender_display_name: 'Doug',
@@ -139,7 +165,7 @@ describe('Router.route', () => {
 
   it('returns an empty decision (not throw) when the model returns malformed output', async () => {
     const provider = fakeProvider('not json at all')
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const decision = await router.route({
       message_id: 'm7',
       sender_display_name: 'Doug',
@@ -150,7 +176,12 @@ describe('Router.route', () => {
   })
 
   it('returns an empty decision when the LLM call throws', async () => {
-    const router = new Router({ provider: failingProvider(), modelId: 'fast' })
+    const router = new Router({
+      provider: failingProvider(),
+      modelId: 'fast',
+      sleep: noSleep,
+      random: noJitter,
+    })
     const decision = await router.route({
       message_id: 'm8',
       sender_display_name: 'Doug',
@@ -158,6 +189,47 @@ describe('Router.route', () => {
       agents: [HOBBY, SIMON],
     })
     expect(decision.woken_agent_ids).toEqual([])
+  })
+
+  // The decisive ambient fix: a transient 403 (every Agent routing the same
+  // message concurrently hits the subscription's limit) must be RETRIED, not
+  // treated as "nobody responds".
+  it('retries a transient AUTH_FAILED and returns the recovered decision', async () => {
+    const router = new Router({
+      provider: flakyProvider(1, 'AUTH_FAILED', '{"woken_agent_ids": ["a-hobby"]}'),
+      modelId: 'fast',
+      sleep: noSleep,
+      random: noJitter,
+    })
+    const decision = await router.route({
+      message_id: 'm-retry',
+      sender_display_name: 'Doug',
+      content: 'anyone around to weigh in?',
+      agents: [HOBBY, SIMON],
+    })
+    expect(decision.woken_agent_ids).toEqual(['a-hobby'])
+  })
+
+  it('does not cache a transient failure ... a later route can still succeed', async () => {
+    // Fails the first 3 attempts (one full route's worth), so the first route
+    // gives up; the 4th call (the second route) succeeds. Proves the failure
+    // was not cached against the message_id.
+    const router = new Router({
+      provider: flakyProvider(3, 'AUTH_FAILED', '{"woken_agent_ids": ["a-simon"]}'),
+      modelId: 'fast',
+      sleep: noSleep,
+      random: noJitter,
+    })
+    const input = {
+      message_id: 'm-nocache',
+      sender_display_name: 'Doug',
+      content: 'status?',
+      agents: [HOBBY, SIMON],
+    }
+    const first = await router.route(input)
+    expect(first.woken_agent_ids).toEqual([])
+    const second = await router.route(input)
+    expect(second.woken_agent_ids).toEqual(['a-simon'])
   })
 
   it('forwards perspective_agent_id into the user prompt as "routing on behalf of"', async () => {
@@ -175,7 +247,7 @@ describe('Router.route', () => {
         })
       },
     }
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     await router.route({
       message_id: 'm-perspective',
       sender_display_name: 'Doug',
@@ -202,7 +274,7 @@ describe('Router.route', () => {
         })
       },
     }
-    const router = new Router({ provider, modelId: 'fast' })
+    const router = new Router({ provider, modelId: 'fast', sleep: noSleep, random: noJitter })
     const a = await router.route({
       message_id: 'm-cache',
       sender_display_name: 'Doug',

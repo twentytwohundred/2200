@@ -164,7 +164,44 @@ describe('Rule 1: @team broadcast (wakes every Agent)', () => {
     })
     expect(result.matched).toBe(true)
     expect(result.rule).toBe('direct_mention')
-    expect(result.detail).toBe('@team broadcast')
+    expect(result.detail).toBe('@all broadcast')
+  })
+
+  it('matches @all and @everyone (broadcast aliases) for any Agent', () => {
+    for (const content of ['@all who is around?', 'heads up @everyone, deploy in 5']) {
+      const result = isDirectedTo({
+        message: {
+          message_id: 'm',
+          agent_id: OTHER_AGENT_ID,
+          content,
+          mentions: [],
+          reply_to: null,
+        },
+        agent: SELF,
+        pub: EMPTY_PUB,
+        sentMessageIds: NO_SENT,
+      })
+      expect(result.matched).toBe(true)
+      expect(result.detail).toBe('@all broadcast')
+    }
+  })
+
+  it('does NOT match @allow / @everyone-else (word-boundary guard)', () => {
+    for (const content of ['the @allow list is set', 'tell @everyone-else to wait']) {
+      const result = isDirectedTo({
+        message: {
+          message_id: 'm',
+          agent_id: OTHER_AGENT_ID,
+          content,
+          mentions: [],
+          reply_to: null,
+        },
+        agent: SELF,
+        pub: EMPTY_PUB,
+        sentMessageIds: NO_SENT,
+      })
+      expect(result.matched).toBe(false)
+    }
   })
 
   it('matches case-insensitively (@Team, @TEAM)', () => {
@@ -182,7 +219,7 @@ describe('Rule 1: @team broadcast (wakes every Agent)', () => {
         sentMessageIds: NO_SENT,
       })
       expect(result.matched).toBe(true)
-      expect(result.detail).toBe('@team broadcast')
+      expect(result.detail).toBe('@all broadcast')
     }
   })
 
@@ -267,7 +304,7 @@ describe('Rule 1: @team broadcast (wakes every Agent)', () => {
     })
     expect(result.matched).toBe(true)
     expect(result.rule).toBe('direct_mention')
-    expect(result.detail).toBe('@team broadcast')
+    expect(result.detail).toBe('@all broadcast')
   })
 
   it('falls through to @<handle> check when @team is absent', () => {

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.1222] ... 2026-06-17
+
+### Fixed
+
+- **Ambient responses work again ... post an untagged question and someone answers.** Every Agent in a room runs its own router LLM call to decide "should I chime in," so one untagged message fired N simultaneous grok calls and the SuperGrok subscription's concurrency limit 403'd them (`auth failed`) ... which the router treated as "nobody responds" (and cached that no-op). The router now staggers each Agent's call with jitter, retries transient failures (the 403, rate limits, 5xx, network) with backoff, and never caches a transient failure (so the missed-mention sweep can still re-route). So a rate-limited router recovers instead of giving you blank stares.
+
+### Added
+
+- **`` (and ``) reach everyone in the room.** Extends the existing `` broadcast: any message containing ``/``/`` wakes every Agent present, deterministically (no router involved), so it always lands. Word-boundary guarded (``, `-else` don't trigger).
+
 ## [2026.617.342] ... 2026-06-17
 
 ### Fixed

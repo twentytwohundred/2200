@@ -86,7 +86,30 @@ export interface RouterOptions {
   logger?: Logger
   /** Inject for tests; defaults to Date.now. */
   now?: () => number
+  /** Inject for tests; defaults to a real timer. Used for stagger + retry backoff. */
+  sleep?: (ms: number) => Promise<void>
+  /**
+   * Inject for tests; defaults to Math.random. Drives stagger + backoff jitter
+   * so N agents routing the same message don't hit the provider in lockstep.
+   */
+  random?: () => number
+  /** Max router LLM attempts before giving up. Defaults to 3. */
+  maxAttempts?: number
 }
+
+/**
+ * Provider error codes worth retrying. The decisive one is AUTH_FAILED: the
+ * xAI subscription returns 403 (mapped here) when too many requests land at
+ * once, which is exactly what happens when every Agent in a room routes the
+ * same message concurrently. The others are ordinary transient faults.
+ */
+const TRANSIENT_ROUTER_CODES = new Set([
+  'AUTH_FAILED',
+  'RATE_LIMITED',
+  'PROVIDER_ERROR',
+  'NETWORK_ERROR',
+  'INVALID_RESPONSE',
+])
 
 const DEFAULT_CACHE_SIZE = 256
 
@@ -166,12 +189,18 @@ export class Router {
   private readonly log: Logger
   private readonly cache: RouterCache
   private readonly nowFn: () => number
+  private readonly sleepFn: (ms: number) => Promise<void>
+  private readonly randomFn: () => number
+  private readonly maxAttempts: number
 
   constructor(opts: RouterOptions) {
     this.opts = opts
     this.log = opts.logger ?? createLogger('pub/router')
     this.cache = opts.cache ?? new RouterCache()
     this.nowFn = opts.now ?? Date.now
+    this.sleepFn = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
+    this.randomFn = opts.random ?? Math.random
+    this.maxAttempts = opts.maxAttempts ?? 3
   }
 
   /**
@@ -195,34 +224,57 @@ export class Router {
 
     const userPrompt = this.composeUserPrompt(input)
     const tStart = this.nowFn()
-    let text: string
-    try {
-      const response = await this.opts.provider.complete({
-        modelId: this.opts.modelId,
-        systemPrompt: ROUTER_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }],
-      })
-      text = response.text
-    } catch (err) {
-      this.log.warn('router LLM call failed; defaulting to no-op decision', {
-        message_id: input.message_id,
-        error: err instanceof Error ? err.message : String(err),
-        ...(err instanceof LlmError ? { code: err.code, provider: err.providerName } : {}),
-      })
-      const fail: RouterDecision = { woken_agent_ids: [], cached: false }
-      this.cache.set(input.message_id, fail)
-      return fail
-    }
 
-    const decision = this.parseDecision(text, input)
-    this.log.info('router decision', {
-      message_id: input.message_id,
-      woken: decision.woken_agent_ids.length,
-      duration_ms: this.nowFn() - tStart,
-      ...(decision.rationale ? { rationale: decision.rationale } : {}),
-    })
-    this.cache.set(input.message_id, decision)
-    return decision
+    // Stagger: every Agent in the room routes the same message independently,
+    // so without a spread they hit the provider at the same instant and the
+    // subscription's concurrency limit 403s them all (which the router used to
+    // treat as "nobody responds"). A short jittered delay de-syncs them.
+    await this.sleepFn(Math.floor(this.randomFn() * 500))
+
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      let text: string
+      try {
+        const response = await this.opts.provider.complete({
+          modelId: this.opts.modelId,
+          systemPrompt: ROUTER_SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: userPrompt }],
+        })
+        text = response.text
+      } catch (err) {
+        const transient = err instanceof LlmError && TRANSIENT_ROUTER_CODES.has(err.code)
+        if (transient && attempt < this.maxAttempts) {
+          this.log.warn('router LLM call failed; retrying', {
+            message_id: input.message_id,
+            attempt,
+            ...(err instanceof LlmError ? { code: err.code } : {}),
+          })
+          // Backoff with jitter so the retries also stay de-synced.
+          await this.sleepFn(200 * 2 ** (attempt - 1) + Math.floor(this.randomFn() * 250))
+          continue
+        }
+        this.log.warn('router LLM call failed; defaulting to no-op decision', {
+          message_id: input.message_id,
+          attempts: attempt,
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof LlmError ? { code: err.code, provider: err.providerName } : {}),
+        })
+        // Do NOT cache a transient failure ... the missed-mention sweep can
+        // re-route the message later instead of being stuck on a stale no-op.
+        return { woken_agent_ids: [], cached: false }
+      }
+
+      const decision = this.parseDecision(text, input)
+      this.log.info('router decision', {
+        message_id: input.message_id,
+        woken: decision.woken_agent_ids.length,
+        attempts: attempt,
+        duration_ms: this.nowFn() - tStart,
+        ...(decision.rationale ? { rationale: decision.rationale } : {}),
+      })
+      this.cache.set(input.message_id, decision)
+      return decision
+    }
+    return { woken_agent_ids: [], cached: false }
   }
 
   private composeUserPrompt(input: RouterInput): string {
