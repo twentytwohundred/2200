@@ -44,6 +44,12 @@ export interface TokenRefreshOptions {
   /** Inject fetch for tests. */
   fetchImpl?: typeof fetch
   logger?: Logger
+  /**
+   * Called after the fleet-scoped subscription token (xai-oauth) is
+   * successfully refreshed. The supervisor uses this to restart running pubs
+   * so the long-running pub-server picks up the fresh bearer.
+   */
+  onFleetTokenRefreshed?: () => void | Promise<void>
 }
 
 export interface TokenRefreshTickStats {
@@ -68,9 +74,11 @@ export class TokenRefreshService {
   private readonly cooldowns = new Map<string, number>()
   private timer: NodeJS.Timeout | null = null
   private running = false
+  private readonly onFleetTokenRefreshed: (() => void | Promise<void>) | undefined
 
   constructor(opts: TokenRefreshOptions) {
     this.home = opts.home
+    this.onFleetTokenRefreshed = opts.onFleetTokenRefreshed
     this.intervalMs = opts.intervalMs ?? 60_000
     this.refreshWindowMs = opts.refreshWindowMs ?? 5 * 60_000
     this.failureCooldownMs = opts.failureCooldownMs ?? 60_000
@@ -245,6 +253,18 @@ export class TokenRefreshService {
           tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600_000,
         ).toISOString(),
       })
+      // Long-running consumers of the fleet bearer (the pub-server) hold the
+      // value they got at spawn; signal so the supervisor restarts them onto
+      // the fresh token. Best-effort: a failure here must not fail the refresh.
+      if (this.onFleetTokenRefreshed) {
+        try {
+          await this.onFleetTokenRefreshed()
+        } catch (cbErr) {
+          this.log.warn('onFleetTokenRefreshed callback failed', {
+            error: cbErr instanceof Error ? cbErr.message : String(cbErr),
+          })
+        }
+      }
     } catch (err) {
       stats.failed++
       this.cooldowns.set(cdKey, this.nowFn().getTime() + this.failureCooldownMs)

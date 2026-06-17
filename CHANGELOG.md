@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.256] ... 2026-06-17
+
+### Fixed
+
+- **Agents stay in the Studio and respond ... the pub-server now runs on the fleet subscription.** The OpenPub pub-server has its own LLM for the Bartender persona + conversation-memory fragments, configured via `LLM_PROVIDER`/`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` env. 2200 was setting **none** of them, so those calls 401'd ... and the failed memory-fragment broadcasts destabilized agents' WebSocket connections, kicking skippy/jodin out of the room ~60s after they joined (so they never saw a message to answer). 2200 now resolves the operator's active subscription and injects those vars, so the pub-server's calls succeed and the agents stay put. The agents themselves were already correctly on the subscription; this fixes the pub-server that was knocking them offline. New `src/runtime/config/fleet-defaults.ts` is the single source of truth (credential from the sealed OAuth token store, base URL from the provider registry, model id from the catalog ... no model literal at the call site). When no subscription is signed in, the LLM vars are omitted and the pub-server's patched guards turn the bartender + fragments into clean no-ops.
+- **The pub-server's subscription credential is kept fresh.** The OAuth bearer is short-lived (~6h) and a long-running pub-server holds the value it got at spawn. When the background refresh rotates the fleet token, the supervisor now restarts running pubs so they pick up the new bearer instead of 401-ing again hours later.
+
+### Added
+
+- **`grok-4.3` is in the model catalog** (xAI frontier), so the fleet-default resolver reads it from the one allowed model registry rather than any call site inlining a model string. (First step of the broader "no hardcoded model anywhere" sweep; migration/onboarding/audit defaults follow in a separate change.)
+
 ## [2026.617.121] ... 2026-06-17
 
 ### Fixed

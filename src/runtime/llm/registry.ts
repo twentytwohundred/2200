@@ -61,7 +61,7 @@ interface OpenAICompatibleConfig {
  * OpenAI-compatible providers. Adding a new vendor is one entry here
  * plus one entry in `defaultSecretFor`.
  */
-const OPENAI_COMPATIBLE_VENDORS: Record<string, OpenAICompatibleConfig> = {
+export const OPENAI_COMPATIBLE_VENDORS: Record<string, OpenAICompatibleConfig> = {
   openai: { baseUrl: 'https://api.openai.com' },
   deepseek: { baseUrl: 'https://api.deepseek.com' },
   kimi: { baseUrl: 'https://api.moonshot.ai' },

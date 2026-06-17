@@ -146,6 +146,21 @@ export const CATALOG: readonly CatalogEntry[] = [
     display_name: 'OpenRouter Auto',
     notes: 'Aggregator default. Pricing varies; useful for fallback policies.',
   },
+
+  // xAI (Grok). Reachable two ways with the SAME model id: `xai-subscription`
+  // (SuperGrok OAuth bearer ... the fleet-default credential) or `xai`
+  // (XAI_API_KEY, metered). The catalog is the single registry of known model
+  // ids; the fleet-default resolver reads grok from here rather than inlining
+  // a literal at any call site.
+  {
+    id: 'xai/grok-4.3',
+    provider: 'xai',
+    model_id: 'grok-4.3',
+    tier: 'frontier',
+    status: 'active',
+    display_name: 'Grok 4.3',
+    notes: 'xAI frontier. Fleet default when a SuperGrok subscription is signed in.',
+  },
 ]
 
 /**
