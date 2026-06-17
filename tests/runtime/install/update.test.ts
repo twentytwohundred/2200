@@ -5,11 +5,15 @@
  * they test directly. The registry fetcher is tested through a stubbed
  * `fetch` implementation so the suite is deterministic and offline-safe.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   checkLatestVersion,
   compareSemver,
   detectInstallSource,
+  restartDaemonFresh,
 } from '../../../src/runtime/install/update.js'
 
 describe('compareSemver', () => {
@@ -173,5 +177,37 @@ describe('detectInstallSource', () => {
       kind: 'npm-global',
       path: 'C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\@twentytwohundred\\2200\\dist\\index.js',
     })
+  })
+})
+
+describe('restartDaemonFresh', () => {
+  let tmp: string
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), '2200-restart-fresh-'))
+  })
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  // The restart runs the FRESHLY-INSTALLED binary in a clean child (immune to
+  // the mid-overwrite parent) and surfaces its exit code as the "daemon is up"
+  // signal. Stub the entry with a script that echoes the chosen exit code so
+  // we exercise the spawn + exit-code plumbing without a real daemon.
+  async function stubMain(exitCode: number): Promise<string> {
+    const path = join(tmp, 'stub-main.cjs')
+    await writeFile(path, `process.exit(${String(exitCode)})\n`, 'utf8')
+    return path
+  }
+
+  it('returns 0 when the fresh daemon-start child exits cleanly', async () => {
+    const mainPath = await stubMain(0)
+    const code = await restartDaemonFresh({ mainPath, home: tmp, nodePath: process.execPath })
+    expect(code).toBe(0)
+  })
+
+  it('surfaces a non-zero exit so the caller can warn + tell the operator to restart', async () => {
+    const mainPath = await stubMain(7)
+    const code = await restartDaemonFresh({ mainPath, home: tmp, nodePath: process.execPath })
+    expect(code).toBe(7)
   })
 })
