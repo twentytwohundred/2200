@@ -37,6 +37,7 @@ import {
 import { createIdentityClient, ensureRegistered } from '../pub/identity-client.js'
 import { loadUserIdentityIfExists } from '../user/loader.js'
 import { buildPubMembers } from '../pub/member-view.js'
+import { mergeAndPersistMessages } from '../pub/message-store.js'
 import { agentIdForPub, readCredentialFile, writeCredentialFile } from '../pub/keypair.js'
 import { readPubSecrets } from '../pub/secrets.js'
 
@@ -3692,11 +3693,29 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     if (!pub) throw notFound('pub', req.params.name)
     const q = PubMessagesQuery.parse(req.query)
     try {
-      const items =
+      const live =
         (await pubBridge.getMessages(req.params.name, {
           ...(q.limit !== undefined ? { limit: q.limit } : {}),
           since: q.since ?? null,
         })) ?? []
+      // Persist + merge with the durable per-pub log so the Studio shows
+      // history on entry (the pub-server's window is in-memory + lost on
+      // restart; OpenPub delegates persistence to the on-box host). Best-effort:
+      // a store failure falls back to the live window rather than erroring.
+      let items = live
+      try {
+        items = (await mergeAndPersistMessages(
+          home,
+          req.params.name,
+          live as unknown as Parameters<typeof mergeAndPersistMessages>[2],
+          q.limit ?? 100,
+        )) as unknown as typeof live
+      } catch (storeErr) {
+        log?.warn('message persistence failed; serving live window only', {
+          pub: req.params.name,
+          error: storeErr instanceof Error ? storeErr.message : String(storeErr),
+        })
+      }
       const reactions = await pubBridge.getReactions(req.params.name)
       return {
         items: items.map((m) => ({
