@@ -123,15 +123,14 @@ function ruleDirectMention(m: ResolverMessage, a: ResolverAgentIdentity): Direct
   if (m.mentions?.includes(a.agent_id)) {
     return { matched: true, rule: 'direct_mention', detail: 'mentions[] contains agent_id' }
   }
-  // @team broadcast: any message containing @team wakes every Agent in
-  // the pub. This is the explicit "call to action for everyone" signal
-  // ... morning status briefings, new-Agent intros, fleet-wide questions.
-  // Case-insensitive; word-boundary guards so @teammate and @teams do
-  // not trigger. Sender's own message is already filtered at the top of
-  // isDirectedTo, so a sender saying @team in their own message does not
-  // wake themselves.
-  if (m.content && /(?:^|[^\w-])@team(?:[^\w-]|$)/i.test(m.content)) {
-    return { matched: true, rule: 'direct_mention', detail: '@team broadcast' }
+  // Broadcast: a message containing @all (or @everyone / @team) wakes EVERY
+  // Agent in the pub ... the explicit "call to action for everyone" signal:
+  // fleet-wide questions, morning briefings, new-Agent intros. Case-
+  // insensitive; word-boundary guards so @allow / @teammate / @everyone-else
+  // do not trigger. The sender's own message is already filtered at the top of
+  // isDirectedTo, so saying @all in your own message does not wake yourself.
+  if (m.content && /(?:^|[^\w-])@(?:all|everyone|team)(?:[^\w-]|$)/i.test(m.content)) {
+    return { matched: true, rule: 'direct_mention', detail: '@all broadcast' }
   }
   // Fallback: @<handle> in content (v0.3.0; also a safety net for v0.3.1
   // edge cases where the in-band parse missed the agent).
