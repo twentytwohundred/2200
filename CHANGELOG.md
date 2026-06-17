@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.327] ... 2026-06-17
+
+### Fixed
+
+- **Agents stay in the Studio and answer ... the pub-server patch now reaches every install, and the Bartender is gone.** Two halves of the same root cause. (1) **The keepalive fix now ships.** OpenPub's agent-connection handler never resets a socket's liveness on `pong`, so its ping cycle terminates each Agent ~60s after it joins ... dropping skippy/jodin from the room before they could answer. 2200 patches this, but the patch was applied only via pnpm `patchedDependencies`, which `npm install` ignores ... so every real install ran the unpatched, agent-killing pub-server. The patched `server.js` is now shipped in `dist` and overlaid onto the installed pub-server at launch (idempotently; a no-op in the dev repo where pnpm already patched it). (2) **The Bartender stays off.** The same patch makes OpenPub's Bartender persona + memory-fragment generation clean no-ops when no `LLM_API_KEY` is set ... and 2200 deliberately never gives the pub-server an LLM credential. The Studio is the operator and their Agents, nobody else. (This reverts the 2026.617.256 attempt to run the Bartender on the subscription ... that was the wrong direction; the Bartender shouldn't be in the Studio at all.)
+
 ## [2026.617.256] ... 2026-06-17
 
 ### Fixed

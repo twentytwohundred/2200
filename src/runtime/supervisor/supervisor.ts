@@ -33,7 +33,6 @@ import {
 } from './lifecycle.js'
 import { isLockHeld } from './process-lock.js'
 import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
-import { resolveFleetDefaults } from '../config/fleet-defaults.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock, IdentityFrontmatter } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
@@ -449,13 +448,6 @@ export class Supervisor {
     this.tokenRefresh = new TokenRefreshService({
       home: state.home,
       logger: this.log.child('oauth-refresh'),
-      // When the fleet subscription token refreshes, the long-running
-      // pub-server still holds the bearer it got at spawn. Restart running
-      // pubs so they pick up the fresh credential (else the bartender +
-      // fragment-gen 401 again ~6h after launch and re-destabilize agents).
-      onFleetTokenRefreshed: () => {
-        void this.restartRunningPubsForFreshFleetToken()
-      },
     })
     this.onboardingSessions = new OnboardingSessionStore({
       logger: this.log.child('onboarding'),
@@ -3168,32 +3160,6 @@ export class Supervisor {
    * Idempotent: starting an already-running pub returns the current
    * pid without re-launching.
    */
-  /**
-   * Restart every running pub so it re-resolves the fleet subscription and
-   * picks up a freshly-refreshed OAuth bearer. Called by the token-refresh
-   * service after the fleet xai-oauth token rotates (~once per token lifetime,
-   * not per tick). Best-effort + serial: a failure on one pub is logged and
-   * does not block the rest.
-   */
-  private async restartRunningPubsForFreshFleetToken(): Promise<void> {
-    const running = Object.entries(this.state.pubs)
-      .filter(([, p]) => p.state === 'running')
-      .map(([name]) => name)
-    if (running.length === 0) return
-    this.log.info('restarting pubs to pick up refreshed fleet token', { pubs: running })
-    for (const name of running) {
-      try {
-        await this.stopPub(name, 'fleet_token_refresh')
-        await this.startPub(name)
-      } catch (err) {
-        this.log.warn('pub restart after fleet-token refresh failed (continuing)', {
-          pub: name,
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-  }
-
   async startPub(
     name: string,
     opts: {
@@ -3215,19 +3181,12 @@ export class Supervisor {
       adminSecret: paths.adminSecret,
       signingKey: paths.signingKey,
     })
-    // Wire the pub-server's own LLM (Bartender + memory fragments) onto the
-    // fleet subscription. Without this it gets no credential, 401s, and the
-    // failed broadcasts destabilize agent WebSockets (kicking them from the
-    // room). When no subscription is active we omit the LLM_* vars so the
-    // pub-server's patched guards make those features clean no-ops.
-    const fleet = await resolveFleetDefaults(this.state.home)
-    const pubEnv: Record<string, string> = {}
-    if (fleet.pubServerLlm) {
-      pubEnv['LLM_PROVIDER'] = fleet.pubServerLlm.provider
-      pubEnv['LLM_BASE_URL'] = fleet.pubServerLlm.baseUrl
-      pubEnv['LLM_API_KEY'] = fleet.pubServerLlm.apiKey
-      pubEnv['LLM_MODEL'] = fleet.pubServerLlm.model
-    }
+    // The pub-server's OWN LLM (the OpenPub Bartender persona + memory-fragment
+    // generation) is deliberately left UNWIRED: 2200's pub-server patch makes
+    // those features clean no-ops when LLM_API_KEY is absent. The Studio is the
+    // operator + their Agents, not an OpenPub greeter ... so we never give the
+    // pub-server an LLM credential. (The Agents themselves run on the fleet
+    // subscription via their own loop; that is unrelated to this process.)
     const tracked = launchPubProcess(
       {
         name,
@@ -3236,7 +3195,6 @@ export class Supervisor {
         adminSecret: secrets.adminSecret,
         signingPrivateKey: secrets.signingPrivateKey,
         signingPublicKey: secrets.signingPublicKey,
-        ...(Object.keys(pubEnv).length > 0 ? { env: pubEnv } : {}),
         ...(opts.issuer !== undefined ? { issuer: opts.issuer } : {}),
         ...(opts.hub_url !== undefined ? { hubUrl: opts.hub_url } : {}),
         ...(opts.executablePath !== undefined ? { executablePath: opts.executablePath } : {}),

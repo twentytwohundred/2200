@@ -18,7 +18,7 @@
  * the supervisor updates on every state change.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -110,6 +110,10 @@ export interface StartPubOptions {
  */
 export function launchPubProcess(opts: StartPubOptions, log?: Logger): StartedPub {
   const componentLog = log ?? createLogger('pub-lifecycle')
+  // npm-installed users get an unpatched pub-server (pnpm patches don't carry
+  // through npm); overlay the shipped patch before launch so the keepalive +
+  // bartender-off behavior is present everywhere, not just in the dev repo.
+  ensurePubServerPatched(componentLog)
   const executable = opts.executablePath ?? defaultPubServerExecutable()
   const paths = pubPaths(opts.home, opts.name)
 
@@ -208,6 +212,74 @@ export function launchPubProcess(opts: StartPubOptions, log?: Logger): StartedPu
  * conventional local `node_modules/.bin` first (covering both the
  * dist-bundled CLI case and the unbundled src layout used by tests).
  */
+const PUB_SERVER_PATCH_MARKER = '2200 patch'
+
+/**
+ * Ensure the installed OpenPub pub-server carries 2200's patches before we
+ * launch it: the empty-key Bartender/fragment guards (so the Bartender stays
+ * OFF in the Studio when no LLM_API_KEY is set ... which is always, by design)
+ * AND the WebSocket keepalive `pong` handler (without which OpenPub terminates
+ * an Agent's socket ~60s after it joins, dropping the Agent from the room).
+ *
+ * The patch is applied in the dev repo via pnpm `patchedDependencies`, but an
+ * `npm install` of the published package ignores pnpm patches and gets an
+ * UNPATCHED pub-server. We ship the patched `server.js` in
+ * `dist/vendor/openpub-pub-server/` (scripts/bundle-pub-server-patch.mjs) and
+ * overlay it here, idempotently. Best-effort: any failure logs and continues
+ * (worst case is the prior unpatched behavior, never a crash).
+ */
+function ensurePubServerPatched(log: Logger): void {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const installed = [
+    resolve(
+      here,
+      '..',
+      '..',
+      '..',
+      'node_modules',
+      '@openpub-ai',
+      'pub-server',
+      'dist',
+      'server.js',
+    ),
+    resolve(here, '..', '..', 'node_modules', '@openpub-ai', 'pub-server', 'dist', 'server.js'),
+    resolve(process.cwd(), 'node_modules', '@openpub-ai', 'pub-server', 'dist', 'server.js'),
+  ].find((p) => existsSync(p))
+  if (!installed) return
+  let current: string
+  try {
+    current = readFileSync(installed, 'utf8')
+  } catch {
+    return
+  }
+  if (current.includes(PUB_SERVER_PATCH_MARKER)) return // already patched (dev pnpm, or a prior overlay)
+
+  const shipped = [
+    resolve(here, '..', 'vendor', 'openpub-pub-server', 'server.js'), // from dist/cli/main.js
+    resolve(here, '..', '..', '..', 'vendor', 'openpub-pub-server', 'server.js'), // from dist/runtime/supervisor/*
+    resolve(here, 'vendor', 'openpub-pub-server', 'server.js'),
+  ].find((p) => existsSync(p))
+  if (!shipped) {
+    log.warn(
+      'pub-server is unpatched and no shipped patch found; Agents may be dropped from rooms',
+      {
+        installed,
+      },
+    )
+    return
+  }
+  try {
+    const patched = readFileSync(shipped, 'utf8')
+    if (!patched.includes(PUB_SERVER_PATCH_MARKER)) return // shipped copy isn't patched; never overwrite
+    writeFileSync(installed, patched)
+    log.info('applied 2200 pub-server patch (keepalive + bartender guards)', { installed })
+  } catch (err) {
+    log.warn('failed to apply 2200 pub-server patch (continuing unpatched)', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
 function defaultPubServerExecutable(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   const candidates = [
