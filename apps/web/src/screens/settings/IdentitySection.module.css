@@ -1,0 +1,35 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-4);
+}
+
+.note {
+  color: var(--text-2);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.note code {
+  font-family: var(--ds-font-mono);
+  background: var(--bg-hover);
+  padding: 0.1em 0.35em;
+  border-radius: var(--ds-r-1);
+}
+
+.row {
+  display: flex;
+  gap: var(--ds-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.row > :global(input) {
+  flex: 1 1 14rem;
+}
+
+.saved {
+  color: var(--accent);
+  font-size: 0.8rem;
+}

@@ -59,6 +59,13 @@ export type UserScutBlock = z.infer<typeof UserScutBlockSchema>
 export const UserIdentityFrontmatterSchema = z.object({
   schema_version: z.literal(1),
   display_name: z.string().min(1),
+  /**
+   * True once the operator has explicitly chosen their display name (in
+   * first-run or Settings). False/absent when the name was defaulted by
+   * non-interactive setup (e.g. to `$USER`). The web uses this to decide
+   * whether to ask "what should we call you?" on first launch.
+   */
+  name_set_by_operator: z.boolean().default(false),
   pub: UserPubBlockSchema,
   scut: UserScutBlockSchema,
   created: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, {

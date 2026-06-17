@@ -36,6 +36,7 @@ import {
 } from '../../primitives'
 import { useTheme } from '../../theme/ThemeProvider'
 import { useLiveSignal } from '../../ws/useLiveSignal'
+import { IdentitySection } from './IdentitySection'
 import { ConnectorSection } from './ConnectorSection'
 import { EmbassiesSection } from './EmbassiesSection'
 import { OAuthClientsSection } from './OAuthClientsSection'
@@ -100,6 +101,13 @@ export function SettingsScreen(): ReactElement {
       lede="Sign in with Grok, manage other providers, runtime info, and CLI reference."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
+      <section className={styles.block}>
+        <Meta>your name · what other Agents call you in the Studio</Meta>
+        <div className={styles.blockBody}>
+          <IdentitySection />
+        </div>
+      </section>
+
       <section className={styles.block}>
         <Meta>grok · sign in with your subscription</Meta>
         <div className={styles.blockBody}>

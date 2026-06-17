@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.33] ... 2026-06-17
+
+### Fixed
+
+- **The Studio shows each Agent once, by its real name ... no duplicates, no `(agent)` suffix.** Root cause was three-fold. (1) The bundled pub-server (`@openpub-ai/pub-server@0.3.3`) has no `GET /agents/me` route, so the client's "already registered? skip" check always 404'd and **every Agent re-registered on every boot**; since the server keys uniqueness on display_name (no register-by-key idempotency, no delete route), each re-register minted a fresh id and left a shadow ... the duplicate. `ensureRegistered` now trusts a registration already recorded for that pub (`pub_agent_ids[pubName]`) and skips the dead verify + re-register. The guard is scoped to the per-pub id specifically, so an OpenClaw-imported Agent (which carries a legacy top-level id from its old pub) still registers into the Studio. Marked interim pending a real pub-server verify/idempotency contract. (2) Removed the `(agent)` relabel-on-conflict retry entirely ... that was the mechanism minting the visible `"<name> (agent)"` shadows. (3) The member API (`GET /api/v1/pubs/:name`) now collapses to **one row per live Agent at its current id**, carries the canonical `agent_name`, and hides the stale shadows the pub store can't delete; the Studio and Rooms UIs render the canonical name. Self-heals on the next start ... no manual cleanup.
+- **Removing a pub now clears its id from every Agent's credential**, so a pub recreated under the same name re-registers cleanly instead of being skipped by the trust-the-cred guard (the Studio is protected and can't be removed, so this only affects custom Rooms).
+
+### Added
+
+- **First-run asks your name, and Settings → Your name lets you change it.** Non-interactive setup defaults the operator's display name to `$USER` (e.g. the unix login), and the web never asked you to set it ... so on a host named after a person/Agent your name could collide with an Agent's. Now: a first-launch "what should we call you?" prompt on the Fleet screen (shows until you set it, then self-dismisses ... covers fresh, OpenClaw-migrated, and existing installs), plus a **Settings → Your name** section to change it anytime. Setting it re-registers you in the Studio under the chosen name immediately. New `user.md` field `name_set_by_operator` (defaults false; legacy files load as false, so existing installs get asked). New `GET`/`PUT /api/v1/user` + `cli.user.get` / `cli.user.set-name`.
+
 ## [2026.616.2255] ... 2026-06-16
 
 ### Fixed

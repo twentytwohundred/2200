@@ -751,6 +751,16 @@ export interface Me {
   token_id: string
 }
 
+export interface UserIdentityResponse {
+  /** Null before setup mints the operator identity. */
+  identity: {
+    display_name: string
+    handle: string
+    /** False when the name was defaulted by setup ($USER); true once set in-app. */
+    name_set_by_operator: boolean
+  } | null
+}
+
 export interface RuntimeHealth {
   healthy: boolean
   components: Record<string, string>
@@ -880,6 +890,14 @@ function extractErrorBody(parsed: unknown): ApiErrorBody | null {
 
 export const api = {
   me: () => request<Me>('/api/v1/me'),
+  /** The operator's identity (display name + whether they've set it). */
+  userIdentity: () => request<UserIdentityResponse>('/api/v1/user'),
+  /** Set / change the operator's display name. Re-registers in the Studio. */
+  setUserName: (display_name: string) =>
+    request<{ display_name: string; handle: string; registered_against: string | null }>(
+      '/api/v1/user',
+      { method: 'PUT', body: { display_name } },
+    ),
   health: () => request<RuntimeHealth>('/api/v1/runtime/health'),
   version: () => request<RuntimeVersion>('/api/v1/runtime/version'),
   agents: () => request<ListEnvelope<Agent>>('/api/v1/agents'),
@@ -1398,6 +1416,12 @@ export interface PubSummary {
 
 export interface PubMember {
   agent_id: string
+  /**
+   * Canonical local Agent name (`agent_name`), or null for a non-Agent
+   * participant (the operator / a guest). The UI labels chips with this so a
+   * pub display_name that was disambiguated server-side never leaks into view.
+   */
+  agent_name: string | null
   display_name: string
   status: string
 }

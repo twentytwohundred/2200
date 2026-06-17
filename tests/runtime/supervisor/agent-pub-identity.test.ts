@@ -21,8 +21,9 @@ import { randomUUID } from 'node:crypto'
 import { Supervisor } from '../../../src/runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../../../src/runtime/control-plane/client.js'
 import { connectUds } from '../../../src/runtime/control-plane/uds-client.js'
-import { agentPaths } from '../../../src/runtime/storage/layout.js'
+import { agentPaths, homePaths } from '../../../src/runtime/storage/layout.js'
 import { loadIdentity } from '../../../src/runtime/identity/loader.js'
+import { loadUserIdentity } from '../../../src/runtime/user/loader.js'
 import { readCredentialFile } from '../../../src/runtime/pub/keypair.js'
 
 let home: string
@@ -316,5 +317,75 @@ describe('readFile sanity', () => {
     expect(raw.startsWith('---\n')).toBe(true)
     expect(raw).toContain('pub:')
     expect(raw).toContain(`id: ${agentPaths(home, 'poe').pubSecret}`)
+  })
+})
+
+describe('setUserDisplayName — operator rename', () => {
+  it('renames the operator, marks it operator-set, and re-registers in the studio', async () => {
+    // setup() mints the operator identity ("Alice") via cli.user.init with no
+    // pub running ... so name_set_by_operator defaults false.
+    await setup()
+    const before = await loadUserIdentity(homePaths(home).configUserMd)
+    expect(before.frontmatter.display_name).toBe('Alice')
+    expect(before.frontmatter.name_set_by_operator).toBe(false)
+
+    const fake = await startFakePub()
+    await client!.call('cli.pub.create', { name: 'studio', port: fake.port })
+    const sleeperBin = await writeSleepBinary()
+    await supervisor!.startPub('studio', { executablePath: sleeperBin })
+
+    const out = await supervisor!.setUserDisplayName({ display_name: 'Doug' })
+    expect(out.display_name).toBe('Doug')
+    expect(out.registered_against).toBe('studio')
+
+    const after = await loadUserIdentity(homePaths(home).configUserMd)
+    expect(after.frontmatter.display_name).toBe('Doug')
+    expect(after.frontmatter.name_set_by_operator).toBe(true)
+
+    // The operator cred is now registered under the new name in the studio.
+    const userCred = await readCredentialFile(homePaths(home).configUserPubSecret)
+    expect(userCred.display_name).toBe('Doug')
+    expect(userCred.pub_agent_ids?.['studio']).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('is idempotent: setting the same name twice does not re-register a shadow', async () => {
+    await setup()
+    const fake = await startFakePub()
+    await client!.call('cli.pub.create', { name: 'studio', port: fake.port })
+    const sleeperBin = await writeSleepBinary()
+    await supervisor!.startPub('studio', { executablePath: sleeperBin })
+
+    await supervisor!.setUserDisplayName({ display_name: 'Doug' })
+    const firstId = (await readCredentialFile(homePaths(home).configUserPubSecret)).pub_agent_ids?.[
+      'studio'
+    ]
+    // Same name again: name unchanged + already recorded -> no fresh register.
+    await supervisor!.setUserDisplayName({ display_name: 'Doug' })
+    const secondId = (await readCredentialFile(homePaths(home).configUserPubSecret))
+      .pub_agent_ids?.['studio']
+    expect(secondId).toBe(firstId)
+  })
+})
+
+describe('removePub — credential cleanup', () => {
+  it('clears stale per-pub cred ids so a recreate re-registers (store-wipe recovery)', async () => {
+    await setup()
+    const fake = await startFakePub()
+    await client!.call('cli.pub.create', { name: 'ops', port: fake.port })
+    const sleeperBin = await writeSleepBinary()
+    await supervisor!.startPub('ops', { executablePath: sleeperBin })
+    const src = await writeIdentitySource('poe', true)
+    await client!.call('cli.agent.create', { name: 'poe', identity_path: src })
+    await supervisor!.enrollAgentInPub('poe', 'ops')
+
+    const before = await readCredentialFile(agentPaths(home, 'poe').pubSecret)
+    expect(before.pub_agent_ids?.['ops']).toBeTruthy()
+
+    // Removing the pub deletes its store; the recorded id is now stale and
+    // must be cleared, or the idempotency guard would skip re-registration on
+    // a same-name recreate.
+    await supervisor!.removePub('ops')
+    const after = await readCredentialFile(agentPaths(home, 'poe').pubSecret)
+    expect(after.pub_agent_ids?.['ops']).toBeUndefined()
   })
 })

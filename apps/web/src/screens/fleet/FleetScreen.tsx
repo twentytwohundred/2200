@@ -20,6 +20,7 @@ import {
   type PillVariant,
 } from '../../primitives'
 import { cx } from '../../primitives/cx'
+import { OperatorNamePrompt } from './OperatorNamePrompt'
 import styles from './FleetScreen.module.css'
 
 interface BandGroups {
@@ -117,6 +118,8 @@ export function FleetScreen(): ReactElement {
         </>
       }
     >
+      <OperatorNamePrompt />
+
       {isLoading && <Banner kind="info" meta="loading" body="Fetching the fleet…" />}
 
       {isError && (

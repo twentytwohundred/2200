@@ -35,7 +35,9 @@ import {
   pubPaths,
 } from '../storage/layout.js'
 import { createIdentityClient, ensureRegistered } from '../pub/identity-client.js'
-import { readCredentialFile, writeCredentialFile } from '../pub/keypair.js'
+import { loadUserIdentityIfExists } from '../user/loader.js'
+import { buildPubMembers } from '../pub/member-view.js'
+import { agentIdForPub, readCredentialFile, writeCredentialFile } from '../pub/keypair.js'
 import { readPubSecrets } from '../pub/secrets.js'
 
 import {
@@ -377,6 +379,43 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       token_id: p.token_id,
     }
   })
+
+  // Operator identity (display name). GET returns null before setup; the
+  // `name_set_by_operator` flag tells the web whether to ask "what should we
+  // call you?" on first launch. PUT sets/changes it (re-registers in the
+  // studio under the new name; see Supervisor.setUserDisplayName).
+  fastify.get('/api/v1/user', async () => {
+    const existing = await loadUserIdentityIfExists(homePaths(home).configUserMd)
+    if (!existing) return { identity: null }
+    return {
+      identity: {
+        display_name: existing.frontmatter.display_name,
+        handle: existing.frontmatter.pub.handle,
+        name_set_by_operator: existing.frontmatter.name_set_by_operator,
+      },
+    }
+  })
+
+  fastify.put<{ Body: { display_name?: unknown; handle?: unknown } }>(
+    '/api/v1/user',
+    async (req, reply) => {
+      const body = req.body as { display_name?: unknown; handle?: unknown } | null
+      const displayName = typeof body?.display_name === 'string' ? body.display_name.trim() : ''
+      if (!displayName) {
+        return reply.code(400).send({ error: 'display_name is required' })
+      }
+      const handle = typeof body?.handle === 'string' ? body.handle : undefined
+      const out = await supervisor.setUserDisplayName({
+        display_name: displayName,
+        ...(handle !== undefined ? { handle } : {}),
+      })
+      return {
+        display_name: out.display_name,
+        handle: out.handle,
+        registered_against: out.registered_against,
+      }
+    },
+  )
 
   fastify.get('/api/v1/runtime/health', () => ({
     healthy: true,
@@ -909,6 +948,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       'JSON Schema bundle is sketched at v1; full self-describing surface lands as endpoints stabilize.',
     endpoints: [
       { method: 'GET', path: '/api/v1/me' },
+      { method: 'GET', path: '/api/v1/user' },
+      { method: 'PUT', path: '/api/v1/user' },
       { method: 'GET', path: '/api/v1/runtime/health' },
       { method: 'GET', path: '/api/v1/runtime/version' },
       { method: 'GET', path: '/api/v1/system/version' },
@@ -3552,35 +3593,56 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     const snap = supervisor.snapshot()
     const pub = snap.pubs[req.params.name]
     if (!pub) throw notFound('pub', req.params.name)
-    let members: { agent_id: string; display_name: string; status: string }[] = []
+    let members: {
+      agent_id: string
+      agent_name: string | null
+      display_name: string
+      status: string
+    }[] = []
     let atmosphere: { tone?: string; energy?: string; active_topics?: string[] } | null = null
     try {
       // Build the members list from two sources merged:
       //
       //  1. The live `room_state.agents_present` (whoever is currently
-      //     subscribed via WebSocket ... typically includes the user).
+      //     subscribed via WebSocket ... typically includes the operator).
       //  2. The pub's `roster.json` (every Agent ever created against
       //     this pub).
       //
-      // OpenPub does not always re-broadcast `room_state` to the
-      // bridge when a new agent connects after the bridge, so reading
-      // only `room_state` understates the room. Merging with roster
-      // gives us the complete-roster perspective the architecture
-      // expects (per the multi-agent chatter lessons memory).
+      // The bundled pub-server (0.3.3) keys agent uniqueness on display_name,
+      // has no `GET /agents/me` and no delete route, so a re-registered Agent
+      // leaves a SHADOW entry (same agent_name, stale agent_id) we cannot
+      // remove from the store. We collapse those here: emit exactly ONE row
+      // per live Agent at its CURRENT registered id (read from the Agent's
+      // cred), carry the canonical `agent_name`, and drop the stale shadows.
+      // The operator and any non-Agent participant still show. Fail-open: an
+      // unreadable cred means we don't filter that Agent's rows (a transient
+      // read error must never hide a live Agent).
       //
-      // Also: filter out the OpenPub Bartender (`agent_id: 'house'`).
-      // It is a server-side moderator persona meant for greeting
-      // visitors in public pubs; in the Studio (the install's
-      // default private-team pub) it is just noise.
+      // Also: filter out the OpenPub Bartender (`agent_id: 'house'`) ... a
+      // server-side greeter persona that is just noise in the private Studio.
       const room = await pubBridge.getRoomState(req.params.name)
       const roster = await readRoster(home, req.params.name)
-      const presentIds = new Set<string>()
-      const merged = new Map<string, { agent_id: string; display_name: string; status: string }>()
+
+      // Resolve each live Agent's CURRENT registered id from its cred (fail
+      // open: unreadable cred => null => the merge keeps that Agent's rows).
+      const liveAgents = []
+      for (const ag of Object.values(snap.agents)) {
+        if (ag.state === 'archived') continue
+        let currentId: string | null = null
+        try {
+          const cred = await readCredentialFile(agentPathsHelper(home, ag.name).pubSecret)
+          currentId = agentIdForPub(cred, req.params.name)
+        } catch {
+          // Unreadable cred (never registered, or transient FS error).
+        }
+        liveAgents.push({ name: ag.name, running: ag.state === 'running', currentId })
+      }
+
+      const present = []
       if (room) {
         for (const a of room.agents_present) {
-          if (a.agent_id === 'house') continue
-          presentIds.add(a.agent_id)
-          merged.set(a.agent_id, {
+          if (a.agent_id === 'house') continue // server-side greeter; noise in the Studio
+          present.push({
             agent_id: a.agent_id,
             display_name: a.display_name,
             status: a.status || 'active',
@@ -3588,27 +3650,16 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         }
         atmosphere = room.atmosphere ?? null
       }
-      const runningAgentIds = new Set<string>()
-      const knownLiveAgentNames = new Set<string>()
-      for (const ag of Object.values(snap.agents)) {
-        if (ag.state === 'archived') continue
-        knownLiveAgentNames.add(ag.name)
-        if (ag.state === 'running') runningAgentIds.add(ag.name)
-      }
-      for (const r of roster.agents) {
-        if (merged.has(r.agent_id)) continue
-        // Drop roster entries whose agent_name no longer maps to a
-        // live (non-archived) Agent. Covers: deleted Agents, archived
-        // Agents (renamed in supervisor state), and orphaned roster
-        // rows from earlier broken create attempts.
-        if (!knownLiveAgentNames.has(r.agent_name)) continue
-        merged.set(r.agent_id, {
+
+      members = buildPubMembers({
+        roster: roster.agents.map((r) => ({
           agent_id: r.agent_id,
+          agent_name: r.agent_name,
           display_name: r.display_name,
-          status: runningAgentIds.has(r.agent_name) ? 'idle' : 'offline',
-        })
-      }
-      members = Array.from(merged.values())
+        })),
+        present,
+        liveAgents,
+      })
     } catch (err) {
       if (err instanceof PubBridgeError) {
         log?.warn('pub bridge unavailable', { pub: req.params.name, code: err.code })

@@ -149,17 +149,21 @@ export function RoomsScreen(): ReactElement {
                     ) : (
                       <ul className={styles.memberStack}>
                         {members.map((m) => {
-                          const agent = agentByName.get(m.display_name)
+                          // Render the canonical Agent name, never a pub
+                          // display_name that was server-disambiguated (the
+                          // member API carries agent_name for exactly this).
+                          const label = m.agent_name ?? m.display_name
+                          const agent = m.agent_name ? agentByName.get(m.agent_name) : undefined
                           return (
                             <li key={m.agent_id} className={styles.memberRow}>
                               <AgentMark
-                                id={m.display_name}
-                                name={m.display_name}
+                                id={label}
+                                name={label}
                                 size="sm"
                                 glyph={agent?.avatar ?? undefined}
                                 imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
                               />
-                              <span className={styles.memberName}>{m.display_name}</span>
+                              <span className={styles.memberName}>{label}</span>
                             </li>
                           )
                         })}

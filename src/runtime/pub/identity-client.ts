@@ -246,6 +246,23 @@ export async function ensureRegistered(
   // look up the cred's view of that pub before authenticating; when
   // omitted, fall back to the legacy single-pub flow against the
   // top-level agent_id.
+  // INTERIM idempotency (remove when the pub-server ships a working verify
+  // route or register-by-public-key idempotency). The bundled pub-server
+  // (0.3.3) has NO `GET /agents/me` route ... it returns 404 ("route not
+  // found"), indistinguishable from "agent not found". So `getMe` ALWAYS
+  // reports "not registered", and without this guard every Agent re-registers
+  // on every boot; since the server keys uniqueness on display_name (not
+  // public_key), a re-register mints a FRESH agent_id and leaves a shadow
+  // entry behind ... the Studio-duplicate bug. Trust a registration already
+  // recorded for THIS specific pub and skip the dead verify + re-register.
+  //
+  // Guard on pub_agent_ids[pubName] SPECIFICALLY, not agentIdForPub() (which
+  // falls back to the legacy top-level agent_id): an OpenClaw-imported Agent
+  // carries a top-level agent_id from its OLD pub but is NOT yet registered
+  // here, and must register against this pub. (The legacy no-pubName flow is
+  // left untouched ... every live caller passes a pubName.)
+  if (pubName !== undefined && cred.pub_agent_ids?.[pubName]) return cred
+
   const effective = pubName ? credForPub(cred, pubName) : cred
   // Conditional flow per Poe's contract: GET /agents/me first; if 404,
   // register. Avoids the 409 from re-registering a known keypair.

@@ -537,6 +537,44 @@ export const CliUserInitResultSchema = z.object({
 })
 export type CliUserInitResult = z.infer<typeof CliUserInitResultSchema>
 
+/**
+ * C->S: read the operator's identity (display_name, handle, and whether the
+ * name was operator-set vs defaulted by setup). Returns null when no user
+ * identity exists yet. Backs the web "your name" surfaces.
+ */
+export const CliUserGetParamsSchema = z.object({})
+export type CliUserGetParams = z.infer<typeof CliUserGetParamsSchema>
+
+export const CliUserGetResultSchema = z.object({
+  identity: z
+    .object({
+      display_name: z.string(),
+      handle: z.string(),
+      name_set_by_operator: z.boolean(),
+    })
+    .nullable(),
+})
+export type CliUserGetResult = z.infer<typeof CliUserGetResultSchema>
+
+/**
+ * C->S: set (or change) the operator's display name. Allows changing an
+ * existing name (unlike cli.user.init). Re-registers the operator in the
+ * studio pub under the new name and marks the name operator-set.
+ */
+export const CliUserSetNameParamsSchema = z.object({
+  display_name: z.string().min(1),
+  handle: z.string().optional(),
+})
+export type CliUserSetNameParams = z.infer<typeof CliUserSetNameParamsSchema>
+
+export const CliUserSetNameResultSchema = z.object({
+  ok: z.literal(true),
+  display_name: z.string(),
+  handle: z.string(),
+  registered_against: z.string().nullable(),
+})
+export type CliUserSetNameResult = z.infer<typeof CliUserSetNameResultSchema>
+
 // ---------------------------------------------------------------------------
 // cli.schedule.* methods (CLI -> supervisor; recurring/timed task scheduling)
 // Epic 6 PR C
@@ -999,6 +1037,14 @@ export const METHODS = {
   'cli.user.init': {
     params: CliUserInitParamsSchema,
     result: CliUserInitResultSchema,
+  },
+  'cli.user.get': {
+    params: CliUserGetParamsSchema,
+    result: CliUserGetResultSchema,
+  },
+  'cli.user.set-name': {
+    params: CliUserSetNameParamsSchema,
+    result: CliUserSetNameResultSchema,
   },
   'cli.schedule.add': {
     params: CliScheduleAddParamsSchema,

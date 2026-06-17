@@ -79,9 +79,16 @@ function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** Label shown for a member chip: the canonical Agent name, or the
+ * display_name for a non-Agent participant (the operator / a guest). */
+function memberLabel(m: PubMember): string {
+  return m.agent_name ?? m.display_name
+}
+
 /**
  * Extract @<token> mentions from message content and resolve to
- * agent_ids. Lookups are case-insensitive against display_name.
+ * agent_ids. Lookups are case-insensitive against the member label
+ * (canonical Agent name, or display_name for the operator/guests).
  * Tokens that don't match any member are dropped silently; the pub
  * server's @<handle> fallback parser will catch them server-side if
  * they correspond to a known agent in the room.
@@ -91,7 +98,7 @@ function extractMentions(content: string, members: PubMember[]): string[] {
   const ids = new Set<string>()
   for (const tok of tokens) {
     const handle = tok.trim().slice(1).toLowerCase()
-    const match = members.find((m) => m.display_name.toLowerCase() === handle)
+    const match = members.find((m) => memberLabel(m).toLowerCase() === handle)
     if (match) ids.add(match.agent_id)
   }
   return Array.from(ids)
@@ -286,15 +293,21 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
     staleTime: 1_000,
   })
 
-  // Identify which member is the local user so we can render the
-  // "you" tag in the roster. Cached aggressively ... the user's
-  // identity doesn't change within a session.
+  // Identify which member is the operator so we can render the "you" tag.
+  // The Studio member is keyed by the operator's user-identity display_name
+  // (which they can change in Settings), not the auth principal ... so read
+  // that, falling back to the principal name.
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => api.me(),
     staleTime: 60_000,
   })
-  const meName = meQuery.data?.name ?? null
+  const userQuery = useQuery({
+    queryKey: ['user'],
+    queryFn: () => api.userIdentity(),
+    staleTime: 10_000,
+  })
+  const meName = userQuery.data?.identity?.display_name ?? meQuery.data?.name ?? null
 
   const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data])
   const members = pubQuery.data?.members ?? []
@@ -506,22 +519,22 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   }
 
   const workingMembers = members.filter((m) => {
-    const p = agentByName.get(m.display_name)?.pulse
+    const p = m.agent_name ? agentByName.get(m.agent_name)?.pulse : undefined
     if (!p) return false
     return p.state === 'working_light' || p.state === 'working_medium' || p.state === 'working_hard'
   })
 
-  // Pub-server rosters can accumulate stale entries (failed
-  // registrations leave shadow agents with the same display_name
-  // and a different agent_id). Dedup by display_name for the UI;
-  // the underlying entries are still there until the pub is
-  // destroyed + recreated.
+  // Defense in depth: the API already collapses shadow registrations to one
+  // row per Agent (the pub-server keys on display_name and can't delete
+  // stale entries), but dedup by canonical label here too so any straggler
+  // never doubles a chip.
   const dedupedMembers = useMemo(() => {
     const seen = new Set<string>()
     const out: PubMember[] = []
     for (const m of members) {
-      if (seen.has(m.display_name)) continue
-      seen.add(m.display_name)
+      const key = memberLabel(m)
+      if (seen.has(key)) continue
+      seen.add(key)
       out.push(m)
     }
     return out
@@ -530,7 +543,7 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
   // For the "+ Add guest" picker: agents on this instance who
   // aren't already in the room.
   const availableToAdd = useMemo(() => {
-    const present = new Set(dedupedMembers.map((m) => m.display_name))
+    const present = new Set(dedupedMembers.map((m) => memberLabel(m)))
     return Array.from(agentByName.values())
       .filter((a) => !present.has(a.name))
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -585,21 +598,25 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
             ) : (
               <ul className={styles.memberList}>
                 {dedupedMembers.map((m) => {
-                  const agent = agentByName.get(m.display_name)
+                  const label = memberLabel(m)
+                  const agent = m.agent_name ? agentByName.get(m.agent_name) : undefined
                   const pulse = agent?.pulse ?? null
-                  const isYou = meName !== null && m.display_name === meName
-                  const canRemove = !isStudio && !isYou
+                  // The operator row carries no agent_name; identify "you" by
+                  // matching the operator's display_name.
+                  const isYou =
+                    meName !== null && m.agent_name === null && m.display_name === meName
+                  const canRemove = !isStudio && !isYou && m.agent_name !== null
                   return (
                     <li key={m.agent_id} className={styles.memberRow}>
                       <AgentMark
-                        id={m.display_name}
-                        name={m.display_name}
+                        id={label}
+                        name={label}
                         size="sm"
                         glyph={agent?.avatar ?? undefined}
                         imageUrl={api.authedUrl(agent?.avatar_image_url) ?? undefined}
                       />
                       <span className={cx(styles.memberName, isYou && styles.memberNameYou)}>
-                        {m.display_name}
+                        {label}
                       </span>
                       {isYou && <span className={styles.memberYouTag}>you</span>}
                       {pulse && (
@@ -607,13 +624,13 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
                           state={pulse.state}
                           intensity={pulse.intensity}
                           size="sm"
-                          title={`${m.display_name} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
+                          title={`${label} · ${pulse.state} (intensity ${pulse.intensity.toFixed(2)})`}
                         />
                       )}
                       {canRemove && (
                         <RemoveGuestButton
                           pubName={pubName}
-                          guest={m.display_name}
+                          guest={label}
                           disabled={guestMutation.isPending}
                           onRemove={(g) => {
                             guestMutation.mutate({ remove_guests: [g] })
@@ -680,16 +697,17 @@ function StudioPubView({ pubName }: { pubName: string }): ReactElement {
               ))
             )}
             {workingMembers.map((m) => {
-              const p = agentByName.get(m.display_name)?.pulse
+              const label = memberLabel(m)
+              const p = m.agent_name ? agentByName.get(m.agent_name)?.pulse : undefined
               if (!p) return null
               return (
                 <div
                   key={`thinking-${m.agent_id}`}
                   className={styles.thinkingRow}
-                  title={`${m.display_name} · ${p.state} (intensity ${p.intensity.toFixed(2)})`}
+                  title={`${label} · ${p.state} (intensity ${p.intensity.toFixed(2)})`}
                 >
                   <PulseDot state={p.state} intensity={p.intensity} size="sm" />
-                  <span>{m.display_name} is thinking…</span>
+                  <span>{label} is thinking…</span>
                 </div>
               )
             })}
