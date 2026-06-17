@@ -1,6 +1,6 @@
 {
   "name": "@twentytwohundred/2200-cli",
-  "version": "2026.617.256",
+  "version": "2026.617.327",
   "description": "A platform for hosting your fleet of always-on Agents.",
   "author": {
     "name": "TWENTYTWOHUNDRED LLC",
@@ -62,9 +62,10 @@
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm test",
     "verify:all": "pnpm verify && pnpm --filter @twentytwohundred/web verify",
-    "prepack": "pnpm build && pnpm bundle:web && pnpm bundle:connectors",
+    "prepack": "pnpm build && pnpm bundle:web && pnpm bundle:connectors && pnpm bundle:pub-server-patch",
     "bundle:web": "pnpm --filter @twentytwohundred/web build && node scripts/bundle-web.mjs",
-    "bundle:connectors": "node scripts/bundle-connectors.mjs"
+    "bundle:connectors": "node scripts/bundle-connectors.mjs",
+    "bundle:pub-server-patch": "node scripts/bundle-pub-server-patch.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
