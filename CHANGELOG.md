@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **`` (and ``) reach everyone in the room.** Extends the existing `` broadcast: any message containing ``/``/`` wakes every Agent present, deterministically (no router involved), so it always lands. Word-boundary guarded (``, `-else` don't trigger).
+- **`@all` (and `@everyone`) reach everyone in the room.** Extends the existing `@team` broadcast: any message containing `@all` / `@everyone` / `@team` wakes every Agent present, deterministically (no router involved), so it always lands. Word-boundary guarded (`@allow`, `@everyone-else` don't trigger).
 
 ## [2026.617.342] ... 2026-06-17
 
