@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.1412] ... 2026-06-17
+
+### Fixed
+
+- **The "web UI is bound to a non-loopback address" notice no longer re-fires on every restart.** `quick-setup` deliberately binds the web UI to `0.0.0.0` so the LAN/Tailscale URL is reachable, which tripped the connector security heads-up on every daemon boot and filled the inbox with duplicate notifications about the intended default. It is now a one-time notice per bind: you see it once, it stays quiet across restarts, and it speaks up again only if you change the bind to a different non-loopback `host:port` (or revert to loopback and later re-widen).
+
 ## [2026.617.1255] ... 2026-06-17
 
 ### Added

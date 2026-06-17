@@ -245,6 +245,24 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host.toLowerCase())
 }
 
+/** Marker recording the host:port we last warned the operator about. */
+function webHostWarnMarkerPath(home: string): string {
+  return join(homePaths(home).state, '.web-host-warned')
+}
+
+/**
+ * Clear the non-loopback warning marker. Called when the web host is
+ * loopback at boot, so that if the operator later re-widens the bind
+ * they get a fresh one-time heads-up rather than silence. Best-effort.
+ */
+export async function clearWebHostWarnMarker(home: string): Promise<void> {
+  try {
+    await rm(webHostWarnMarkerPath(home), { force: true })
+  } catch {
+    // best-effort; do not break boot
+  }
+}
+
 /**
  * Emit a `normal`-tier Inbox event when the web UI listener is bound
  * to a non-loopback host. The MCP-connector security model assumes
@@ -252,15 +270,31 @@ export function isLoopbackHost(host: string): boolean {
  * is loopback-only; the connector listener on a separate port is the
  * intended public-facing surface.
  *
+ * Fires at most once per (host:port): `quick-setup` deliberately binds
+ * `0.0.0.0` for LAN/Tailscale access, so this warning would otherwise
+ * re-fire on every daemon boot and spam the inbox about the intended
+ * default. A disk marker records the host:port we've already warned
+ * about; the warning is a one-time security heads-up, not a recurring
+ * nag ("you can ignore this" only makes sense once). Re-binding to a
+ * different non-loopback host:port warns again (genuinely new surface).
+ *
  * Best-effort: a failed notification write must not prevent the
  * supervisor from coming up.
  */
-async function warnWebHostNonLoopback(args: {
+export async function warnWebHostNonLoopback(args: {
   home: string
   host: string
   port: number
   logger: Logger
 }): Promise<void> {
+  const marker = webHostWarnMarkerPath(args.home)
+  const current = `${args.host}:${String(args.port)}`
+  try {
+    const seen = (await readFile(marker, 'utf8')).trim()
+    if (seen === current) return // already warned for this exact bind
+  } catch {
+    // no marker yet (ENOENT) or unreadable -> treat as not-yet-warned
+  }
   args.logger.warn('web UI listener bound to non-loopback host', {
     host: args.host,
     port: args.port,
@@ -283,6 +317,10 @@ async function warnWebHostNonLoopback(args: {
         web_port: args.port,
       },
     })
+    // Record the bind we warned about so the next boot stays quiet
+    // unless the operator changes it. Written only after a successful
+    // emit so a failed write retries the warning next boot.
+    await writeFile(marker, current, 'utf8')
   } catch {
     // best-effort; do not break boot
   }
@@ -545,6 +583,9 @@ export class Supervisor {
           port: this.webConfig.port,
           logger: this.log,
         })
+      } else {
+        // Back on loopback: drop the marker so a future re-widen warns.
+        void clearWebHostWarnMarker(this.state.home)
       }
     }
     if (this.connectorConfig) {
