@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2026.617.1222] ... 2026-06-17
+## [2026.617.1255] ... 2026-06-17
+
+### Added
+
+- **The Studio keeps its history ... you never come back to a blank screen.** The OpenPub pub-server keeps only an in-memory conversation window and explicitly delegates persistence to the on-box host, so that window was lost on every restart. 2200 now persists each pub's chat to a durable per-pub log (`state/openpub/<pub>/messages.jsonl`) and the messages endpoint serves the merge of that log with the live window, deduped by id. So the chat is there on entry, across restarts and fresh sessions. Append-only on the hot path; trimmed to the last 2000 messages.
+
+### Changed
+
+- **Tighter message spacing in the Studio.** The gap between messages was 28px (a lot of empty space); it's now 12px.
 
 ### Fixed
 
