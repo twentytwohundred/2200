@@ -409,6 +409,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         display_name: displayName,
         ...(handle !== undefined ? { handle } : {}),
       })
+      // The bridge holds a live WS authenticated as the OLD identity; drop it
+      // so the operator reconnects (and appears + posts) under the new name
+      // without waiting for a daemon restart.
+      if (out.registered_against) {
+        await pubBridge.reconnect(out.registered_against)
+      }
       return {
         display_name: out.display_name,
         handle: out.handle,

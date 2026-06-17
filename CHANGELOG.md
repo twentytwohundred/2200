@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.617.54] ... 2026-06-17
+
+### Fixed
+
+- **Changing your name now takes effect live, without a daemon restart.** Setting your name (first-run or Settings → Your name) re-registered you in the Studio under the new name, but the supervisor's long-lived pub connection stayed authenticated as your _old_ identity ... so your presence and message authorship kept showing the old name until the next restart. The rename now drops that cached connection so it reconnects under the new name immediately. (Follow-up to 2026.617.33, which landed the rename itself.)
+
 ## [2026.617.33] ... 2026-06-17
 
 ### Fixed

@@ -163,6 +163,25 @@ export class SupervisorPubBridge {
   }
 
   /**
+   * Drop the cached connection for one pub so the next request reconnects
+   * with a freshly-read cred. Used after the operator's identity is renamed +
+   * re-registered (setUserDisplayName): the live WS is authenticated as the
+   * OLD identity, so without this the operator keeps appearing + posting under
+   * the old name until the daemon restarts. No-op if not currently connected.
+   */
+  async reconnect(pubName: string): Promise<void> {
+    const entry = this.entries.get(pubName)
+    if (!entry) return
+    this.entries.delete(pubName)
+    try {
+      await entry.client.close()
+    } catch {
+      // best-effort; a failed close still drops the entry so the next
+      // acquire() rebuilds the connection with the new cred.
+    }
+  }
+
+  /**
    * Close all bridge connections. Called from the supervisor's
    * shutdown path so the WS clients exit cleanly.
    */
