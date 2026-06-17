@@ -34,7 +34,9 @@ interface FakePub {
   callCounts: Map<string, number>
 }
 
-async function startFakePub(opts: { conflictDisplayName?: string } = {}): Promise<FakePub> {
+async function startFakePub(
+  opts: { conflictDisplayName?: string; deadGetMe?: boolean } = {},
+): Promise<FakePub> {
   const agents = new Map<
     string,
     { agent_id: string; display_name: string; public_key: string; key_version: number }
@@ -49,6 +51,13 @@ async function startFakePub(opts: { conflictDisplayName?: string } = {}): Promis
 
     void readBody(req).then((rawBody) => {
       if (req.method === 'GET' && url.pathname === '/agents/me') {
+        // Reproduce pub-server 0.3.3, which has NO /agents/me route: every
+        // call 404s ("route not found"), indistinguishable from "agent not
+        // found". The idempotency guard must not depend on this route.
+        if (opts.deadGetMe) {
+          res.writeHead(404).end()
+          return
+        }
         const agentId = req.headers['x-openpub-agent-id']
         if (typeof agentId !== 'string' || !agents.has(agentId)) {
           res.writeHead(404).end()
@@ -270,5 +279,50 @@ describe('ensureRegistered (idempotent provisioning)', () => {
     await expect(ensureRegistered(client, lying)).rejects.toBeInstanceOf(RegisterAgentConflict)
     // Sanity: the original agent_id is still recognized.
     expect(await client.getMe({ ...cred, agent_id })).not.toBeNull()
+  })
+
+  // The pub-scoped idempotency guard ... the Studio-duplicate fix. The bundled
+  // pub-server has no /agents/me, so we must NOT rely on it to detect an
+  // existing registration; the cred's per-pub record is authoritative.
+  it('trusts a recorded per-pub registration and makes zero requests', async () => {
+    pub = await startFakePub({ deadGetMe: true })
+    const client = createIdentityClient({ baseUrl: pub.baseUrl })
+    const cred = {
+      ...generateKeypair({ display_name: 'skippy', issuer_url: pub.baseUrl }),
+      pub_agent_ids: { studio: randomUUID() },
+    }
+    const updated = await ensureRegistered(client, cred, 'admin-secret', 'studio')
+    expect(updated).toBe(cred) // unchanged, returned as-is
+    expect(pub.callCounts.get('POST /admin/register-agent')).toBeUndefined()
+    expect(pub.callCounts.get('GET /agents/me')).toBeUndefined()
+  })
+
+  it('does NOT re-register on a second enroll even when /agents/me is dead (no shadow)', async () => {
+    // Without the per-pub guard this is the valkyrie bug: dead /agents/me ->
+    // 404 -> re-register -> a fresh agent_id (a shadow). With it, the second
+    // call short-circuits on the recorded id.
+    pub = await startFakePub({ deadGetMe: true })
+    const client = createIdentityClient({ baseUrl: pub.baseUrl })
+    const cred = generateKeypair({ display_name: 'jodin', issuer_url: pub.baseUrl })
+    const first = await ensureRegistered(client, cred, 'admin-secret', 'studio')
+    const firstId = first.pub_agent_ids?.['studio']
+    expect(firstId).toMatch(/^[0-9a-f-]{36}$/)
+    const second = await ensureRegistered(client, first, 'admin-secret', 'studio')
+    expect(second.pub_agent_ids?.['studio']).toBe(firstId)
+    expect(pub.callCounts.get('POST /admin/register-agent')).toBe(1) // exactly one
+  })
+
+  it('registers against a new pub for an OpenClaw-imported cred (legacy top-level id only)', async () => {
+    // OC-imported: a top-level agent_id from its OLD pub, but no studio entry.
+    // The guard is on pub_agent_ids[pubName], so it must still register here.
+    pub = await startFakePub()
+    const client = createIdentityClient({ baseUrl: pub.baseUrl })
+    const cred = {
+      ...generateKeypair({ display_name: 'poe', issuer_url: pub.baseUrl }),
+      agent_id: randomUUID(),
+    }
+    const updated = await ensureRegistered(client, cred, 'admin-secret', 'studio')
+    expect(updated.pub_agent_ids?.['studio']).toMatch(/^[0-9a-f-]{36}$/)
+    expect(pub.callCounts.get('POST /admin/register-agent')).toBe(1)
   })
 })

@@ -50,7 +50,6 @@ import { generateKeypair } from '../pub/keypair-generate.js'
 import {
   createIdentityClient,
   ensureRegistered,
-  RegisterAgentConflict,
   type IdentityClient,
 } from '../pub/identity-client.js'
 import { loadUserIdentityIfExists, writeUserIdentity } from '../user/loader.js'
@@ -2398,21 +2397,16 @@ export class Supervisor {
       adminSecret: paths.adminSecret,
       signingKey: paths.signingKey,
     })
-    let updated
-    try {
-      updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, pubName)
-    } catch (err) {
-      if (err instanceof RegisterAgentConflict) {
-        // The pub display name is taken ... e.g. the operator's own identity
-        // shares this Agent's name (common on a host named after the Agent,
-        // like `skippy@valkyrie`). Retry with a disambiguated label so the
-        // Agent still gets enrolled rather than left out of the room.
-        const relabeled = { ...cred, display_name: `${pubBlock.display_name} (agent)` }
-        updated = await ensureRegistered(client, relabeled, pubSecrets.adminSecret, pubName)
-      } else {
-        throw err
-      }
-    }
+    // Register (idempotent: ensureRegistered trusts a registration already
+    // recorded for this pub and does NOT re-mint). A genuine display-name
+    // conflict here means a DIFFERENT identity already holds this Agent's
+    // name in the pub ... almost always the operator's own identity sharing
+    // the name (the regression where setup defaulted the operator name to
+    // $USER). We do NOT silently relabel the Agent to "<name> (agent)"; the
+    // operator renames THEMSELF in the web app so the names stop colliding.
+    // Surface the conflict so the studio bootstrap logs it rather than
+    // minting a shadow Agent.
+    const updated = await ensureRegistered(client, cred, pubSecrets.adminSecret, pubName)
     await writeCredentialFile(credPath, updated)
     const registeredId = updated.pub_agent_ids?.[pubName] ?? updated.agent_id ?? null
 
@@ -3048,9 +3042,37 @@ export class Supervisor {
     }
     this.state = { ...this.state, pubs: next }
     await saveState(this.state)
+    await this.clearPubFromCreds(name)
     const pubDir = join(this.state.home, 'state', 'openpub', name)
     await rm(pubDir, { recursive: true, force: true })
     this.log.info('Pub removed', { name, dir: pubDir })
+  }
+
+  /**
+   * After a pub is removed its store (agents.json) is deleted, so the per-pub
+   * registration ids recorded in each cred are now stale. Clear them so a pub
+   * later recreated under the SAME name re-registers fresh ... the idempotency
+   * guard (ensureRegistered) trusts a recorded id and would otherwise skip
+   * registration, leaving the Agent absent from the new pub. Best-effort: an
+   * unreadable cred (never registered) is skipped, never blocks removal.
+   */
+  private async clearPubFromCreds(pubName: string): Promise<void> {
+    const credPaths = [
+      homePaths(this.state.home).configUserPubSecret,
+      ...Object.keys(this.state.agents).map((n) => agentPaths(this.state.home, n).pubSecret),
+    ]
+    for (const credPath of credPaths) {
+      try {
+        const cred = await readCredentialFile(credPath)
+        if (!cred.pub_agent_ids?.[pubName]) continue
+        const nextMap = Object.fromEntries(
+          Object.entries(cred.pub_agent_ids).filter(([k]) => k !== pubName),
+        )
+        await writeCredentialFile(credPath, { ...cred, pub_agent_ids: nextMap })
+      } catch {
+        // Missing/unreadable cred (Agent never registered) ... nothing to clear.
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -3333,6 +3355,10 @@ export class Supervisor {
     const frontmatter: UserIdentityFrontmatter = {
       schema_version: 1,
       display_name: opts.display_name,
+      // Setup mints with a defaulted name ($USER); only the operator setting
+      // their name in-app flips this true (see setUserDisplayName). Preserve
+      // it on an idempotent re-run.
+      name_set_by_operator: existing?.frontmatter.name_set_by_operator ?? false,
       pub: {
         identity: agentId ?? '',
         handle,
@@ -3356,6 +3382,97 @@ export class Supervisor {
       agent_id: agentId,
       registered_against: registeredAgainst,
     }
+  }
+
+  /**
+   * Set (or change) the operator's display name. Unlike createUserIdentity,
+   * this ALLOWS changing an existing name ... the operator owns it. It backs
+   * both the first-run "what should we call you?" ask and Settings → Your
+   * name. It marks the name operator-set, then re-registers the operator in
+   * the studio pub under the new name so the room reflects it immediately.
+   *
+   * The keypair is preserved (identity continuity). The pub-server (0.3.3)
+   * keys on display_name with no key-idempotency and no delete route, so a
+   * rename mints a fresh agent_id and the prior "name" registration is left
+   * inert in the store ... hidden by the member view's stale-shadow collapse.
+   */
+  async setUserDisplayName(opts: {
+    display_name: string
+    handle?: string
+  }): Promise<{ display_name: string; handle: string; registered_against: string | null }> {
+    const display_name = opts.display_name.trim()
+    if (!display_name) throw new Error('display_name cannot be empty')
+    const paths = homePaths(this.state.home)
+    const existing = await loadUserIdentityIfExists(paths.configUserMd)
+    if (!existing) {
+      throw new Error('no user identity yet; run setup before naming the operator')
+    }
+    const handle = opts.handle ?? defaultHandleFor(display_name)
+    const nameChanged = existing.frontmatter.display_name !== display_name
+
+    let cred = await readCredentialFile(paths.configUserPubSecret)
+    const studio = this.state.pubs['studio']
+    let agentId: string | null = existing.frontmatter.pub.identity || null
+    let registeredAgainst: string | null = null
+
+    if (nameChanged) {
+      // Force a fresh registration under the new name: clear the studio
+      // record so the idempotency short-circuit doesn't skip the re-register.
+      const nextPubAgentIds = { ...(cred.pub_agent_ids ?? {}) }
+      delete nextPubAgentIds['studio']
+      cred = { ...cred, display_name, pub_agent_ids: nextPubAgentIds, agent_id: null }
+      await writeCredentialFile(paths.configUserPubSecret, cred)
+    }
+
+    if (studio?.state === 'running') {
+      const baseUrl = `http://127.0.0.1:${String(studio.port)}`
+      const client = createIdentityClient({ baseUrl })
+      try {
+        const sp = pubPaths(this.state.home, 'studio')
+        const secrets = await readPubSecrets({
+          adminSecret: sp.adminSecret,
+          signingKey: sp.signingKey,
+        })
+        const updated = await ensureRegistered(client, cred, secrets.adminSecret, 'studio')
+        const id = updated.pub_agent_ids?.['studio'] ?? updated.agent_id
+        if (id) {
+          agentId = id
+          registeredAgainst = 'studio'
+        }
+        await writeCredentialFile(paths.configUserPubSecret, updated)
+        cred = updated
+      } catch (err) {
+        // On a name change the cred was already cleared (agent_id=null) before
+        // the failed register, so user.md must mirror that ... not the old id.
+        // The studio bootstrap re-registers on the next boot.
+        if (nameChanged) agentId = null
+        this.log.warn('operator rename: studio re-registration failed (retries next boot)', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    const frontmatter: UserIdentityFrontmatter = {
+      schema_version: 1,
+      display_name,
+      name_set_by_operator: true,
+      pub: {
+        identity: agentId ?? existing.frontmatter.pub.identity,
+        handle,
+        credentials: existing.frontmatter.pub.credentials,
+        key_version: cred.key_version,
+        issuer_url: cred.issuer_url,
+      },
+      scut: existing.frontmatter.scut,
+      created: existing.frontmatter.created,
+    }
+    await writeUserIdentity(paths.configUserMd, frontmatter, existing.body)
+    this.log.info('Operator display name set', {
+      display_name,
+      handle,
+      registered_against: registeredAgainst,
+    })
+    return { display_name, handle, registered_against: registeredAgainst }
   }
 
   // ---------------------------------------------------------------------------
@@ -3661,6 +3778,32 @@ export class Supervisor {
           user_md_path: out.user_md_path,
           credentials_path: out.credentials_path,
           agent_id: out.agent_id,
+          registered_against: out.registered_against,
+        }
+      },
+
+      'cli.user.get': async () => {
+        const existing = await loadUserIdentityIfExists(homePaths(this.state.home).configUserMd)
+        return {
+          identity: existing
+            ? {
+                display_name: existing.frontmatter.display_name,
+                handle: existing.frontmatter.pub.handle,
+                name_set_by_operator: existing.frontmatter.name_set_by_operator,
+              }
+            : null,
+        }
+      },
+
+      'cli.user.set-name': async (params) => {
+        const out = await this.setUserDisplayName({
+          display_name: params.display_name,
+          ...(params.handle !== undefined ? { handle: params.handle } : {}),
+        })
+        return {
+          ok: true as const,
+          display_name: out.display_name,
+          handle: out.handle,
           registered_against: out.registered_against,
         }
       },

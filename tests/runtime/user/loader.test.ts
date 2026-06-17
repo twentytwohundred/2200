@@ -26,6 +26,7 @@ afterEach(async () => {
 const sampleFrontmatter: UserIdentityFrontmatter = {
   schema_version: 1,
   display_name: 'Alice',
+  name_set_by_operator: true,
   pub: {
     identity: '01919c4f-7e3a-7000-8000-d4a984f2c1b3',
     handle: '@alice',
@@ -45,6 +46,34 @@ describe('writeUserIdentity + loadUserIdentity', () => {
     expect(record.frontmatter).toEqual(sampleFrontmatter)
     expect(record.body.trim()).toBe('Free-form bio.')
     expect(record.source_path).toBe(path)
+  })
+
+  // Migration: a user.md written before name_set_by_operator existed (e.g.
+  // every install before this change, incl. valkyrie) must load with the flag
+  // defaulting to false, so the web knows to ask "what should we call you?".
+  it('defaults name_set_by_operator to false on a legacy file without the field', async () => {
+    const path = join(tmp, 'user.md')
+    const legacy = [
+      '---',
+      'schema_version: 1',
+      'display_name: skippy',
+      'pub:',
+      '  identity: 01919c4f-7e3a-7000-8000-d4a984f2c1b3',
+      '  handle: "@skippy"',
+      '  credentials:',
+      '    source: file',
+      '    id: /var/2200/config/user.pub.secret',
+      '  key_version: 1',
+      '  issuer_url: local://localhost',
+      'scut: {}',
+      'created: 2026-04-26',
+      '---',
+      '',
+    ].join('\n')
+    await writeFile(path, legacy, 'utf8')
+    const record = await loadUserIdentity(path)
+    expect(record.frontmatter.display_name).toBe('skippy')
+    expect(record.frontmatter.name_set_by_operator).toBe(false)
   })
 
   it('preserves an empty body', async () => {
