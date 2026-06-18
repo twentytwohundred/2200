@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.618.1542] ... 2026-06-18
+
+### Fixed
+
+- **A self-hosted Ollama model now binds ... the Identity `model_id` accepts an Ollama-style `:tag`.** Ollama names its models `name:tag` (`gemma4:26b`, `llama3.1:8b`), and the API 404s on a bare name when no matching `:latest` exists ... so the exact tagged id is required. But the Identity schema's `model_id` rule (`/^[a-z0-9.-]+$/`) forbade the colon, so a `local`-provider Agent could not be bound to any tagged Ollama model: the daemon rejected the Identity at load with `model.model_id must be lowercase alphanumeric, dashes, or dots` and the Agent crash-looped. (The `provider` field already allowed an optional `:tag`; only `model_id` didn't ... an oversight.) `model_id` now accepts an optional `:tag` suffix, with the tag permitting mixed case + underscores so Ollama quantization tags work too (`llama3.1:8b-instruct-q4_K_M`). `grok-4.3`, `gemini-2.5-pro`, and other colon-free ids are unaffected.
+
 ## [2026.617.1412] ... 2026-06-17
 
 ### Fixed

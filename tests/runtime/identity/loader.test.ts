@@ -175,6 +175,46 @@ describe('loadIdentity (error paths)', () => {
     expect(id.frontmatter.model.provider).toBe('xai-subscription')
   })
 
+  it('accepts an Ollama-style model_id with a :tag (gemma4:26b)', async () => {
+    // Regression guard: self-hosted Ollama names its models `name:tag`
+    // (`gemma4:26b`), and the API 404s on a bare name when no matching
+    // `:latest` exists. The prior /^[a-z0-9.-]+$/ rejected the colon,
+    // so a `local` provider could not bind any tagged Ollama model ...
+    // which broke the whole "free local LLM" path. The schema now
+    // allows an optional `:tag`.
+    const path = await writeAt(
+      'ollama-model.md',
+      VALID.replace('provider: anthropic', 'provider: local').replace(
+        'model_id: claude-opus-4-7',
+        'model_id: gemma4:26b',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.model.model_id).toBe('gemma4:26b')
+  })
+
+  it('accepts an Ollama quantization tag with underscores/case (q4_K_M)', async () => {
+    const path = await writeAt(
+      'ollama-quant.md',
+      VALID.replace('provider: anthropic', 'provider: local').replace(
+        'model_id: claude-opus-4-7',
+        'model_id: llama3.1:8b-instruct-q4_K_M',
+      ),
+    )
+    const id = await loadIdentity(path)
+    expect(id.frontmatter.model.model_id).toBe('llama3.1:8b-instruct-q4_K_M')
+  })
+
+  it('rejects a model_id with more than one colon', async () => {
+    // The tag is a single optional suffix; a bare/empty or repeated
+    // colon is still malformed.
+    const path = await writeAt(
+      'bad-model-id.md',
+      VALID.replace('model_id: claude-opus-4-7', 'model_id: gemma4:26b:extra'),
+    )
+    await expect(loadIdentity(path)).rejects.toThrow(/model_id/)
+  })
+
   it('rejects a non-ISO created date', async () => {
     const path = await writeAt(
       'bad-date.md',
