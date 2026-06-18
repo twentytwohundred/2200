@@ -50,13 +50,19 @@ export const ModelProviderSchema = z
 
 /**
  * model_id portion of the model identifier. Lowercase alphanumeric,
- * dashes, or dots; whatever the provider calls the model. Dots are
- * permitted because real-world model ids contain them
- * (`gemini-2.5-pro`, `grok-4.3`); the runtime passes this string
- * verbatim to the provider's chat-completions endpoint.
+ * dashes, or dots, with an optional `:tag` suffix; whatever the
+ * provider calls the model. Dots are permitted because real-world
+ * model ids contain them (`gemini-2.5-pro`, `grok-4.3`); the runtime
+ * passes this string verbatim to the provider's chat-completions
+ * endpoint. The optional `:tag` is required for self-hosted Ollama,
+ * whose model names are `name:tag` (`gemma4:26b`, `llama3.1:8b`,
+ * `qwen2.5:14b-instruct-q4_K_M`) and which 404s on a bare name when no
+ * matching `:latest` exists. The tag allows mixed case + underscores
+ * because Ollama quantization tags do (`q4_K_M`, `q8_0`).
  */
-export const ModelIdComponentSchema = z.string().regex(/^[a-z0-9.-]+$/, {
-  message: 'model.model_id must be lowercase alphanumeric, dashes, or dots',
+export const ModelIdComponentSchema = z.string().regex(/^[a-z0-9.-]+(:[A-Za-z0-9._-]+)?$/, {
+  message:
+    'model.model_id must be lowercase alphanumeric, dashes, or dots, with an optional ":tag" (e.g. "grok-4.3" or "gemma4:26b")',
 })
 
 export const ModelBindingSchema = z.object({
