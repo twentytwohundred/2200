@@ -83,6 +83,7 @@ import {
 import { GatewayManager } from '../connectors/gateway-manager.js'
 import { upsertConnectorBinding } from '../identity/binding-writer.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import { pickOnboardingProvider } from '../onboarding/pick-provider.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
   defaultRuntimeEnvPath,
@@ -4013,16 +4014,28 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     let providerName = body.provider
     let modelId = body.model
     if (!providerName) {
-      const configured = listKnownProviders().find((p) => {
-        if (p.keyOptional) return true
-        const v = env[p.defaultEnvKey] ?? ''
-        return v.length > 0
-      })
+      // A subscription provider (xai-subscription) is "configured" when its
+      // fleet OAuth token is present + unexpired ... it never carries a
+      // runtime.env key, so the old env-key-only check missed it and a
+      // SuperGrok-only install (Sign in with X, no API key) fell through to
+      // the keyless `local` fallback (Ollama at localhost, usually not
+      // running). Read the OAuth store the same way the providers endpoint
+      // does so the subscription counts.
+      const subscriptionActive = await (async () => {
+        try {
+          const { readOAuthToken } = await import('../oauth/token-store.js')
+          const tok = await readOAuthToken(home, 'xai-oauth')
+          return tok !== null && tok.metadata.expires_at_ms > Date.now()
+        } catch {
+          return false
+        }
+      })()
+      const configured = pickOnboardingProvider(listKnownProviders(), env, subscriptionActive)
       if (!configured) {
         throw new ApiError(
           503,
           'no_provider_configured',
-          'No LLM provider has an API key configured. Visit Settings → Providers to add one before starting onboarding.',
+          'No LLM provider is configured. Sign in with SuperGrok or add an API key in Settings → Providers before starting onboarding.',
         )
       }
       providerName = configured.name
