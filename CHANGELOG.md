@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.622.2027] ... 2026-06-22
+
+### Fixed
+
+- **A SuperGrok-only install can start onboarding ... the default provider pick now counts the subscription.** When `POST /api/v1/onboarding` is called without an explicit provider (the CLI/legacy path), it auto-picks a provider from the catalog. That pick only looked at runtime.env API keys, so it never saw the `xai-subscription` credential (which lives in the sealed fleet OAuth store, not runtime.env) ... a "Sign in with X / SuperGrok" install with no API key fell through to the keyless `local` fallback (Ollama at `localhost:11434`, usually not running), and the interview failed to connect. The pick now treats an active subscription as a real credential and prefers it over the keyless fallback, matching the web picker. (The web onboarding flow always passed the provider explicitly, so it was already fine; this fixes the no-explicit-provider path.) Pulled into a pure, unit-tested `pickOnboardingProvider` helper. So: one SuperGrok sign-in is all an operator needs ... no second model, no API key.
+
 ## [2026.618.1542] ... 2026-06-18
 
 ### Fixed
