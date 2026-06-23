@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.623.1738] ... 2026-06-23
+
+### Changed
+
+- **From-tarball install smoke + isolated chaos tests (QA hardening, no runtime change).** Two gaps an independent QA pass flagged:
+  - **`scripts/smoke-install.sh` (`pnpm smoke`)** packs the tarball, installs it in a clean `node:22` container, and asserts the regression classes that have actually bitten on real installs: `setup` serves the web app keyless, the **pub-server patch overlay applies**, the Studio auto-provisions and **dedupes** (one row per Agent, no `(agent)` shadow), the pub-server runs with **no LLM credential** (Bartender off), the pub survives a daemon restart **without a port collision**, and **Studio chat persists across a restart**. Wired into CI as a gate on PRs to `main` (`.github/workflows/smoke.yml`). This is the end-to-end guard the unit tests couldn't give.
+  - **Chaos tests now run isolated** (`vitest.chaos.config.ts`, single fork, file-parallelism off) instead of competing with ~190 other files for CPU ... the prior timeout loosening was a band-aid; running `supervisor-bounce-survival` with dedicated CPU is the real fix for its flake. `pnpm test` runs the main suite then the isolated chaos pass.
+  - Documented the pub adoption/orphan/overlay story in one place (`pub-port.ts`) so the interlocking pieces aren't re-broken, and prettier now ignores the in-repo `.pnpm-store/`.
+
 ## [2026.623.1702] ... 2026-06-23
 
 ### Fixed
