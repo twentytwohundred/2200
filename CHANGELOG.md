@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.623.1702] ... 2026-06-23
+
+### Fixed
+
+- **`2200 update` over SSH no longer leaves the daemon down.** The update stops the daemon, runs `npm install -g`, then restarts it via the freshly-installed binary's `daemon start`. That restart was spawned with inherited stdio and `await`ed, which tied the new daemon's startup to the `2200 update` process ... and over SSH that parent exits the instant the command returns, taking the half-started restart chain down with it (observed live on valkyrie: a remote `2200 update` installed the new version but the daemon never came back). The restart is now spawned **fully detached** ... its own session (`detached: true` => `setsid` on POSIX), no inherited stdio, `unref`'d ... so it survives a parent that dies the moment the command returns. Liveness is confirmed by **polling the supervisor lock** rather than awaiting the (now-detached) child, so the up/down signal also doesn't depend on the parent surviving; if the parent is killed mid-poll, the daemon is still coming up underneath. (Local interactive `2200 update` was already fine; this fixes remote/headless updates.)
+
 ## [2026.623.1638] ... 2026-06-23
 
 ### Fixed
