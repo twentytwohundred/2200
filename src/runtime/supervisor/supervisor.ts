@@ -33,6 +33,7 @@ import {
 } from './lifecycle.js'
 import { isLockHeld } from './process-lock.js'
 import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
+import { planPubPort, type PubPortProbe } from './pub-port.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock, IdentityFrontmatter } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
@@ -3201,6 +3202,29 @@ export class Supervisor {
    * Idempotent: starting an already-running pub returns the current
    * pid without re-launching.
    */
+  /**
+   * Real port probe for `planPubPort`: HTTP liveness via a short-timeout fetch
+   * (any response ... even a 404 ... means a pub-server is alive), and the
+   * LISTENing pids via `lsof`. Injected so `planPubPort`'s branching is tested
+   * without sockets.
+   */
+  private pubPortProbe(): PubPortProbe {
+    return {
+      isHealthy: async (port: number): Promise<boolean> => {
+        try {
+          await fetch(`http://127.0.0.1:${String(port)}`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(1500),
+          })
+          return true
+        } catch {
+          return false
+        }
+      },
+      listeners: (port: number) => listenersOnPort(port),
+    }
+  }
+
   async startPub(
     name: string,
     opts: {
@@ -3216,6 +3240,28 @@ export class Supervisor {
     const existing = this.trackedPubs.get(name)
     if (existing) {
       return { pid: existing.pid, port: record.port }
+    }
+    // Before launching, look at the port. A pub-server can outlive the
+    // supervisor that spawned it (a `2200 update` restart, a SIGHUP
+    // self-upgrade, a detached crash), so the recorded port may already be
+    // served by a healthy pub-server. Launching a second one collides on
+    // EADDRINUSE and flips the record to `errored` ... which is exactly how
+    // the Studio started returning 409 (`pub_not_running`) after an update.
+    // Adopt a healthy server instead; only reclaim + launch when nothing
+    // healthy is there. See pub-port.ts.
+    const portPlan = await planPubPort(record.port, this.pubPortProbe())
+    if (portPlan.action === 'adopt') {
+      const pid = portPlan.pid ?? record.pid
+      await this.updatePub(name, { state: 'running', ...(pid !== null ? { pid } : {}) })
+      this.log.info('startPub: adopted healthy pub-server already on port', {
+        name,
+        port: record.port,
+        pid,
+      })
+      return { pid: pid ?? 0, port: record.port }
+    }
+    if (portPlan.action === 'reclaim-then-launch') {
+      await killOrphanOnPort(record.port, this.log)
     }
     const paths = pubPaths(this.state.home, name)
     const secrets = await readPubSecrets({
@@ -4435,18 +4481,30 @@ function today(): string {
  * Best-effort: if `lsof` is missing or returns nothing, we no-op.
  * Failures are logged at warn but never thrown.
  */
-async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
+/**
+ * PIDs LISTENing on a TCP port, via `lsof`. Empty when none, when lsof is
+ * missing, or on any error (best-effort, never throws).
+ */
+async function listenersOnPort(port: number): Promise<number[]> {
   try {
     const { execFile } = await import('node:child_process')
     const { promisify } = await import('node:util')
     const exec = promisify(execFile)
     const { stdout } = await exec('lsof', ['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-t'])
-    const pids = stdout
+    return stdout
       .trim()
       .split('\n')
       .filter(Boolean)
       .map((s) => Number(s))
       .filter((n) => Number.isFinite(n) && n > 0)
+  } catch {
+    return []
+  }
+}
+
+async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
+  try {
+    const pids = await listenersOnPort(port)
     if (pids.length === 0) return
     for (const pid of pids) {
       log.info('boot: killing orphan process holding pub port', { pid, port })
