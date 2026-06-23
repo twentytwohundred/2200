@@ -1,8 +1,14 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, configDefaults } from 'vitest/config'
 
 export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
+    // Chaos tests SIGKILL + restart real supervisor/agent processes and time
+    // their reconnect. Run concurrently with ~190 other files (16 workers
+    // saturating the CPU) they starve and flake on timing ... so they are
+    // excluded here and run isolated, single-fork, via vitest.chaos.config.ts
+    // (`pnpm test` runs both passes). See tests/chaos/.
+    exclude: [...configDefaults.exclude, 'tests/chaos/**'],
     globals: false,
     environment: 'node',
     coverage: {

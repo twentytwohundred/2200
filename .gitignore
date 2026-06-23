@@ -40,3 +40,7 @@ brain_dir/
 
 # npm pack output
 *.tgz
+
+# In-repo pnpm content store (pnpm falls back to a local store when the global
+# one is on a different filesystem, e.g. this repo on Dropbox).
+.pnpm-store/
