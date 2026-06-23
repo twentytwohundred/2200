@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.623.1638] ... 2026-06-23
+
+### Fixed
+
+- **The Studio no longer breaks (HTTP 409 on send) after a `2200 update`.** A pub-server can outlive the supervisor that spawned it ... an update restart, a SIGHUP self-upgrade, or a detached crash leaves it running and still holding its TCP port. On the next boot the fresh supervisor launched a _new_ pub-server on that same recorded port, which died instantly on `EADDRINUSE`; the pub record flipped to `errored`, and the supervisor's pub-bridge then reported `pub_not_running` ... so posting to the Studio returned HTTP 409, even though a perfectly healthy pub-server was sitting right there on the port. (Hit live on valkyrie right after updating to 2026.623.1612: a pub-server from days earlier held the port and every relaunch collided.) `startPub` now inspects the port before launching: if a healthy pub-server is already serving it, **adopt** it (no relaunch, no collision, no flap of the Agents' WebSockets); if a wedged listener is stuck there, reclaim it and launch fresh; otherwise just launch. The decision is a pure, unit-tested `planPubPort`. So an update (or any restart) brings the room back instead of stranding it.
+
 ## [2026.623.1612] ... 2026-06-23
 
 ### Fixed
