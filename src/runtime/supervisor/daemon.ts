@@ -173,6 +173,15 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<number> {
  * preserves Agent and pub child processes." The CLI follows up by
  * waiting for the PID file to clear and re-starting the daemon.
  */
+/**
+ * True when a live supervisor currently holds the daemon lock for this home.
+ * The lock is the single source of truth for "is the daemon up" ... a stale
+ * PID file without a held lock reads as not-running.
+ */
+export async function isSupervisorRunning(home: string): Promise<boolean> {
+  return isLockHeld(pidFilePath(home))
+}
+
 export async function signalDaemon(home: string, signal: NodeJS.Signals): Promise<boolean> {
   const pid = await readLivePid(home)
   if (pid === null) return false

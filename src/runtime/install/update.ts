@@ -146,37 +146,66 @@ export async function runNpmGlobalInstall(opts: {
   })
 }
 
-/**
- * Restart the daemon by invoking the freshly-installed CLI as a clean child
- * process (`<node> <mainPath> --home <home> daemon start`).
- *
- * Why not call startDaemon() in-process: `npm install -g` above just
- * overwrote THIS process's own files underneath it. Continuing to run the
- * old, half-replaced code to orchestrate the restart is the classic
- * self-upgrade hazard ... the parent can die before the restart lands,
- * leaving the daemon down and the web non-responsive with no signal. A fresh
- * child loads the NEW code from scratch and is immune to that.
- *
- * Awaits the child so its exit code is a real "daemon is up" (0) / "did not
- * come up" (non-zero) signal: the child's own startDaemon waits for the
- * supervisor lock before exiting. stdio is inherited so the operator sees
- * the start output (or the failure) in their terminal.
- */
-export async function restartDaemonFresh(opts: {
+/** Default liveness check: the freshly-started supervisor holds its lock. */
+async function supervisorLockHeld(home: string): Promise<boolean> {
+  const { isSupervisorRunning } = await import('../supervisor/daemon.js')
+  return isSupervisorRunning(home)
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise<void>((r) => setTimeout(r, ms))
+
+export interface RestartDaemonFreshOptions {
   mainPath: string
   home: string
   nodePath?: string
-}): Promise<number> {
+  /** How long to wait for the supervisor lock before reporting failure. Default 15s. */
+  waitMs?: number
+  /** Injectable spawn (tests). */
+  spawnImpl?: typeof spawn
+  /** Injectable liveness check (tests); defaults to the supervisor lock. */
+  confirmUp?: (home: string) => Promise<boolean>
+  /** Injectable sleep (tests). */
+  sleepMs?: (ms: number) => Promise<void>
+}
+
+/**
+ * Restart the daemon by invoking the freshly-installed CLI's `daemon start`
+ * as a FULLY DETACHED child, then confirm liveness by polling the supervisor
+ * lock.
+ *
+ * Why a fresh child (not in-process `startDaemon`): `npm install -g` above
+ * just overwrote THIS process's own files. Running the old, half-replaced
+ * code to orchestrate the restart is the classic self-upgrade hazard. A fresh
+ * child loads the NEW code and is immune.
+ *
+ * Why detached + poll (not inherit-stdio + await, as before): awaiting a
+ * stdio-inherited child tied the new daemon's fate to the parent `2200 update`
+ * process. Over SSH that parent dies the instant the command returns ... and
+ * took the mid-restart chain down with it, leaving the daemon DOWN (observed
+ * on valkyrie after a remote update). Detaching into its own session
+ * (`detached: true` => setsid on POSIX), with no inherited stdio and `unref`,
+ * means the new daemon comes up regardless of what happens to the parent. We
+ * then confirm via the lock rather than the child's exit, so the up/down
+ * signal does not depend on the parent surviving either; if the parent is
+ * killed mid-poll, the daemon is still coming up underneath ... strictly
+ * better than the old "daemon down".
+ */
+export async function restartDaemonFresh(opts: RestartDaemonFreshOptions): Promise<number> {
   const node = opts.nodePath ?? process.execPath
-  return new Promise<number>((resolve, reject) => {
-    const child = spawn(node, [opts.mainPath, '--home', opts.home, 'daemon', 'start'], {
-      stdio: 'inherit',
-    })
-    child.on('error', reject)
-    child.on('exit', (code) => {
-      resolve(code ?? 1)
-    })
+  const spawnImpl = opts.spawnImpl ?? spawn
+  const child = spawnImpl(node, [opts.mainPath, '--home', opts.home, 'daemon', 'start'], {
+    detached: true,
+    stdio: 'ignore',
   })
+  child.unref()
+  const confirmUp = opts.confirmUp ?? supervisorLockHeld
+  const sleepMs = opts.sleepMs ?? defaultSleep
+  const deadline = Date.now() + (opts.waitMs ?? 15_000)
+  for (;;) {
+    if (await confirmUp(opts.home)) return 0
+    if (Date.now() >= deadline) return 1
+    await sleepMs(150)
+  }
 }
 
 /**

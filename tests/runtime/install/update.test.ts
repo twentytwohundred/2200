@@ -5,10 +5,8 @@
  * they test directly. The registry fetcher is tested through a stubbed
  * `fetch` implementation so the suite is deterministic and offline-safe.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import type { spawn } from 'node:child_process'
 import {
   checkLatestVersion,
   compareSemver,
@@ -181,33 +179,58 @@ describe('detectInstallSource', () => {
 })
 
 describe('restartDaemonFresh', () => {
-  let tmp: string
-  beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), '2200-restart-fresh-'))
-  })
-  afterEach(async () => {
-    await rm(tmp, { recursive: true, force: true })
-  })
-
-  // The restart runs the FRESHLY-INSTALLED binary in a clean child (immune to
-  // the mid-overwrite parent) and surfaces its exit code as the "daemon is up"
-  // signal. Stub the entry with a script that echoes the chosen exit code so
-  // we exercise the spawn + exit-code plumbing without a real daemon.
-  async function stubMain(exitCode: number): Promise<string> {
-    const path = join(tmp, 'stub-main.cjs')
-    await writeFile(path, `process.exit(${String(exitCode)})\n`, 'utf8')
-    return path
+  // The restart spawns the freshly-installed `daemon start` FULLY DETACHED and
+  // confirms liveness by polling the supervisor lock ... NOT by awaiting the
+  // child. That decoupling is the fix for the remote/SSH update where the
+  // parent `2200 update` process dies the instant the command returns and used
+  // to take the half-started daemon down with it. A fake spawn keeps these
+  // unit tests from launching a real daemon.
+  let spawned: { command: string; args: string[]; options: unknown } | null
+  let unrefCalled: boolean
+  function fakeSpawn(): typeof spawn {
+    spawned = null
+    unrefCalled = false
+    return ((command: string, args: string[], options: unknown) => {
+      spawned = { command, args, options }
+      return { unref: () => (unrefCalled = true) }
+    }) as unknown as typeof spawn
   }
 
-  it('returns 0 when the fresh daemon-start child exits cleanly', async () => {
-    const mainPath = await stubMain(0)
-    const code = await restartDaemonFresh({ mainPath, home: tmp, nodePath: process.execPath })
-    expect(code).toBe(0)
+  it('spawns daemon-start detached + stdio-ignore + unref (survives a dying parent)', async () => {
+    await restartDaemonFresh({
+      mainPath: '/fresh/main.js',
+      home: '/h',
+      spawnImpl: fakeSpawn(),
+      confirmUp: () => Promise.resolve(true),
+      sleepMs: () => Promise.resolve(),
+    })
+    expect(spawned?.args).toEqual(['/fresh/main.js', '--home', '/h', 'daemon', 'start'])
+    expect(spawned?.options).toMatchObject({ detached: true, stdio: 'ignore' })
+    expect(unrefCalled).toBe(true)
   })
 
-  it('surfaces a non-zero exit so the caller can warn + tell the operator to restart', async () => {
-    const mainPath = await stubMain(7)
-    const code = await restartDaemonFresh({ mainPath, home: tmp, nodePath: process.execPath })
-    expect(code).toBe(7)
+  it('returns 0 once the supervisor lock is held (does not await the child)', async () => {
+    let polls = 0
+    const code = await restartDaemonFresh({
+      mainPath: '/fresh/main.js',
+      home: '/h',
+      spawnImpl: fakeSpawn(),
+      confirmUp: () => Promise.resolve(++polls >= 2), // up on the 2nd poll
+      sleepMs: () => Promise.resolve(),
+    })
+    expect(code).toBe(0)
+    expect(polls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('returns 1 when the daemon never comes up within the window', async () => {
+    const code = await restartDaemonFresh({
+      mainPath: '/fresh/main.js',
+      home: '/h',
+      spawnImpl: fakeSpawn(),
+      confirmUp: () => Promise.resolve(false),
+      sleepMs: () => Promise.resolve(),
+      waitMs: 50,
+    })
+    expect(code).toBe(1)
   })
 })
