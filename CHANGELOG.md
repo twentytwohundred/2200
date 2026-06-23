@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.623.1350] ... 2026-06-23
+
+### Changed
+
+- **The pub-server patch-overlay decision is now unit-tested (no behavior change).** The logic that overlays 2200's patched `server.js` onto an npm-installed pub-server (keepalive + Bartender-off) probes several candidate paths for both the installed file and the shipped patch ... and getting the shipped-patch depth wrong is the bug that shipped twice (`2026.617.327` then `.342`) before the overlay actually applied. The path-probing + marker decision is extracted into a pure, injectable `planPubServerPatch` with a dedicated test (finds the patch at a deeper bundle depth, idempotent when already patched, never overwrites with an unpatched copy, warns when no shipped patch is found). `ensurePubServerPatched` is now the thin I/O executor over that decision. This is the regression guard for the "Agents silently dropped from the Studio after ~60s" class of failure.
+
 ## [2026.622.2027] ... 2026-06-22
 
 ### Fixed
