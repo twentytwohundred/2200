@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.623.1612] ... 2026-06-23
+
+### Fixed
+
+- **The `supervisor-bounce-survival` chaos test no longer flakes under parallel CI load (test-only).** The test SIGKILLs the supervisor, restarts it, and waits for the agent to reconnect and advance its heartbeat. That reconnect wait was capped at 25s, which held in isolation but timed out when the full suite saturated the CPU with ~16 workers ... a false red that cost a re-run. Bumped the reconnect wait to 60s and the overall test budget to 150s so a slow-under-load run still passes (and a genuine hang fails with the test's own clear message, not a vitest timeout). No product code changed.
+
 ## [2026.623.1350] ... 2026-06-23
 
 ### Changed
