@@ -116,6 +116,58 @@ describe('OpenAIProvider native-tool-use fallback', () => {
   })
 })
 
+describe('OpenAIProvider apiKeyProvider (rotating bearer)', () => {
+  // Regression guard for the "Agent stops responding ~6h after start" bug: the
+  // fleet xai-subscription bearer rotates, and an Agent that captured it at
+  // spawn 403s once the cached copy expires. apiKeyProvider reads it fresh per
+  // request so the rotated token is picked up without restarting the Agent.
+  it('reads the bearer fresh on every request (picks up a rotated token)', async () => {
+    const bearers = ['bearer-OLD', 'bearer-NEW']
+    let call = 0
+    const seen: string[] = []
+    const fetchImpl = mockFetch((_, init) => {
+      seen.push((init.headers as Record<string, string>)['authorization'] ?? '')
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({
+      apiKeyProvider: () => bearers[call++] ?? 'bearer-OLD',
+      fetchImpl,
+    })
+    await provider.complete({ modelId: 'grok-4.3', messages: [{ role: 'user', content: 'a' }] })
+    await provider.complete({ modelId: 'grok-4.3', messages: [{ role: 'user', content: 'b' }] })
+    expect(seen[0]).toBe('Bearer bearer-OLD')
+    expect(seen[1]).toBe('Bearer bearer-NEW') // rotated token picked up, no reconstruction
+  })
+
+  it('supports an async apiKeyProvider', async () => {
+    let header = ''
+    const fetchImpl = mockFetch((_, init) => {
+      header = (init.headers as Record<string, string>)['authorization'] ?? ''
+      return jsonResponse({
+        id: 'x',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })
+    })
+    const provider = new OpenAIProvider({
+      apiKeyProvider: () => Promise.resolve('async-bearer'),
+      fetchImpl,
+    })
+    await provider.complete({ modelId: 'grok-4.3', messages: [{ role: 'user', content: 'a' }] })
+    expect(header).toBe('Bearer async-bearer')
+  })
+
+  it('throws if neither apiKey nor apiKeyProvider is given', () => {
+    expect(() => new OpenAIProvider({ fetchImpl: mockFetch(() => jsonResponse({})) })).toThrow(
+      /apiKey or apiKeyProvider/,
+    )
+  })
+})
+
 describe('OpenAIProvider baseUrl normalization', () => {
   it('appends /v1/chat/completions when baseUrl has no /v1 suffix', () => {
     const p = new OpenAIProvider({ apiKey: 'k', baseUrl: 'http://gb10:8000' })

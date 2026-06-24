@@ -185,8 +185,32 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
         opts.providerName,
       )
     }
+    // Hot-read the bearer per request rather than capturing token.bearer here.
+    // The fleet token is ~6h-lived and the background refresh rotates it; an
+    // Agent that cached the bearer at spawn 403s once that copy expires (it
+    // does not pick up the refreshed one). Reading it fresh per call ... cheap,
+    // one sealed-file decrypt ... means the Agent always uses the current
+    // token, no restart needed. The check above is the fail-fast at spawn.
+    const home = opts.home
     return new OpenAIProvider({
-      apiKey: token.bearer,
+      apiKeyProvider: async () => {
+        const fresh = await readOAuthToken(home, 'xai-oauth').catch(() => null)
+        if (!fresh) {
+          throw new LlmError(
+            'CONFIG_ERROR',
+            'xai-subscription is not signed in. Open Settings and click "Sign in with X / SuperGrok" (or run `2200 oauth xai login`).',
+            'xai-subscription',
+          )
+        }
+        if (fresh.metadata.expires_at_ms <= Date.now()) {
+          throw new LlmError(
+            'CONFIG_ERROR',
+            'xai-subscription token is expired and the background refresh has not landed a fresh one yet. Try again in ~60s, or re-sign-in from Settings.',
+            'xai-subscription',
+          )
+        }
+        return fresh.bearer
+      },
       baseUrl: vendor.baseUrl,
       providerName: 'xai-subscription',
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),

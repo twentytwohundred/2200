@@ -16,8 +16,22 @@ import type { CompletionRequest, CompletionResponse, Message, NativeToolCall } f
 const DEFAULT_BASE_URL = 'https://api.openai.com'
 
 export interface OpenAIProviderOptions {
-  /** Resolved API key. The provider does not log this. */
-  apiKey: string
+  /**
+   * Resolved API key. The provider does not log this. Static credential ...
+   * for rotating credentials (e.g. an OAuth subscription bearer that refreshes
+   * out from under a long-running Agent) pass `apiKeyProvider` instead so the
+   * key is read fresh per request.
+   */
+  apiKey?: string
+  /**
+   * Resolve the bearer FRESH on every request. Use for credentials that
+   * rotate while the provider is alive ... the fleet `xai-subscription` OAuth
+   * bearer is ~6h-lived and the background refresh rotates it, so an Agent
+   * that cached it at spawn would 403 once the cached copy expired. Reading it
+   * per call (cheap: decrypt one small sealed file) means the Agent always
+   * uses the current token without a restart. Takes precedence over `apiKey`.
+   */
+  apiKeyProvider?: () => string | Promise<string>
   /**
    * Override base URL. Defaults to https://api.openai.com. Use this for
    * OpenAI-compatible endpoints: pass the vendor's URL (e.g.,
@@ -99,6 +113,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly baseUrl: string
   readonly endpointUrl: string
   private readonly apiKey: string
+  private readonly apiKeyProvider?: () => string | Promise<string>
   private readonly fetchImpl: typeof fetch
   // Set to `true` once we observe an upstream that rejects native
   // tool-use specs (vLLM without --enable-auto-tool-choice is the
@@ -110,7 +125,11 @@ export class OpenAIProvider implements LLMProvider {
   private nativeToolsDisabled = false
 
   constructor(opts: OpenAIProviderOptions) {
-    this.apiKey = opts.apiKey
+    if (opts.apiKey === undefined && opts.apiKeyProvider === undefined) {
+      throw new Error('OpenAIProvider requires either apiKey or apiKeyProvider')
+    }
+    this.apiKey = opts.apiKey ?? ''
+    if (opts.apiKeyProvider) this.apiKeyProvider = opts.apiKeyProvider
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
     // Handle the two conventional baseUrl shapes:
     //   1. Without `/v1` suffix (legacy 2200 shape):
@@ -159,12 +178,17 @@ export class OpenAIProvider implements LLMProvider {
       body.tool_choice = 'auto'
     }
 
+    // Resolve the bearer ONCE per complete() ... fresh when apiKeyProvider is
+    // set (rotating subscription token), static otherwise. Used for both the
+    // initial request and the native-tools-disabled retry below.
+    const apiKey = this.apiKeyProvider ? await this.apiKeyProvider() : this.apiKey
+
     const post = async (): Promise<Response> => {
       try {
         return await this.fetchImpl(this.endpointUrl, {
           method: 'POST',
           headers: {
-            authorization: `Bearer ${this.apiKey}`,
+            authorization: `Bearer ${apiKey}`,
             'content-type': 'application/json',
           },
           body: JSON.stringify(body),
