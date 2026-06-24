@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.624.1204] ... 2026-06-24
+
+### Fixed
+
+- **Agents no longer go silent ~6h after they start.** An Agent bound to the `xai-subscription` (SuperGrok) provider captured the OAuth bearer once, at spawn. The fleet bearer is ~6h-lived and the background refresh rotates it ... but a running Agent never picked up the new one, so once its cached copy expired, **every** LLM call returned `403 auth failed`: the ambient router (so nobody chimes in on an untagged message, and the member dots stay grey/idle) AND the main loop (so even an @-mention couldn't actually reply). Only a restart fixed it, until the next rotation. The pub-server already re-read the rotated token; Agents now do too ... the `xai-subscription` provider reads the bearer **fresh from the sealed token store on every request** (one small decrypt, no network), so a rotated fleet token is used immediately with no restart and no 6-hourly Agent flapping. (The same fix covers the per-Agent ambient router, which shares the provider.) Other providers are unchanged ... static API keys are still captured once.
+
 ## [2026.623.1738] ... 2026-06-23
 
 ### Changed
