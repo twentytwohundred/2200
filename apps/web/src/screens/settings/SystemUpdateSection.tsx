@@ -22,7 +22,13 @@
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, NetworkError, apiSystem, type UpgradeStatus } from '../../lib/api'
+import {
+  ApiError,
+  NetworkError,
+  apiSystem,
+  type FleetRestartResult,
+  type UpgradeStatus,
+} from '../../lib/api'
 import { Card, ErrorState, KV, LoadingState, Pill, cx } from '../../primitives'
 import { shouldShowUpgradeProgress } from './upgradeProgress'
 import styles from './SettingsScreen.module.css'
@@ -211,7 +217,87 @@ export function SystemUpdateSection(): ReactElement {
           error={update.error}
         />
       )}
+
+      <RestartFleetAction disabled={upgradeActive} />
     </Card>
+  )
+}
+
+/**
+ * "Restart all Agents & services" ... bounces every pub-server, Agent, and
+ * connector gateway (the daemon stays up). The cure for a wedged Agent.
+ * Two-step inline confirm per [[feedback_no_browser_popups]].
+ */
+function RestartFleetAction({ disabled }: { disabled: boolean }): ReactElement {
+  const [armed, setArmed] = useState(false)
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (armTimer.current) clearTimeout(armTimer.current)
+    },
+    [],
+  )
+  const restart = useMutation<FleetRestartResult>({ mutationFn: () => apiSystem.restart() })
+
+  const arm = (): void => {
+    setArmed(true)
+    if (armTimer.current) clearTimeout(armTimer.current)
+    armTimer.current = setTimeout(() => {
+      setArmed(false)
+    }, 5000)
+  }
+  const cancel = (): void => {
+    setArmed(false)
+    if (armTimer.current) {
+      clearTimeout(armTimer.current)
+      armTimer.current = null
+    }
+  }
+  const confirm = (): void => {
+    cancel()
+    restart.mutate()
+  }
+
+  const result = restart.data
+  const failures = result ? [...result.agents, ...result.pubs].filter((t) => !t.ok) : []
+
+  return (
+    <div
+      className={styles.systemNote}
+      style={{ marginTop: 16, borderTop: '1px solid var(--ds-border-strong)', paddingTop: 16 }}
+    >
+      <div>
+        Restart all Agents and services (pub-servers, connector gateways). The daemon stays up; your
+        fleet state is untouched. Use this if an Agent gets stuck or stops responding.
+      </div>
+      <button
+        type="button"
+        className={cx(
+          styles.providerBtn,
+          armed ? styles.providerBtnDanger : styles.providerBtnPrimary,
+        )}
+        onClick={armed ? confirm : arm}
+        onMouseLeave={armed ? cancel : undefined}
+        disabled={disabled || restart.isPending}
+      >
+        {restart.isPending
+          ? 'RESTARTING…'
+          : armed
+            ? 'CLICK TO CONFIRM'
+            : 'RESTART ALL AGENTS & SERVICES'}
+      </button>
+      {restart.isError ? (
+        <ErrorState title="Restart failed" body={formatError(restart.error)} />
+      ) : result ? (
+        <div>
+          Restarted {result.agents.filter((a) => a.ok).length}/{result.agents.length} Agents and{' '}
+          {result.pubs.filter((p) => p.ok).length}/{result.pubs.length} services.
+          {failures.length > 0 ? (
+            <span> Failed: {failures.map((f) => f.name).join(', ')}.</span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

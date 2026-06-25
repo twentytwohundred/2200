@@ -2841,6 +2841,54 @@ export class Supervisor {
   }
 
   /**
+   * Operator-triggered "restart everything": bounce every pub-server and every
+   * Agent process, WITHOUT touching the daemon itself (the daemon serves the
+   * web request that calls this, so it must stay up). Pubs are restarted FIRST
+   * so Agents reconnect to fresh pub-servers; then each Agent is restarted ...
+   * which is what clears a wedged Agent (e.g. one stuck `blocked_on_agent`).
+   * Connector gateways are refreshed by the caller (they live in the HTTP
+   * layer's GatewayManager).
+   *
+   * Best-effort and independent: one pub or Agent failing to come back does
+   * not abort the rest. Returns a per-target summary so the UI can report
+   * exactly what restarted and what didn't.
+   */
+  async restartFleet(reason = 'operator_restart'): Promise<{
+    pubs: { name: string; ok: boolean; error?: string }[]
+    agents: { name: string; ok: boolean; error?: string }[]
+  }> {
+    const snap = this.snapshot()
+    const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+    const pubs: { name: string; ok: boolean; error?: string }[] = []
+    for (const name of Object.keys(snap.pubs)) {
+      try {
+        await this.stopPub(name, reason)
+        await this.startPub(name)
+        pubs.push({ name, ok: true })
+      } catch (err) {
+        pubs.push({ name, ok: false, error: errText(err) })
+      }
+    }
+    const agents: { name: string; ok: boolean; error?: string }[] = []
+    for (const name of Object.keys(snap.agents)) {
+      try {
+        await this.restartAgent(name, reason)
+        agents.push({ name, ok: true })
+      } catch (err) {
+        agents.push({ name, ok: false, error: errText(err) })
+      }
+    }
+    this.log.info('fleet restart complete', {
+      pubs_ok: pubs.filter((p) => p.ok).length,
+      pubs_total: pubs.length,
+      agents_ok: agents.filter((a) => a.ok).length,
+      agents_total: agents.length,
+      reason,
+    })
+    return { pubs, agents }
+  }
+
+  /**
    * Remove an Agent: stop the running process if any, clear the
    * in-memory record, persist the state change, and delete the
    * on-disk per-Agent directory tree under `<home>/agents/<name>/`.

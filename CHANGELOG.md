@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.625.1807] ... 2026-06-25
+
+### Added
+
+- **A "Restart all Agents & services" button in Settings → System.** When an Agent gets wedged (e.g. stuck `blocked_on_agent` and no longer responding), there was no in-app way to recover it ... you had to drop to the CLI. The new button bounces every pub-server, Agent, and connector gateway in one click, WITHOUT restarting the daemon itself (it stays up to serve the request and orchestrate the restart, so the web app never goes dark). Pubs restart first so Agents reconnect to fresh pub-servers; then each Agent is restarted (the actual unstick); then connector gateways are refreshed. Two-step inline confirm (no browser popup), and the result reports exactly how many Agents and services came back (and names any that didn't). Backed by `POST /api/v1/system/restart` → `Supervisor.restartFleet()`, best-effort and independent per target. Your fleet state on disk is untouched.
+
 ## [2026.624.1204] ... 2026-06-24
 
 ### Fixed
