@@ -1662,6 +1662,19 @@ export const apiSystem = {
       body: body ?? {},
     }),
   upgradeStatus: () => request<{ status: UpgradeStatus | null }>('/api/v1/system/upgrade-status'),
+  /**
+   * Restart every pub-server, Agent, and connector gateway (NOT the daemon ...
+   * it serves this request and stays up). Cures a wedged Agent. Returns a
+   * per-target summary.
+   */
+  restart: () =>
+    request<FleetRestartResult>('/api/v1/system/restart', { method: 'POST', body: {} }),
+}
+
+/** Result of POST /api/v1/system/restart ... one entry per pub + Agent. */
+export interface FleetRestartResult {
+  pubs: { name: string; ok: boolean; error?: string }[]
+  agents: { name: string; ok: boolean; error?: string }[]
 }
 
 /**

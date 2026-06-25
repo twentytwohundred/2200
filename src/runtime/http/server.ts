@@ -963,6 +963,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/system/version' },
       { method: 'POST', path: '/api/v1/system/update' },
       { method: 'GET', path: '/api/v1/system/upgrade-status' },
+      { method: 'POST', path: '/api/v1/system/restart' },
       { method: 'GET', path: '/api/v1/agents' },
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
@@ -4490,6 +4491,29 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     home,
     supervisorUrl: `http://127.0.0.1:${String(port)}`,
     catalogPath,
+  })
+
+  // Operator "restart everything" ... bounce every pub-server, Agent, and
+  // connector gateway WITHOUT restarting the daemon (it serves this request).
+  // This is the cure for a wedged Agent (e.g. stuck `blocked_on_agent`) and a
+  // general "kick the tyres" for the fleet. The daemon staying up is why this
+  // is safe to call from the web UI; a full daemon restart is a CLI/ops action.
+  fastify.post('/api/v1/system/restart', async () => {
+    const result = await supervisor.restartFleet('operator_restart')
+    // Refresh connector gateways too (best-effort, like boot recovery). The
+    // platform single-bot semantics take over any orphan from the old gateway.
+    void recoverGateways({
+      home,
+      catalogPath,
+      gatewayManager,
+      snapshot: () => supervisor.snapshot(),
+      log: log?.child('gateway-recovery'),
+    }).catch((err: unknown) => {
+      log?.warn('gateway refresh during restart failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+    return result
   })
 
   interface PairState {

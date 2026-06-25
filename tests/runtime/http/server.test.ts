@@ -92,6 +92,25 @@ describe('HTTP server', () => {
     expect(r.body).toMatchObject({ healthy: true })
   })
 
+  it('POST /api/v1/system/restart restarts the fleet and returns a per-target summary', async () => {
+    // Clean home ... nothing to restart, but the endpoint must exist, be
+    // authed, and return the {pubs, agents} summary shape the UI renders.
+    const res = await fetch(`${handle.url}/api/v1/system/restart`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { pubs: unknown[]; agents: unknown[] }
+    expect(Array.isArray(body.pubs)).toBe(true)
+    expect(Array.isArray(body.agents)).toBe(true)
+    expect(body.agents).toEqual([])
+  })
+
+  it('POST /api/v1/system/restart without a bearer is 401', async () => {
+    const res = await fetch(`${handle.url}/api/v1/system/restart`, { method: 'POST' })
+    expect(res.status).toBe(401)
+  })
+
   it('GET /api/v1/me without a bearer is 401 with the standard envelope', async () => {
     const r = await get('/api/v1/me', { auth: false })
     expect(r.status).toBe(401)
