@@ -306,20 +306,30 @@ describe('HTTP server', () => {
     expect(text).toMatch(/2200 web/)
   })
 
-  it('GET /api/v1/me accepts ?token=<value> in the URL as an alternative to the Authorization header', async () => {
-    // Browsers cannot set the Authorization header on EventSource or
-    // WebSocket connections, so the URL fallback is load-bearing for
-    // those surfaces. Tested explicitly for HTTP first since the same
-    // authenticate() function gates both paths.
-    const res = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { kind: string; name: string }
+  it('GET /api/v1/me does NOT accept ?token= (query-token is scoped to WS + avatar image only)', async () => {
+    // Security: a bearer must never ride in the URL for an ordinary API call
+    // (URLs leak via history, referrers, proxy logs). Only the WS upgrade and
+    // the avatar-image GET ... where a browser genuinely can't set a header ...
+    // accept ?token=. So a valid token in the query on /api/v1/me is rejected;
+    // the header form works.
+    const viaQuery = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
+    expect(viaQuery.status).toBe(401)
+    const viaHeader = await fetch(`${handle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(viaHeader.status).toBe(200)
+    const body = (await viaHeader.json()) as { kind: string; name: string }
     expect(body).toMatchObject({ kind: 'user', name: 'default' })
   })
 
-  it('GET /api/v1/me with a bogus ?token= is 401', async () => {
-    const res = await fetch(`${handle.url}/api/v1/me?token=bogus-not-a-real-token`)
-    expect(res.status).toBe(401)
+  it('GET /api/v1/agents/:name/avatar/image DOES accept ?token= (loaded via <img>)', async () => {
+    // The avatar image is loaded through an <img src>, which can't carry a
+    // header ... so the query-token form must still work here (404 for a
+    // missing image is fine; the point is auth passed, not a 401).
+    const res = await fetch(
+      `${handle.url}/api/v1/agents/default/avatar/image?token=${encodeURIComponent(token)}`,
+    )
+    expect(res.status).not.toBe(401)
   })
 })
 

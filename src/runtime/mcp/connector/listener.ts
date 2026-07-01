@@ -113,22 +113,27 @@ export async function startConnectorListener(
     },
   )
 
-  // The OAuth Authorization Server endpoints advertise their own
-  // issuer URL (RFC 8414 metadata). Since the listener doesn't know
-  // its public-facing URL (the tunnel decides), derive it from each
-  // request's Host / X-Forwarded-Host header on the fly. Captured
-  // here so all OAuth handlers can read the most-recent value.
-  let lastSeenIssuer: string | null = null
-  fastify.addHook('onRequest', (req, _reply, done) => {
+  // The OAuth Authorization Server endpoints advertise their own issuer URL
+  // (RFC 8414 metadata). The secure source is an operator-configured public
+  // URL: `TWENTYTWOHUNDRED_PUBLIC_URL` (the tunnel hostname, e.g.
+  // `https://name.2200.ai`). When set, the issuer is PINNED to it ... the
+  // request Host is never reflected, which closes the host-header-injection
+  // vector (an attacker can't make the AS advertise a rogue token_endpoint
+  // that a discovering client would POST its code + client_secret to) and
+  // removes any cross-request state. When it is NOT set (local dev, pre-tunnel),
+  // we fall back to deriving from this request's Host header ... computed
+  // per-request (no shared mutable, so concurrent requests can't poison each
+  // other's metadata), defaulting to loopback.
+  const pinnedIssuer = (process.env['TWENTYTWOHUNDRED_PUBLIC_URL'] ?? '').trim().replace(/\/+$/, '')
+  const issuerFor = (req: FastifyRequest): string => {
+    if (pinnedIssuer.length > 0) return pinnedIssuer
     const xfh = req.headers['x-forwarded-host']
     const host = typeof xfh === 'string' ? xfh : req.headers.host
     const xfp = req.headers['x-forwarded-proto']
     const proto = typeof xfp === 'string' ? xfp : 'https'
-    if (typeof host === 'string' && host.length > 0) {
-      lastSeenIssuer = `${proto}://${host}`
-    }
-    done()
-  })
+    if (typeof host === 'string' && host.length > 0) return `${proto}://${host}`
+    return `http://127.0.0.1:${String(args.port)}`
+  }
 
   // Mount the OAuth Authorization Server endpoints (Phase 2 PR-A1).
   // These live on `/oauth/*` + `/.well-known/oauth-authorization-server` + `/.well-known/oauth-protected-resource`
@@ -137,7 +142,7 @@ export async function startConnectorListener(
   mountOAuthServer(fastify, {
     home: args.home,
     audit: args.audit,
-    issuerBaseUrl: () => lastSeenIssuer ?? `http://127.0.0.1:${String(args.port)}`,
+    issuerBaseUrl: issuerFor,
   })
 
   // Pre-handler: routes-that-need-bearer-auth path.

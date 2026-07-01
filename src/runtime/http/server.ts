@@ -254,6 +254,34 @@ function resolveStaticDir(override?: string): string | null {
   return null
 }
 
+/**
+ * True when the request originated from the local host. The gateway→supervisor
+ * internal pushes (connector inbound, pair-state) are posted by child processes
+ * on the same box via `SUPERVISOR_URL=http://127.0.0.1:<port>`, so they are
+ * loopback by construction. We gate those otherwise-unauthenticated endpoints
+ * on this so a request arriving from off-box (e.g. across the LAN when the web
+ * server binds `0.0.0.0`) is rejected. `trustProxy` is left at its default
+ * (off), so `req.ip` is the real socket peer, not a spoofable forwarded header.
+ */
+function isLoopbackRequest(req: FastifyRequest): boolean {
+  const ip = req.ip.length > 0 ? req.ip : (req.socket.remoteAddress ?? '')
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('127.')
+}
+
+/**
+ * The only routes where a `?token=` query param is accepted as a bearer
+ * equivalent: the WebSocket upgrade and the avatar-image GET. Browsers cannot
+ * set an Authorization header on a WS upgrade or an `<img src>` load, so those
+ * two genuinely need the URL form. Every other route requires the header, so a
+ * bearer never rides in a URL (which leaks via browser history, referrers, and
+ * proxy/access logs) for an ordinary API call.
+ */
+function queryTokenAllowed(req: FastifyRequest): boolean {
+  const path = req.url.split('?')[0] ?? req.url
+  if (path.startsWith('/api/v1/ws')) return true
+  return req.method === 'GET' && /^\/api\/v1\/agents\/[^/]+\/avatar\/image$/.test(path)
+}
+
 export async function startHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
   const { supervisor, home } = options
   const port = options.port ?? 2200
@@ -325,14 +353,15 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // require a bearer token that resolves to a token record on disk.
   // ------------------------------------------------------------------------
   async function authenticate(req: FastifyRequest): Promise<Principal> {
-    // Browsers cannot set the Authorization header on a WebSocket upgrade.
-    // Accept ?token=<value> in the URL as an equivalent for the WS route.
     let value: string | undefined
     const header = req.headers.authorization ?? ''
     const match = /^Bearer\s+([\S]+)$/.exec(header)
     if (match?.[1]) {
       value = match[1]
-    } else {
+    } else if (queryTokenAllowed(req)) {
+      // Only the WS upgrade and the avatar-image GET may carry the bearer as
+      // a ?token= query param (browsers can't set a header on those). All
+      // other routes require the Authorization header ... see queryTokenAllowed.
       const url = new URL(req.url, 'http://placeholder')
       const fromQuery = url.searchParams.get('token')
       if (fromQuery) value = fromQuery
@@ -356,23 +385,25 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     if (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/icon$/.test(req.url)) {
       return
     }
-    // Gateway → supervisor pair-state push is loopback-only (the
-    // gateway child process runs on the same host as the supervisor).
-    // The GET counterpart stays authenticated.
+    // Gateway → supervisor internal pushes (pair-state, connector inbound).
+    // The gateway child runs on the same host and posts to 127.0.0.1
+    // (SUPERVISOR_URL), so these are loopback-only by construction. Enforce
+    // it: a same-box push is allowed without a bearer (the child has no user
+    // token), but a request from off-box (e.g. across the LAN under a 0.0.0.0
+    // bind) is rejected ... closing the unauthenticated-inbound vector that
+    // would otherwise let any LAN host forge connector events or pairing
+    // state. The GET counterparts stay bearer-authenticated below.
     if (
       req.method === 'POST' &&
-      /^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url)
+      (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url) ||
+        /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url))
     ) {
-      return
-    }
-    // Connector gateways post their inbound events here. Same
-    // loopback-only rationale as pair/state; the substrate-side
-    // endpoint validates the Extension manifest carefully.
-    if (
-      req.method === 'POST' &&
-      /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url)
-    ) {
-      return
+      if (isLoopbackRequest(req)) return
+      throw new ApiError(
+        403,
+        'loopback_only',
+        'This endpoint accepts requests from the local host only.',
+      )
     }
     const principal = await authenticate(req)
     ;(req as AuthedRequest).principal = principal
