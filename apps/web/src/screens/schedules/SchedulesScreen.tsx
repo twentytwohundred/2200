@@ -4,7 +4,7 @@
  * Body extracted to <SchedulesBody> so the same surface can render
  * either standalone here OR inside the Agent screen's Schedules tab.
  */
-import { useCallback, useState, type SyntheticEvent, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type SyntheticEvent, type ReactElement } from 'react'
 import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -170,6 +170,20 @@ interface ScheduleRowProps {
 }
 
 function ScheduleRow({ schedule, onToggle, onDelete, pending }: ScheduleRowProps): ReactElement {
+  // Two-step inline confirm ... deleting a schedule is destructive and every
+  // other destructive action in the app arms first (no browser popups). First
+  // click arms, second within the window fires; it auto-disarms so a stray
+  // arm doesn't linger.
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => {
+      setArmed(false)
+    }, 4000)
+    return () => {
+      clearTimeout(t)
+    }
+  }, [armed])
   return (
     <div className={styles.scheduleRow} data-disabled={!schedule.enabled}>
       <div>
@@ -202,8 +216,20 @@ function ScheduleRow({ schedule, onToggle, onDelete, pending }: ScheduleRowProps
         >
           {schedule.enabled ? 'Disable' : 'Enable'}
         </Button>
-        <Button size="sm" variant="destructive" disabled={pending} onClick={onDelete}>
-          Delete
+        <Button
+          size="sm"
+          variant="destructive"
+          disabled={pending}
+          onClick={() => {
+            if (armed) {
+              setArmed(false)
+              onDelete()
+            } else {
+              setArmed(true)
+            }
+          }}
+        >
+          {armed ? 'Confirm delete?' : 'Delete'}
         </Button>
       </div>
     </div>

@@ -20,6 +20,9 @@
  * See https://github.com/twentytwohundred/wiki/blob/main/epics/02-agent-runtime-minimum.md
  * for the locked Epic 2 spec.
  */
+// MUST be first: guards the Node version before any native-addon module
+// (better-sqlite3 via the Supervisor) is evaluated. See the module doc.
+import './node-version-guard.js'
 import { fileURLToPath } from 'node:url'
 import * as readline from 'node:readline'
 import { readdir, readFile } from 'node:fs/promises'

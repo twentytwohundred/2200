@@ -54,7 +54,9 @@ export function Router(): ReactElement {
         <Route path="/rooms" element={<RoomsScreen />} />
         <Route path="/fleet" element={<FleetDocScreen />} />
         <Route path="/extensions" element={<ExtensionsScreen />} />
-        <Route path="/dev/components" element={<ComponentsPage />} />
+        {/* Internal primitives reference ... dev builds only, never shipped to
+            a production instance an operator or demo audience can reach. */}
+        {import.meta.env.DEV && <Route path="/dev/components" element={<ComponentsPage />} />}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

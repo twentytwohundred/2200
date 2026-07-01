@@ -61,11 +61,11 @@
 }
 
 .statusOn {
-  color: var(--ds-success, #2e7d32) !important;
+  color: var(--success) !important;
 }
 
 .statusOff {
-  color: var(--ds-warning, #b35900) !important;
+  color: var(--warn) !important;
 }
 
 .tokenRow {
@@ -121,7 +121,7 @@
 
 .warnBlock {
   padding: 10px 12px;
-  border: 1px solid var(--ds-warning, #b35900);
+  border: 1px solid var(--warn);
   border-radius: 6px;
   background: rgba(179, 89, 0, 0.06);
   font-size: 13px;
@@ -130,7 +130,7 @@
 
 .errorBlock {
   padding: 10px 12px;
-  border: 1px solid var(--ds-danger, #b00020);
+  border: 1px solid var(--danger);
   border-radius: 6px;
   background: rgba(176, 0, 32, 0.06);
   font-size: 13px;
@@ -191,8 +191,8 @@
 .dangerButton {
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--ds-danger, #b00020);
-  background: var(--ds-danger, #b00020);
+  border: 1px solid var(--danger);
+  background: var(--danger);
   color: var(--ds-bg);
   font-size: 13px;
   cursor: pointer;
