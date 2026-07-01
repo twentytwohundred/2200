@@ -83,6 +83,7 @@ import {
 import { GatewayManager } from '../connectors/gateway-manager.js'
 import { upsertConnectorBinding } from '../identity/binding-writer.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import { validateLocalEndpoint, type ValidateKeyResult } from '../llm/validate-key.js'
 import { pickOnboardingProvider } from '../onboarding/pick-provider.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
@@ -160,6 +161,16 @@ export interface HttpServerOptions {
    * 2200.ai; dev falls back to the in-repo `extensions-catalog/v1.json`.
    */
   catalogPath?: string
+  /**
+   * Injectable reachability probe for the `local` provider at onboarding
+   * start (testing). Defaults to the real `validateLocalEndpoint`, which
+   * hits `<baseUrl>/v1/models`. Lets tests assert the "dead local endpoint
+   * fails onboarding with an actionable error" path without a live server.
+   */
+  probeLocalEndpoint?: (args: {
+    baseUrl: string
+    apiKey?: string
+  }) => Promise<ValidateKeyResult>
 }
 
 export interface HttpServerHandle {
@@ -4082,6 +4093,33 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         }`,
       )
     }
+    // Fail fast if the operator picked the `local` provider but the endpoint
+    // isn't reachable. The interview swallows provider errors by design (never
+    // 500 on a transient model hiccup), but that means a persistently-dead
+    // provider silently produces a garbage half-Agent bound to a provider that
+    // can never chat ... and `local` (Ollama at localhost, the cold-start
+    // fallback the first-run card offers) is the exact endpoint most likely to
+    // be down. A cheap upfront `/v1/models` probe turns that into an actionable
+    // error before the interview starts. Only `local` is probed here: cloud
+    // keys are validated at paste-time in Settings, and the subscription's
+    // token freshness was already checked above.
+    if (providerName === 'local') {
+      const baseUrl =
+        env['LOCAL_BASE_URL'] ?? process.env['LOCAL_BASE_URL'] ?? 'http://localhost:11434/v1'
+      const apiKey = env['LOCAL_API_KEY'] ?? process.env['LOCAL_API_KEY']
+      const probe = options.probeLocalEndpoint ?? validateLocalEndpoint
+      const result = await probe(apiKey !== undefined ? { baseUrl, apiKey } : { baseUrl })
+      if (!result.ok) {
+        const detail =
+          result.reason === 'network_error'
+            ? `Couldn't reach your local model at ${baseUrl}. Is the server (Ollama / LM Studio / vLLM) running and reachable? (${result.message})`
+            : result.reason === 'auth_failed'
+              ? `Your local model at ${baseUrl} requires a key and rejected the current one. Set LOCAL_API_KEY in Settings → Providers. (HTTP ${String(result.status)})`
+              : `Your local model at ${baseUrl} returned an unexpected response (HTTP ${String(result.status)}). ${result.message}`
+        throw new ApiError(503, 'llm_provider_unreachable', detail)
+      }
+    }
+
     const id = `onb_${newId().replace(/^req_/, '')}`
     const session = new OnboardingSession({ id, script, provider, modelId })
     sessions.register(session)
