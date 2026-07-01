@@ -2483,16 +2483,21 @@ export class Supervisor {
   /**
    * Ensure a default "studio" pub exists with EVERY Agent enrolled ... the
    * shared room "everyone is in." Run at boot BEFORE Agents are revived (so
-   * they attach the studio wake source on their first start, no extra restart).
+   * they attach the studio wake source on their first start, no extra restart),
+   * AND on Agent creation before the new Agent is started (same reason ... a
+   * fresh install boots the daemon with zero Agents, so boot's call no-ops; the
+   * first Agent arrives later via onboarding confirm and must get the studio
+   * wired up before it starts, or it has no room to appear in and its seeded
+   * orientation post to `studio` fails).
    *
    * Idempotent + self-healing: creates the studio pub only if missing, and
-   * enrolls every Agent every boot (enrollAgentInPub + addPubToAgentFile both
+   * enrolls every Agent every call (enrollAgentInPub + addPubToAgentFile both
    * no-op when already done). It iterates EVERY Agent in state regardless of
    * origin, so an Agent created fresh OR imported from OpenClaw ... including one
    * added after the studio already existed ... gets enrolled. FULLY best-effort:
-   * any failure is logged and swallowed so it can never break boot.
+   * any failure is logged and swallowed so it can never break boot or a spawn.
    */
-  private async ensureStudioPub(): Promise<void> {
+  async ensureStudioPub(): Promise<void> {
     const STUDIO = 'studio'
     try {
       const agentNames = Object.keys(this.state.agents)
