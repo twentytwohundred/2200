@@ -231,7 +231,16 @@ export async function runFirstRun(
   // without SuperGrok rely on this path to leave first-run with a
   // working credential.
   // ------------------------------------------------------------------
-  await runFirstRunApiKeyProviders(io)
+  const keysAdded = await runFirstRunApiKeyProviders(io)
+  // The keys just written to runtime.env are invisible to the daemon started
+  // back in step 3 ... a supervisor loads runtime.env only at boot, so a
+  // freshly-pasted key would surface as "env var 'ANTHROPIC_API_KEY' is not
+  // set" the moment the operator tries to onboard their first Agent. Restart
+  // the daemon now so the keys are live before setup finishes. (The OpenClaw
+  // migration path above already does the same for its migrated keys.)
+  if (keysAdded > 0) {
+    await restartDaemonForProviderKeys(io, home)
+  }
 
   // ------------------------------------------------------------------
   // 5b. MCP connector setup (optional, default NO).
@@ -520,7 +529,7 @@ async function finishInteractiveCutover(
   // run a turn (answer a Discord message, anything) until the daemon reloads
   // it. Restart now ... BEFORE wiring Discord ... so the Agent comes back
   // cred-equipped and the gateway we start next survives (no later restart).
-  await restartDaemonForMigratedKeys(io, home)
+  await restartDaemonForProviderKeys(io, home)
 
   let discord: Awaited<ReturnType<typeof collectOpenClawDiscord>>
   try {
@@ -551,14 +560,15 @@ async function finishInteractiveCutover(
 }
 
 /**
- * Restart the supervisor so a just-migrated Agent's LLM provider keys
- * (written to runtime.env during migration) are actually loaded into the
- * env every Agent inherits. Waits for the HTTP server to accept requests
- * again, since the Discord cutover POSTs to it next. Best-effort: a failed
- * health probe still returns (the daemon is up; the cutover will retry).
+ * Restart the supervisor so LLM provider keys just written to runtime.env
+ * (during OpenClaw migration OR first-run API-key entry) are actually loaded
+ * into the env every Agent inherits ... a supervisor reads runtime.env only at
+ * boot. Waits for the HTTP server to accept requests again, since later setup
+ * steps (Discord cutover, onboarding) POST to it. Best-effort: a failed health
+ * probe still returns (the daemon is up; the next call will retry).
  */
-async function restartDaemonForMigratedKeys(io: FirstRunIO, home: string): Promise<void> {
-  io.info('Restarting 2200 so your migrated provider keys take effect...')
+async function restartDaemonForProviderKeys(io: FirstRunIO, home: string): Promise<void> {
+  io.info('Restarting 2200 so your provider keys take effect...')
   await killDaemon(home)
   await startDaemon({ home })
   const { webPortFromEnv } = await import('./quick-setup.js')
@@ -797,14 +807,14 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
  * restart` (which is part of the natural "next session" workflow,
  * not something they need to do right now).
  */
-export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> {
+export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<number> {
   const all = listKnownProviders()
   // Surface paste-a-key providers (`api-key`) AND self-hosted (`local`).
   // The `subscription` provider (xai-subscription) is reachable via the
   // SuperGrok step above (the preferred path). Local has a different shape
   // (base URL + OPTIONAL key) so it's prompted differently below.
   const candidates = all.filter((p) => p.category === 'api-key' || p.category === 'local')
-  if (candidates.length === 0) return // defensive; registry always has these
+  if (candidates.length === 0) return 0 // defensive; registry always has these
 
   io.info('Other LLM providers (optional ... Grok above is the easy path).')
   io.info('')
@@ -854,13 +864,15 @@ export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> 
     io.success(
       `Saved ${String(added)} API key${added === 1 ? '' : 's'} to ${userRuntimeEnvPath()}.`,
     )
-    io.info('The key takes effect on the next supervisor restart (next 2200 launch, or')
-    io.info('run `2200 daemon restart` now). Agents pick their provider when you build them.')
+    io.info('Agents pick their provider when you build them.')
     io.info('')
   } else {
     io.info('No API keys configured. You can add them later from the CLI or Settings.')
     io.info('')
   }
+  // Caller restarts the daemon when this is > 0 so the just-written keys are
+  // actually loaded into the running supervisor's env (frozen at boot).
+  return added
 }
 
 /**
