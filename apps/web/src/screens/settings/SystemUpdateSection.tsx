@@ -30,7 +30,7 @@ import {
   type UpgradeStatus,
 } from '../../lib/api'
 import { Card, ErrorState, KV, LoadingState, Pill, cx } from '../../primitives'
-import { shouldShowUpgradeProgress } from './upgradeProgress'
+import { shouldShowUpgradeProgress, nextUpgradePollInterval } from './upgradeProgress'
 import styles from './SettingsScreen.module.css'
 
 function formatError(err: unknown): string {
@@ -75,6 +75,13 @@ export function SystemUpdateSection(): ReactElement {
   // because invalidating the queryKey forces a refetch). When a
   // non-terminal stage is active or we have not loaded yet, poll
   // every 2s.
+  // Latch: "an upgrade is in flight." Set when we see a live stage or the
+  // operator clicks Upgrade; cleared when a terminal stage lands. It's what
+  // lets a transient daemon-down blip (status === null mid-upgrade) keep
+  // polling instead of the poller giving up forever ... see
+  // `nextUpgradePollInterval`.
+  const [upgrading, setUpgrading] = useState(false)
+
   const upgradeStatusQuery = useQuery({
     queryKey: ['system', 'upgrade-status'],
     queryFn: async () => {
@@ -82,22 +89,36 @@ export function SystemUpdateSection(): ReactElement {
         return await apiSystem.upgradeStatus()
       } catch (err) {
         // The daemon is briefly down mid-upgrade. Treat as a
-        // transient blip; the polling loop will recover.
+        // transient blip; the polling loop will recover (the latch keeps it
+        // polling through the null so it can reconnect).
         if (err instanceof NetworkError) return null
         throw err
       }
     },
     refetchInterval: (query): number | false => {
-      const data = query.state.data
-      const status = data?.status ?? null
-      if (!status) return false
-      return isTerminalStage(status.stage) ? false : 2_000
+      const status = query.state.data?.status ?? null
+      return nextUpgradePollInterval({
+        hasStatus: status !== null,
+        terminal: status !== null && isTerminalStage(status.stage),
+        latchedUpgrading: upgrading,
+      })
     },
     staleTime: 0,
   })
 
   const upgradeStatus = upgradeStatusQuery.data?.status ?? null
-  const upgradeActive = upgradeStatus !== null && !isTerminalStage(upgradeStatus.stage)
+  // Keep the latch in sync with the observed stage. A null status (blip)
+  // leaves the latch untouched so the UI stays in its upgrading state.
+  useEffect(() => {
+    if (upgradeStatus === null) return
+    setUpgrading(!isTerminalStage(upgradeStatus.stage))
+  }, [upgradeStatus])
+
+  // Active while a live stage is reported OR while we're latched mid-upgrade
+  // (a daemon-down blip). Without the latch clause the tile would flash the
+  // stale "Upgrade to X" button during the restart window.
+  const upgradeActive =
+    upgrading || (upgradeStatus !== null && !isTerminalStage(upgradeStatus.stage))
 
   // Two-step inline confirm for the destructive Upgrade button.
   // First click arms; second click within 5s commits. Mouseout or
@@ -113,6 +134,11 @@ export function SystemUpdateSection(): ReactElement {
 
   const update = useMutation({
     mutationFn: () => apiSystem.update(),
+    onMutate: () => {
+      // Latch immediately so a daemon-down blip BEFORE the first status poll
+      // still keeps the poller alive (and the tile in its upgrading state).
+      setUpgrading(true)
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['system', 'upgrade-status'] })
     },

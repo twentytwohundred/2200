@@ -9,7 +9,10 @@
  * while an actively-running upgrade still shows its live progress.
  */
 import { describe, expect, it } from 'vitest'
-import { shouldShowUpgradeProgress } from '../../src/screens/settings/upgradeProgress'
+import {
+  shouldShowUpgradeProgress,
+  nextUpgradePollInterval,
+} from '../../src/screens/settings/upgradeProgress'
 
 describe('shouldShowUpgradeProgress', () => {
   it('hides a finished card when a newer update is available (the bug)', () => {
@@ -48,6 +51,34 @@ describe('shouldShowUpgradeProgress', () => {
   it('shows nothing when there is no upgrade status at all', () => {
     expect(
       shouldShowUpgradeProgress({ hasStatus: false, versionStatus: 'up-to-date', active: false }),
+    ).toBe(false)
+  })
+})
+
+describe('nextUpgradePollInterval', () => {
+  it('polls fast while a live stage is running', () => {
+    expect(
+      nextUpgradePollInterval({ hasStatus: true, terminal: false, latchedUpgrading: true }),
+    ).toBe(2_000)
+  })
+
+  it('stops once a terminal stage lands', () => {
+    expect(
+      nextUpgradePollInterval({ hasStatus: true, terminal: true, latchedUpgrading: true }),
+    ).toBe(false)
+  })
+
+  it('KEEPS polling through a daemon-down blip when latched mid-upgrade (the bug)', () => {
+    // status went null because the daemon restarted mid-upgrade. Before the
+    // fix this stopped the poller forever and the stale button reappeared.
+    expect(
+      nextUpgradePollInterval({ hasStatus: false, terminal: false, latchedUpgrading: true }),
+    ).toBe(2_000)
+  })
+
+  it('stops when there is no status and we are not mid-upgrade (genuinely idle)', () => {
+    expect(
+      nextUpgradePollInterval({ hasStatus: false, terminal: false, latchedUpgrading: false }),
     ).toBe(false)
   })
 })
