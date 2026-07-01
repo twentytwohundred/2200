@@ -67,6 +67,13 @@ import { ToolsBody } from '../tools/ToolsScreen'
 import { cx } from '../../primitives/cx'
 import styles from './AgentDetailScreen.module.css'
 
+/** One composed chat turn, as handed to `submitMessage`. */
+interface SubmitArgs {
+  body: string
+  mode: ComposerMode
+  attachments: ComposerAttachment[]
+}
+
 type AgentTab = 'chat' | 'status' | 'identity' | 'budget' | 'brain' | 'schedules' | 'tools'
 const VALID_TABS: AgentTab[] = [
   'chat',
@@ -199,26 +206,45 @@ export function AgentDetailScreen(): ReactElement {
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [streamingChars, setStreamingChars] = useState(0)
+  // A failed send (network/API error). We keep the composed args so the
+  // operator can Retry ... the composer clears its own text synchronously on
+  // submit, so without this the message would silently vanish.
+  const [sendError, setSendError] = useState<{ args: SubmitArgs; message: string } | null>(null)
+  // Set when we give up waiting for a reply (the Agent crashed, or nothing
+  // arrived within the backstop window). A late reply still renders as a
+  // normal message, so this only ends the spinner ... it never drops content.
+  const [replyGaveUp, setReplyGaveUp] = useState<string | null>(null)
 
   const submitMessage = useCallback(
-    async (args: { body: string; mode: ComposerMode; attachments: ComposerAttachment[] }) => {
-      let chatId = activeChatId
-      if (chatId === null) {
-        const created = await api.chatThreadCreate(agentName)
-        chatId = created.chat.id
-      }
-      const res = await sendMessageWithAttachments(agentName, chatId, args)
-      // Tag the new task with its originating chat so the cross-chat
-      // avatar pulse can light up rows for chats the operator isn't
-      // currently viewing.
-      toolStreamStore.noteTaskChat(res.task_id, chatId)
-      setPendingTaskId(res.task_id)
-      void queryClient.invalidateQueries({
-        queryKey: ['agentChatMessages', agentName, chatId],
-      })
-      void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
-      if (activeChatId === null) {
-        void navigate(`/agent/${encodeURIComponent(agentName)}/chat/${encodeURIComponent(chatId)}`)
+    async (args: SubmitArgs) => {
+      setSendError(null)
+      setReplyGaveUp(null)
+      try {
+        let chatId = activeChatId
+        if (chatId === null) {
+          const created = await api.chatThreadCreate(agentName)
+          chatId = created.chat.id
+        }
+        const res = await sendMessageWithAttachments(agentName, chatId, args)
+        // Tag the new task with its originating chat so the cross-chat
+        // avatar pulse can light up rows for chats the operator isn't
+        // currently viewing.
+        toolStreamStore.noteTaskChat(res.task_id, chatId)
+        setPendingTaskId(res.task_id)
+        void queryClient.invalidateQueries({
+          queryKey: ['agentChatMessages', agentName, chatId],
+        })
+        void queryClient.invalidateQueries({ queryKey: ['agentChats', agentName] })
+        if (activeChatId === null) {
+          void navigate(
+            `/agent/${encodeURIComponent(agentName)}/chat/${encodeURIComponent(chatId)}`,
+          )
+        }
+      } catch (err) {
+        // The send failed (Agent stopped, network blip, API error). The
+        // composer already cleared the textarea, so surface the error with a
+        // Retry that re-sends the exact args ... never eat the message.
+        setSendError({ args, message: err instanceof Error ? err.message : String(err) })
       }
     },
     [agentName, activeChatId, navigate, queryClient],
@@ -349,6 +375,8 @@ export function AgentDetailScreen(): ReactElement {
     setStreamingChars(0)
     setAtBottom(true)
     setUnreadBelow(0)
+    setSendError(null)
+    setReplyGaveUp(null)
   }, [activeChatId])
 
   // Watch the live ToolStream so chip arrivals re-trigger the
@@ -357,6 +385,44 @@ export function AgentDetailScreen(): ReactElement {
   // sits at "the bottom" of the message list.
   const pendingStream = useToolStream(pendingTaskId)
   const pendingStepsCount = pendingStream?.steps.length ?? 0
+
+  // Give up the "thinking…" spinner when no reply is coming, so it can never
+  // spin forever (the "it's frozen" moment in a demo). The runtime doesn't
+  // emit task-lifecycle events yet, so we backstop on two signals:
+  //   1. The Agent's own `errored_at` flips → the process died mid-reply;
+  //      no reply is coming, give up immediately.
+  //   2. A max wait with no reply. The timer is re-armed whenever a new tool
+  //      chip arrives (pendingStepsCount changes), so an Agent genuinely
+  //      working through tools is never cut off ... only a silent hang is.
+  // Either way a late reply still renders as a normal ChatMessage, so giving
+  // up early only forfeits the typewriter animation, never the content.
+  const REPLY_BACKSTOP_MS = 90_000
+  const erroredAt = agent?.errored_at ?? null
+  const erroredReason = agent?.errored_reason ?? null
+  useEffect(() => {
+    if (pendingTaskId === null) return
+    if (streamingId !== null) return // a reply is actively streaming in
+    if (erroredAt !== null) {
+      toolStreamStore.evict(pendingTaskId)
+      setPendingTaskId(null)
+      setReplyGaveUp(
+        `${agentName} stopped before replying${
+          erroredReason ? ` (${erroredReason})` : ''
+        }. Check the Status tab or restart it.`,
+      )
+      return
+    }
+    const timer = setTimeout(() => {
+      toolStreamStore.evict(pendingTaskId)
+      setPendingTaskId(null)
+      setReplyGaveUp(
+        `${agentName} hasn't replied yet ... it may have stopped or hit an error (check the Status tab). If it's still working, its reply will appear here when it lands.`,
+      )
+    }, REPLY_BACKSTOP_MS)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [pendingTaskId, streamingId, erroredAt, erroredReason, agentName, pendingStepsCount])
 
   // When new messages land, the streaming cursor advances, or new
   // tool chips arrive, keep the viewport pinned to the bottom *only*
@@ -590,6 +656,47 @@ export function AgentDetailScreen(): ReactElement {
                   )}
                 </div>
                 <div className={styles.composer}>
+                  {replyGaveUp !== null && (
+                    <div className={styles.sendNotice} role="status">
+                      <span>{replyGaveUp}</span>
+                      <button
+                        type="button"
+                        className={styles.sendNoticeDismiss}
+                        onClick={() => {
+                          setReplyGaveUp(null)
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+                  {sendError !== null && (
+                    <div className={styles.sendError} role="alert">
+                      <span>Couldn't send: {sendError.message}</span>
+                      <div className={styles.sendErrorActions}>
+                        <button
+                          type="button"
+                          className={styles.sendErrorRetry}
+                          onClick={() => {
+                            const retry = sendError.args
+                            setSendError(null)
+                            void submitMessage(retry)
+                          }}
+                        >
+                          Retry
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.sendNoticeDismiss}
+                          onClick={() => {
+                            setSendError(null)
+                          }}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <ChatComposer
                     agent={agentName}
                     onSubmit={(args) => {
