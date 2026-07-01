@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.701.2304] ... 2026-07-01
+
+### Security
+
+- **Transport-edge hardening.** Three pre-public fixes; none change a normal user flow:
+  - The two gateway-internal HTTP routes (connector inbound, Extension pair-state) skipped bearer auth on the rationale that only a same-host child calls them. With the web server bound to all interfaces they were reachable across the LAN, so any host on the network could forge connector events (which turn into Agent tasks) or pairing state. They now require a loopback source ... the gateway child posts to `127.0.0.1`, so the real flow is unchanged; an off-box request gets a `403`.
+  - A bearer token in a URL leaks (browser history, referrers, proxy/access logs). The `?token=` query form ... a header fallback for surfaces that can't set one ... is now accepted ONLY on the WebSocket upgrade and the avatar-image GET (loaded via `<img>`). Every other route requires the `Authorization` header.
+  - The connector's OAuth Authorization-Server metadata derived its issuer URL from each request's `Host` header into shared state ... host-header-injectable (advertise a rogue token endpoint a discovering client would post its code + secret to) and racy across concurrent requests. It now pins to an operator-configured public URL when set, and otherwise derives per-request with a loopback default.
+
+### Fixed
+
+- **The System Update tile no longer stalls (and shows a stale "Upgrade" button) mid-upgrade.** When the daemon briefly restarts as part of an upgrade, the status poller used to give up permanently ... the progress stepper vanished and the old "Upgrade to X" button reappeared even though the upgrade was still running. A "mid-upgrade" latch now keeps the tile polling through that restart window and only stops once the upgrade actually finishes.
+
 ## [2026.701.2123] ... 2026-07-01
 
 ### Changed
