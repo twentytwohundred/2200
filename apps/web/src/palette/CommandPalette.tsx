@@ -239,17 +239,6 @@ export function CommandPalette(): ReactElement {
           close()
         },
       },
-      {
-        id: 'nav:components',
-        group: 'NAVIGATE',
-        label: 'Component library',
-        hint: '/dev/components',
-        searchable: 'dev components primitives',
-        activate: () => {
-          void navigate('/dev/components')
-          close()
-        },
-      },
     ]
 
     const commands: PaletteResult[] = [

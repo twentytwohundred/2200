@@ -94,6 +94,8 @@
   --warn-soft: oklch(95% 0.06 75);
   --info: oklch(60% 0.10 240);
   --info-soft: oklch(95% 0.03 240);
+  --success: oklch(58% 0.14 150);
+  --success-soft: oklch(94% 0.05 150);
 
   /* Light theme — shadow */
   --shadow-1: 0 1px 0 rgba(15,18,22,.04), 0 1px 2px rgba(15,18,22,.04);
