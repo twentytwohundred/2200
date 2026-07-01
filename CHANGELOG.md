@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.701.2102] ... 2026-07-01
+
+### Fixed
+
+- **The five stranger-path onboarding dead-ends are closed.** A pre-public QA sweep found five deterministic ways a first-time user (or a demo audience) could get stuck on the path from `npm install` to chatting with a freshly-spawned Agent in the Studio. All five are fixed:
+  - **A fresh install never got a Studio.** The shared `studio` pub was created only at daemon boot, which no-ops on a fresh install (zero Agents on disk). The first Agent ... spawned later through onboarding ... had no room to appear in, and its seeded orientation post to `studio` failed too. The Studio is now ensured when that first Agent is built (inside `migrateFromHandoff`, the single chokepoint shared by the web-confirm, CLI-spawn, and CLI-migrate paths), before the Agent starts, so it attaches the studio wake source on first launch. It only looked fine before on boxes that already had Agents from a prior boot.
+  - **A dead provider during the interview silently produced a garbage Agent.** The interview deliberately swallows provider errors (so a transient hiccup never 500s), but that turned a persistently-unreachable provider into a half-built Agent bound to a model that can never chat ... with no error shown. Picking the `local` provider with the endpoint down (Ollama not running, the exact cold-start fallback first-run offers) now fails fast at onboarding start with an actionable message naming the endpoint, via a cheap `/v1/models` reachability probe.
+  - **API keys pasted in the setup wizard were dead until a restart the wizard never did.** The daemon starts early in setup; keys entered afterward went to `runtime.env`, but a supervisor reads that file only at boot, so the operator's very first onboarding attempt died with `env var 'ANTHROPIC_API_KEY' is not set`. The wizard now restarts the daemon when it wrote any keys, so they're live before setup finishes.
+  - **The main chat screen ate failed sends and could spin "Thinking…" forever.** A send that failed (Agent stopped, network blip) vanished silently because the composer clears on submit; it now surfaces an inline error with a Retry that re-sends the exact message. And the "thinking" placeholder no longer spins indefinitely when an Agent dies mid-reply ... it gives up on the Agent's error state or a tool-activity-aware backstop (a late reply still lands as a normal message).
+  - **Odd or duplicate Agent names 500'd and wedged the interview.** A name that didn't reduce to a valid identifier ("2200", non-Latin scripts, emoji) threw during the build, surfaced as a generic 500, and left the session permanently stuck (every retry re-threw). Names now derive gracefully ("2200" → `agent-2200`) and never throw; a name collision returns an actionable 409 before any files are written instead of a 500.
+
 ## [2026.625.1807] ... 2026-06-25
 
 ### Added
