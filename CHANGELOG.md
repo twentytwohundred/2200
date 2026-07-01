@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.701.2123] ... 2026-07-01
+
+### Changed
+
+- **Pre-public polish on the surfaces a demo audience actually sees.** Four camera-visible cleanups, no behavior-critical paths touched:
+  - The internal component-library reference page is no longer reachable on a real instance ... it was listed in the ⌘K command palette and its route was live in production. The palette entry is gone and the `/dev/components` route is now dev-build-only.
+  - Settings no longer renders off-palette reds and greens. Six style modules referenced color tokens that didn't exist (`--ds-danger`, `--ds-error`, `--ds-warning`, `--ds-success`) and fell back to hardcoded hex, so those chips never tracked the dark theme. They now use the real `--danger` / `--warn` tokens, and a `--success` / `--success-soft` pair was added to fill the one genuine gap (the design system had danger / warn / info but no positive-state color).
+  - Deleting a schedule now takes two clicks (arm, then confirm ... auto-disarming), matching every other destructive action instead of firing on a single click.
+
+### Fixed
+
+- **A clear message instead of a raw crash when 2200 is installed on an old Node.** Installing via `npm i -g` on Node older than 22 used to dump an opaque `ERR_DLOPEN_FAILED` from the native `better-sqlite3` addon the instant the CLI started. The CLI now checks the Node version before that addon loads and exits with a plain-language "upgrade Node to 22+" message. (The `install.sh` path already preflighted this; the bare npm path didn't.)
+
 ## [2026.701.2102] ... 2026-07-01
 
 ### Fixed
