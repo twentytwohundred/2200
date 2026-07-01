@@ -116,13 +116,14 @@ describe('buildHandoffFromTranscript', () => {
     expect(handoff.frontmatter.agent_name).toBe('email-triage-bot-2-0')
   })
 
-  it('throws when the normalized name does not start with a letter', () => {
-    expect(() =>
-      buildHandoffFromTranscript({
-        transcript: transcript({ agentName: '!@#' }),
-        sourceHost: 'test-host',
-      }),
-    ).toThrow(/cannot be normalized/)
+  it('derives a valid name (never throws) when the answer has no usable letters', () => {
+    // Previously threw "cannot be normalized" → generic 500 → wedged session.
+    // Now it falls back to a name synthesized from the opening answer.
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({ agentName: '!@#' }),
+      sourceHost: 'test-host',
+    })
+    expect(handoff.frontmatter.agent_name).toMatch(/^[a-z][a-z0-9_-]*$/)
   })
 
   it('inherits os.hostname() when sourceHost is omitted', () => {
@@ -172,5 +173,45 @@ describe('buildHandoffFromTranscript', () => {
       capabilities: ['google-workspace', 'slack'],
     })
     expect(handoff.frontmatter.capabilities).toEqual(['google-workspace', 'slack'])
+  })
+})
+
+describe('agent_name derivation (regression: odd names must never 500 the interview)', () => {
+  // Must match the Identity schema's agent_name regex exactly.
+  const AGENT_NAME_RE = /^[a-z][a-z0-9_-]*$/
+
+  it('prefixes a digit-leading name so it stays a valid identifier', () => {
+    // "2200" used to throw here → generic 500 → wedged session.
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({ agentName: '2200' }),
+      sourceHost: 'test-host',
+    })
+    expect(handoff.frontmatter.agent_name).toBe('agent-2200')
+    expect(handoff.frontmatter.agent_name).toMatch(AGENT_NAME_RE)
+  })
+
+  it('falls back to a valid synthesized name when the name is all non-Latin', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({
+        agentName: '🎉🎉🎉',
+        entries: [
+          { id: 'opening', tag: 'opening_purpose', answer: 'watch my inbox please' },
+          { id: 'agent_name', tag: 'agent_name', answer: '🎉🎉🎉' },
+        ],
+      }),
+      sourceHost: 'test-host',
+    })
+    // Derived from the opening answer, not a throw.
+    expect(handoff.frontmatter.agent_name).toMatch(AGENT_NAME_RE)
+    expect(handoff.frontmatter.agent_name.length).toBeGreaterThan(0)
+  })
+
+  it('lowercases and cleans an ordinary name', () => {
+    const handoff = buildHandoffFromTranscript({
+      transcript: transcript({ agentName: 'Mira The Great!' }),
+      sourceHost: 'test-host',
+    })
+    expect(handoff.frontmatter.agent_name).toBe('mira-the-great')
+    expect(handoff.frontmatter.agent_name).toMatch(AGENT_NAME_RE)
   })
 })

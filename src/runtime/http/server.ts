@@ -4206,6 +4206,20 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           `Session "${req.params.id}" is in state "${session.getState()}"; finish the interview before confirming.`,
         )
       }
+      // Pre-check the derived name against the existing fleet. Without this,
+      // a collision (a second "Mira", or re-confirming after a partial build)
+      // reaches supervisor.createAgent, which throws a plain Error → generic
+      // 500 → the session is stuck confirming forever with no hint why. Catch
+      // it here, before migrateFromHandoff writes any files, and return an
+      // actionable 409 the operator can resolve by renaming in the preview.
+      const plannedName = preview.handoff.frontmatter.agent_name
+      if (supervisor.snapshot().agents[plannedName]) {
+        throw new ApiError(
+          409,
+          'agent_name_taken',
+          `An Agent named "${plannedName}" already exists. Rename this one in the preview (or remove the existing Agent) and confirm again.`,
+        )
+      }
       const body = ConfirmBodySchema.parse(req.body ?? {})
       let handoff = preview.handoff
       if (body?.selected_capabilities !== undefined) {
