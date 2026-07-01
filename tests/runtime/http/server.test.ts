@@ -8,6 +8,7 @@ import { startHttpServer, type HttpServerHandle } from '../../../src/runtime/htt
 import { WebTokenStore } from '../../../src/runtime/http/tokens.js'
 import { homePaths } from '../../../src/runtime/storage/layout.js'
 import type { Listener } from '../../../src/runtime/control-plane/transport.js'
+import type { ValidateKeyResult } from '../../../src/runtime/llm/validate-key.js'
 
 /**
  * In-process HTTP smoke tests. The supervisor's UDS listener is bypassed
@@ -457,6 +458,85 @@ describe('HTTP server onboarding endpoints', () => {
       const body = r.body as { error: { code: string } }
       expect(body.error.code).toBe('model_required')
     }
+  })
+})
+
+/**
+ * Onboarding must fail fast with an actionable error when the operator picks
+ * the `local` provider but the endpoint is unreachable ... otherwise the
+ * error-swallowing interview silently produces a garbage half-Agent bound to a
+ * dead provider (the exact first-user dead-end when Ollama isn't running). The
+ * reachability probe is injected so the test asserts the wiring without a live
+ * local server.
+ */
+describe('HTTP server onboarding ... local endpoint reachability gate', () => {
+  let lHome: string
+  let lSup: Supervisor
+  let lHandle: HttpServerHandle
+  let lToken: string
+  let probeResult: ValidateKeyResult
+
+  async function post(body: unknown): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`${lHandle.url}/api/v1/onboarding`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${lToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    let parsed: unknown = text
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      // keep as text
+    }
+    return { status: res.status, body: parsed }
+  }
+
+  beforeEach(async () => {
+    lHome = await mkdtemp(join(tmpdir(), '2200-http-local-'))
+    lSup = await Supervisor.create({ home: lHome })
+    await lSup.start({ home: lHome, listener: new NullListener() })
+    lHandle = await startHttpServer({
+      supervisor: lSup,
+      home: lHome,
+      port: 0,
+      host: '127.0.0.1',
+      staticDir: join(lHome, '__no_static_dir__'),
+      // eslint-disable-next-line @typescript-eslint/require-await
+      probeLocalEndpoint: async () => probeResult,
+    })
+    const tokens = new WebTokenStore(homePaths(lHome).stateWebTokens)
+    const list = await tokens.list()
+    lToken = list[0]!.value
+  })
+
+  afterEach(async () => {
+    await lHandle.stop()
+    await lSup.shutdown()
+    await rm(lHome, { recursive: true, force: true })
+  })
+
+  it('rejects onboarding with 503 + actionable detail when the local endpoint is down', async () => {
+    probeResult = {
+      ok: false,
+      reason: 'network_error',
+      message: 'connect ECONNREFUSED 127.0.0.1:11434',
+    }
+    const r = await post({ provider: 'local', model: 'llama3' })
+    expect(r.status).toBe(503)
+    const body = r.body as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('llm_provider_unreachable')
+    // The operator must see WHERE and WHAT to fix, not a silent fallback.
+    expect(body.error.message).toContain('11434')
+    expect(body.error.message.toLowerCase()).toContain('running')
+  })
+
+  it('starts onboarding when the local endpoint probe succeeds', async () => {
+    probeResult = { ok: true }
+    const r = await post({ provider: 'local', model: 'llama3' })
+    expect(r.status).toBe(200)
+    const body = r.body as { session_id: string; state: string }
+    expect(body.session_id).toMatch(/^onb_/)
   })
 })
 

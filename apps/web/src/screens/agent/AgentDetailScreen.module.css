@@ -315,6 +315,63 @@
   font-size: 12px;
 }
 
+/* Advisory shown when we stop waiting for a reply (Agent stopped / silent
+   hang). Informational, not an error ... the reply may still land. */
+.sendNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-3);
+  margin-bottom: var(--ds-2);
+  padding: var(--ds-2) var(--ds-3);
+  border-radius: var(--ds-r-2);
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.sendNoticeDismiss {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+/* A failed send. Error-toned; carries a Retry that re-sends the exact args. */
+.sendError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-3);
+  margin-bottom: var(--ds-2);
+  padding: var(--ds-2) var(--ds-3);
+  border-radius: var(--ds-r-2);
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.sendErrorActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+}
+
+.sendErrorRetry {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 10px;
+  border-radius: var(--ds-r-1);
+}
+
 /* ── Empty chat ───────────────────────────────────────────────────── */
 .emptyChat {
   flex: 1;

@@ -92,7 +92,7 @@ export function buildHandoffFromTranscript(args: BuildHandoffArgs): HandoffDocum
   // included an agent_name question, so this path didn't apply.
   const cleanName =
     agentNameRaw !== undefined && agentNameRaw.trim().length > 0
-      ? normalizeAgentName(agentNameRaw)
+      ? (deriveAgentName(agentNameRaw) ?? synthesizeAgentName(t))
       : synthesizeAgentName(t)
 
   // agent_type derivation:
@@ -174,25 +174,30 @@ function stripBranchSuffix(branchId: string): string {
 }
 
 /**
- * Normalize a free-form name answer into a valid Agent name. Lowercases,
- * strips characters outside `[a-z0-9_-]`, collapses runs of separators,
- * and trims leading/trailing separators. The result must satisfy the
- * Identity's agent_name regex; if the cleanup leaves an empty string
- * (the user typed only special characters), throws.
+ * Derive a valid Agent name from a free-form answer. Lowercases, strips
+ * characters outside `[a-z0-9_-]`, collapses runs of separators, and trims.
+ * If the cleaned core doesn't start with a lowercase letter (the operator
+ * answered "2200", "3M", an emoji, etc.), it's prefixed with `agent-` so the
+ * result still satisfies the Identity agent_name regex `^[a-z][a-z0-9_-]*$`.
+ * Returns null ONLY when nothing usable survives (e.g. a purely non-Latin
+ * answer), so callers fall back to a synthesized name.
+ *
+ * This NEVER throws. It's the onboarding path: a well-meant but odd name
+ * answer used to throw here, propagate to a generic 500, and permanently wedge
+ * the interview session (every retry re-threw). A confirmable preview the
+ * operator can rename beats a dead 500.
  */
-function normalizeAgentName(raw: string): string {
-  const lowered = raw.toLowerCase().trim()
-  const cleaned = lowered
+function deriveAgentName(raw: string): string | null {
+  const core = raw
+    .toLowerCase()
+    .trim()
     .replace(/[\s.]+/g, '-')
     .replace(/[^a-z0-9_-]+/g, '')
     .replace(/[-_]{2,}/g, '-')
     .replace(/^[-_]+|[-_]+$/g, '')
-  if (cleaned.length === 0 || !/^[a-z]/.test(cleaned)) {
-    throw new Error(
-      `agent_name "${raw}" cannot be normalized to a valid identifier (must start with a lowercase letter, then lowercase letters / digits / underscores / dashes only)`,
-    )
-  }
-  return cleaned
+    .slice(0, 24)
+  if (core.length === 0) return null
+  return /^[a-z]/.test(core) ? core : `agent-${core}`
 }
 
 /**
@@ -205,15 +210,11 @@ function normalizeAgentName(raw: string): string {
  */
 function synthesizeAgentName(t: InterviewTranscript): string {
   const seed = (t.entries[0]?.answer ?? '').slice(0, 24).trim()
-  if (seed.length > 0) {
-    try {
-      const normalized = normalizeAgentName(seed)
-      // Cap length so unwieldy openings don't yield 24-char-prefix
-      // names; 16 is comfortable for an Identity slug.
-      return normalized.slice(0, 16)
-    } catch {
-      // fall through
-    }
+  const derived = seed.length > 0 ? deriveAgentName(seed) : null
+  if (derived) {
+    // Cap length so unwieldy openings don't yield 24-char-prefix
+    // names; 16 is comfortable for an Identity slug.
+    return derived.slice(0, 16)
   }
   // Last-resort name: timestamp suffix keeps it unique enough that
   // re-building back-to-back doesn't collide.
