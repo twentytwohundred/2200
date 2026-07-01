@@ -167,10 +167,7 @@ export interface HttpServerOptions {
    * hits `<baseUrl>/v1/models`. Lets tests assert the "dead local endpoint
    * fails onboarding with an actionable error" path without a live server.
    */
-  probeLocalEndpoint?: (args: {
-    baseUrl: string
-    apiKey?: string
-  }) => Promise<ValidateKeyResult>
+  probeLocalEndpoint?: (args: { baseUrl: string; apiKey?: string }) => Promise<ValidateKeyResult>
 }
 
 export interface HttpServerHandle {
