@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.702.2218] ... 2026-07-02
+
+### Security
+
+- **Box-level login lockout, independent of Cloudflare.** After 10 failed authentication attempts from one client within 5 minutes, that client is locked out for 15 minutes (HTTP `429` + `Retry-After`), checked before the token is even compared. Keyed per client ... behind the tunnel the real client is read from Cloudflare's `CF-Connecting-IP` (which Cloudflare sets and a client can't forge through the tunnel), otherwise the socket address ... so no one can lock anyone else out. A successful login clears the count. This is defense-in-depth on top of the 256-bit bearer: brute force was already infeasible, but repeated guessing now gets shut off and stops filling the logs.
+
 ## [2026.702.2115] ... 2026-07-02
 
 ### Internal
