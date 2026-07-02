@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.702.32] ... 2026-07-02
+
+### Added
+
+- **Rename your Agent in the onboarding preview before it's built.** The preview showed the interview-derived name read-only, so "Let's call it Mira" shipped as `lets-call-it-mira` with no way to fix it. The preview now has an editable name field, and whatever you type is tidied into a valid identifier ("Mira The Great!" becomes `mira-the-great`, "2200" becomes `agent-2200`); a name with no usable letters is rejected with a clear message, and a collision with an existing Agent is caught before anything is written.
+
+### Fixed
+
+- **Onboarding survives a reload or navigating away instead of losing the whole interview.** A page reload or an in-tab navigation mid-interview used to silently discard the session ... "answered five questions, misclicked, start over." The session now persists to the browser so a reload or a trip to another screen and back **resumes** where you left off, prior answers intact. An expired session quietly starts fresh.
+
 ## [2026.701.2304] ... 2026-07-01
 
 ### Security
