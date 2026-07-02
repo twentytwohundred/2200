@@ -1,37 +1,29 @@
 /**
  * Auth gate.
  *
- * The install / CLI hand the user a URL with `?token=` (consumed once by
- * bootstrapAuth). But a URL isn't always how someone gets back in: after
- * `2200 web token rotate`, or after the instance state was reset, the saved
- * token stops working and the only recovery used to be hand-editing
- * `?token=...` back into the address bar.
- *
- * This gate makes the bare token enough: when there is no token, or the
- * stored one no longer authenticates, it shows a paste-your-token screen.
- * Paste the value the CLI printed and you're back in ... no URL surgery.
+ * With cookie auth, page JS can't read the token (it's HttpOnly), so the gate
+ * doesn't guess whether you're logged in ... it just makes an authed probe. The
+ * browser attaches the session cookie automatically; a 401 means "no valid
+ * session" → show the paste-your-token screen. Pasting the token POSTs it to
+ * `/auth/login`, the server sets the cookie, and the probe re-runs clean. No
+ * token in the URL, ever.
  */
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, api } from '../lib/api'
-import { getToken, setToken } from '../lib/auth'
+import { login } from '../lib/auth'
 import { Button, Input } from '../primitives'
 import styles from './AuthGate.module.css'
 
 export function AuthGate({ children }: { children: ReactNode }): ReactNode {
-  const hasToken = getToken() !== null
-
-  // A cheap authed probe. Disabled when there's no token (we go straight to
-  // the entry screen). `retry: false` so an invalid token surfaces at once.
+  // A cheap authed probe. The cookie (if any) is sent automatically.
+  // `retry: false` so a missing/invalid session surfaces at once.
   const probe = useQuery({
     queryKey: ['auth', 'probe'],
     queryFn: () => api.agents(),
-    enabled: hasToken,
     retry: false,
     staleTime: 30_000,
   })
-
-  if (!hasToken) return <TokenScreen reason="missing" />
 
   if (probe.isLoading) {
     return (
@@ -43,9 +35,16 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
 
   if (probe.isError) {
     const status = probe.error instanceof ApiError ? probe.error.status : 0
-    if (status === 401 || status === 403) return <TokenScreen reason="invalid" />
-    // A non-auth failure (daemon down, network) is NOT a token problem ...
-    // don't make the user re-enter a token that's fine.
+    if (status === 401 || status === 403) {
+      return (
+        <TokenScreen
+          onSuccess={() => {
+            void probe.refetch()
+          }}
+        />
+      )
+    }
+    // A non-auth failure (daemon down, network) is NOT a session problem.
     return (
       <div className={styles.center}>
         <div className={styles.panel}>
@@ -66,15 +65,20 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
   return <>{children}</>
 }
 
-function TokenScreen({ reason }: { reason: 'missing' | 'invalid' }): ReactNode {
+function TokenScreen({ onSuccess }: { onSuccess: () => void }): ReactNode {
   const [value, setValue] = useState('')
+  const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState(false)
   const trimmed = value.trim()
 
-  const submit = (): void => {
-    if (trimmed.length === 0) return
-    setToken(trimmed)
-    // Reload so bootstrapAuth + the gate re-run cleanly against the new token.
-    window.location.reload()
+  const submit = async (): Promise<void> => {
+    if (trimmed.length === 0 || pending) return
+    setPending(true)
+    setFailed(false)
+    const ok = await login(trimmed)
+    setPending(false)
+    if (ok) onSuccess()
+    else setFailed(true)
   }
 
   return (
@@ -83,17 +87,14 @@ function TokenScreen({ reason }: { reason: 'missing' | 'invalid' }): ReactNode {
         className={styles.panel}
         onSubmit={(e) => {
           e.preventDefault()
-          submit()
+          void submit()
         }}
       >
         <div className={styles.mark}>● 2200</div>
-        <h1 className={styles.title}>
-          {reason === 'invalid' ? 'Your access token expired' : 'Enter your access token'}
-        </h1>
+        <h1 className={styles.title}>Enter your access token</h1>
         <p className={styles.muted}>
-          {reason === 'invalid'
-            ? 'The saved token no longer works (it was rotated, or the instance was reset). Paste a fresh one to get back in.'
-            : 'Paste the bearer token for this 2200 instance to continue.'}
+          Paste the token for this 2200 instance to sign in. It&rsquo;s stored as a secure,
+          browser-only cookie ... not in this page, not in the URL.
         </p>
         <Input
           type="password"
@@ -103,10 +104,18 @@ function TokenScreen({ reason }: { reason: 'missing' | 'invalid' }): ReactNode {
           aria-label="Access token"
           onChange={(e) => {
             setValue(e.target.value)
+            if (failed) setFailed(false)
           }}
         />
-        <Button variant="primary" onClick={submit} disabled={trimmed.length === 0}>
-          Connect
+        {failed && (
+          <p className={styles.muted}>That token wasn&rsquo;t accepted. Check it and try again.</p>
+        )}
+        <Button
+          variant="primary"
+          onClick={() => void submit()}
+          disabled={trimmed.length === 0 || pending}
+        >
+          {pending ? 'Signing in...' : 'Connect'}
         </Button>
         <p className={styles.hint}>
           Get a token with <code>2200 web token rotate</code> ... it prints the URL and the token.

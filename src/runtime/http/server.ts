@@ -275,17 +275,58 @@ function isLoopbackRequest(req: FastifyRequest): boolean {
 }
 
 /**
- * The only routes where a `?token=` query param is accepted as a bearer
- * equivalent: the WebSocket upgrade and the avatar-image GET. Browsers cannot
- * set an Authorization header on a WS upgrade or an `<img src>` load, so those
- * two genuinely need the URL form. Every other route requires the header, so a
- * bearer never rides in a URL (which leaks via browser history, referrers, and
- * proxy/access logs) for an ordinary API call.
+ * The browser session cookie. `HttpOnly` so page JavaScript can't read the
+ * token (an XSS bug can't exfiltrate the fleet key); the browser attaches it
+ * automatically on same-origin requests INCLUDING the WebSocket handshake and
+ * `<img>` loads, so the token never rides in a URL/query/history/log. Non-browser
+ * clients (CLI, scripts) still use `Authorization: Bearer`.
  */
-function queryTokenAllowed(req: FastifyRequest): boolean {
-  const path = req.url.split('?')[0] ?? req.url
-  if (path.startsWith('/api/v1/ws')) return true
-  return req.method === 'GET' && /^\/api\/v1\/agents\/[^/]+\/avatar\/image$/.test(path)
+const SESSION_COOKIE = '2200_session'
+
+/** Read the session token from the `2200_session` cookie, if present. */
+function readSessionCookie(req: FastifyRequest): string | undefined {
+  const raw = req.headers.cookie
+  if (typeof raw !== 'string') return undefined
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) return part.slice(eq + 1).trim()
+  }
+  return undefined
+}
+
+/**
+ * True when the request reached us over HTTPS ... i.e. through the Cloudflare
+ * tunnel, which sets `X-Forwarded-Proto: https`. Used to add `Secure` to the
+ * cookie ONLY when there's TLS: on a plain-HTTP local/LAN bind a `Secure` cookie
+ * would never be sent back and auth would break. Spoofing the header only makes
+ * the spoofer's own cookie not send, so reading it here is safe.
+ */
+function isHttpsRequest(req: FastifyRequest): boolean {
+  const xfp = req.headers['x-forwarded-proto']
+  const proto = typeof xfp === 'string' ? (xfp.split(',')[0] ?? '').trim() : ''
+  return proto === 'https'
+}
+
+function setSessionCookieHeader(value: string, secure: boolean): string {
+  // 1-year persistence (the token itself doesn't expire in v1); cleared on
+  // logout. HttpOnly + SameSite=Lax (blocks cross-site POST → CSRF) always;
+  // Secure only under TLS.
+  const attrs = [
+    `${SESSION_COOKIE}=${value}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    'Max-Age=31536000',
+  ]
+  if (secure) attrs.push('Secure')
+  return attrs.join('; ')
+}
+
+function clearSessionCookieHeader(secure: boolean): string {
+  const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=0']
+  if (secure) attrs.push('Secure')
+  return attrs.join('; ')
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
@@ -367,18 +408,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // require a bearer token that resolves to a token record on disk.
   // ------------------------------------------------------------------------
   async function authenticate(req: FastifyRequest): Promise<Principal> {
+    // Browser: the HttpOnly session cookie (sent automatically on every
+    // same-origin request, incl. the WS handshake and <img> loads). Non-browser
+    // clients: `Authorization: Bearer`. No `?token=` query path ... the token
+    // never rides in a URL.
     let value: string | undefined
     const header = req.headers.authorization ?? ''
     const match = /^Bearer\s+([\S]+)$/.exec(header)
     if (match?.[1]) {
       value = match[1]
-    } else if (queryTokenAllowed(req)) {
-      // Only the WS upgrade and the avatar-image GET may carry the bearer as
-      // a ?token= query param (browsers can't set a header on those). All
-      // other routes require the Authorization header ... see queryTokenAllowed.
-      const url = new URL(req.url, 'http://placeholder')
-      const fromQuery = url.searchParams.get('token')
-      if (fromQuery) value = fromQuery
+    } else {
+      value = readSessionCookie(req)
     }
     if (!value) throw unauthorized()
     const token = await tokens.findByValue(value)
@@ -393,6 +433,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // does not see the upgraded socket.
       return
     }
+    // The login endpoint IS the auth mechanism (it validates the token and
+    // sets the session cookie), so it can't require the cookie it hands out.
+    // It rate-limits itself. Everything else, including logout, needs a session.
+    if (req.url === '/api/v1/auth/login') return
     // Extension icon endpoint is public ... `<img src>` tags can't
     // send Authorization headers, and icons are branding assets, not
     // sensitive data. Match the supervisor's static-frontend posture.
@@ -501,6 +545,41 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
     },
   )
+
+  // Auth: exchange the pasted token for an HttpOnly session cookie. Public
+  // (it's how you authenticate) but rate-limited on the same per-client lockout
+  // as the rest of the auth surface. On success the cookie is set; the token is
+  // never returned in a URL or readable by page JS.
+  const LoginBodySchema = z.object({ token: z.string().min(1) })
+  fastify.post('/api/v1/auth/login', async (req, reply) => {
+    const clientKey = loginRateLimitKey(req)
+    const gate = loginLimiter.check(clientKey)
+    if (!gate.allowed) {
+      void reply.header('Retry-After', String(gate.retryAfterSeconds))
+      throw new ApiError(
+        429,
+        'too_many_attempts',
+        `Too many failed attempts. Try again in ${String(gate.retryAfterSeconds)}s.`,
+      )
+    }
+    const body = LoginBodySchema.parse(req.body)
+    const token = await tokens.findByValue(body.token)
+    if (!token) {
+      loginLimiter.recordFailure(clientKey)
+      loginLimiter.sweep()
+      throw unauthorized()
+    }
+    loginLimiter.recordSuccess(clientKey)
+    void reply.header('Set-Cookie', setSessionCookieHeader(body.token, isHttpsRequest(req)))
+    return { ok: true, name: token.label }
+  })
+
+  // Clear the session cookie. Requires a valid session (goes through the
+  // pre-handler auth), so only a logged-in browser can log itself out.
+  fastify.post('/api/v1/auth/logout', async (req, reply) => {
+    void reply.header('Set-Cookie', clearSessionCookieHeader(isHttpsRequest(req)))
+    return { ok: true }
+  })
 
   fastify.get('/api/v1/runtime/health', () => ({
     healthy: true,
