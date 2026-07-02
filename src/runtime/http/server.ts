@@ -127,6 +127,7 @@ import {
   unauthorized,
 } from './errors.js'
 import { WebTokenStore } from './tokens.js'
+import { LoginRateLimiter, loginRateLimitKey } from './login-rate-limit.js'
 import { CredentialVault } from '../credentials/vault.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
 import {
@@ -168,6 +169,11 @@ export interface HttpServerOptions {
    * fails onboarding with an actionable error" path without a live server.
    */
   probeLocalEndpoint?: (args: { baseUrl: string; apiKey?: string }) => Promise<ValidateKeyResult>
+  /**
+   * Login-lockout thresholds. Defaults to 10 failed attempts / 5 min → a
+   * 15-min lockout. Overridable for tests + tuning.
+   */
+  loginLockout?: { maxFailures: number; windowMs: number; lockoutMs: number }
 }
 
 export interface HttpServerHandle {
@@ -292,6 +298,14 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const tokens = new WebTokenStore(paths.stateWebTokens)
   await tokens.ensure('default')
 
+  // Box-level login lockout (defense-in-depth, independent of Cloudflare).
+  // 10 failed attempts from one client in 5 min → a 15-min lockout. A legit
+  // operator who has the token doesn't fail; an attacker gets throttled and the
+  // logs don't fill with guess spam. Per-client so no one can lock others out.
+  const loginLimiter = new LoginRateLimiter(
+    options.loginLockout ?? { maxFailures: 10, windowMs: 5 * 60_000, lockoutMs: 15 * 60_000 },
+  )
+
   // Supervisor-side PubClient bridge. Lazy-init: nothing happens until
   // the first /api/v1/pubs/:name/messages call wakes a connection.
   // Shut down with the rest of the HTTP server.
@@ -372,7 +386,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { kind: 'user', name: token.label, token_id: token.id }
   }
 
-  fastify.addHook('preHandler', async (req) => {
+  fastify.addHook('preHandler', async (req, reply) => {
     if (!req.url.startsWith('/api/v1/')) return
     if (req.url.startsWith('/api/v1/ws')) {
       // The WS upgrade is authenticated separately below. Pre-handler
@@ -405,7 +419,31 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         'This endpoint accepts requests from the local host only.',
       )
     }
-    const principal = await authenticate(req)
+    // Box-level lockout on repeated failed auth (independent of any edge
+    // rate-limit). Keyed on the real client (Cloudflare header behind the
+    // tunnel, else socket address). A locked-out client is refused before we
+    // even do the token compare.
+    const clientKey = loginRateLimitKey(req)
+    const gate = loginLimiter.check(clientKey)
+    if (!gate.allowed) {
+      void reply.header('Retry-After', String(gate.retryAfterSeconds))
+      throw new ApiError(
+        429,
+        'too_many_attempts',
+        `Too many failed attempts. Try again in ${String(gate.retryAfterSeconds)}s.`,
+      )
+    }
+    let principal: Principal
+    try {
+      principal = await authenticate(req)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        loginLimiter.recordFailure(clientKey)
+        loginLimiter.sweep()
+      }
+      throw err
+    }
+    loginLimiter.recordSuccess(clientKey)
     ;(req as AuthedRequest).principal = principal
   })
 
