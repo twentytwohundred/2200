@@ -448,6 +448,57 @@ describe('HTTP server WebSocket auth', () => {
     })
     expect(code).toBe(4401)
   })
+
+  it('rejects a cross-origin upgrade with 4403 even WITH a valid cookie (WS hijacking)', async () => {
+    // A page at another origin opening a socket here: the definitive fix is a
+    // server-side Origin check, not a reliance on SameSite. Even a valid cookie
+    // doesn't help ... the origin is refused before auth.
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, {
+      headers: { origin: 'https://evil.example', cookie: `2200_session=${token}` },
+    })
+    const code = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not close within 2000ms'))
+      }, 2000)
+      ws.once('close', (closeCode) => {
+        clearTimeout(t)
+        resolve(closeCode)
+      })
+      ws.once('error', () => {
+        /* non-101 upgrade may raise before close; the close still fires */
+      })
+    })
+    expect(code).toBe(4403)
+  })
+
+  it('accepts a same-origin upgrade (Origin host matches Host)', async () => {
+    const wsBase = handle.url.replace(/^http/, 'ws')
+    const ws = new WebSocket(`${wsBase}/api/v1/ws`, {
+      // Origin host === request Host (both the loopback authority).
+      headers: { origin: handle.url, cookie: `2200_session=${token}` },
+    })
+    const message = await new Promise<string>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not produce a message within 2000ms'))
+      }, 2000)
+      ws.once('message', (data) => {
+        clearTimeout(t)
+        const buf = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data)
+        resolve(buf.toString('utf8'))
+      })
+      ws.once('error', (err) => {
+        clearTimeout(t)
+        reject(err)
+      })
+    })
+    ws.close()
+    expect((JSON.parse(message) as { event: string }).event).toBe('hello')
+  })
 })
 
 describe('HTTP server onboarding endpoints', () => {
