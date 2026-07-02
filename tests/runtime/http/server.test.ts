@@ -306,37 +306,81 @@ describe('HTTP server', () => {
     expect(text).toMatch(/2200 web/)
   })
 
-  it('GET /api/v1/me does NOT accept ?token= (query-token is scoped to WS + avatar image only)', async () => {
-    // Security: a bearer must never ride in the URL for an ordinary API call
-    // (URLs leak via history, referrers, proxy logs). Only the WS upgrade and
-    // the avatar-image GET ... where a browser genuinely can't set a header ...
-    // accept ?token=. So a valid token in the query on /api/v1/me is rejected;
-    // the header form works.
+  it('rejects a token in the URL query ... it must ride in the cookie or header, never a URL', async () => {
+    // Security: the token never rides in a URL (leaks via history/referrers/
+    // proxy logs). A ?token= is ignored; the session cookie or the Bearer
+    // header authenticate.
     const viaQuery = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
     expect(viaQuery.status).toBe(401)
     const viaHeader = await fetch(`${handle.url}/api/v1/me`, {
       headers: { authorization: `Bearer ${token}` },
     })
     expect(viaHeader.status).toBe(200)
-    const body = (await viaHeader.json()) as { kind: string; name: string }
+    const viaCookie = await fetch(`${handle.url}/api/v1/me`, {
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(viaCookie.status).toBe(200)
+    const body = (await viaCookie.json()) as { kind: string; name: string }
     expect(body).toMatchObject({ kind: 'user', name: 'default' })
   })
 
-  it('GET /api/v1/agents/:name/avatar/image DOES accept ?token= (loaded via <img>)', async () => {
-    // The avatar image is loaded through an <img src>, which can't carry a
-    // header ... so the query-token form must still work here (404 for a
-    // missing image is fine; the point is auth passed, not a 401).
-    const res = await fetch(
+  it('the avatar image authenticates off the session cookie, not a URL token', async () => {
+    // <img src> can't set a header, but the browser attaches the same-origin
+    // cookie automatically ... so no ?token= is needed (and a ?token= is
+    // rejected). 404 for a missing image is fine; the point is auth passed.
+    const viaQuery = await fetch(
       `${handle.url}/api/v1/agents/default/avatar/image?token=${encodeURIComponent(token)}`,
     )
-    expect(res.status).not.toBe(401)
+    expect(viaQuery.status).toBe(401)
+    const viaCookie = await fetch(`${handle.url}/api/v1/agents/default/avatar/image`, {
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(viaCookie.status).not.toBe(401)
+  })
+
+  it('POST /api/v1/auth/login exchanges a valid token for an HttpOnly session cookie', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    expect(res.status).toBe(200)
+    const setCookie = res.headers.get('set-cookie') ?? ''
+    expect(setCookie).toContain('2200_session=')
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    expect(setCookie).toContain('Path=/')
+    // Not Secure over plain HTTP (no X-Forwarded-Proto: https), so it's actually
+    // sent back on this loopback connection.
+    expect(setCookie).not.toContain('Secure')
+  })
+
+  it('POST /api/v1/auth/login with a bad token is 401 and sets no cookie', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'not-the-real-token' }),
+    })
+    expect(res.status).toBe(401)
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('POST /api/v1/auth/logout clears the cookie (Max-Age=0)', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/logout`, {
+      method: 'POST',
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie') ?? '').toContain('Max-Age=0')
   })
 })
 
 describe('HTTP server WebSocket auth', () => {
-  it('upgrades and receives hello when ?token=<value> matches a known token', async () => {
-    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=${encodeURIComponent(token)}`
-    const ws = new WebSocket(wsUrl)
+  it('upgrades and receives hello when the session cookie matches a known token', async () => {
+    // The browser attaches the same-origin cookie to the WS handshake; the
+    // node ws client does it via a Cookie header.
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, { headers: { cookie: `2200_session=${token}` } })
     const message = await new Promise<string>((resolve, reject) => {
       const t = setTimeout(() => {
         reject(new Error('WS did not produce a message within 2000ms'))
@@ -387,9 +431,9 @@ describe('HTTP server WebSocket auth', () => {
     expect(code).toBe(4401)
   })
 
-  it('closes the WS with code 4401 when ?token= is bogus', async () => {
-    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=bogus-not-a-real-token`
-    const ws = new WebSocket(wsUrl)
+  it('closes the WS with code 4401 when the session cookie is bogus', async () => {
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, { headers: { cookie: '2200_session=bogus-not-a-real-token' } })
     const code = await new Promise<number>((resolve, reject) => {
       const t = setTimeout(() => {
         reject(new Error('WS did not close within 2000ms'))

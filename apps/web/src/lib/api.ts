@@ -6,7 +6,6 @@
  * defined here are the frontend's view of the contract; the runtime's
  * types are independent (see wiki/conventions/runtime-api.md).
  */
-import { getToken } from './auth'
 
 export interface ListEnvelope<T> {
   items: T[]
@@ -825,16 +824,17 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const token = getToken()
   const headers: Record<string, string> = {
     accept: 'application/json',
   }
-  if (token) headers.authorization = `Bearer ${token}`
   if (opts.body !== undefined) headers['content-type'] = 'application/json; charset=utf-8'
 
   const init: RequestInit = {
     method: opts.method ?? 'GET',
     headers,
+    // Auth rides in the HttpOnly session cookie, sent automatically on every
+    // same-origin request. No token in JS, no token in the URL.
+    credentials: 'include',
   }
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body)
   if (opts.signal) init.signal = opts.signal
@@ -1120,20 +1120,15 @@ export const api = {
         }
     >(`/api/v1/settings/endpoints/${encodeURIComponent(id)}/models`),
   /**
-   * Build an image-loadable URL for an endpoint that requires the
-   * bearer token. The browser's `<img>` tag cannot set an
-   * Authorization header, so the runtime accepts `?token=...` as an
-   * equivalent (same trick the WebSocket uses). Returns null when
-   * the input is null/empty so callers can do
-   * `imageUrl={api.authedUrl(agent.avatar_image_url)}` without
-   * extra guards.
+   * Image URL for an endpoint that requires auth. The browser attaches the
+   * same-origin HttpOnly session cookie to `<img>` requests automatically, so
+   * this is now a pass-through (kept so call sites don't churn). Returns null
+   * for null/empty input so callers can do
+   * `imageUrl={api.authedUrl(agent.avatar_image_url)}` without extra guards.
    */
   authedUrl: (url: string | null | undefined): string | null => {
     if (!url) return null
-    const token = getToken()
-    if (!token) return url
-    const sep = url.includes('?') ? '&' : '?'
-    return `${url}${sep}token=${encodeURIComponent(token)}`
+    return url
   },
   identityRead: (name: string) =>
     request<{ path: string; content: string }>(

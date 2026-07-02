@@ -153,11 +153,13 @@ export async function runFirstRun(
   await Supervisor.create({ home })
   io.success(`Initialized 2200_HOME at ${home}`)
 
-  // Bind the web server to the LAN so the access URL printed at the end
-  // is reachable from another device. Set BEFORE the daemon starts (it
-  // reads the host from the environment at boot) and persist it.
-  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '0.0.0.0')
-  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '0.0.0.0'
+  // Secure by default: bind the web server to loopback (127.0.0.1) on a fresh
+  // install, so nothing is exposed ... not even to the LAN ... until the operator
+  // deliberately picks an access mode (LAN, Tailscale, or the Cloudflare tunnel).
+  // Set BEFORE the daemon starts (it reads the host at boot) and persist it. The
+  // access-mode picker flips this to the LAN/loopback value for the chosen mode.
+  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '127.0.0.1')
+  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '127.0.0.1'
 
   const pid = await startDaemon({ home })
   io.success(`Supervisor daemon started (pid ${String(pid)})`)
