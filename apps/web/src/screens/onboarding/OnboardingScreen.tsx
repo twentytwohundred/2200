@@ -290,8 +290,15 @@ export function OnboardingScreen(): ReactElement {
   })
 
   const confirmMutation = useMutation({
-    mutationFn: ({ id, selected_capabilities }: { id: string; selected_capabilities: string[] }) =>
-      api.onboardingConfirm(id, { selected_capabilities }),
+    mutationFn: ({
+      id,
+      selected_capabilities,
+      agent_name,
+    }: {
+      id: string
+      selected_capabilities: string[]
+      agent_name: string
+    }) => api.onboardingConfirm(id, { selected_capabilities, agent_name }),
     onSuccess: (result: OnboardingConfirmResponse): void => {
       clearOnboardingSession()
       setPhase({ kind: 'confirmed', result })
@@ -526,8 +533,8 @@ export function OnboardingScreen(): ReactElement {
       {phase.kind === 'preview' ? (
         <PreviewView
           preview={phase.preview}
-          onConfirm={(selected_capabilities) => {
-            confirmMutation.mutate({ id: phase.sessionId, selected_capabilities })
+          onConfirm={(selected_capabilities, agent_name) => {
+            confirmMutation.mutate({ id: phase.sessionId, selected_capabilities, agent_name })
           }}
           onCancel={() => {
             cancelMutation.mutate(phase.sessionId)
@@ -715,8 +722,11 @@ function appendAnswer(
 
 interface PreviewViewProps {
   preview: OnboardingPreview
-  /** Called with the operator-curated capability id set on confirm. */
-  onConfirm: (selected_capabilities: string[]) => void
+  /**
+   * Called with the operator-curated capability id set and the (possibly
+   * renamed) Agent name on confirm. The server re-normalizes the name.
+   */
+  onConfirm: (selected_capabilities: string[], agentName: string) => void
   onCancel: () => void
   confirmDisabled: boolean
   confirmPending: boolean
@@ -742,6 +752,12 @@ function PreviewView({
       ),
   )
 
+  // Editable Agent name. Pre-filled with the interview-derived name; the
+  // operator can rename before confirming (the old flow shipped the derived
+  // name as-is, e.g. "lets-call-it-mira"). The server re-normalizes whatever
+  // is typed, so a friendly value is fine.
+  const [name, setName] = useState<string>(preview.agent_name)
+
   const toggleCapability = (id: string): void => {
     setSelectedCapabilityIds((prev) => {
       const next = new Set(prev)
@@ -756,7 +772,23 @@ function PreviewView({
       <section>
         <SectionHeader title="AGENT" />
         <Card padding={20}>
-          <div className={styles.previewName}>{preview.agent_name}</div>
+          <label className={styles.renameLabel}>
+            <span className={styles.renameLabelText}>NAME</span>
+            <input
+              type="text"
+              className={styles.renameInput}
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value)
+              }}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label="Agent name"
+            />
+          </label>
+          <div className={styles.renameHint}>
+            Lowercase letters, digits, and dashes. We tidy up whatever you type.
+          </div>
           <div className={styles.previewMeta}>
             CHOSEN BRANCH · {preview.transcript.chosen_branch}
           </div>
@@ -882,9 +914,9 @@ function PreviewView({
         <Button
           variant="primary"
           onClick={() => {
-            onConfirm([...selectedCapabilityIds])
+            onConfirm([...selectedCapabilityIds], name.trim())
           }}
-          disabled={confirmDisabled}
+          disabled={confirmDisabled || name.trim().length === 0}
         >
           {confirmPending ? 'Building...' : 'Confirm + build'}
         </Button>

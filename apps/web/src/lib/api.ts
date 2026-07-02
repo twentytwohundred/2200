@@ -1277,7 +1277,10 @@ export const api = {
       method: 'POST',
       body: { answer },
     }),
-  onboardingConfirm: (id: string, body?: { selected_capabilities?: string[] }) =>
+  onboardingConfirm: (
+    id: string,
+    body?: { selected_capabilities?: string[]; agent_name?: string },
+  ) =>
     request<OnboardingConfirmResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}/confirm`, {
       method: 'POST',
       body: body ?? {},

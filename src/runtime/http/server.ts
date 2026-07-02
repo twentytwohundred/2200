@@ -4212,6 +4212,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
        * default_on set from the preview's handoff stays as-is.
        */
       selected_capabilities: z.array(z.string().min(1)).optional(),
+      /**
+       * Operator rename from the preview. Overrides the interview-derived
+       * name. Run through the same `deriveAgentName` normalization so a
+       * free-form value ("Mira The Great!") still yields a valid identifier.
+       */
+      agent_name: z.string().optional(),
     })
     .optional()
 
@@ -4234,26 +4240,59 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
           `Session "${req.params.id}" is in state "${session.getState()}"; finish the interview before confirming.`,
         )
       }
-      // Pre-check the derived name against the existing fleet. Without this,
-      // a collision (a second "Mira", or re-confirming after a partial build)
+      const body = ConfirmBodySchema.parse(req.body ?? {})
+
+      // Resolve the final Agent name. An operator rename from the preview
+      // overrides the interview-derived name; run it through the same
+      // derivation so a free-form value still yields a valid identifier
+      // ("Mira The Great!" → "mira-the-great"). A value with no usable
+      // letters is rejected with a clear message rather than silently kept.
+      let finalName = preview.handoff.frontmatter.agent_name
+      if (body?.agent_name !== undefined && body.agent_name.trim().length > 0) {
+        const { deriveAgentName } = await import('../onboarding/identity-from-interview.js')
+        const derived = deriveAgentName(body.agent_name)
+        if (derived === null) {
+          throw new ApiError(
+            400,
+            'invalid_agent_name',
+            `"${body.agent_name}" has no usable letters for an Agent name. Pick a name that starts with a letter.`,
+          )
+        }
+        finalName = derived
+      }
+
+      // Pre-check the FINAL name against the existing fleet. Without this, a
+      // collision (a second "Mira", or re-confirming after a partial build)
       // reaches supervisor.createAgent, which throws a plain Error → generic
       // 500 → the session is stuck confirming forever with no hint why. Catch
       // it here, before migrateFromHandoff writes any files, and return an
       // actionable 409 the operator can resolve by renaming in the preview.
-      const plannedName = preview.handoff.frontmatter.agent_name
-      if (supervisor.snapshot().agents[plannedName]) {
+      if (supervisor.snapshot().agents[finalName]) {
         throw new ApiError(
           409,
           'agent_name_taken',
-          `An Agent named "${plannedName}" already exists. Rename this one in the preview (or remove the existing Agent) and confirm again.`,
+          `An Agent named "${finalName}" already exists. Rename this one in the preview (or remove the existing Agent) and confirm again.`,
         )
       }
-      const body = ConfirmBodySchema.parse(req.body ?? {})
+
+      // Apply the rename to the handoff (name + display_name) before anything
+      // is materialized, so the capability override and migration build the
+      // Agent under the operator's chosen name.
       let handoff = preview.handoff
+      if (finalName !== preview.handoff.frontmatter.agent_name) {
+        handoff = {
+          ...handoff,
+          frontmatter: {
+            ...handoff.frontmatter,
+            agent_name: finalName,
+            identity: { ...handoff.frontmatter.identity, display_name: finalName },
+          },
+        }
+      }
       if (body?.selected_capabilities !== undefined) {
         const { applyCapabilityOverride } = await import('../onboarding/capability-override.js')
         const result = applyCapabilityOverride({
-          handoff: preview.handoff,
+          handoff,
           suggestions: preview.capabilities,
           selected_ids: body.selected_capabilities,
         })
