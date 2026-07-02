@@ -192,6 +192,36 @@
   color: var(--text);
 }
 
+.renameLabel {
+  display: grid;
+  gap: var(--ds-1);
+}
+
+.renameLabelText {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+}
+
+.renameInput {
+  font-family: var(--ds-font-mono);
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--ds-r-2);
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.renameHint {
+  margin-top: var(--ds-1);
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 .previewMeta {
   font-family: var(--ds-font-mono);
   font-size: 12px;

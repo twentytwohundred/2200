@@ -187,7 +187,7 @@ function stripBranchSuffix(branchId: string): string {
  * the interview session (every retry re-threw). A confirmable preview the
  * operator can rename beats a dead 500.
  */
-function deriveAgentName(raw: string): string | null {
+export function deriveAgentName(raw: string): string | null {
   const core = raw
     .toLowerCase()
     .trim()
