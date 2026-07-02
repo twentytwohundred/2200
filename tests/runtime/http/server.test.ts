@@ -770,3 +770,67 @@ describe('isLoopbackHost', () => {
     expect(isLoopbackHost('::')).toBe(false)
   })
 })
+
+/**
+ * Box-level login lockout (defense-in-depth, independent of Cloudflare). Its
+ * own server with a low threshold so the lockout trips fast and deterministically
+ * without touching the shared instance.
+ */
+describe('HTTP server login lockout', () => {
+  let lHome: string
+  let lSup: Supervisor
+  let lHandle: HttpServerHandle
+  let lToken: string
+
+  beforeEach(async () => {
+    lHome = await mkdtemp(join(tmpdir(), '2200-http-lockout-'))
+    lSup = await Supervisor.create({ home: lHome })
+    await lSup.start({ home: lHome, listener: new NullListener() })
+    lHandle = await startHttpServer({
+      supervisor: lSup,
+      home: lHome,
+      port: 0,
+      host: '127.0.0.1',
+      staticDir: join(lHome, '__no_static_dir__'),
+      loginLockout: { maxFailures: 2, windowMs: 60_000, lockoutMs: 60_000 },
+    })
+    const list = await new WebTokenStore(homePaths(lHome).stateWebTokens).list()
+    lToken = list[0]!.value
+  })
+
+  afterEach(async () => {
+    await lHandle.stop()
+    await lSup.shutdown()
+    await rm(lHome, { recursive: true, force: true })
+  })
+
+  it('locks out a client after repeated failed auth, with Retry-After', async () => {
+    const bad = () =>
+      fetch(`${lHandle.url}/api/v1/me`, { headers: { authorization: 'Bearer wrong-token' } })
+    expect((await bad()).status).toBe(401) // failure 1
+    expect((await bad()).status).toBe(401) // failure 2 → trips the lockout
+    const locked = await bad() // now locked out
+    expect(locked.status).toBe(429)
+    expect(locked.headers.get('retry-after')).toBeTruthy()
+    // The lockout gates BEFORE the token compare: even the valid token is
+    // refused for the cooldown (per-client lockout).
+    const withGoodToken = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${lToken}` },
+    })
+    expect(withGoodToken.status).toBe(429)
+  })
+
+  it('a valid token before lockout succeeds and clears the failure count', async () => {
+    // One failure, then a success resets ... so we don't trip on the next failure.
+    await fetch(`${lHandle.url}/api/v1/me`, { headers: { authorization: 'Bearer wrong' } })
+    const ok = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${lToken}` },
+    })
+    expect(ok.status).toBe(200)
+    // A single subsequent failure should NOT be locked out (count was reset).
+    const after = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: 'Bearer wrong' },
+    })
+    expect(after.status).toBe(401)
+  })
+})
