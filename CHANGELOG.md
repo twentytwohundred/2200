@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.702.2310] ... 2026-07-02
+
+### Security
+
+- **The live-updates WebSocket now checks the request `Origin` server-side.** With the session moved to a cookie (previous release), a page at another website could try to open a socket to your instance and rely on the browser attaching your cookie (cross-site WebSocket hijacking). `SameSite=Lax` should already prevent that, but 2200 doesn't lean on "should": the WebSocket upgrade is rejected outright (`4403`, before authentication) when the `Origin` doesn't match the instance's own host. A non-browser client (which has no ambient cookie to hijack) is unaffected and still needs a valid credential.
+
 ## [2026.702.2247] ... 2026-07-02
 
 ### Security
