@@ -329,6 +329,29 @@ function clearSessionCookieHeader(secure: boolean): string {
   return attrs.join('; ')
 }
 
+/**
+ * Same-origin gate for the WebSocket upgrade. Since the WS authenticates off
+ * the session cookie, a page at another origin could open a socket here and the
+ * browser might attach the cookie (cross-site WebSocket hijacking). SameSite=Lax
+ * *should* withhold it, but we don't lean on "should": a browser WS always sends
+ * an `Origin` header, so we require its host to equal the request Host. A missing
+ * Origin means a non-browser client (no ambient cookie to hijack) ... allowed,
+ * since it still must present a valid cookie/bearer. A present-but-mismatched
+ * Origin is rejected outright.
+ */
+function wsOriginAllowed(req: FastifyRequest): boolean {
+  const origin = req.headers.origin
+  if (typeof origin !== 'string' || origin.length === 0) return true
+  let originHost: string
+  try {
+    originHost = new URL(origin).host
+  } catch {
+    return false
+  }
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  return originHost.length > 0 && originHost === host
+}
+
 export async function startHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
   const { supervisor, home } = options
   const port = options.port ?? 2200
@@ -5407,6 +5430,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         throw new ApiError(426, 'upgrade_required', 'Upgrade to WebSocket required at /api/v1/ws')
       },
       wsHandler: async (socket: WsSocket, req: FastifyRequest) => {
+        // Reject a cross-origin upgrade BEFORE looking at the cookie ... the
+        // definitive fix for cross-site WS hijacking, not a reliance on SameSite.
+        if (!wsOriginAllowed(req)) {
+          socket.close(4403, 'forbidden origin')
+          return
+        }
         let principal: Principal
         try {
           principal = await authenticate(req)
