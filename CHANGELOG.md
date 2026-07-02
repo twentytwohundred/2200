@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.702.2247] ... 2026-07-02
+
+### Security
+
+- **Web sign-in now uses an HttpOnly session cookie ... your access token is no longer readable by page scripts or exposed in any URL.** Previously the token lived in the browser's `localStorage` (any script on the page could read it) and rode in `?token=` query strings for the live-updates socket and avatar images (so it could land in history and logs). Now you paste the token once into the sign-in form; the server exchanges it for a secure, browser-only cookie (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS) that the browser attaches automatically to every request, including the WebSocket and images. The token is never held in JavaScript and never appears in a URL. Non-browser API clients still use `Authorization: Bearer`. New `POST /api/v1/auth/login` (rate-limited on the same lockout) and `/auth/logout`.
+- **Secure by default: a fresh install binds to loopback (`127.0.0.1`), not all interfaces.** Nothing is reachable ... not even from your own LAN ... until you deliberately choose how to expose it (LAN, Tailscale, or the Cloudflare tunnel). Previously a new install was LAN-reachable out of the box.
+
 ## [2026.702.2218] ... 2026-07-02
 
 ### Security
