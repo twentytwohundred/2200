@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.702.2115] ... 2026-07-02
+
+### Internal
+
+- **Groundwork for the self-serve Cloudflare Tunnel (Epic 19).** No user-facing behavior yet ... internal modules the access-mode picker and `cloudflared` sidecar will assemble from: the tunnel-broker provision/revoke client (byte-compatible request signing), a sealed instance-secret store for the broker secret + tunnel token (same AES-256-GCM sealing as the OAuth tokens), and the access-mode config (cloud / local / tailscale) with the loopback-vs-LAN bind decision. Domain-agnostic ... the tunnel hostname comes from the broker, so the chosen domain drops in with no code change.
+
 ## [2026.702.32] ... 2026-07-02
 
 ### Added
