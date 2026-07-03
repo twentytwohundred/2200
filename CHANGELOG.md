@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.703.54] ... 2026-07-03
+
+### Fixed
+
+- **`2200 daemon` now works cleanly under a service manager (systemd, launchd, containers).** Two problems surfaced wiring boot-persistence:
+  - **New `2200 daemon run`** runs the supervisor in the **foreground** ... no detaching, logs to the service manager's journal, forwards `SIGTERM`/`SIGINT` for a clean stop, and exits with the supervisor's code. This is the right target for a `Type=simple` systemd unit (or launchd / a container entrypoint). The existing detached `2200 daemon start` fights `Type=forking` (the detached process escapes the unit's control group); use `daemon run` with `Type=simple` instead.
+  - **`2200 daemon stop` now confirms the process is actually gone** before reporting success ... it previously judged "stopped" by a released lock, which could report success while the process kept running. It now waits for real process exit and escalates to `SIGKILL` if the daemon lingers.
+
 ## [2026.703.5] ... 2026-07-03
 
 ### Added
