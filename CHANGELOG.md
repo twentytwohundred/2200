@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.703.5] ... 2026-07-03
+
+### Added
+
+- **`2200 secret` ... manage sealed instance-level secrets.** `2200 secret set <key>` seals a value into the encrypted instance-secret store (reads the value from stdin when it's omitted, so it never lands in the process list or shell history); `secret list` shows the stored key names only (never values); `secret rm <key>` deletes one. First use: injecting the tunnel-broker install secret for the self-serve Cloudflare tunnel. Internal groundwork ... no user-facing change until the access-mode picker wires it up.
+
 ## [2026.702.2310] ... 2026-07-02
 
 ### Security
