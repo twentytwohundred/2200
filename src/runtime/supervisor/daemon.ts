@@ -159,6 +159,65 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<number> {
 }
 
 /**
+ * Run the supervisor in the FOREGROUND, for `2200 daemon run` under a service
+ * manager (systemd `Type=simple`, launchd, a container ENTRYPOINT, etc.).
+ *
+ * Unlike startDaemon, this does NOT detach: the supervisor runs as a child with
+ * inherited stdio (logs flow to the service manager's journal), and this call
+ * does not resolve until the supervisor exits. SIGTERM/SIGINT are forwarded so
+ * `systemctl stop` shuts it down gracefully, and the supervisor's exit code is
+ * returned so the manager sees success vs. failure correctly. This is the clean
+ * alternative to the detached `daemon start`, which fights `Type=forking`'s
+ * cgroup tracking (the detached child escapes the unit's control group).
+ */
+export async function runDaemonForeground(opts: StartDaemonOptions): Promise<number> {
+  const paths = homePaths(opts.home)
+  await mkdir(paths.state, { recursive: true })
+  const bootstrapPath = opts.bootstrapPath ?? defaultBootstrapPath()
+  const nodePath = opts.nodePath ?? process.execPath
+
+  let runtimeEnv: Record<string, string> = {}
+  if (opts.runtimeEnvPath !== null) {
+    runtimeEnv = await loadRuntimeEnv(opts.runtimeEnvPath ?? defaultRuntimeEnvPath())
+  }
+
+  const child = spawn(nodePath, [bootstrapPath, '--home', opts.home], {
+    stdio: 'inherit',
+    env: { ...process.env, ...runtimeEnv },
+  })
+
+  const forward = (sig: NodeJS.Signals): void => {
+    if (child.pid !== undefined) {
+      try {
+        child.kill(sig)
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  process.on('SIGTERM', () => {
+    forward('SIGTERM')
+  })
+  process.on('SIGINT', () => {
+    forward('SIGINT')
+  })
+
+  return await new Promise<number>((resolve) => {
+    child.on('exit', (code, signal) => {
+      if (code !== null) {
+        resolve(code)
+      } else {
+        // Signal-terminated: an expected stop (SIGTERM/SIGINT) is success.
+        resolve(signal === 'SIGTERM' || signal === 'SIGINT' ? 0 : 1)
+      }
+    })
+    child.on('error', () => {
+      resolve(1)
+    })
+  })
+}
+
+/**
  * Send SIGTERM to a running daemon and wait for it to exit. Cleans up
  * the PID file when the daemon dies. Returns true if a daemon was
  * stopped; false if no daemon was running.
@@ -202,12 +261,10 @@ export async function killDaemon(
   // kill(0) path so `daemon stop` can also stop a pre-lock daemon
   // during the one-time upgrade transition.
   let pid = await readLivePid(home)
-  let isLegacy = false
   if (pid === null) {
     const legacy = await readLegacyPidFile(home)
     if (legacy === null) return false
     pid = legacy
-    isLegacy = true
     log.warn('stopping legacy daemon (no lock file)', { pid })
   }
 
@@ -222,13 +279,16 @@ export async function killDaemon(
   const timeoutMs = options.timeoutMs ?? 5000
   const start = Date.now()
   const pollIntervalMs = 100
-  // For lock-aware daemons, "gone" means the lock is released. For
-  // legacy daemons, "gone" means kill(0) returns ESRCH.
-  const isStillAlive = async (): Promise<boolean> =>
-    isLegacy ? isPidAlive(pid) : (await readLivePid(home)) !== null
+  // "Gone" means the PROCESS is actually dead (kill(0) → ESRCH), for both
+  // legacy and lock-aware daemons. Do NOT trust lock-release alone: a buggy
+  // or service-manager-interrupted shutdown could release the lock without
+  // the process exiting, and we'd report "stopped" while it keeps serving.
+  // Requiring real process death is what makes `daemon stop` honest ... and
+  // escalates to SIGKILL if the process lingers.
+  const isStillAlive = (): boolean => isPidAlive(pid)
 
   while (Date.now() - start < timeoutMs) {
-    if (!(await isStillAlive())) {
+    if (!isStillAlive()) {
       return true
     }
     await sleep(pollIntervalMs)
@@ -245,7 +305,7 @@ export async function killDaemon(
   // Wait briefly for the kernel to reap.
   const killStart = Date.now()
   while (Date.now() - killStart < 2000) {
-    if (!(await isStillAlive())) {
+    if (!isStillAlive()) {
       return true
     }
     await sleep(pollIntervalMs)
