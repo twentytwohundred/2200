@@ -400,6 +400,18 @@ export function buildProgram(): Command {
     })
 
   daemon
+    .command('run')
+    .description(
+      'run the supervisor in the FOREGROUND for a service manager (systemd Type=simple, launchd, containers). Does not detach; exits when the supervisor exits; forwards SIGTERM/SIGINT for a clean stop.',
+    )
+    .action(async () => {
+      const home = await resolveHomeFromOpts(program)
+      const { runDaemonForeground } = await import('../runtime/supervisor/daemon.js')
+      const code = await runDaemonForeground({ home })
+      process.exit(code)
+    })
+
+  daemon
     .command('stop')
     .description('stop the running supervisor daemon (SIGTERM, then SIGKILL on timeout)')
     .action(async () => {
