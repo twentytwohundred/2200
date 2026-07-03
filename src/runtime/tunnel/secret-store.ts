@@ -13,7 +13,7 @@
  * string and its own salt.
  */
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
-import { mkdir, readFile, stat, chmod, unlink } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, chmod, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { atomicWriteFile } from '../util/atomic-write.js'
@@ -127,6 +127,21 @@ export async function readInstanceSecret(home: string, key: string): Promise<str
     decipher.update(Buffer.from(parsed.ciphertext, 'hex')),
     decipher.final(),
   ]).toString('utf-8')
+}
+
+/** List the stored secret KEYS (names only, never values). Excludes the salt. */
+export async function listInstanceSecretKeys(home: string): Promise<string[]> {
+  let entries: string[]
+  try {
+    entries = await readdir(secretsDir(home))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+  return entries
+    .filter((e) => e.endsWith('.json'))
+    .map((e) => e.slice(0, -'.json'.length))
+    .sort()
 }
 
 export async function hasInstanceSecret(home: string, key: string): Promise<boolean> {

@@ -52,6 +52,7 @@ import { startDaemon, killDaemon, logFilePath } from '../runtime/supervisor/daem
 import { readLivePid } from '../runtime/supervisor/pidfile.js'
 import { resolveHome, saveUserConfig } from '../runtime/config/loader.js'
 import { registerWebCommands } from './web.js'
+import { registerSecretCommands } from './secret.js'
 import { homePaths } from '../runtime/storage/layout.js'
 import { loadUserIdentity } from '../runtime/user/loader.js'
 import { readCredentialFile } from '../runtime/pub/keypair.js'
@@ -3851,6 +3852,7 @@ export function buildProgram(): Command {
     })
 
   registerWebCommands(program)
+  registerSecretCommands(program)
 
   // ---------------------------------------------------------------------------
   // Top-level: bare `2200` invocation.

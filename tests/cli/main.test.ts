@@ -28,7 +28,7 @@ describe('CLI program', () => {
     expect(versionFlag).toBeDefined()
   })
 
-  it('has the twenty-three top-level commands (setup, init, update, daemon, agent, task, pub, user, chat, notification, usage, schedule, brain, shared-brain, model, extension, skill, credential, oauth, platform, catalog, web, connector)', () => {
+  it('has the twenty-four top-level commands (setup, init, update, daemon, agent, task, pub, user, chat, notification, usage, schedule, brain, shared-brain, model, extension, skill, credential, oauth, platform, catalog, web, connector, secret)', () => {
     const program = buildProgram()
     const names = program.commands.map((c) => c.name()).sort()
     expect(names).toEqual([
@@ -47,6 +47,7 @@ describe('CLI program', () => {
       'platform',
       'pub',
       'schedule',
+      'secret',
       'setup',
       'shared-brain',
       'skill',
@@ -56,6 +57,13 @@ describe('CLI program', () => {
       'user',
       'web',
     ])
+  })
+
+  it('secret has set, list, rm', () => {
+    const program = buildProgram()
+    const secret = findSubcommand(program, 'secret')!
+    const subs = secret.commands.map((c) => c.name()).sort()
+    expect(subs).toEqual(['list', 'rm', 'set'])
   })
 })
 
