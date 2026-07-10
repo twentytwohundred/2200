@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.710.904] ... 2026-07-10
+
 ### Added
 
-- **Sign in with ChatGPT.** A ChatGPT Plus/Pro subscription now powers a fleet the same way SuperGrok does: a peer sign-in card in Settings, a first-run option, and a new `openai-subscription` provider in the model picker (the Codex model family ... coding-tuned, general-capable). Device-code sign-in is the primary path (works headless / over SSH; requires the "Device code authentication" toggle in ChatGPT security settings); when an account has that toggle off, the flow falls back automatically to a browser sign-in on the machine running 2200 (`localhost:1455` callback). Fleet-scoped like Grok: one sign-in, every Agent that picks the provider, background token refresh included. The inference transport (ChatGPT Codex backend, Responses shape) is marked interim until it returns a real completion from a live subscription; the auth half is verified against OpenAI's live surface.
+- **Sign in with ChatGPT.** A ChatGPT Plus/Pro subscription now powers a fleet the same way SuperGrok does: a peer sign-in card in Settings, a first-run option, and a new `openai-subscription` provider in the model picker (the Codex model family ... coding-tuned, general-capable). Device-code sign-in is the primary path (works headless / over SSH; requires the "Device code authentication" toggle in ChatGPT security settings); for accounts without that toggle there is a browser sign-in on the machine running 2200 (`localhost:1455` callback) ... the card's "Use browser sign-in instead" button or `2200 oauth openai login --browser`, plus an automatic fallback when the device flow cannot start. Fleet-scoped like Grok: one sign-in, every Agent that picks the provider, background token refresh included. The inference transport (ChatGPT Codex backend, Responses shape) is marked interim until it returns a real completion from a live subscription; the auth half is verified against OpenAI's live surface.
 - **Subscription positioning: peer cards, not one pinned leader.** Settings presents SuperGrok and ChatGPT as equal "bring a subscription you already pay for" options, and first-run offers each in turn. Grok stays fully supported; it just no longer gets sole top billing.
 
 ### Changed
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **Stale `2200 oauth xai login` success text** claimed Agents on provider `xai` would use the subscription bearer with an `XAI_API_KEY` fallback ... neither is true (the subscription provider is `xai-subscription`, fail-loud by design, and running Agents hot-read the rotated bearer with no restart). The message now says what actually happens; same correction on logout.
+- **Subscription provider cards no longer expose API-key controls.** The generic CHANGE/CLEAR buttons on a subscription card wrote through a display-only placeholder to the API-key sibling's env var (clearing `xai-subscription` deleted `XAI_API_KEY`; the new `openai-subscription` would have deleted `OPENAI_API_KEY`). The runtime now rejects key writes for subscription providers and the cards point at the sign-in flow instead.
 
 ## [2026.703.54] ... 2026-07-03
 
