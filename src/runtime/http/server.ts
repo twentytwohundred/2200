@@ -687,23 +687,27 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   })
 
   // --------------------------------------------------------------
-  // OAuth: xAI / Grok device-code sign-in (browser-driven).
+  // OAuth: subscription sign-ins (browser-driven), one route family
+  // for every provider in the subscription registry (SuperGrok,
+  // ChatGPT). Mirrors the CLI flows (`2200 oauth <provider> login`)
+  // over HTTP so the Settings page can drive a sign-in inline. The
+  // flow is stateful across two requests:
   //
-  // Mirrors the CLI flow (`2200 oauth xai login`) over HTTP so the
-  // Settings page can drive the sign-in inline. The flow is stateful
-  // across two requests:
-  //
-  //   1. POST  /api/v1/oauth/xai/login/start
-  //        → daemon calls device-authorization endpoint, returns
-  //          { session_id, user_code, verification_uri, ... }
-  //   2. GET   /api/v1/oauth/xai/login/status?session=<id>
-  //        → daemon does ONE token-endpoint poll, returns
-  //          { status: 'pending' | 'completed' | 'failed', ... }.
-  //          Browser polls at its own cadence.
-  //   3. GET   /api/v1/oauth/xai/status
-  //        → reads the sealed token (if any) and returns
-  //          configured/expires/scopes (no secrets).
-  //   4. POST  /api/v1/oauth/xai/logout
+  //   1. POST  /api/v1/oauth/:provider/login/start
+  //        → daemon starts a device-code flow, returns
+  //          { session_id, flow: 'device', user_code, ... }.
+  //          When the provider rejects device-code (OpenAI accounts
+  //          without the device-auth toggle) and a loopback fallback
+  //          exists, returns { flow: 'loopback', authorization_url }
+  //          instead; the daemon holds the localhost redirect
+  //          listener and finishes the exchange itself.
+  //   2. GET   /api/v1/oauth/:provider/login/status?session=<id>
+  //        → device: daemon does ONE token poll; loopback: reads the
+  //          background exchange result. Browser polls at its own
+  //          cadence.
+  //   3. GET   /api/v1/oauth/:provider/status
+  //        → reads the sealed token (if any); no secrets.
+  //   4. POST  /api/v1/oauth/:provider/logout
   //        → deletes the sealed token from disk.
   //
   // The session manager is in-process and dies with the daemon.
@@ -711,105 +715,167 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // "Sign in" again ... no persistence of in-flight secrets.
   // --------------------------------------------------------------
   const { DeviceFlowSessionManager } = await import('../oauth/device-flow-session.js')
+  const {
+    subscriptionProviderByRoute,
+    subscriptionProviderByLlmName,
+    activeSubscriptionLlmProviders,
+    saveSubscriptionTokens,
+  } = await import('../oauth/subscription-providers.js')
   const oauthSessions = new DeviceFlowSessionManager()
 
-  fastify.post('/api/v1/oauth/xai/login/start', async (_req, reply) => {
-    const { fetchXaiDiscovery, xaiDeviceFlowProvider, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPES } =
-      await import('../oauth/xai-config.js')
-    const { generatePkce } = await import('../oauth/pkce.js')
-    let discovery
-    try {
-      discovery = await fetchXaiDiscovery()
-    } catch (err) {
-      await reply.code(502).send({
-        error: 'discovery_failed',
-        message: err instanceof Error ? err.message : String(err),
-      })
-      return
-    }
-    const provider = xaiDeviceFlowProvider(discovery)
-    const pkce = generatePkce()
-
-    const initBody = new URLSearchParams()
-    initBody.set('client_id', XAI_OAUTH_CLIENT_ID)
-    initBody.set('scope', XAI_OAUTH_SCOPES.join(' '))
-    initBody.set('code_challenge', pkce.challenge)
-    initBody.set('code_challenge_method', pkce.method)
-
-    let initRes
-    try {
-      initRes = await fetch(provider.deviceAuthorizationUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: initBody.toString(),
-      })
-    } catch (err) {
-      await reply.code(502).send({
-        error: 'device_authorization_request_failed',
-        message: err instanceof Error ? err.message : String(err),
-      })
-      return
-    }
-    if (!initRes.ok) {
-      const text = await initRes.text().catch(() => '')
-      await reply.code(502).send({
-        error: 'device_authorization_request_failed',
-        message: `HTTP ${String(initRes.status)} ${text.slice(0, 300)}`,
-      })
-      return
-    }
-    const initJson = (await initRes.json().catch(() => null)) as {
-      device_code?: string
-      user_code?: string
-      verification_uri?: string
-      verification_uri_complete?: string
-      expires_in?: number
-      interval?: number
-    } | null
-    if (!initJson?.device_code || !initJson.user_code || !initJson.verification_uri) {
-      await reply.code(502).send({
-        error: 'device_authorization_invalid_response',
-        message: 'xAI device-auth response missing device_code, user_code, or verification_uri',
-      })
-      return
-    }
-
-    const expiresInRaw = initJson.expires_in
-    const expiresInSec =
-      typeof expiresInRaw === 'number' && Number.isFinite(expiresInRaw) ? expiresInRaw : 900
-    // RFC 8628: minimum 5s polling interval.
-    const intervalRaw = initJson.interval
-    const rawInterval =
-      typeof intervalRaw === 'number' && Number.isFinite(intervalRaw) ? intervalRaw : 5
-    const intervalSec = Math.min(Math.max(rawInterval, 5), 60)
-    const session = oauthSessions.create({
-      provider,
-      deviceCode: initJson.device_code,
-      userCode: initJson.user_code,
-      verificationUri: initJson.verification_uri,
-      ...(initJson.verification_uri_complete
-        ? { verificationUriComplete: initJson.verification_uri_complete }
-        : {}),
-      expiresAtMs: Date.now() + expiresInSec * 1000,
-      codeVerifier: pkce.verifier,
-      intervalSec,
-    })
-    return session
-  })
-
-  fastify.get<{ Querystring: { session?: string } }>(
-    '/api/v1/oauth/xai/login/status',
+  fastify.post<{ Params: { provider: string }; Body: { flow?: string } | null }>(
+    '/api/v1/oauth/:provider/login/start',
     async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+
+      // The browser can request the loopback flow explicitly
+      // (`{"flow":"loopback"}`). This matters because OpenAI's
+      // device-code MINT is account-independent (verified keylessly),
+      // so an account with the device-auth toggle OFF still mints a
+      // code fine and only fails at approval time ... a mint-failure
+      // fallback alone would never reach the loopback flow for exactly
+      // the accounts that need it. The ChatGPT card offers a "use
+      // browser sign-in" action wired to this.
+      const wantsLoopback = req.body?.flow === 'loopback'
+      if (wantsLoopback && !def.loopback) {
+        await reply.code(400).send({
+          error: 'no_loopback_flow',
+          message: `${def.shortLabel} has no browser (loopback) sign-in flow`,
+        })
+        return
+      }
+
+      // One in-flight sign-in per provider: tear down any prior
+      // session (and its loopback listener) BEFORE starting a new
+      // flow, so a retry can rebind the fixed redirect port instead of
+      // 409ing on EADDRINUSE until the old listener times out.
+      oauthSessions.removeBySlug(def.slug)
+
+      let deviceStartError: unknown
+      if (!wantsLoopback) {
+        try {
+          const start = await def.startDeviceFlow()
+          return oauthSessions.create({
+            slug: def.slug,
+            flow: 'device',
+            userCode: start.userCode,
+            verificationUri: start.verificationUri,
+            ...(start.verificationUriComplete
+              ? { verificationUriComplete: start.verificationUriComplete }
+              : {}),
+            expiresAtMs: start.expiresAtMs,
+            intervalSec: start.intervalSec,
+            pollState: start.pollState,
+          })
+        } catch (err) {
+          deviceStartError = err
+        }
+
+        // Device-code could not START (mint rejected or unreachable).
+        // Fall back to the loopback authorization-code flow when the
+        // provider supports one: the daemon binds the registered
+        // localhost port, the browser opens the authorization URL, and
+        // the callback lands back here. Only works when the user's
+        // browser runs on the same machine as the daemon ... the UI
+        // says so.
+        if (!def.loopback) {
+          await reply.code(502).send({
+            error: 'sign_in_start_failed',
+            message:
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError),
+          })
+          return
+        }
+      }
+      const loopback = def.loopback
+      if (!loopback) {
+        // Unreachable: wantsLoopback guards above; here for narrowing.
+        await reply.code(500).send({ error: 'internal' })
+        return
+      }
+      try {
+        const { startOAuthFlowSession } = await import('../oauth/flow.js')
+        const providerConfig = await loopback.providerConfig()
+        const timeoutMs = 15 * 60_000
+        const flowSession = await startOAuthFlowSession({
+          provider: providerConfig,
+          clientId: loopback.clientId,
+          port: loopback.redirect.port,
+          redirectPath: loopback.redirect.path,
+          redirectUrlHostname: loopback.redirect.urlHostname,
+          timeoutMs,
+        })
+        const session = oauthSessions.create({
+          slug: def.slug,
+          flow: 'loopback',
+          authorizationUrl: flowSession.authorizationUrl,
+          expiresAtMs: Date.now() + timeoutMs,
+          intervalSec: 2,
+          cancel: () => void flowSession.close(),
+        })
+        // Background completion: the redirect callback + token
+        // exchange resolve the promise; the status route reads the
+        // recorded result.
+        void flowSession.tokens
+          .then(async (tokens) => {
+            const record = await saveSubscriptionTokens(home, def, tokens)
+            oauthSessions.recordCompletion(session.session_id, {
+              status: 'completed',
+              access_token: '<sealed-on-disk>',
+              refresh_token: '<sealed-on-disk>',
+              expires_at_ms: record.metadata.expires_at_ms,
+              granted_scopes: record.metadata.granted_scopes,
+            })
+          })
+          .catch((err: unknown) => {
+            oauthSessions.recordCompletion(session.session_id, {
+              status: 'failed',
+              error: 'loopback_flow_failed',
+              description: err instanceof Error ? err.message : String(err),
+            })
+          })
+        return session
+      } catch (err) {
+        const busy = (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+        const deviceNote = wantsLoopback
+          ? ''
+          : `device-code unavailable (${
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError)
+            }); `
+        await reply.code(busy ? 409 : 502).send({
+          error: busy ? 'loopback_port_busy' : 'sign_in_start_failed',
+          message: busy
+            ? `port ${String(loopback.redirect.port)} is in use (another sign-in in progress?)`
+            : `${deviceNote}loopback flow failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+        return
+      }
+    },
+  )
+
+  fastify.get<{ Params: { provider: string }; Querystring: { session?: string } }>(
+    '/api/v1/oauth/:provider/login/status',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
       const sessionId = req.query.session
       if (!sessionId) {
         await reply.code(400).send({ error: 'missing_session_id' })
         return
       }
       const rec = oauthSessions.get(sessionId)
-      if (!rec) {
+      if (rec?.slug !== def.slug) {
         await reply.code(404).send({ error: 'unknown_session' })
         return
       }
@@ -817,120 +883,103 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // so the browser can rely on idempotent status responses.
       if (rec.completed) return rec.completed
 
-      const pollBody = new URLSearchParams()
-      pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
-      pollBody.set('device_code', rec.deviceCode)
-      pollBody.set('client_id', rec.provider.clientId)
-      pollBody.set('code_verifier', rec.codeVerifier)
+      // Loopback sessions complete in the background (redirect
+      // callback + exchange); there is nothing to poll upstream.
+      if (rec.flow === 'loopback') {
+        return { status: 'pending' as const, poll_interval_sec: rec.intervalSec }
+      }
 
-      let pollRes
-      try {
-        pollRes = await fetch(rec.tokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Accept: 'application/json',
-          },
-          body: pollBody.toString(),
-        })
-      } catch (err) {
+      const outcome = await def.pollDeviceFlowOnce({ ...rec.pollState })
+
+      if (outcome.status === 'transient') {
         // Transient network errors: report pending so the browser
         // tries again at its own cadence. We do NOT mark failed here;
         // a brief blip should not kill a sign-in.
         return {
           status: 'pending' as const,
           poll_interval_sec: rec.intervalSec,
-          transient_error: err instanceof Error ? err.message : String(err),
+          transient_error: outcome.message,
         }
       }
-      const pollJson = (await pollRes.json().catch(() => null)) as {
-        access_token?: string
-        refresh_token?: string
-        expires_in?: number
-        scope?: string
-        error?: string
-        error_description?: string
-      } | null
-
-      if (pollRes.ok && pollJson?.access_token) {
-        const now = Date.now()
-        const expiresAtMs =
-          pollJson.expires_in !== undefined ? now + pollJson.expires_in * 1000 : now + 3_600_000
-        const grantedScopes = pollJson.scope ? pollJson.scope.split(/\s+/) : []
-        const refreshToken = pollJson.refresh_token ?? ''
-        if (!refreshToken) {
-          const fail = {
-            status: 'failed' as const,
-            error: 'no_refresh_token',
-            description:
-              'xAI did not return a refresh token; ensure the offline_access scope was granted at consent.',
-          }
-          oauthSessions.recordCompletion(sessionId, fail)
-          return fail
-        }
-        const { saveOAuthToken } = await import('../oauth/token-store.js')
-        await saveOAuthToken(home, {
-          provider: 'xai-oauth',
-          bearer: pollJson.access_token,
-          refreshToken,
-          metadata: {
-            granted_scopes: grantedScopes,
-            expires_at_ms: expiresAtMs,
-            created_at: new Date(now).toISOString(),
-          },
-        })
-        const result = {
-          status: 'completed' as const,
-          access_token: '<sealed-on-disk>',
-          refresh_token: '<sealed-on-disk>',
-          expires_at_ms: expiresAtMs,
-          granted_scopes: grantedScopes,
-        }
-        oauthSessions.recordCompletion(sessionId, result)
-        return result
-      }
-
-      const errorCode = pollJson?.error ?? 'unknown'
-      if (errorCode === 'authorization_pending') {
+      if (outcome.status === 'pending') {
         return { status: 'pending' as const, poll_interval_sec: rec.intervalSec }
       }
-      if (errorCode === 'slow_down') {
+      if (outcome.status === 'slow_down') {
         oauthSessions.bumpInterval(sessionId, 5)
         const updated = oauthSessions.get(sessionId)
         return { status: 'pending' as const, poll_interval_sec: updated?.intervalSec ?? 10 }
       }
+      if (outcome.status === 'completed') {
+        try {
+          const record = await saveSubscriptionTokens(home, def, outcome.tokens)
+          const result = {
+            status: 'completed' as const,
+            access_token: '<sealed-on-disk>',
+            refresh_token: '<sealed-on-disk>',
+            expires_at_ms: record.metadata.expires_at_ms,
+            granted_scopes: record.metadata.granted_scopes,
+          }
+          oauthSessions.recordCompletion(sessionId, result)
+          return result
+        } catch (err) {
+          // saveSubscriptionTokens throws on a missing refresh token.
+          const fail = {
+            status: 'failed' as const,
+            error: 'no_refresh_token',
+            description: err instanceof Error ? err.message : String(err),
+          }
+          oauthSessions.recordCompletion(sessionId, fail)
+          return fail
+        }
+      }
       const failResult = {
         status: 'failed' as const,
-        error: errorCode,
-        ...(pollJson?.error_description ? { description: pollJson.error_description } : {}),
+        error: outcome.error,
+        ...(outcome.description ? { description: outcome.description } : {}),
       }
       oauthSessions.recordCompletion(sessionId, failResult)
       return failResult
     },
   )
 
-  fastify.get('/api/v1/oauth/xai/status', async () => {
-    const { readOAuthToken } = await import('../oauth/token-store.js')
-    const token = await readOAuthToken(home, 'xai-oauth').catch(() => null)
-    if (!token) {
-      return { configured: false }
-    }
-    return {
-      configured: true,
-      provider: token.provider,
-      granted_scopes: token.metadata.granted_scopes,
-      expires_at: new Date(token.metadata.expires_at_ms).toISOString(),
-      expires_at_ms: token.metadata.expires_at_ms,
-      created_at: token.metadata.created_at,
-      refreshed_at: token.metadata.refreshed_at ?? null,
-    }
-  })
+  fastify.get<{ Params: { provider: string } }>(
+    '/api/v1/oauth/:provider/status',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+      const { readOAuthToken } = await import('../oauth/token-store.js')
+      const token = await readOAuthToken(home, def.slug).catch(() => null)
+      if (!token) {
+        return { configured: false }
+      }
+      return {
+        configured: true,
+        provider: token.provider,
+        granted_scopes: token.metadata.granted_scopes,
+        expires_at: new Date(token.metadata.expires_at_ms).toISOString(),
+        expires_at_ms: token.metadata.expires_at_ms,
+        created_at: token.metadata.created_at,
+        refreshed_at: token.metadata.refreshed_at ?? null,
+      }
+    },
+  )
 
-  fastify.post('/api/v1/oauth/xai/logout', async () => {
-    const { deleteOAuthToken } = await import('../oauth/token-store.js')
-    const removed = await deleteOAuthToken(home, 'xai-oauth')
-    return { removed }
-  })
+  fastify.post<{ Params: { provider: string } }>(
+    '/api/v1/oauth/:provider/logout',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+      const { deleteOAuthToken } = await import('../oauth/token-store.js')
+      const removed = await deleteOAuthToken(home, def.slug)
+      return { removed }
+    },
+  )
 
   // ---------------------------------------------------------------------------
   // MCP connector management (Phase 1 / PR 1b).
@@ -1297,29 +1346,22 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
     }
 
-    // Subscription providers (xai-subscription) get their "configured"
-    // signal from the fleet OAuth token store, not from runtime.env.
-    // Read once here so each provider in the loop below can check.
-    const xaiSubscriptionConfigured = await (async () => {
-      try {
-        const { readOAuthToken } = await import('../oauth/token-store.js')
-        const tok = await readOAuthToken(home, 'xai-oauth')
-        return tok !== null && tok.metadata.expires_at_ms > Date.now()
-      } catch {
-        return false
-      }
-    })()
+    // Subscription providers get their "configured" signal from the
+    // fleet OAuth token store, not from runtime.env. Read once here so
+    // each provider in the loop below can check membership.
+    const activeSubscriptions = await activeSubscriptionLlmProviders(home)
 
     const items = listKnownProviders().map((cat) => {
       const value = env[cat.defaultEnvKey] ?? ''
       // Subscription providers don't read runtime.env; their `key_set`
       // is whether the OAuth token is present and unexpired.
-      const keySet = cat.category === 'subscription' ? xaiSubscriptionConfigured : value.length > 0
-      // xai-subscription shares grok-* models with the API-key xai
-      // provider, but pricing.json keys those under "xai/...". Copy
-      // the suggestions over so the picker shows the same model list
-      // under the Subscriptions optgroup.
-      const suggestedKey = cat.name === 'xai-subscription' ? 'xai' : cat.name
+      const keySet =
+        cat.category === 'subscription' ? activeSubscriptions.has(cat.name) : value.length > 0
+      // A subscription provider's model list may live under a pricing
+      // alias: xai-subscription shares grok-* ids with the API-key xai
+      // provider ("xai/..."), while openai-subscription has its own
+      // namespace. The registry def names the alias.
+      const suggestedKey = subscriptionProviderByLlmName(cat.name)?.modelsPricingAlias ?? cat.name
       return {
         ...cat,
         // Reflect the live env value for the local provider's URL,
@@ -1343,9 +1385,25 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     key: z.string(),
   })
 
+  // Subscription providers carry a sibling provider's env var as a
+  // display-only placeholder (openai-subscription → OPENAI_API_KEY);
+  // letting the generic key routes write through it would silently
+  // clobber the API-key sibling's credential. Their credential
+  // lifecycle is the sign-in card / `2200 oauth <provider>` CLI.
+  const rejectSubscriptionKeyWrite = (cat: { name: string; category: string }): void => {
+    if (cat.category === 'subscription') {
+      throw new ApiError(
+        400,
+        'subscription_provider_has_no_key',
+        `${cat.name} uses a subscription sign-in, not an API key. Use the sign-in card in Settings (or the \`2200 oauth\` CLI) to connect or disconnect it.`,
+      )
+    }
+  }
+
   fastify.put<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     const body = PutProviderKeyBody.parse(req.body)
     if (body.key === '') {
       await removeRuntimeEnvKey(cat.defaultEnvKey)
@@ -1366,6 +1424,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   fastify.delete<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     await removeRuntimeEnvKey(cat.defaultEnvKey)
     return {
       provider: cat.name,
@@ -4194,28 +4253,21 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     let providerName = body.provider
     let modelId = body.model
     if (!providerName) {
-      // A subscription provider (xai-subscription) is "configured" when its
-      // fleet OAuth token is present + unexpired ... it never carries a
-      // runtime.env key, so the old env-key-only check missed it and a
-      // SuperGrok-only install (Sign in with X, no API key) fell through to
-      // the keyless `local` fallback (Ollama at localhost, usually not
-      // running). Read the OAuth store the same way the providers endpoint
-      // does so the subscription counts.
-      const subscriptionActive = await (async () => {
-        try {
-          const { readOAuthToken } = await import('../oauth/token-store.js')
-          const tok = await readOAuthToken(home, 'xai-oauth')
-          return tok !== null && tok.metadata.expires_at_ms > Date.now()
-        } catch {
-          return false
-        }
-      })()
-      const configured = pickOnboardingProvider(listKnownProviders(), env, subscriptionActive)
+      // A subscription provider is "configured" when its fleet OAuth
+      // token is present + unexpired ... it never carries a
+      // runtime.env key, so an env-key-only check would miss it and a
+      // subscription-only install (Sign in with X / ChatGPT, no API
+      // key) would fall through to the keyless `local` fallback
+      // (Ollama at localhost, usually not running). Read the OAuth
+      // store the same way the providers endpoint does so
+      // subscriptions count.
+      const activeSubs = await activeSubscriptionLlmProviders(home)
+      const configured = pickOnboardingProvider(listKnownProviders(), env, activeSubs)
       if (!configured) {
         throw new ApiError(
           503,
           'no_provider_configured',
-          'No LLM provider is configured. Sign in with SuperGrok or add an API key in Settings → Providers before starting onboarding.',
+          'No LLM provider is configured. Sign in with a subscription (SuperGrok, ChatGPT) or add an API key in Settings → Providers before starting onboarding.',
         )
       }
       providerName = configured.name

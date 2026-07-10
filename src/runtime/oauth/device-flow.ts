@@ -26,12 +26,11 @@
  *   5. Token response carries access_token + refresh_token (when
  *      `offline_access` was requested) + expires_in.
  *
- * This module is pure I/O: takes a config, returns a token response.
- * The caller (CLI for `2200 oauth login xai`, daemon HTTP route for
- * web-driven sign-in) is responsible for vault writes and refresh
- * scheduling.
+ * This module is pure I/O building blocks: an init request, a single
+ * token poll, and the refresh grant. Pacing/loop policy lives in the
+ * subscription registry's drivers; callers own vault writes and
+ * refresh scheduling.
  */
-import { generatePkce } from './pkce.js'
 import { OAuthError, type OAuthTokenResponse } from './types.js'
 
 /** Endpoint set for a device-flow-capable OAuth provider. */
@@ -74,58 +73,63 @@ export interface DeviceFlowPrompt {
   readonly expiresAt: Date
 }
 
-export interface RunDeviceFlowOptions {
-  provider: DeviceFlowProviderConfig
-  /** Override scopes; defaults to provider.scopes. */
-  scopes?: readonly string[]
-  /**
-   * Called once we have the user_code and verification URI but before
-   * polling begins. The implementation surfaces these to the operator
-   * (print to stderr, web UI render, etc.). Synchronous.
-   */
-  onPrompt: (prompt: DeviceFlowPrompt) => void
-  /** Override fetch (testing). Default: global fetch. */
-  fetchImpl?: typeof fetch
-  /** Override the clock (testing). Default: Date.now. */
-  nowFn?: () => number
-  /**
-   * Override the polling sleep (testing). Default: setTimeout-based.
-   * Called between token polls.
-   */
-  sleepFn?: (ms: number) => Promise<void>
-  /**
-   * Optional overall timeout in seconds. Defaults to `expires_in` from
-   * the device-authorization response (typically 900s = 15 min).
-   */
-  timeoutSeconds?: number
+/** Parsed + normalized result of the device-authorization (init) request. */
+export interface DeviceFlowInitResult {
+  readonly deviceCode: string
+  readonly userCode: string
+  readonly verificationUri: string
+  readonly verificationUriComplete: string | undefined
+  readonly expiresAtMs: number
+  readonly intervalSec: number
 }
 
 /**
- * Run the device-code flow end to end. Resolves to the token response.
- * Rejects with an OAuthError on any unrecoverable error or timeout.
+ * Outcome of a single token-endpoint poll. Shared vocabulary between
+ * the blocking sign-in driver (`runSubscriptionDeviceFlow`) and the browser-driven
+ * per-poll HTTP route, so RFC 8628 error semantics live in exactly
+ * one place.
+ *
+ *   - transient:  network blip; keep polling (a brief outage must not
+ *                 kill a flow the user already approved in a browser)
+ *   - pending:    authorization_pending; keep polling
+ *   - slow_down:  bump the interval +5s, keep polling
+ *   - completed:  provider returned tokens
+ *   - failed:     terminal provider error (expired_token, access_denied, ...)
  */
-export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTokenResponse> {
-  const fetchImpl = opts.fetchImpl ?? fetch
-  const sleep = opts.sleepFn ?? defaultSleep
-  const now = opts.nowFn ?? (() => Date.now())
+export type DeviceTokenPollOutcome =
+  | { status: 'transient'; message: string }
+  | { status: 'pending' }
+  | { status: 'slow_down' }
+  | { status: 'completed'; tokens: OAuthTokenResponse }
+  | { status: 'failed'; error: string; description?: string }
 
-  const pkce = generatePkce()
-  const scopes = opts.scopes ?? opts.provider.scopes
-  const scopeSeparator = opts.provider.scopeSeparator ?? ' '
-  const scopeString = scopes.join(scopeSeparator)
+/**
+ * Run the RFC 8628 device-authorization (init) request and normalize
+ * the response. PKCE is bound at init: pass the S256 challenge; keep
+ * the matching verifier for the token polls.
+ */
+export async function initDeviceAuthorization(args: {
+  provider: DeviceFlowProviderConfig
+  codeChallenge: string
+  codeChallengeMethod: string
+  scopes?: readonly string[]
+  fetchImpl?: typeof fetch
+  nowFn?: () => number
+}): Promise<DeviceFlowInitResult> {
+  const fetchImpl = args.fetchImpl ?? fetch
+  const now = args.nowFn ?? (() => Date.now())
+  const scopes = args.scopes ?? args.provider.scopes
+  const scopeSeparator = args.provider.scopeSeparator ?? ' '
 
-  // ----------------------------------------------------------------------
-  // Step 1: device authorization request.
-  // ----------------------------------------------------------------------
   const initBody = new URLSearchParams()
-  initBody.set('client_id', opts.provider.clientId)
-  initBody.set('scope', scopeString)
-  initBody.set('code_challenge', pkce.challenge)
-  initBody.set('code_challenge_method', pkce.method)
+  initBody.set('client_id', args.provider.clientId)
+  initBody.set('scope', scopes.join(scopeSeparator))
+  initBody.set('code_challenge', args.codeChallenge)
+  initBody.set('code_challenge_method', args.codeChallengeMethod)
 
   let initRes
   try {
-    initRes = await fetchImpl(opts.provider.deviceAuthorizationUrl, {
+    initRes = await fetchImpl(args.provider.deviceAuthorizationUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -135,7 +139,7 @@ export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTo
     })
   } catch (err) {
     throw new OAuthError(
-      `device authorization request to ${opts.provider.deviceAuthorizationUrl} failed: ${
+      `device authorization request to ${args.provider.deviceAuthorizationUrl} failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
       'TOKEN_EXCHANGE_FAILED',
@@ -149,112 +153,80 @@ export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTo
     )
   }
   const initJson = (await initRes.json().catch(() => null)) as DeviceAuthorizationResponse | null
-  if (!initJson || typeof initJson.device_code !== 'string') {
-    throw new OAuthError('device authorization response missing device_code', 'INVALID_RESPONSE')
+  if (
+    !initJson ||
+    typeof initJson.device_code !== 'string' ||
+    typeof initJson.user_code !== 'string' ||
+    typeof initJson.verification_uri !== 'string'
+  ) {
+    throw new OAuthError(
+      'device authorization response missing device_code, user_code, or verification_uri',
+      'INVALID_RESPONSE',
+    )
   }
-
-  // ----------------------------------------------------------------------
-  // Step 2: surface the verification URI + user_code so the operator
-  // can complete consent in a browser. The caller decides how to show
-  // it (CLI prints, web UI renders inline).
-  // ----------------------------------------------------------------------
   const expiresInSec = Number.isFinite(initJson.expires_in) ? initJson.expires_in : 900
-  const expiresAt = new Date(now() + expiresInSec * 1000)
-  opts.onPrompt({
+  return {
+    deviceCode: initJson.device_code,
     userCode: initJson.user_code,
     verificationUri: initJson.verification_uri,
     verificationUriComplete: initJson.verification_uri_complete,
-    expiresAt,
-  })
+    expiresAtMs: now() + expiresInSec * 1000,
+    intervalSec: clampInterval(initJson.interval),
+  }
+}
 
-  // ----------------------------------------------------------------------
-  // Step 3: poll the token endpoint until the user approves or expires.
-  // RFC 8628 error semantics:
-  //   - authorization_pending: keep waiting at current interval
-  //   - slow_down:             bump interval by +5s
-  //   - expired_token:         abort (device_code expired)
-  //   - access_denied:         abort (user said no)
-  //   - anything else:         abort
-  // ----------------------------------------------------------------------
-  let intervalSec = clampInterval(initJson.interval)
-  const overallTimeoutMs = (opts.timeoutSeconds ?? expiresInSec) * 1000
-  const deadline = now() + overallTimeoutMs
+/**
+ * One RFC 8628 token-endpoint poll. Pure request/normalize; the caller
+ * owns pacing (sleep between polls) and interval bookkeeping.
+ */
+export async function pollDeviceTokenOnce(args: {
+  tokenUrl: string
+  clientId: string
+  deviceCode: string
+  codeVerifier: string
+  fetchImpl?: typeof fetch
+}): Promise<DeviceTokenPollOutcome> {
+  const fetchImpl = args.fetchImpl ?? fetch
+  const pollBody = new URLSearchParams()
+  pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
+  pollBody.set('device_code', args.deviceCode)
+  pollBody.set('client_id', args.clientId)
+  pollBody.set('code_verifier', args.codeVerifier)
 
-  // First wait so we do not slam the token endpoint immediately.
-  await sleep(intervalSec * 1000)
-
-  while (now() < deadline) {
-    const pollBody = new URLSearchParams()
-    pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
-    pollBody.set('device_code', initJson.device_code)
-    pollBody.set('client_id', opts.provider.clientId)
-    pollBody.set('code_verifier', pkce.verifier)
-
-    let pollRes
-    try {
-      pollRes = await fetchImpl(opts.provider.tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: pollBody.toString(),
-      })
-    } catch {
-      // Transient network errors are tolerated: keep polling. We do
-      // not want a brief blip to kill a flow the user has already
-      // approved in their browser.
-      await sleep(intervalSec * 1000)
-      continue
-    }
-
-    const pollJson = (await pollRes.json().catch(() => null)) as
-      | OAuthTokenResponse
-      | { error: string; error_description?: string }
-      | null
-
-    if (pollRes.ok && pollJson && 'access_token' in pollJson && pollJson.access_token) {
-      return pollJson
-    }
-
-    const errorCode =
-      pollJson && typeof pollJson === 'object' && 'error' in pollJson && pollJson.error
-        ? pollJson.error
-        : null
-
-    if (errorCode === 'authorization_pending') {
-      await sleep(intervalSec * 1000)
-      continue
-    }
-    if (errorCode === 'slow_down') {
-      intervalSec = clampInterval(intervalSec + 5)
-      await sleep(intervalSec * 1000)
-      continue
-    }
-    if (errorCode === 'expired_token') {
-      throw new OAuthError(
-        'device code expired before user approval; restart the flow',
-        'CALLBACK_TIMEOUT',
-      )
-    }
-    if (errorCode === 'access_denied') {
-      throw new OAuthError('user denied access at the provider consent screen', 'PROVIDER_DENIED')
-    }
-    // Anything else: abort. Include the description if present.
-    const desc =
-      pollJson && typeof pollJson === 'object' && 'error_description' in pollJson
-        ? (pollJson.error_description ?? '')
-        : ''
-    throw new OAuthError(
-      `device-code token poll failed: ${errorCode ?? 'unknown'}${desc ? ` — ${desc}` : ''}`,
-      'TOKEN_EXCHANGE_FAILED',
-    )
+  let pollRes
+  try {
+    pollRes = await fetchImpl(args.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: pollBody.toString(),
+    })
+  } catch (err) {
+    return { status: 'transient', message: err instanceof Error ? err.message : String(err) }
   }
 
-  throw new OAuthError(
-    'device-code flow timed out before user approval completed',
-    'CALLBACK_TIMEOUT',
-  )
+  const pollJson = (await pollRes.json().catch(() => null)) as
+    | OAuthTokenResponse
+    | { error: string; error_description?: string }
+    | null
+
+  if (pollRes.ok && pollJson && 'access_token' in pollJson && pollJson.access_token) {
+    return { status: 'completed', tokens: pollJson }
+  }
+
+  const errorCode =
+    pollJson && typeof pollJson === 'object' && 'error' in pollJson && pollJson.error
+      ? pollJson.error
+      : 'unknown'
+  if (errorCode === 'authorization_pending') return { status: 'pending' }
+  if (errorCode === 'slow_down') return { status: 'slow_down' }
+  const desc =
+    pollJson && typeof pollJson === 'object' && 'error_description' in pollJson
+      ? (pollJson.error_description ?? '')
+      : ''
+  return { status: 'failed', error: errorCode, ...(desc ? { description: desc } : {}) }
 }
 
 /**
@@ -314,14 +286,8 @@ export async function refreshDeviceFlowToken(args: {
 }
 
 /** Per RFC 8628 §3.5: minimum 5 second polling interval. */
-function clampInterval(seconds: number | undefined): number {
+export function clampInterval(seconds: number | undefined): number {
   if (!Number.isFinite(seconds) || seconds === undefined || seconds < 5) return 5
   if (seconds > 60) return 60
   return seconds
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }

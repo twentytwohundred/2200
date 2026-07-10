@@ -295,3 +295,125 @@ describe('TokenRefreshService', () => {
     expect(stats.failed).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fleet-scoped subscription tokens (SuperGrok, ChatGPT). These live in the
+// home-level sealed store, refresh with a public-client grant (no
+// client_secret), and are driven off the subscription registry ... a token
+// for EITHER provider must refresh with no provider-specific code in the
+// service.
+// ---------------------------------------------------------------------------
+describe('TokenRefreshService fleet subscription tokens', () => {
+  const XAI_DISCOVERY = {
+    issuer: 'https://auth.x.ai',
+    device_authorization_endpoint: 'https://auth.x.ai/oauth2/device/code',
+    token_endpoint: 'https://auth.x.ai/oauth2/token',
+    grant_types_supported: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256'],
+  }
+  const OPENAI_DISCOVERY = {
+    issuer: 'https://auth.openai.com',
+    authorization_endpoint: 'https://auth.openai.com/api/accounts/authorize',
+    token_endpoint: 'https://auth.openai.com/api/accounts/oauth/token',
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256'],
+  }
+
+  async function seedFleetToken(slug: string, expiresAtMs: number): Promise<void> {
+    const { saveOAuthToken } = await import('../../../src/runtime/oauth/token-store.js')
+    await saveOAuthToken(home, {
+      provider: slug,
+      bearer: 'old-bearer',
+      refreshToken: `old-refresh-${slug}`,
+      metadata: {
+        granted_scopes: ['offline_access'],
+        expires_at_ms: expiresAtMs,
+        created_at: '2026-07-10T00:00:00.000Z',
+      },
+    })
+  }
+
+  /** Serves both providers' discovery docs + token endpoints. */
+  function fleetFetch(seen: { urls: string[]; bodies: string[] }): typeof fetch {
+    return (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      seen.urls.push(url)
+      if (url.includes('auth.x.ai') && url.includes('openid-configuration')) {
+        return Promise.resolve(Response.json(XAI_DISCOVERY))
+      }
+      if (url.includes('auth.openai.com') && url.includes('openid-configuration')) {
+        return Promise.resolve(Response.json(OPENAI_DISCOVERY))
+      }
+      if (url.includes('/oauth2/token') || url.includes('/api/accounts/oauth/token')) {
+        seen.bodies.push(typeof init?.body === 'string' ? init.body : '')
+        return Promise.resolve(
+          Response.json({
+            access_token: 'new-bearer',
+            refresh_token: 'new-refresh',
+            expires_in: 3600,
+          }),
+        )
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }))
+    }
+  }
+
+  it('refreshes near-expiry tokens for BOTH subscription providers in one tick', async () => {
+    const now = new Date('2026-07-10T12:00:00.000Z')
+    await seedFleetToken('xai-oauth', now.getTime() + 60_000)
+    await seedFleetToken('openai-oauth', now.getTime() + 60_000)
+    const seen = { urls: [] as string[], bodies: [] as string[] }
+    const service = new TokenRefreshService({ home, now: () => now, fetchImpl: fleetFetch(seen) })
+    const stats = await service.tick()
+    expect(stats.refreshed).toBe(2)
+
+    const { readOAuthToken } = await import('../../../src/runtime/oauth/token-store.js')
+    for (const slug of ['xai-oauth', 'openai-oauth']) {
+      const stored = await readOAuthToken(home, slug)
+      expect(stored?.bearer).toBe('new-bearer')
+      expect(stored?.refreshToken).toBe('new-refresh')
+      expect(stored?.metadata.expires_at_ms).toBe(now.getTime() + 3600_000)
+      expect(stored?.metadata.refreshed_at).toBe(now.toISOString())
+    }
+    // Public-client refresh: grant + client_id, and NO client_secret.
+    expect(seen.bodies).toHaveLength(2)
+    for (const body of seen.bodies) {
+      const params = new URLSearchParams(body)
+      expect(params.get('grant_type')).toBe('refresh_token')
+      expect(params.get('client_id')).toBeTruthy()
+      expect(params.get('client_secret')).toBeNull()
+    }
+  })
+
+  it('leaves far-from-expiry fleet tokens alone', async () => {
+    const now = new Date('2026-07-10T12:00:00.000Z')
+    await seedFleetToken('openai-oauth', now.getTime() + 24 * 3600_000)
+    const seen = { urls: [] as string[], bodies: [] as string[] }
+    const service = new TokenRefreshService({ home, now: () => now, fetchImpl: fleetFetch(seen) })
+    const stats = await service.tick()
+    expect(stats.refreshed).toBe(0)
+    expect(stats.skipped).toBe(1)
+    expect(seen.bodies).toHaveLength(0)
+  })
+
+  it('applies a per-provider cooldown after a failed fleet refresh', async () => {
+    const now = new Date('2026-07-10T12:00:00.000Z')
+    await seedFleetToken('openai-oauth', now.getTime() + 60_000)
+    let tokenCalls = 0
+    const failingFetch: typeof fetch = (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('openid-configuration')) {
+        return Promise.resolve(Response.json(OPENAI_DISCOVERY))
+      }
+      tokenCalls += 1
+      return Promise.resolve(Response.json({ error: 'server_error' }, { status: 500 }))
+    }
+    const service = new TokenRefreshService({ home, now: () => now, fetchImpl: failingFetch })
+    const first = await service.tick()
+    expect(first.failed).toBe(1)
+    // Second tick inside the cooldown window: skipped, no second call.
+    const second = await service.tick()
+    expect(second.skipped).toBe(1)
+    expect(tokenCalls).toBe(1)
+  })
+})

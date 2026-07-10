@@ -434,7 +434,12 @@ function looksLikeNativeToolUseRejection(bodyText: string): boolean {
   return false
 }
 
-function mapHttpError(
+/**
+ * Map an HTTP error status to the LlmError vocabulary. Shared with the
+ * Codex Responses adapter (`codex-responses.ts`), which fronts a
+ * different transport but the same status semantics.
+ */
+export function mapHttpError(
   providerName: string,
   modelId: string,
   status: number,
