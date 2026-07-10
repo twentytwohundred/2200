@@ -94,7 +94,13 @@ describe('startOpenAiDeviceFlow', () => {
   }
 
   it('normalizes the live mint shape (string interval, ISO expiry)', async () => {
-    const start = await startOpenAiDeviceFlow({ fetchImpl: stubFetch(jsonRes(200, LIVE_MINT)) })
+    // Pin the clock 10 minutes before the fixture's expires_at so the
+    // absolute timestamp is honored as-is (sane-clock case).
+    const now = Date.parse('2026-07-10T13:00:10.800263+00:00') - 600_000
+    const start = await startOpenAiDeviceFlow({
+      fetchImpl: stubFetch(jsonRes(200, LIVE_MINT)),
+      nowFn: () => now,
+    })
     expect(start.userCode).toBe('YM3A-N8J3U')
     expect(start.intervalSec).toBe(5)
     expect(start.expiresAtMs).toBe(Date.parse('2026-07-10T13:00:10.800263+00:00'))
@@ -107,6 +113,17 @@ describe('startOpenAiDeviceFlow', () => {
     const now = 1_000_000
     const start = await startOpenAiDeviceFlow({
       fetchImpl: stubFetch(jsonRes(200, { ...LIVE_MINT, expires_at: 'garbage' })),
+      nowFn: () => now,
+    })
+    expect(start.expiresAtMs).toBe(now + 900_000)
+  })
+
+  it('floors an already-past expires_at (local clock ahead of the server)', async () => {
+    // A machine clock running ahead of OpenAI's would otherwise see the
+    // code as expired before the first poll and kill the flow.
+    const now = Date.parse('2026-07-10T13:00:10.800263+00:00') + 120_000
+    const start = await startOpenAiDeviceFlow({
+      fetchImpl: stubFetch(jsonRes(200, LIVE_MINT)),
       nowFn: () => now,
     })
     expect(start.expiresAtMs).toBe(now + 900_000)
@@ -205,6 +222,21 @@ describe('pollOpenAiDeviceTokenOnce', () => {
     const fetchImpl: typeof fetch = () => Promise.reject(new Error('ECONNRESET'))
     const outcome = await pollOpenAiDeviceTokenOnce(POLL_STATE, { fetchImpl })
     expect(outcome.status).toBe('transient')
+  })
+
+  it('treats gateway blips (5xx/429/non-JSON) as transient, not terminal', async () => {
+    // A user mid-approval on their phone must not have the whole flow
+    // killed by one 502 from a proxy. Only a structured provider error
+    // is a verdict on the sign-in.
+    const responses = [
+      new Response('<html>bad gateway</html>', { status: 502 }),
+      new Response('<html>service unavailable</html>', { status: 503 }),
+      jsonRes(429, {}),
+    ]
+    for (const res of responses) {
+      const outcome = await pollOpenAiDeviceTokenOnce(POLL_STATE, { fetchImpl: stubFetch(res) })
+      expect(outcome.status).toBe('transient')
+    }
   })
 
   it('uses the routed poll URL from the wire config', async () => {

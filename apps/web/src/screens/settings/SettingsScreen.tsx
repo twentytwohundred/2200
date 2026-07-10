@@ -369,13 +369,24 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
   })
 
   const error = setKey.error ?? clearKey.error ?? setUrl.error
+  // Subscription providers have no API key to manage here: their
+  // credential is the OAuth sign-in (the cards at the top of this
+  // page), and their defaultEnvKey is a display-only placeholder that
+  // belongs to the API-key sibling ... rendering CHANGE/CLEAR would
+  // invite clobbering that sibling's key (the runtime rejects such
+  // writes too).
+  const isSubscription = provider.category === 'subscription'
   return (
     <div className={styles.providerCard}>
       <div className={styles.providerHead}>
         <div className={styles.providerLabel}>{provider.label}</div>
         {provider.key_set ? (
           <Pill variant="info" size="sm" dot>
-            key set
+            {isSubscription ? 'signed in' : 'key set'}
+          </Pill>
+        ) : isSubscription ? (
+          <Pill variant="idle" size="sm" dot>
+            not signed in
           </Pill>
         ) : provider.keyOptional ? (
           <Pill variant="idle" size="sm" dot>
@@ -386,16 +397,18 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
             no key
           </Pill>
         )}
-        <button
-          type="button"
-          className={styles.providerBtn}
-          onClick={() => {
-            setOpen((v) => !v)
-          }}
-        >
-          {open ? 'CLOSE' : provider.key_set ? 'CHANGE' : 'ADD KEY'}
-        </button>
-        {provider.key_set ? (
+        {!isSubscription && (
+          <button
+            type="button"
+            className={styles.providerBtn}
+            onClick={() => {
+              setOpen((v) => !v)
+            }}
+          >
+            {open ? 'CLOSE' : provider.key_set ? 'CHANGE' : 'ADD KEY'}
+          </button>
+        )}
+        {provider.key_set && !isSubscription ? (
           <button
             type="button"
             className={cx(styles.providerBtn, clearArmed && styles.providerBtnDanger)}
@@ -435,10 +448,19 @@ function ProviderCard({ provider }: { provider: ProviderSettingsItem }): ReactEl
       </div>
 
       <div className={styles.providerMeta}>
-        <div className={styles.providerMetaRow}>
-          <span className={styles.providerMetaKey}>env var</span>
-          <span className={styles.providerMetaValue}>{provider.defaultEnvKey}</span>
-        </div>
+        {isSubscription ? (
+          <div className={styles.providerMetaRow}>
+            <span className={styles.providerMetaKey}>credential</span>
+            <span className={styles.providerMetaValue}>
+              subscription sign-in (card at the top of this page)
+            </span>
+          </div>
+        ) : (
+          <div className={styles.providerMetaRow}>
+            <span className={styles.providerMetaKey}>env var</span>
+            <span className={styles.providerMetaValue}>{provider.defaultEnvKey}</span>
+          </div>
+        )}
         <div className={styles.providerMetaRow}>
           <span className={styles.providerMetaKey}>base url</span>
           <span className={styles.providerMetaValue}>{provider.baseUrl}</span>

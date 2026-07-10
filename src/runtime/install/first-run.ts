@@ -718,17 +718,25 @@ async function installBuiltinConnectorManifest(home: string, id: string): Promis
  * so the surrounding wizard's logging style is consistent. On failure
  * we log and continue ... a failed sign-in must NOT abort the wizard;
  * the operator already has a working install, just no credential yet
- * (which they can fix later from Settings or CLI). The loopback
- * fallback (OpenAI accounts without device sign-in enabled) runs when
- * the device flow cannot start, opening a browser on this machine.
+ * (which they can fix later from Settings or CLI).
+ *
+ * The loopback fallback (a browser sign-in on this machine) engages
+ * ONLY when the device flow cannot START. A terminal outcome ... the
+ * operator denied consent, or let the code expire ... is a decision to
+ * respect, not to paper over with a second sign-in attempt; those
+ * paths surface the error plus the explicit `--browser` escape hatch.
  */
 async function runFirstRunSubscriptionSignIn(
   io: FirstRunIO,
   home: string,
   def: SubscriptionOAuthProviderDef,
 ): Promise<void> {
-  const { runSubscriptionDeviceFlow, saveSubscriptionTokens } =
-    await import('../oauth/subscription-providers.js')
+  const {
+    runSubscriptionDeviceFlow,
+    runSubscriptionLoopbackFlow,
+    saveSubscriptionTokens,
+    SubscriptionDeviceStartError,
+  } = await import('../oauth/subscription-providers.js')
 
   let tokens
   try {
@@ -753,28 +761,25 @@ async function runFirstRunSubscriptionSignIn(
       },
     })
   } catch (deviceErr) {
-    if (!def.loopback) {
+    const startFailed = deviceErr instanceof SubscriptionDeviceStartError
+    if (!def.loopback || !startFailed) {
       io.warn(
         `${def.shortLabel} sign-in failed: ${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}`,
       )
+      if (def.loopback) {
+        io.warn(
+          `If your ${def.shortLabel} account has device sign-in disabled, run \`${def.signInCommand} --browser\` on this machine's desktop instead.`,
+        )
+      }
       io.warn(`Continuing without it. You can retry with \`${def.signInCommand}\` later.`)
       io.info('')
       return
     }
     io.info('')
-    io.info(
-      `Device sign-in unavailable (${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}).`,
-    )
+    io.info(`Device sign-in unavailable (${deviceErr.message}).`)
     io.info('Falling back to the browser sign-in on this machine...')
     try {
-      const { runOAuthFlow } = await import('../oauth/flow.js')
-      const providerConfig = await def.loopback.providerConfig()
-      tokens = await runOAuthFlow({
-        provider: providerConfig,
-        clientId: def.loopback.clientId,
-        port: def.loopback.redirect.port,
-        redirectPath: def.loopback.redirect.path,
-        redirectUrlHostname: def.loopback.redirect.urlHostname,
+      tokens = await runSubscriptionLoopbackFlow(def, {
         onLog: (line) => {
           io.info(line)
         },
@@ -809,7 +814,7 @@ async function runFirstRunSubscriptionSignIn(
  *
  * Loops until the operator skips, so an operator can set up multiple
  * providers in a single pass (e.g., Anthropic + DeepSeek as a fallback
- * pair). Subscription providers are filtered out — those paths go
+ * pair). Subscription providers are filtered out ... those paths go
  * through the subscription sign-in step above.
  *
  * Errors:

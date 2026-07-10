@@ -143,4 +143,42 @@ describe('DeviceFlowSessionManager', () => {
     expect(mgr.size()).toBe(0)
     expect(mgr.remove(pub.session_id)).toBe(false)
   })
+
+  it('removeBySlug tears down that provider’s sessions (and their listeners) only', () => {
+    // The start route calls this before binding a new loopback flow:
+    // without it, a canceled/abandoned sign-in would hold the fixed
+    // redirect port and every retry would 409 until the old listener
+    // timed out.
+    const mgr = new DeviceFlowSessionManager()
+    let cancelled = false
+    mgr.create({
+      slug: 'openai-oauth',
+      flow: 'loopback',
+      authorizationUrl: 'https://auth.openai.com/api/accounts/authorize?client_id=x',
+      expiresAtMs: Date.now() + 600_000,
+      intervalSec: 2,
+      cancel: () => {
+        cancelled = true
+      },
+    })
+    const other = mgr.create(makeInput()) // xai-oauth device session
+    mgr.removeBySlug('openai-oauth')
+    expect(cancelled).toBe(true)
+    expect(mgr.size()).toBe(1)
+    expect(mgr.get(other.session_id)).toBeDefined()
+  })
+
+  it('create() sweeps expired sessions so terminal records cannot pile up', () => {
+    let now = 1_000_000
+    const mgr = new DeviceFlowSessionManager(() => now)
+    const old = mgr.create({ ...makeInput(), expiresAtMs: now + 600_000 })
+    mgr.recordCompletion(old.session_id, {
+      status: 'failed',
+      error: 'expired_token',
+    })
+    // Far past the old session's grace window, a new sign-in sweeps it.
+    now += 600_000 + 120_000
+    mgr.create({ ...makeInput(), slug: 'openai-oauth', expiresAtMs: now + 600_000 })
+    expect(mgr.size()).toBe(1)
+  })
 })

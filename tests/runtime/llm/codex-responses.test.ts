@@ -225,6 +225,21 @@ describe('CodexResponsesProvider response normalization', () => {
     expect((err as LlmError).message).toContain('scaffold rejected')
   })
 
+  it('still fails loud when a failed response carries no error detail', async () => {
+    // A sparse failure envelope (status 'failed', error null/empty)
+    // must not read as a successful empty completion ... the agent
+    // loop would silently record a corrupted turn.
+    const failed = { id: 'resp_10', status: 'failed' }
+    const p = provider({
+      response: sseResponse([{ type: 'response.failed', response: failed }]),
+    })
+    const err = await p
+      .complete({ modelId: 'gpt-5.1-codex', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((e: unknown) => e)
+    expect((err as LlmError).code).toBe('PROVIDER_ERROR')
+    expect((err as LlmError).message).toContain('no error detail')
+  })
+
   it('resolves credentials fresh on every request (rotating bearer)', async () => {
     const bearers: string[] = []
     let call = 0

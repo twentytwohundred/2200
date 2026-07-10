@@ -20,12 +20,14 @@
  * See wiki/decisions/2026-07-10-oauth-ecosystem-openai-subscription.md.
  */
 import {
+  clampInterval,
   initDeviceAuthorization,
   pollDeviceTokenOnce,
   refreshDeviceFlowToken,
   type DeviceFlowPrompt,
   type DeviceTokenPollOutcome,
 } from './device-flow.js'
+import { runOAuthFlow } from './flow.js'
 import { OAuthError } from './types.js'
 import { generatePkce } from './pkce.js'
 import {
@@ -88,6 +90,15 @@ export interface SubscriptionOAuthProviderDef {
   /** Refresh when the bearer has this many seconds (or fewer) left. */
   readonly refreshSkewSeconds: number
   /**
+   * Inference transport the LLM registry constructs for this
+   * provider's bearer. 'chat-completions' rides OpenAIProvider against
+   * the vendor base URL; 'codex-responses' is the ChatGPT Codex
+   * backend adapter. Keeping the selector here (not a name-equality
+   * branch in the registry) is what makes a new provider a data
+   * change.
+   */
+  readonly transport: 'chat-completions' | 'codex-responses'
+  /**
    * Pricing-table namespace whose model list feeds the picker's
    * Subscriptions optgroup. Defaults to `llmProvider`; xAI aliases to
    * 'xai' because the subscription reaches the same model ids as the
@@ -134,6 +145,7 @@ const XAI_DEF: SubscriptionOAuthProviderDef = {
   consentNote:
     'The consent screen says "Grok Build" because integrators share xAI\'s CLI OAuth client. That is expected; you are not installing a new app.',
   refreshSkewSeconds: XAI_OAUTH_REFRESH_SKEW_SECONDS,
+  transport: 'chat-completions',
   modelsPricingAlias: 'xai',
   async startDeviceFlow(opts = {}) {
     const discovery = await fetchXaiDiscovery(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {})
@@ -197,8 +209,9 @@ const OPENAI_DEF: SubscriptionOAuthProviderDef = {
   signInCta: 'Sign in with ChatGPT',
   signInCommand: '2200 oauth openai login',
   consentNote:
-    'Device sign-in must be enabled on your ChatGPT account (Settings → Security → "Device code authentication"). If the code page rejects the code, enable that toggle or use the browser sign-in fallback.',
+    'Device sign-in must be enabled on your ChatGPT account (Settings → Security → "Device code authentication"). If the code page rejects the code, enable that toggle or use the browser sign-in instead.',
   refreshSkewSeconds: OPENAI_OAUTH_REFRESH_SKEW_SECONDS,
+  transport: 'codex-responses',
   async startDeviceFlow(opts = {}) {
     const startOpts: Parameters<typeof startOpenAiDeviceFlow>[0] = {}
     if (opts.fetchImpl) startOpts.fetchImpl = opts.fetchImpl
@@ -302,10 +315,27 @@ export async function activeSubscriptionLlmProviders(
   nowMs: number = Date.now(),
 ): Promise<Set<string>> {
   const out = new Set<string>()
-  for (const def of SUBSCRIPTION_OAUTH_PROVIDERS) {
-    if (await hasActiveSubscription(home, def.slug, nowMs)) out.add(def.llmProvider)
-  }
+  const actives = await Promise.all(
+    SUBSCRIPTION_OAUTH_PROVIDERS.map((def) => hasActiveSubscription(home, def.slug, nowMs)),
+  )
+  SUBSCRIPTION_OAUTH_PROVIDERS.forEach((def, i) => {
+    if (actives[i]) out.add(def.llmProvider)
+  })
   return out
+}
+
+/**
+ * Thrown when a device-code sign-in cannot START (the mint request was
+ * rejected or unreachable). Distinct from a terminal poll failure ...
+ * only a start failure justifies falling back to the loopback flow: a
+ * user who DENIED consent or let the code expire made a decision the
+ * caller must surface, not paper over with a second sign-in attempt.
+ */
+export class SubscriptionDeviceStartError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'SubscriptionDeviceStartError'
+  }
 }
 
 /**
@@ -313,7 +343,9 @@ export async function activeSubscriptionLlmProviders(
  * start the flow, surface the code via `onPrompt`, poll to a terminal
  * outcome. The single loop the CLI subcommands and the first-run
  * wizard share; the browser path drives the same start/poll functions
- * per-request instead of blocking.
+ * per-request instead of blocking. Start failures are wrapped in
+ * `SubscriptionDeviceStartError` so callers can distinguish "device
+ * sign-in unavailable, try loopback" from a terminal outcome.
  */
 export async function runSubscriptionDeviceFlow(
   def: SubscriptionOAuthProviderDef,
@@ -337,7 +369,12 @@ export async function runSubscriptionDeviceFlow(
   if (opts.fetchImpl) flowOpts.fetchImpl = opts.fetchImpl
   if (opts.nowFn) flowOpts.nowFn = opts.nowFn
 
-  const start = await def.startDeviceFlow(flowOpts)
+  let start
+  try {
+    start = await def.startDeviceFlow(flowOpts)
+  } catch (err) {
+    throw new SubscriptionDeviceStartError(err)
+  }
   opts.onPrompt({
     userCode: start.userCode,
     verificationUri: start.verificationUri,
@@ -360,7 +397,7 @@ export async function runSubscriptionDeviceFlow(
       continue
     }
     if (outcome.status === 'slow_down') {
-      intervalSec = Math.min(intervalSec + 5, 60)
+      intervalSec = clampInterval(intervalSec + 5)
       await sleep(intervalSec * 1000)
       continue
     }
@@ -374,7 +411,7 @@ export async function runSubscriptionDeviceFlow(
       throw new OAuthError('user denied access at the provider consent screen', 'PROVIDER_DENIED')
     }
     throw new OAuthError(
-      `device-code sign-in failed: ${outcome.error}${outcome.description ? ` — ${outcome.description}` : ''}`,
+      `device-code sign-in failed: ${outcome.error}${outcome.description ? ` ... ${outcome.description}` : ''}`,
       'TOKEN_EXCHANGE_FAILED',
     )
   }
@@ -383,6 +420,39 @@ export async function runSubscriptionDeviceFlow(
     'device-code flow timed out before user approval completed',
     'CALLBACK_TIMEOUT',
   )
+}
+
+/**
+ * Blocking loopback sign-in for a provider with a loopback flow:
+ * bind the registered localhost redirect, open (or print) the
+ * authorization URL, exchange the callback code. Shared by the CLI's
+ * `--browser` path, the automatic fall-back after a failed device-code
+ * START, and first-run. Throws when the def has no loopback flow.
+ */
+export async function runSubscriptionLoopbackFlow(
+  def: SubscriptionOAuthProviderDef,
+  opts: {
+    onLog: (line: string) => void
+    timeoutMs?: number
+    fetchImpl?: typeof fetch
+  },
+): Promise<OAuthTokenResponse> {
+  if (!def.loopback) {
+    throw new Error(`${def.shortLabel} has no browser (loopback) sign-in flow`)
+  }
+  const providerConfig = await def.loopback.providerConfig(
+    opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {},
+  )
+  return runOAuthFlow({
+    provider: providerConfig,
+    clientId: def.loopback.clientId,
+    port: def.loopback.redirect.port,
+    redirectPath: def.loopback.redirect.path,
+    redirectUrlHostname: def.loopback.redirect.urlHostname,
+    onLog: opts.onLog,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  })
 }
 
 /**

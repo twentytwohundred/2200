@@ -26,12 +26,11 @@
  *   5. Token response carries access_token + refresh_token (when
  *      `offline_access` was requested) + expires_in.
  *
- * This module is pure I/O: takes a config, returns a token response.
- * The caller (CLI for `2200 oauth login xai`, daemon HTTP route for
- * web-driven sign-in) is responsible for vault writes and refresh
- * scheduling.
+ * This module is pure I/O building blocks: an init request, a single
+ * token poll, and the refresh grant. Pacing/loop policy lives in the
+ * subscription registry's drivers; callers own vault writes and
+ * refresh scheduling.
  */
-import { generatePkce } from './pkce.js'
 import { OAuthError, type OAuthTokenResponse } from './types.js'
 
 /** Endpoint set for a device-flow-capable OAuth provider. */
@@ -86,7 +85,7 @@ export interface DeviceFlowInitResult {
 
 /**
  * Outcome of a single token-endpoint poll. Shared vocabulary between
- * the blocking CLI runner (`runDeviceFlow`) and the browser-driven
+ * the blocking sign-in driver (`runSubscriptionDeviceFlow`) and the browser-driven
  * per-poll HTTP route, so RFC 8628 error semantics live in exactly
  * one place.
  *
@@ -230,123 +229,6 @@ export async function pollDeviceTokenOnce(args: {
   return { status: 'failed', error: errorCode, ...(desc ? { description: desc } : {}) }
 }
 
-export interface RunDeviceFlowOptions {
-  provider: DeviceFlowProviderConfig
-  /** Override scopes; defaults to provider.scopes. */
-  scopes?: readonly string[]
-  /**
-   * Called once we have the user_code and verification URI but before
-   * polling begins. The implementation surfaces these to the operator
-   * (print to stderr, web UI render, etc.). Synchronous.
-   */
-  onPrompt: (prompt: DeviceFlowPrompt) => void
-  /** Override fetch (testing). Default: global fetch. */
-  fetchImpl?: typeof fetch
-  /** Override the clock (testing). Default: Date.now. */
-  nowFn?: () => number
-  /**
-   * Override the polling sleep (testing). Default: setTimeout-based.
-   * Called between token polls.
-   */
-  sleepFn?: (ms: number) => Promise<void>
-  /**
-   * Optional overall timeout in seconds. Defaults to `expires_in` from
-   * the device-authorization response (typically 900s = 15 min).
-   */
-  timeoutSeconds?: number
-}
-
-/**
- * Run the device-code flow end to end. Resolves to the token response.
- * Rejects with an OAuthError on any unrecoverable error or timeout.
- */
-export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTokenResponse> {
-  const fetchImpl = opts.fetchImpl ?? fetch
-  const sleep = opts.sleepFn ?? defaultSleep
-  const now = opts.nowFn ?? (() => Date.now())
-
-  const pkce = generatePkce()
-
-  // ----------------------------------------------------------------------
-  // Step 1: device authorization request.
-  // ----------------------------------------------------------------------
-  const initArgs: Parameters<typeof initDeviceAuthorization>[0] = {
-    provider: opts.provider,
-    codeChallenge: pkce.challenge,
-    codeChallengeMethod: pkce.method,
-    fetchImpl,
-    nowFn: now,
-  }
-  if (opts.scopes) initArgs.scopes = opts.scopes
-  const init = await initDeviceAuthorization(initArgs)
-
-  // ----------------------------------------------------------------------
-  // Step 2: surface the verification URI + user_code so the operator
-  // can complete consent in a browser. The caller decides how to show
-  // it (CLI prints, web UI renders inline).
-  // ----------------------------------------------------------------------
-  opts.onPrompt({
-    userCode: init.userCode,
-    verificationUri: init.verificationUri,
-    verificationUriComplete: init.verificationUriComplete,
-    expiresAt: new Date(init.expiresAtMs),
-  })
-
-  // ----------------------------------------------------------------------
-  // Step 3: poll the token endpoint until the user approves or expires.
-  // Outcome semantics live in `pollDeviceTokenOnce`; this loop owns
-  // pacing and the overall deadline.
-  // ----------------------------------------------------------------------
-  let intervalSec = init.intervalSec
-  const expiresInSec = Math.max(0, Math.round((init.expiresAtMs - now()) / 1000))
-  const overallTimeoutMs = (opts.timeoutSeconds ?? expiresInSec) * 1000
-  const deadline = now() + overallTimeoutMs
-
-  // First wait so we do not slam the token endpoint immediately.
-  await sleep(intervalSec * 1000)
-
-  while (now() < deadline) {
-    const outcome = await pollDeviceTokenOnce({
-      tokenUrl: opts.provider.tokenUrl,
-      clientId: opts.provider.clientId,
-      deviceCode: init.deviceCode,
-      codeVerifier: pkce.verifier,
-      fetchImpl,
-    })
-
-    if (outcome.status === 'completed') return outcome.tokens
-    if (outcome.status === 'transient' || outcome.status === 'pending') {
-      await sleep(intervalSec * 1000)
-      continue
-    }
-    if (outcome.status === 'slow_down') {
-      intervalSec = clampInterval(intervalSec + 5)
-      await sleep(intervalSec * 1000)
-      continue
-    }
-    // Terminal failure. Map the provider error code to the OAuthError
-    // vocabulary callers already handle.
-    if (outcome.error === 'expired_token') {
-      throw new OAuthError(
-        'device code expired before user approval; restart the flow',
-        'CALLBACK_TIMEOUT',
-      )
-    }
-    if (outcome.error === 'access_denied') {
-      throw new OAuthError('user denied access at the provider consent screen', 'PROVIDER_DENIED')
-    }
-    throw new OAuthError(
-      `device-code token poll failed: ${outcome.error}${outcome.description ? ` — ${outcome.description}` : ''}`,
-      'TOKEN_EXCHANGE_FAILED',
-    )
-  }
-
-  throw new OAuthError(
-    'device-code flow timed out before user approval completed',
-    'CALLBACK_TIMEOUT',
-  )
-}
-
 /**
  * Exchange a refresh_token for a fresh access token. Used by the
  * refresh service and by any caller that detects an expired bearer.
@@ -404,14 +286,8 @@ export async function refreshDeviceFlowToken(args: {
 }
 
 /** Per RFC 8628 §3.5: minimum 5 second polling interval. */
-function clampInterval(seconds: number | undefined): number {
+export function clampInterval(seconds: number | undefined): number {
   if (!Number.isFinite(seconds) || seconds === undefined || seconds < 5) return 5
   if (seconds > 60) return 60
   return seconds
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }

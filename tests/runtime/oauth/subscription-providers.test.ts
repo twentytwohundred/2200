@@ -16,6 +16,7 @@ import {
   runSubscriptionDeviceFlow,
   saveSubscriptionTokens,
   SUBSCRIPTION_OAUTH_PROVIDERS,
+  SubscriptionDeviceStartError,
   subscriptionProviderByLlmName,
   subscriptionProviderByRoute,
   subscriptionProviderBySlug,
@@ -171,6 +172,7 @@ describe('runSubscriptionDeviceFlow', () => {
       signInCommand: '2200 oauth test login',
       consentNote: 'note',
       refreshSkewSeconds: 120,
+      transport: 'chat-completions',
       startDeviceFlow: () =>
         Promise.resolve({
           userCode: 'CODE-1',
@@ -254,5 +256,74 @@ describe('runSubscriptionDeviceFlow', () => {
         },
       }),
     ).rejects.toThrow(/timed out/)
+  })
+
+  it('wraps a start failure in SubscriptionDeviceStartError (the loopback-fallback trigger)', async () => {
+    // The fallback policy hangs on this distinction: only a flow that
+    // could not START may fall back to the browser flow. A terminal
+    // poll outcome (denied, expired) must NOT be wrapped.
+    const def: SubscriptionOAuthProviderDef = {
+      ...scriptedDef([]),
+      startDeviceFlow: () => Promise.reject(new Error('mint rejected: HTTP 403')),
+    }
+    const err = await runSubscriptionDeviceFlow(def, {
+      onPrompt: () => undefined,
+      sleepFn: noSleep,
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(SubscriptionDeviceStartError)
+    expect((err as Error).message).toContain('mint rejected')
+
+    const denied = await runSubscriptionDeviceFlow(
+      scriptedDef([{ status: 'failed', error: 'access_denied' }]),
+      { onPrompt: () => undefined, sleepFn: noSleep },
+    ).catch((e: unknown) => e)
+    expect(denied).not.toBeInstanceOf(SubscriptionDeviceStartError)
+  })
+
+  it('drives the real xAI def end-to-end over a mocked wire (discovery → init → poll)', async () => {
+    // Guards the def's pollState wiring: the token URL pinned at start
+    // and the PKCE verifier must actually reach the poll request.
+    const def = subscriptionProviderBySlug('xai-oauth')
+    if (!def) throw new Error('xai def missing')
+    let pollBody = ''
+    const fetchImpl: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('openid-configuration')) {
+        return Promise.resolve(
+          Response.json({
+            issuer: 'https://auth.x.ai',
+            device_authorization_endpoint: 'https://auth.x.ai/oauth2/device/code',
+            token_endpoint: 'https://auth.x.ai/oauth2/token',
+            grant_types_supported: ['urn:ietf:params:oauth:grant-type:device_code'],
+            code_challenge_methods_supported: ['S256'],
+          }),
+        )
+      }
+      if (url.includes('/device/code')) {
+        return Promise.resolve(
+          Response.json({
+            device_code: 'D-9',
+            user_code: 'CODE-9',
+            verification_uri: 'https://auth.x.ai/device',
+            expires_in: 600,
+            interval: 5,
+          }),
+        )
+      }
+      if (url.includes('/oauth2/token')) {
+        pollBody = typeof init?.body === 'string' ? init.body : ''
+        return Promise.resolve(Response.json({ access_token: 'at-9', refresh_token: 'rt-9' }))
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }))
+    }
+    const tokens = await runSubscriptionDeviceFlow(def, {
+      onPrompt: () => undefined,
+      fetchImpl,
+      sleepFn: noSleep,
+    })
+    expect(tokens.access_token).toBe('at-9')
+    const params = new URLSearchParams(pollBody)
+    expect(params.get('device_code')).toBe('D-9')
+    expect(params.get('code_verifier')?.length ?? 0).toBeGreaterThan(20)
   })
 })

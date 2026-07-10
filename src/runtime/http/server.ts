@@ -715,11 +715,15 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // "Sign in" again ... no persistence of in-flight secrets.
   // --------------------------------------------------------------
   const { DeviceFlowSessionManager } = await import('../oauth/device-flow-session.js')
-  const { subscriptionProviderByRoute, saveSubscriptionTokens } =
-    await import('../oauth/subscription-providers.js')
+  const {
+    subscriptionProviderByRoute,
+    subscriptionProviderByLlmName,
+    activeSubscriptionLlmProviders,
+    saveSubscriptionTokens,
+  } = await import('../oauth/subscription-providers.js')
   const oauthSessions = new DeviceFlowSessionManager()
 
-  fastify.post<{ Params: { provider: string } }>(
+  fastify.post<{ Params: { provider: string }; Body: { flow?: string } | null }>(
     '/api/v1/oauth/:provider/login/start',
     async (req, reply) => {
       const def = subscriptionProviderByRoute(req.params.provider)
@@ -728,50 +732,83 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         return
       }
 
-      let deviceStartError: unknown
-      try {
-        const start = await def.startDeviceFlow()
-        return oauthSessions.create({
-          slug: def.slug,
-          flow: 'device',
-          userCode: start.userCode,
-          verificationUri: start.verificationUri,
-          ...(start.verificationUriComplete
-            ? { verificationUriComplete: start.verificationUriComplete }
-            : {}),
-          expiresAtMs: start.expiresAtMs,
-          intervalSec: start.intervalSec,
-          pollState: start.pollState,
+      // The browser can request the loopback flow explicitly
+      // (`{"flow":"loopback"}`). This matters because OpenAI's
+      // device-code MINT is account-independent (verified keylessly),
+      // so an account with the device-auth toggle OFF still mints a
+      // code fine and only fails at approval time ... a mint-failure
+      // fallback alone would never reach the loopback flow for exactly
+      // the accounts that need it. The ChatGPT card offers a "use
+      // browser sign-in" action wired to this.
+      const wantsLoopback = req.body?.flow === 'loopback'
+      if (wantsLoopback && !def.loopback) {
+        await reply.code(400).send({
+          error: 'no_loopback_flow',
+          message: `${def.shortLabel} has no browser (loopback) sign-in flow`,
         })
-      } catch (err) {
-        deviceStartError = err
+        return
       }
 
-      // Device-code unavailable (OpenAI gates it behind an
-      // account-settings toggle). Fall back to the loopback
-      // authorization-code flow when the provider supports one: the
-      // daemon binds the registered localhost port, the browser opens
-      // the authorization URL, and the callback lands back here. Only
-      // works when the user's browser runs on the same machine as the
-      // daemon ... the UI says so.
-      if (!def.loopback) {
-        await reply.code(502).send({
-          error: 'sign_in_start_failed',
-          message:
-            deviceStartError instanceof Error ? deviceStartError.message : String(deviceStartError),
-        })
+      // One in-flight sign-in per provider: tear down any prior
+      // session (and its loopback listener) BEFORE starting a new
+      // flow, so a retry can rebind the fixed redirect port instead of
+      // 409ing on EADDRINUSE until the old listener times out.
+      oauthSessions.removeBySlug(def.slug)
+
+      let deviceStartError: unknown
+      if (!wantsLoopback) {
+        try {
+          const start = await def.startDeviceFlow()
+          return oauthSessions.create({
+            slug: def.slug,
+            flow: 'device',
+            userCode: start.userCode,
+            verificationUri: start.verificationUri,
+            ...(start.verificationUriComplete
+              ? { verificationUriComplete: start.verificationUriComplete }
+              : {}),
+            expiresAtMs: start.expiresAtMs,
+            intervalSec: start.intervalSec,
+            pollState: start.pollState,
+          })
+        } catch (err) {
+          deviceStartError = err
+        }
+
+        // Device-code could not START (mint rejected or unreachable).
+        // Fall back to the loopback authorization-code flow when the
+        // provider supports one: the daemon binds the registered
+        // localhost port, the browser opens the authorization URL, and
+        // the callback lands back here. Only works when the user's
+        // browser runs on the same machine as the daemon ... the UI
+        // says so.
+        if (!def.loopback) {
+          await reply.code(502).send({
+            error: 'sign_in_start_failed',
+            message:
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError),
+          })
+          return
+        }
+      }
+      const loopback = def.loopback
+      if (!loopback) {
+        // Unreachable: wantsLoopback guards above; here for narrowing.
+        await reply.code(500).send({ error: 'internal' })
         return
       }
       try {
         const { startOAuthFlowSession } = await import('../oauth/flow.js')
-        const providerConfig = await def.loopback.providerConfig()
+        const providerConfig = await loopback.providerConfig()
         const timeoutMs = 15 * 60_000
         const flowSession = await startOAuthFlowSession({
           provider: providerConfig,
-          clientId: def.loopback.clientId,
-          port: def.loopback.redirect.port,
-          redirectPath: def.loopback.redirect.path,
-          redirectUrlHostname: def.loopback.redirect.urlHostname,
+          clientId: loopback.clientId,
+          port: loopback.redirect.port,
+          redirectPath: loopback.redirect.path,
+          redirectUrlHostname: loopback.redirect.urlHostname,
           timeoutMs,
         })
         const session = oauthSessions.create({
@@ -806,15 +843,18 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         return session
       } catch (err) {
         const busy = (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+        const deviceNote = wantsLoopback
+          ? ''
+          : `device-code unavailable (${
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError)
+            }); `
         await reply.code(busy ? 409 : 502).send({
           error: busy ? 'loopback_port_busy' : 'sign_in_start_failed',
           message: busy
-            ? `port ${String(def.loopback.redirect.port)} is in use (another sign-in in progress?)`
-            : `device-code unavailable (${
-                deviceStartError instanceof Error
-                  ? deviceStartError.message
-                  : String(deviceStartError)
-              }); loopback fallback failed: ${err instanceof Error ? err.message : String(err)}`,
+            ? `port ${String(loopback.redirect.port)} is in use (another sign-in in progress?)`
+            : `${deviceNote}loopback flow failed: ${err instanceof Error ? err.message : String(err)}`,
         })
         return
       }
@@ -1309,16 +1349,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     // Subscription providers get their "configured" signal from the
     // fleet OAuth token store, not from runtime.env. Read once here so
     // each provider in the loop below can check membership.
-    const activeSubscriptions = await (async () => {
-      try {
-        const { activeSubscriptionLlmProviders } =
-          await import('../oauth/subscription-providers.js')
-        return await activeSubscriptionLlmProviders(home)
-      } catch {
-        return new Set<string>()
-      }
-    })()
-    const { subscriptionProviderByLlmName } = await import('../oauth/subscription-providers.js')
+    const activeSubscriptions = await activeSubscriptionLlmProviders(home)
 
     const items = listKnownProviders().map((cat) => {
       const value = env[cat.defaultEnvKey] ?? ''
@@ -1354,9 +1385,25 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     key: z.string(),
   })
 
+  // Subscription providers carry a sibling provider's env var as a
+  // display-only placeholder (openai-subscription → OPENAI_API_KEY);
+  // letting the generic key routes write through it would silently
+  // clobber the API-key sibling's credential. Their credential
+  // lifecycle is the sign-in card / `2200 oauth <provider>` CLI.
+  const rejectSubscriptionKeyWrite = (cat: { name: string; category: string }): void => {
+    if (cat.category === 'subscription') {
+      throw new ApiError(
+        400,
+        'subscription_provider_has_no_key',
+        `${cat.name} uses a subscription sign-in, not an API key. Use the sign-in card in Settings (or the \`2200 oauth\` CLI) to connect or disconnect it.`,
+      )
+    }
+  }
+
   fastify.put<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     const body = PutProviderKeyBody.parse(req.body)
     if (body.key === '') {
       await removeRuntimeEnvKey(cat.defaultEnvKey)
@@ -1377,6 +1424,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   fastify.delete<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     await removeRuntimeEnvKey(cat.defaultEnvKey)
     return {
       provider: cat.name,
@@ -4213,21 +4261,13 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // (Ollama at localhost, usually not running). Read the OAuth
       // store the same way the providers endpoint does so
       // subscriptions count.
-      const activeSubs = await (async () => {
-        try {
-          const { activeSubscriptionLlmProviders } =
-            await import('../oauth/subscription-providers.js')
-          return await activeSubscriptionLlmProviders(home)
-        } catch {
-          return new Set<string>()
-        }
-      })()
+      const activeSubs = await activeSubscriptionLlmProviders(home)
       const configured = pickOnboardingProvider(listKnownProviders(), env, activeSubs)
       if (!configured) {
         throw new ApiError(
           503,
           'no_provider_configured',
-          'No LLM provider is configured. Sign in with SuperGrok or add an API key in Settings → Providers before starting onboarding.',
+          'No LLM provider is configured. Sign in with a subscription (SuperGrok, ChatGPT) or add an API key in Settings → Providers before starting onboarding.',
         )
       }
       providerName = configured.name

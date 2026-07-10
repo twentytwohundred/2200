@@ -179,10 +179,13 @@ export class CodexResponsesProvider implements LLMProvider {
         raw.slice(0, 500),
       )
     }
-    if (terminal.error?.message) {
+    // A terminal failure must throw even when the error envelope is
+    // sparse ... an empty error object on a status:'failed' response
+    // must not read as a successful empty completion.
+    if (terminal.error?.message || terminal.status === 'failed') {
       throw new LlmError(
         'PROVIDER_ERROR',
-        `${this.name} response failed: ${terminal.error.message}`,
+        `${this.name} response failed: ${terminal.error?.message ?? terminal.error?.code ?? 'no error detail'}`,
         this.name,
         request.modelId,
         terminal,
@@ -266,23 +269,24 @@ function toResponsesInput(
  * `response.incomplete` event carrying the full response object; we
  * only need the terminal one since 2200's v1 surface is non-streaming.
  */
+const SSE_TERMINAL_EVENT_TYPES = ['response.completed', 'response.failed', 'response.incomplete']
+
 function extractTerminalFromSse(raw: string): ResponsesApiResponse | null {
   let terminal: ResponsesApiResponse | null = null
   for (const line of raw.split(/\r?\n/)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice('data:'.length).trim()
     if (!payload || payload === '[DONE]') continue
+    // Cheap substring gate before JSON.parse: a long completion emits
+    // thousands of delta events, and parsing each one to look for the
+    // single terminal event would re-parse roughly the whole body.
+    if (!SSE_TERMINAL_EVENT_TYPES.some((t) => payload.includes(t))) continue
     const parsed = safeJsonParse(payload) as {
       type?: string
       response?: ResponsesApiResponse
     } | null
     if (!parsed?.type) continue
-    if (
-      (parsed.type === 'response.completed' ||
-        parsed.type === 'response.failed' ||
-        parsed.type === 'response.incomplete') &&
-      parsed.response
-    ) {
+    if (SSE_TERMINAL_EVENT_TYPES.includes(parsed.type) && parsed.response) {
       terminal = parsed.response
     }
   }

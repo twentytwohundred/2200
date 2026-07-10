@@ -30,9 +30,11 @@
 import { EndpointStore } from '../endpoints/store.js'
 import { extractChatgptAccountId } from '../oauth/openai-config.js'
 import {
+  SUBSCRIPTION_OAUTH_PROVIDERS,
   subscriptionProviderByLlmName,
   type SubscriptionOAuthProviderDef,
 } from '../oauth/subscription-providers.js'
+import { readOAuthToken } from '../oauth/token-store.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import type { SecretRef } from '../secrets/types.js'
 import { AnthropicProvider } from './anthropic.js'
@@ -176,7 +178,6 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
     // per call ... cheap, one sealed-file decrypt ... means the Agent
     // always uses the current token, no restart needed.
     const readFreshToken = async () => {
-      const { readOAuthToken } = await import('../oauth/token-store.js')
       const fresh = await readOAuthToken(home, subscriptionDef.slug).catch(() => null)
       if (!fresh) {
         throw new LlmError(
@@ -228,19 +229,19 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
 }
 
 /**
- * Construct the transport for a subscription provider. xAI's
- * subscription bearer works against the ordinary OpenAI-compatible
- * chat-completions surface (a pure credential swap); OpenAI's works
- * ONLY against the ChatGPT Codex Responses backend, which is its own
- * adapter. Both hot-read the sealed fleet token per request via
- * `readFreshToken`.
+ * Construct the transport for a subscription provider, selected by
+ * the def's `transport` field: xAI's subscription bearer works
+ * against the ordinary OpenAI-compatible chat-completions surface (a
+ * pure credential swap); OpenAI's works ONLY against the ChatGPT
+ * Codex Responses backend, which is its own adapter. Both hot-read
+ * the sealed fleet token per request via `readFreshToken`.
  */
 function buildSubscriptionProvider(
   def: SubscriptionOAuthProviderDef,
   readFreshToken: () => Promise<{ bearer: string; metadata: { subject?: string | undefined } }>,
   opts: ProviderResolveOptions,
 ): LLMProvider {
-  if (def.llmProvider === 'openai-subscription') {
+  if (def.transport === 'codex-responses') {
     return new CodexResponsesProvider({
       credentialProvider: async () => {
         const fresh = await readFreshToken()
@@ -337,6 +338,11 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
     },
   ]
   for (const [name, cfg] of Object.entries(OPENAI_COMPATIBLE_VENDORS)) {
+    // Subscription providers are emitted below from the subscription
+    // registry, in one place, AFTER every API-key vendor ... catalog
+    // order drives the onboarding default pick, and the documented
+    // invariant is that a pasted API key wins over a subscription.
+    if (subscriptionProviderByLlmName(name)) continue
     out.push({
       name,
       label: PROVIDER_LABELS[name] ?? name,
@@ -346,24 +352,29 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
       baseUrlEditable: false,
       baseUrlEnvKey: '',
       keyOptional: false,
-      category: name === 'xai-subscription' ? 'subscription' : 'api-key',
+      category: 'api-key',
     })
   }
-  // ChatGPT subscription. Not in OPENAI_COMPATIBLE_VENDORS because its
-  // transport is the Codex Responses backend, not chat-completions.
-  // The env key is display-only, same posture as xai-subscription: the
-  // credential lives in the fleet OAuth token store.
-  out.push({
-    name: 'openai-subscription',
-    label: PROVIDER_LABELS['openai-subscription'] ?? 'openai-subscription',
-    defaultEnvKey: 'OPENAI_API_KEY',
-    kind: 'codex-responses',
-    baseUrl: CODEX_RESPONSES_WIRE.url,
-    baseUrlEditable: false,
-    baseUrlEnvKey: '',
-    keyOptional: false,
-    category: 'subscription',
-  })
+  // Subscription providers, in registry (display) order. Their env key
+  // is a display-only placeholder ... the credential lives in the
+  // fleet OAuth token store, and the key routes reject writes for the
+  // subscription category.
+  for (const def of SUBSCRIPTION_OAUTH_PROVIDERS) {
+    const isCodex = def.transport === 'codex-responses'
+    out.push({
+      name: def.llmProvider,
+      label: PROVIDER_LABELS[def.llmProvider] ?? def.label,
+      defaultEnvKey: defaultSecretFor(def.llmProvider).id,
+      kind: isCodex ? 'codex-responses' : 'openai-compatible',
+      baseUrl: isCodex
+        ? CODEX_RESPONSES_WIRE.url
+        : (OPENAI_COMPATIBLE_VENDORS[def.llmProvider]?.baseUrl ?? ''),
+      baseUrlEditable: false,
+      baseUrlEnvKey: '',
+      keyOptional: false,
+      category: 'subscription',
+    })
+  }
   out.push({
     name: 'local',
     label: 'Local (Ollama / LM Studio / vLLM)',

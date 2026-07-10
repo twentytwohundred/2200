@@ -3546,74 +3546,92 @@ export function buildProgram(): Command {
       .description(
         `${def.signInCta}; stores the OAuth bearer + refresh fleet-wide for the ${def.llmProvider} provider`,
       )
-      .option('--timeout <seconds>', 'override the overall device-flow timeout', (v) =>
-        parseInt(v, 10),
+      .option('--timeout <seconds>', 'override the overall sign-in timeout', (v) => parseInt(v, 10))
+      .option(
+        '--browser',
+        'skip the device code and sign in via a browser on this machine (loopback callback)',
       )
-      .action(async (opts: { timeout?: number }) => {
+      .action(async (opts: { timeout?: number; browser?: boolean }) => {
         const home = await resolveHomeFromOpts(program)
-        const { runSubscriptionDeviceFlow, saveSubscriptionTokens } =
-          await import('../runtime/oauth/subscription-providers.js')
+        const {
+          runSubscriptionDeviceFlow,
+          runSubscriptionLoopbackFlow,
+          saveSubscriptionTokens,
+          SubscriptionDeviceStartError,
+        } = await import('../runtime/oauth/subscription-providers.js')
 
-        console.log(`Requesting a device code (${def.shortLabel})...`)
-        let tokenResponse
-        try {
-          tokenResponse = await runSubscriptionDeviceFlow(def, {
-            ...(opts.timeout !== undefined ? { timeoutSeconds: opts.timeout } : {}),
-            onPrompt: (prompt) => {
-              console.log('')
-              console.log(`To sign in with your ${def.shortLabel} account:`)
-              console.log('')
-              console.log(`  1. Open this URL in any browser:  ${prompt.verificationUri}`)
-              if (
-                prompt.verificationUriComplete &&
-                prompt.verificationUriComplete !== prompt.verificationUri
-              ) {
-                console.log(
-                  `     (or the convenience URL with the code pre-filled: ${prompt.verificationUriComplete})`,
-                )
-              }
-              console.log(`  2. When prompted, enter this code:  ${prompt.userCode}`)
-              console.log('')
-              console.log(def.consentNote)
-              console.log('')
-              console.log(
-                `Waiting for you to confirm... (expires at ${prompt.expiresAt.toISOString()})`,
-              )
-            },
-          })
-        } catch (deviceErr) {
-          // Device-code unavailable or rejected. When the provider has
-          // a loopback fallback (OpenAI: accounts without the
-          // device-auth toggle), run the browser flow on this machine.
-          if (!def.loopback) {
-            console.error('')
-            console.error(
-              `Sign-in failed: ${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}`,
-            )
-            process.exit(1)
-          }
-          console.log('')
-          console.log(
-            `Device sign-in unavailable (${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}).`,
-          )
-          console.log('Falling back to the browser sign-in on this machine...')
-          console.log('')
-          const { runOAuthFlow } = await import('../runtime/oauth/flow.js')
-          const providerConfig = await def.loopback.providerConfig()
-          tokenResponse = await runOAuthFlow({
-            provider: providerConfig,
-            clientId: def.loopback.clientId,
-            port: def.loopback.redirect.port,
-            redirectPath: def.loopback.redirect.path,
-            redirectUrlHostname: def.loopback.redirect.urlHostname,
+        const runLoopback = () =>
+          runSubscriptionLoopbackFlow(def, {
             onLog: (line) => {
               console.log(line)
             },
+            ...(opts.timeout !== undefined ? { timeoutMs: opts.timeout * 1000 } : {}),
           }).catch((err: unknown) => {
             console.error('')
             console.error(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
             process.exit(1)
           })
+
+        if (opts.browser && !def.loopback) {
+          console.error(`${def.shortLabel} has no browser (loopback) sign-in flow; omit --browser.`)
+          process.exit(1)
+        }
+
+        let tokenResponse
+        if (opts.browser) {
+          tokenResponse = await runLoopback()
+        } else {
+          console.log(`Requesting a device code (${def.shortLabel})...`)
+          try {
+            tokenResponse = await runSubscriptionDeviceFlow(def, {
+              ...(opts.timeout !== undefined ? { timeoutSeconds: opts.timeout } : {}),
+              onPrompt: (prompt) => {
+                console.log('')
+                console.log(`To sign in with your ${def.shortLabel} account:`)
+                console.log('')
+                console.log(`  1. Open this URL in any browser:  ${prompt.verificationUri}`)
+                if (
+                  prompt.verificationUriComplete &&
+                  prompt.verificationUriComplete !== prompt.verificationUri
+                ) {
+                  console.log(
+                    `     (or the convenience URL with the code pre-filled: ${prompt.verificationUriComplete})`,
+                  )
+                }
+                console.log(`  2. When prompted, enter this code:  ${prompt.userCode}`)
+                console.log('')
+                console.log(def.consentNote)
+                console.log('')
+                console.log(
+                  `Waiting for you to confirm... (expires at ${prompt.expiresAt.toISOString()})`,
+                )
+              },
+            })
+          } catch (deviceErr) {
+            // Fall back to the loopback browser flow ONLY when the
+            // device flow could not START (mint rejected/unreachable).
+            // A terminal outcome ... the user denied consent, or let
+            // the code expire ... is a decision to respect, not to
+            // paper over with a second sign-in attempt.
+            const startFailed = deviceErr instanceof SubscriptionDeviceStartError
+            if (!def.loopback || !startFailed) {
+              console.error('')
+              console.error(
+                `Sign-in failed: ${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}`,
+              )
+              if (def.loopback) {
+                console.error(
+                  `If your ${def.shortLabel} account has device sign-in disabled, retry with \`${def.signInCommand} --browser\` on this machine's desktop.`,
+                )
+              }
+              process.exit(1)
+            }
+            console.log('')
+            console.log(`Device sign-in unavailable (${deviceErr.message}).`)
+            console.log('Falling back to the browser sign-in on this machine...')
+            console.log('')
+            tokenResponse = await runLoopback()
+          }
         }
 
         const record = await saveSubscriptionTokens(home, def, tokenResponse).catch(

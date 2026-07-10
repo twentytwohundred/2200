@@ -85,7 +85,14 @@ interface SubscriptionCardConfig {
   signInLabel: string
   /** Note rendered under the user code during a device flow. */
   deviceNote: ReactNode
-  /** Extra guidance rendered when the loopback fallback engages. */
+  /**
+   * Offer an explicit "browser sign-in on this machine" action. Needed
+   * for ChatGPT: the device-code mint succeeds even for accounts with
+   * device sign-in disabled (the gate is at approval time), so the
+   * loopback flow must be reachable by choice, not only by fallback.
+   */
+  supportsLoopback?: boolean
+  /** Extra guidance rendered while a loopback sign-in is in flight. */
   loopbackNote?: ReactNode
   /** Fine-print posture note pinned to the card (interim flags etc.). */
   interimNote?: ReactNode
@@ -104,8 +111,14 @@ function SubscriptionAuthCard({ config }: { config: SubscriptionCardConfig }): R
   const [session, setSession] = useState<SubscriptionOAuthStartResponse | null>(null)
   const [flowResult, setFlowResult] = useState<SubscriptionOAuthLoginStatusResponse | null>(null)
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Poll-chain generation. An in-flight loginStatus request survives
+  // Cancel/unmount (stopPolling only clears the queued timer), and its
+  // late resolution must not re-arm the timer or clobber a NEWER
+  // session's state ... bump the generation to orphan the old chain.
+  const pollGen = useRef(0)
 
   const stopPolling = (): void => {
+    pollGen.current += 1
     if (pollTimer.current) {
       clearTimeout(pollTimer.current)
       pollTimer.current = null
@@ -115,36 +128,36 @@ function SubscriptionAuthCard({ config }: { config: SubscriptionCardConfig }): R
   // Cleanup any in-flight polling on unmount.
   useEffect(() => stopPolling, [])
 
-  const pollOnce = async (sessionId: string, intervalSec: number): Promise<void> => {
+  const pollOnce = async (sessionId: string, intervalSec: number, gen: number): Promise<void> => {
     let res: SubscriptionOAuthLoginStatusResponse
     try {
       res = await api.loginStatus(sessionId)
     } catch (err) {
+      if (gen !== pollGen.current) return
       setFlowResult({
         status: 'failed',
         error: 'transport_error',
         description: formatError(err),
       })
-      stopPolling()
       return
     }
+    if (gen !== pollGen.current) return
     if (res.status === 'pending') {
       const nextSec = res.poll_interval_sec > 0 ? res.poll_interval_sec : intervalSec
       pollTimer.current = setTimeout(() => {
-        void pollOnce(sessionId, nextSec)
+        void pollOnce(sessionId, nextSec, gen)
       }, nextSec * 1000)
       return
     }
     // Terminal state: completed or failed.
     setFlowResult(res)
-    stopPolling()
     if (res.status === 'completed') {
       void queryClient.invalidateQueries({ queryKey: ['oauth', config.route, 'status'] })
     }
   }
 
   const startSignIn = useMutation({
-    mutationFn: () => api.loginStart(),
+    mutationFn: (flow?: 'loopback') => api.loginStart(flow),
     onMutate: () => {
       setFlowResult(null)
       stopPolling()
@@ -152,8 +165,9 @@ function SubscriptionAuthCard({ config }: { config: SubscriptionCardConfig }): R
     onSuccess: (data) => {
       setSession(data)
       // Kick the first poll on the daemon-suggested cadence.
+      const gen = pollGen.current
       pollTimer.current = setTimeout(() => {
-        void pollOnce(data.session_id, data.poll_interval_sec)
+        void pollOnce(data.session_id, data.poll_interval_sec, gen)
       }, data.poll_interval_sec * 1000)
     },
   })
@@ -322,12 +336,25 @@ function SubscriptionAuthCard({ config }: { config: SubscriptionCardConfig }): R
               type="button"
               className={styles.primaryButton}
               onClick={() => {
-                startSignIn.mutate()
+                startSignIn.mutate(undefined)
               }}
               disabled={startSignIn.isPending || statusQuery.isLoading}
             >
               {configured ? 'Re-sign in' : config.signInLabel}
             </button>
+            {config.supportsLoopback && (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => {
+                  startSignIn.mutate('loopback')
+                }}
+                disabled={startSignIn.isPending || statusQuery.isLoading}
+                title="For accounts without device sign-in enabled. Requires a browser on the machine running 2200."
+              >
+                Use browser sign-in instead
+              </button>
+            )}
             {configured && (
               <button
                 type="button"
@@ -394,19 +421,20 @@ export function ChatGptAuthSection(): ReactElement {
         ),
         logo: <OpenAiLogo />,
         signInLabel: 'Sign in with ChatGPT',
+        supportsLoopback: true,
         deviceNote: (
           <>
             If the code page rejects the code, enable <strong>Device code authentication</strong> in
-            ChatGPT Settings → Security, or cancel and retry ... the card falls back to a browser
-            sign-in on the machine running 2200.
+            ChatGPT Settings → Security ... or cancel and pick{' '}
+            <strong>Use browser sign-in instead</strong> (works when your browser runs on the
+            machine running 2200).
           </>
         ),
         loopbackNote: (
           <>
-            Your account doesn&rsquo;t have device sign-in enabled, so this link must be opened in a
-            browser <strong>on the machine running 2200</strong>. On a remote or headless install,
-            enable <strong>Device code authentication</strong> in ChatGPT Settings → Security and
-            start over.
+            This link must be opened in a browser <strong>on the machine running 2200</strong>. On a
+            remote or headless install, enable <strong>Device code authentication</strong> in
+            ChatGPT Settings → Security and use the device code instead.
           </>
         ),
         interimNote: (

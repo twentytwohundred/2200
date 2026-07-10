@@ -96,7 +96,32 @@ export class DeviceFlowSessionManager {
   /** Inject the clock for tests; default Date.now. */
   constructor(private readonly nowFn: () => number = () => Date.now()) {}
 
+  /**
+   * Tear down every session for a provider slug (aborting a loopback
+   * session's redirect listener). The start route calls this BEFORE
+   * binding a new flow, so a retry can rebind the fixed redirect port
+   * instead of hitting EADDRINUSE ... one in-flight sign-in per
+   * provider is the semantic.
+   */
+  removeBySlug(slug: string): void {
+    for (const [id, rec] of this.sessions) {
+      if (rec.slug === slug) {
+        rec.cancel?.()
+        this.sessions.delete(id)
+      }
+    }
+  }
+
   create(input: CreateSessionInput): SessionPublic {
+    // Sweep sessions past their expiry grace so terminal records
+    // cannot accumulate for the daemon's lifetime (get()'s lazy GC
+    // deliberately keeps completed sessions for idempotent re-polls).
+    for (const [id, rec] of this.sessions) {
+      if (this.nowFn() > rec.expiresAtMs + 60_000) {
+        rec.cancel?.()
+        this.sessions.delete(id)
+      }
+    }
     const id = randomBytes(16).toString('hex')
     const rec: SessionRecord = {
       id,

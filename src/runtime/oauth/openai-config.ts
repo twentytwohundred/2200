@@ -25,7 +25,7 @@
  * includes "none").
  */
 import { z } from 'zod'
-import type { DeviceTokenPollOutcome } from './device-flow.js'
+import { clampInterval, type DeviceTokenPollOutcome } from './device-flow.js'
 import type { OAuthProviderConfig, OAuthTokenResponse } from './types.js'
 import { generatePkce } from './pkce.js'
 
@@ -249,12 +249,19 @@ export async function startOpenAiDeviceFlow(
     throw new Error('ChatGPT device-code mint response missing device_auth_id or user_code')
   }
   const intervalRaw = typeof json.interval === 'string' ? Number(json.interval) : json.interval
-  const intervalSec =
-    typeof intervalRaw === 'number' && Number.isFinite(intervalRaw) && intervalRaw >= 5
-      ? Math.min(intervalRaw, 60)
-      : 5
+  const intervalSec = clampInterval(
+    typeof intervalRaw === 'number' && Number.isFinite(intervalRaw) ? intervalRaw : undefined,
+  )
+  // `expires_at` is an ABSOLUTE server timestamp (unlike xAI's relative
+  // expires_in), so a local clock running ahead of OpenAI's would make
+  // the code look already-expired and kill the flow before the first
+  // poll. Floor the local deadline at one minute of headroom; the
+  // provider still terminates a truly-expired code via the poll error.
   const expiresAtParsed = json.expires_at ? Date.parse(json.expires_at) : NaN
-  const expiresAtMs = Number.isNaN(expiresAtParsed) ? now() + 900_000 : expiresAtParsed
+  const expiresAtMs =
+    Number.isNaN(expiresAtParsed) || expiresAtParsed < now() + 60_000
+      ? now() + 900_000
+      : expiresAtParsed
   return {
     userCode: json.user_code,
     verificationUri: OPENAI_DEVICE_AUTH_WIRE.verificationUri,
@@ -327,6 +334,14 @@ export async function pollOpenAiDeviceTokenOnce(
     if (code) {
       return exchangeDeviceAuthorizationCode(code, pollState.codeVerifier, fetchImpl)
     }
+  }
+
+  // No structured error envelope + a server-side/throttling status is a
+  // gateway blip, not a verdict on the sign-in: a brief outage must not
+  // kill a flow the user already approved on their phone. Only a
+  // structured provider error (or an unexplained 4xx) is terminal.
+  if (errCode === null && (res.status >= 500 || res.status === 429 || json === null)) {
+    return { status: 'transient', message: `HTTP ${String(res.status)} from device-auth poll` }
   }
 
   const message = errObj && typeof errObj['message'] === 'string' ? errObj['message'] : undefined

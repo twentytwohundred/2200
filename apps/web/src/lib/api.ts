@@ -779,7 +779,7 @@ export interface ProviderSettingsItem {
   name: string
   label: string
   defaultEnvKey: string
-  kind: 'anthropic' | 'openai-compatible' | 'local'
+  kind: 'anthropic' | 'openai-compatible' | 'codex-responses' | 'local'
   baseUrl: string
   baseUrlEditable: boolean
   baseUrlEnvKey: string
@@ -791,7 +791,7 @@ export interface ProviderSettingsItem {
   /**
    * Settings-UI category. Drives optgroup placement in the model picker
    * and section grouping in Settings ▸ Models & API Keys.
-   *   - 'subscription': OAuth subscription credential (xAI / SuperGrok)
+   *   - 'subscription': OAuth subscription credential (SuperGrok, ChatGPT)
    *   - 'api-key':      Paste-an-API-key (Anthropic, OpenAI, xAI, ...)
    *   - 'local':        Self-hosted (Ollama / LM Studio / vLLM)
    */
@@ -1727,10 +1727,10 @@ export type SubscriptionOAuthStatusResponse =
 
 export const apiOAuthSubscription = (provider: SubscriptionOAuthRoute) => ({
   status: () => request<SubscriptionOAuthStatusResponse>(`/api/v1/oauth/${provider}/status`),
-  loginStart: () =>
+  loginStart: (flow?: 'loopback') =>
     request<SubscriptionOAuthStartResponse>(`/api/v1/oauth/${provider}/login/start`, {
       method: 'POST',
-      body: {},
+      body: flow ? { flow } : {},
     }),
   loginStatus: (sessionId: string) =>
     request<SubscriptionOAuthLoginStatusResponse>(
