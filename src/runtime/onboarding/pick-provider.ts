@@ -6,16 +6,17 @@
  * injectable so the ranking is unit-tested without an HTTP server or the
  * global runtime.env path.
  *
- * A subscription provider (`xai-subscription`) is "configured" when its fleet
- * OAuth token is present + unexpired ... it never carries a runtime.env key.
- * The earlier env-key-only check missed it, so a SuperGrok-only install (Sign
- * in with X, no API key) fell through to the keyless `local` fallback (Ollama
- * at localhost, usually not running).
+ * A subscription provider (`xai-subscription`, `openai-subscription`) is
+ * "configured" when its fleet OAuth token is present + unexpired ... it never
+ * carries a runtime.env key. The earlier env-key-only check missed that, so a
+ * subscription-only install (Sign in with X / ChatGPT, no API key) fell
+ * through to the keyless `local` fallback (Ollama at localhost, usually not
+ * running).
  *
  * Preference order:
  *   1. The first provider with a real credential ... an API key set in env, or
  *      an active subscription. API-key providers come first in the catalog, so
- *      a keyed provider still wins for mixed setups; the subscription only wins
+ *      a keyed provider still wins for mixed setups; a subscription only wins
  *      when nothing earlier has a key.
  *   2. The keyOptional fallback (`local`).
  *   3. null ... nothing usable; the caller surfaces a "configure a provider" error.
@@ -25,10 +26,12 @@ import type { ProviderCatalogEntry } from '../llm/registry.js'
 export function pickOnboardingProvider(
   providers: ProviderCatalogEntry[],
   env: Record<string, string>,
-  subscriptionActive: boolean,
+  activeSubscriptions: ReadonlySet<string>,
 ): ProviderCatalogEntry | null {
   const credentialed = providers.find((p) =>
-    p.category === 'subscription' ? subscriptionActive : (env[p.defaultEnvKey] ?? '').length > 0,
+    p.category === 'subscription'
+      ? activeSubscriptions.has(p.name)
+      : (env[p.defaultEnvKey] ?? '').length > 0,
   )
   return credentialed ?? providers.find((p) => p.keyOptional) ?? null
 }

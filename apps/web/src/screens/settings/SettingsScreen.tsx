@@ -43,7 +43,7 @@ import { OAuthClientsSection } from './OAuthClientsSection'
 import { WorkPackagesSection } from './WorkPackagesSection'
 import { DoctorSection } from './DoctorSection'
 import { EndpointsSection } from './EndpointsSection'
-import { GrokAuthSection } from './GrokAuthSection'
+import { ChatGptAuthSection, GrokAuthSection } from './SubscriptionAuthSection'
 import { SkillsSection } from './SkillsSection'
 import { SystemUpdateSection } from './SystemUpdateSection'
 import { WebSearchSection } from './WebSearchSection'
@@ -54,7 +54,15 @@ const CLI_REFERENCE: { command: string; description: string }[] = [
     command: '2200 oauth xai login',
     description: 'sign in with X / SuperGrok (also at the top of this page)',
   },
+  {
+    command: '2200 oauth openai login',
+    description: 'sign in with ChatGPT Plus/Pro (also at the top of this page)',
+  },
   { command: '2200 oauth xai status', description: 'show xAI subscription credential state' },
+  {
+    command: '2200 oauth openai status',
+    description: 'show ChatGPT subscription credential state',
+  },
   { command: '2200 web token list', description: 'list bearer tokens' },
   { command: '2200 web token rotate', description: 'rotate the default token' },
   { command: '2200 oauth login google', description: 'log into Google for Gmail / Calendar' },
@@ -98,7 +106,7 @@ export function SettingsScreen(): ReactElement {
     <Screen
       crumbs={['2200', 'settings']}
       title="Settings"
-      lede="Sign in with Grok, manage other providers, runtime info, and CLI reference."
+      lede="Bring a subscription you already pay for, manage providers, runtime info, and CLI reference."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
       <section className={styles.block}>
@@ -109,9 +117,10 @@ export function SettingsScreen(): ReactElement {
       </section>
 
       <section className={styles.block}>
-        <Meta>grok · sign in with your subscription</Meta>
+        <Meta>subscriptions · sign in with a plan you already pay for</Meta>
         <div className={styles.blockBody}>
           <GrokAuthSection />
+          <ChatGptAuthSection />
         </div>
       </section>
 

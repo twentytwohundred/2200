@@ -1,7 +1,7 @@
 /**
- * Grok-First sign-in tile. Sits at the top of the Settings page;
- * differentiated visual weight (border accent, larger header) so a
- * first-time user can't miss it.
+ * Subscription sign-in cards (SuperGrok, ChatGPT). Peers at the top of
+ * the Settings page; differentiated visual weight (border accent,
+ * larger header) so a first-time user can't miss them.
  */
 .tile {
   display: flex;
@@ -199,6 +199,14 @@
   font-size: 12px;
   color: var(--ds-text-dim);
   line-height: 1.5;
+}
+
+/* Fine-print posture note (e.g. the ChatGPT card's interim flag). */
+.interimNote {
+  font-size: 11px;
+  color: var(--ds-text-dim);
+  line-height: 1.5;
+  margin: 0;
 }
 
 .errorBlock {

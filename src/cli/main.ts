@@ -40,6 +40,7 @@ import { Supervisor } from '../runtime/supervisor/supervisor.js'
 import { JsonRpcClient } from '../runtime/control-plane/client.js'
 import { connectUds } from '../runtime/control-plane/uds-client.js'
 import { GROK_CONNECTOR_REDIRECT_URI } from '../runtime/mcp/connector/oauth/client-store.js'
+import { SUBSCRIPTION_OAUTH_PROVIDERS } from '../runtime/oauth/subscription-providers.js'
 import type {
   CliScheduleAddParams,
   StateSnapshotResult,
@@ -3523,155 +3524,164 @@ export function buildProgram(): Command {
     })
 
   // ---------------------------------------------------------------------------
-  // 2200 oauth xai <login|status|logout>
+  // 2200 oauth <provider> <login|status|logout>
   //
-  // Fleet-scoped device-code OAuth for xAI / Grok via SuperGrok or
-  // X Premium+ subscription. Distinct from the per-Agent `oauth login`
-  // path above:
-  //   - device code flow (no localhost callback), so works headless / over SSH
-  //   - public client (no client secret to configure)
-  //   - bearer + refresh stored in <home>/state/oauth-tokens/xai-oauth.json,
+  // Fleet-scoped subscription OAuth (SuperGrok, ChatGPT), one
+  // subcommand family per entry in the subscription registry.
+  // Distinct from the per-Agent `oauth login` path above:
+  //   - device-code first (no localhost callback), so works headless /
+  //     over SSH; OpenAI falls back to a browser loopback flow when
+  //     the account has device sign-in disabled
+  //   - public clients (no client secret to configure)
+  //   - bearer + refresh stored in <home>/state/oauth-tokens/<slug>.json,
   //     not in any one Agent's vault (one subscription, whole fleet)
   // ---------------------------------------------------------------------------
-  const oauthXai = oauth
-    .command('xai')
-    .description(
-      'manage the fleet-wide xAI / Grok OAuth subscription credential (alternative to XAI_API_KEY)',
-    )
+  for (const def of SUBSCRIPTION_OAUTH_PROVIDERS) {
+    const sub = oauth
+      .command(def.route)
+      .description(`manage the fleet-wide ${def.label} OAuth credential`)
 
-  oauthXai
-    .command('login')
-    .description(
-      'sign in with X / SuperGrok via device-code flow; stores the OAuth bearer + refresh fleet-wide',
-    )
-    .option('--timeout <seconds>', 'override the overall device-flow timeout', (v) =>
-      parseInt(v, 10),
-    )
-    .action(async (opts: { timeout?: number }) => {
-      const home = await resolveHomeFromOpts(program)
-      const {
-        fetchXaiDiscovery,
-        xaiDeviceFlowProvider,
-        XAI_OAUTH_REFRESH_SKEW_SECONDS: _skew,
-      } = await import('../runtime/oauth/xai-config.js')
-      const { runDeviceFlow } = await import('../runtime/oauth/device-flow.js')
-      const { saveOAuthToken } = await import('../runtime/oauth/token-store.js')
+    sub
+      .command('login')
+      .description(
+        `${def.signInCta}; stores the OAuth bearer + refresh fleet-wide for the ${def.llmProvider} provider`,
+      )
+      .option('--timeout <seconds>', 'override the overall device-flow timeout', (v) =>
+        parseInt(v, 10),
+      )
+      .action(async (opts: { timeout?: number }) => {
+        const home = await resolveHomeFromOpts(program)
+        const { runSubscriptionDeviceFlow, saveSubscriptionTokens } =
+          await import('../runtime/oauth/subscription-providers.js')
 
-      console.log('Fetching xAI OIDC discovery document...')
-      const discovery = await fetchXaiDiscovery().catch((err: unknown) => {
-        console.error(
-          `Could not fetch xAI discovery: ${err instanceof Error ? err.message : String(err)}`,
-        )
-        process.exit(1)
-      })
-      const provider = xaiDeviceFlowProvider(discovery)
-
-      console.log('Requesting a device code from xAI...')
-      const tokenResponse = await runDeviceFlow({
-        provider,
-        ...(opts.timeout !== undefined ? { timeoutSeconds: opts.timeout } : {}),
-        onPrompt: (prompt) => {
-          console.log('')
-          console.log('To sign in with your SuperGrok / X Premium+ account:')
-          console.log('')
-          console.log(`  1. Open this URL in any browser:  ${prompt.verificationUri}`)
-          if (
-            prompt.verificationUriComplete &&
-            prompt.verificationUriComplete !== prompt.verificationUri
-          ) {
-            console.log(
-              `     (or scan the convenience URL with the code pre-filled: ${prompt.verificationUriComplete})`,
+        console.log(`Requesting a device code (${def.shortLabel})...`)
+        let tokenResponse
+        try {
+          tokenResponse = await runSubscriptionDeviceFlow(def, {
+            ...(opts.timeout !== undefined ? { timeoutSeconds: opts.timeout } : {}),
+            onPrompt: (prompt) => {
+              console.log('')
+              console.log(`To sign in with your ${def.shortLabel} account:`)
+              console.log('')
+              console.log(`  1. Open this URL in any browser:  ${prompt.verificationUri}`)
+              if (
+                prompt.verificationUriComplete &&
+                prompt.verificationUriComplete !== prompt.verificationUri
+              ) {
+                console.log(
+                  `     (or the convenience URL with the code pre-filled: ${prompt.verificationUriComplete})`,
+                )
+              }
+              console.log(`  2. When prompted, enter this code:  ${prompt.userCode}`)
+              console.log('')
+              console.log(def.consentNote)
+              console.log('')
+              console.log(
+                `Waiting for you to confirm... (expires at ${prompt.expiresAt.toISOString()})`,
+              )
+            },
+          })
+        } catch (deviceErr) {
+          // Device-code unavailable or rejected. When the provider has
+          // a loopback fallback (OpenAI: accounts without the
+          // device-auth toggle), run the browser flow on this machine.
+          if (!def.loopback) {
+            console.error('')
+            console.error(
+              `Sign-in failed: ${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}`,
             )
+            process.exit(1)
           }
-          console.log(`  2. When prompted, enter this code:  ${prompt.userCode}`)
           console.log('')
           console.log(
-            'xAI labels the consent screen "Grok Build" because integrators share xAI\'s CLI OAuth client.',
+            `Device sign-in unavailable (${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}).`,
           )
-          console.log('That is expected; you are not installing a new app.')
+          console.log('Falling back to the browser sign-in on this machine...')
           console.log('')
+          const { runOAuthFlow } = await import('../runtime/oauth/flow.js')
+          const providerConfig = await def.loopback.providerConfig()
+          tokenResponse = await runOAuthFlow({
+            provider: providerConfig,
+            clientId: def.loopback.clientId,
+            port: def.loopback.redirect.port,
+            redirectPath: def.loopback.redirect.path,
+            redirectUrlHostname: def.loopback.redirect.urlHostname,
+            onLog: (line) => {
+              console.log(line)
+            },
+          }).catch((err: unknown) => {
+            console.error('')
+            console.error(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
+            process.exit(1)
+          })
+        }
+
+        const record = await saveSubscriptionTokens(home, def, tokenResponse).catch(
+          (err: unknown) => {
+            console.error(err instanceof Error ? err.message : String(err))
+            process.exit(1)
+          },
+        )
+
+        console.log('')
+        console.log('✓ Signed in. Subscription credential sealed to disk.')
+        console.log(`  expires:  ${new Date(record.metadata.expires_at_ms).toISOString()}`)
+        console.log('')
+        console.log(
+          `Tip: this credential is fleet-wide. Agents whose model.provider is "${def.llmProvider}"`,
+        )
+        console.log('read it fresh on every request, so running Agents pick it up with no restart.')
+      })
+
+    sub
+      .command('status')
+      .description(
+        `show whether a fleet-wide ${def.shortLabel} subscription credential is configured`,
+      )
+      .action(async () => {
+        const home = await resolveHomeFromOpts(program)
+        const { readOAuthToken } = await import('../runtime/oauth/token-store.js')
+        const token = await readOAuthToken(home, def.slug)
+        if (!token) {
+          console.log(`${def.shortLabel} OAuth: not configured.`)
+          console.log(`Sign in with: ${def.signInCommand}`)
+          process.exit(1)
+        }
+        const expires = new Date(token.metadata.expires_at_ms)
+        const ttlSec = Math.round((expires.getTime() - Date.now()) / 1000)
+        console.log(`${def.shortLabel} OAuth: configured`)
+        console.log(`  provider:       ${token.provider}`)
+        if (token.metadata.subject) {
+          console.log(`  account:        ${token.metadata.subject}`)
+        }
+        console.log(`  scopes:         ${token.metadata.granted_scopes.join(' ')}`)
+        console.log(
+          `  expires:        ${expires.toISOString()}  (${ttlSec > 0 ? `in ${String(ttlSec)}s` : 'EXPIRED'})`,
+        )
+        console.log(`  created:        ${token.metadata.created_at}`)
+        if (token.metadata.refreshed_at) {
+          console.log(`  last refresh:   ${token.metadata.refreshed_at}`)
+        }
+      })
+
+    sub
+      .command('logout')
+      .description(
+        `delete the fleet-wide ${def.shortLabel} OAuth credential (does not revoke at the provider)`,
+      )
+      .action(async () => {
+        const home = await resolveHomeFromOpts(program)
+        const { deleteOAuthToken } = await import('../runtime/oauth/token-store.js')
+        const removed = await deleteOAuthToken(home, def.slug)
+        if (removed) {
           console.log(
-            `Waiting for you to confirm... (expires at ${prompt.expiresAt.toISOString()})`,
+            `${def.shortLabel} OAuth credential deleted. Agents on "${def.llmProvider}" will fail loud until you sign in again or move them to another provider.`,
           )
-        },
-      }).catch((err: unknown) => {
-        console.error('')
-        console.error(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
-        process.exit(1)
+        } else {
+          console.log(`No ${def.shortLabel} OAuth credential to delete.`)
+        }
       })
-
-      if (!tokenResponse.refresh_token) {
-        console.error('xAI did not return a refresh token; cannot persist subscription credential.')
-        console.error('Double-check that the `offline_access` scope was granted at consent time.')
-        process.exit(1)
-      }
-
-      const now = Date.now()
-      const expiresAtMs =
-        tokenResponse.expires_in !== undefined
-          ? now + tokenResponse.expires_in * 1000
-          : now + 3600 * 1000
-      await saveOAuthToken(home, {
-        provider: 'xai-oauth',
-        bearer: tokenResponse.access_token,
-        refreshToken: tokenResponse.refresh_token,
-        metadata: {
-          granted_scopes: tokenResponse.scope ? tokenResponse.scope.split(/\s+/) : [],
-          expires_at_ms: expiresAtMs,
-          created_at: new Date(now).toISOString(),
-        },
-      })
-
-      console.log('')
-      console.log('✓ Signed in. Subscription credential sealed to disk.')
-      console.log(`  expires:  ${new Date(expiresAtMs).toISOString()}`)
-      console.log('  next:     restart Agents to pick up the new credential.')
-      console.log('')
-      console.log(
-        'Tip: this credential is fleet-wide. Any Agent whose model.provider is "xai" will',
-      )
-      console.log('use the subscription bearer; the legacy XAI_API_KEY remains as a fallback.')
-    })
-
-  oauthXai
-    .command('status')
-    .description('show whether a fleet-wide xAI subscription credential is configured')
-    .action(async () => {
-      const home = await resolveHomeFromOpts(program)
-      const { readOAuthToken } = await import('../runtime/oauth/token-store.js')
-      const token = await readOAuthToken(home, 'xai-oauth')
-      if (!token) {
-        console.log('xAI OAuth: not configured.')
-        console.log('Sign in with: 2200 oauth xai login')
-        process.exit(1)
-      }
-      const expires = new Date(token.metadata.expires_at_ms)
-      const ttlSec = Math.round((expires.getTime() - Date.now()) / 1000)
-      console.log('xAI OAuth: configured')
-      console.log(`  provider:       ${token.provider}`)
-      console.log(`  scopes:         ${token.metadata.granted_scopes.join(' ')}`)
-      console.log(
-        `  expires:        ${expires.toISOString()}  (${ttlSec > 0 ? `in ${String(ttlSec)}s` : 'EXPIRED'})`,
-      )
-      console.log(`  created:        ${token.metadata.created_at}`)
-      if (token.metadata.refreshed_at) {
-        console.log(`  last refresh:   ${token.metadata.refreshed_at}`)
-      }
-    })
-
-  oauthXai
-    .command('logout')
-    .description('delete the fleet-wide xAI OAuth credential (does not revoke at xAI)')
-    .action(async () => {
-      const home = await resolveHomeFromOpts(program)
-      const { deleteOAuthToken } = await import('../runtime/oauth/token-store.js')
-      const removed = await deleteOAuthToken(home, 'xai-oauth')
-      if (removed) {
-        console.log('xAI OAuth credential deleted. Agents will fall back to XAI_API_KEY.')
-      } else {
-        console.log('No xAI OAuth credential to delete.')
-      }
-    })
+  }
 
   const platform = program
     .command('platform')

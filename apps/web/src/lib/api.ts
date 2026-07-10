@@ -1676,13 +1676,22 @@ export interface FleetRestartResult {
 }
 
 /**
- * `/api/v1/oauth/xai/*` ... browser-driven device-code sign-in for the
- * SuperGrok / X Premium+ subscription credential. Mirrors the CLI
- * (`2200 oauth xai login`) over HTTP so the Settings page can drive
- * the flow inline. The Grok-First Settings tile is the primary
- * consumer.
+ * `/api/v1/oauth/:provider/*` ... browser-driven subscription sign-ins
+ * (SuperGrok / X Premium+, ChatGPT Plus/Pro). Mirrors the CLI
+ * (`2200 oauth <provider> login`) over HTTP so the Settings page can
+ * drive the flow inline. The subscription cards on Settings are the
+ * primary consumers.
+ *
+ * `flow` on the start response: 'device' is the normal shape (show
+ * the user code + verification URL, poll). 'loopback' is the OpenAI
+ * fallback for accounts without device sign-in enabled: the daemon
+ * holds a localhost redirect listener and the browser just opens
+ * `authorization_url` (only works when the browser runs on the same
+ * machine as the runtime).
  */
-export type XaiOAuthLoginStatusResponse =
+export type SubscriptionOAuthRoute = 'xai' | 'openai'
+
+export type SubscriptionOAuthLoginStatusResponse =
   | { status: 'pending'; poll_interval_sec: number; transient_error?: string }
   | {
       status: 'completed'
@@ -1693,16 +1702,18 @@ export type XaiOAuthLoginStatusResponse =
     }
   | { status: 'failed'; error: string; description?: string }
 
-export interface XaiOAuthStartResponse {
+export interface SubscriptionOAuthStartResponse {
   session_id: string
-  user_code: string
-  verification_uri: string
+  flow: 'device' | 'loopback'
+  user_code?: string
+  verification_uri?: string
   verification_uri_complete?: string
+  authorization_url?: string
   expires_at: string
   poll_interval_sec: number
 }
 
-export type XaiOAuthStatusResponse =
+export type SubscriptionOAuthStatusResponse =
   | { configured: false }
   | {
       configured: true
@@ -1714,19 +1725,20 @@ export type XaiOAuthStatusResponse =
       refreshed_at: string | null
     }
 
-export const apiOAuthXai = {
-  status: () => request<XaiOAuthStatusResponse>('/api/v1/oauth/xai/status'),
+export const apiOAuthSubscription = (provider: SubscriptionOAuthRoute) => ({
+  status: () => request<SubscriptionOAuthStatusResponse>(`/api/v1/oauth/${provider}/status`),
   loginStart: () =>
-    request<XaiOAuthStartResponse>('/api/v1/oauth/xai/login/start', {
+    request<SubscriptionOAuthStartResponse>(`/api/v1/oauth/${provider}/login/start`, {
       method: 'POST',
       body: {},
     }),
   loginStatus: (sessionId: string) =>
-    request<XaiOAuthLoginStatusResponse>(
-      `/api/v1/oauth/xai/login/status?session=${encodeURIComponent(sessionId)}`,
+    request<SubscriptionOAuthLoginStatusResponse>(
+      `/api/v1/oauth/${provider}/login/status?session=${encodeURIComponent(sessionId)}`,
     ),
-  logout: () => request<{ removed: boolean }>('/api/v1/oauth/xai/logout', { method: 'POST' }),
-}
+  logout: () =>
+    request<{ removed: boolean }>(`/api/v1/oauth/${provider}/logout`, { method: 'POST' }),
+})
 
 /**
  * `/api/v1/connector/*` ... operator controls for the MCP connector
