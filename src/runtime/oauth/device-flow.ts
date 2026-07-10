@@ -74,6 +74,162 @@ export interface DeviceFlowPrompt {
   readonly expiresAt: Date
 }
 
+/** Parsed + normalized result of the device-authorization (init) request. */
+export interface DeviceFlowInitResult {
+  readonly deviceCode: string
+  readonly userCode: string
+  readonly verificationUri: string
+  readonly verificationUriComplete: string | undefined
+  readonly expiresAtMs: number
+  readonly intervalSec: number
+}
+
+/**
+ * Outcome of a single token-endpoint poll. Shared vocabulary between
+ * the blocking CLI runner (`runDeviceFlow`) and the browser-driven
+ * per-poll HTTP route, so RFC 8628 error semantics live in exactly
+ * one place.
+ *
+ *   - transient:  network blip; keep polling (a brief outage must not
+ *                 kill a flow the user already approved in a browser)
+ *   - pending:    authorization_pending; keep polling
+ *   - slow_down:  bump the interval +5s, keep polling
+ *   - completed:  provider returned tokens
+ *   - failed:     terminal provider error (expired_token, access_denied, ...)
+ */
+export type DeviceTokenPollOutcome =
+  | { status: 'transient'; message: string }
+  | { status: 'pending' }
+  | { status: 'slow_down' }
+  | { status: 'completed'; tokens: OAuthTokenResponse }
+  | { status: 'failed'; error: string; description?: string }
+
+/**
+ * Run the RFC 8628 device-authorization (init) request and normalize
+ * the response. PKCE is bound at init: pass the S256 challenge; keep
+ * the matching verifier for the token polls.
+ */
+export async function initDeviceAuthorization(args: {
+  provider: DeviceFlowProviderConfig
+  codeChallenge: string
+  codeChallengeMethod: string
+  scopes?: readonly string[]
+  fetchImpl?: typeof fetch
+  nowFn?: () => number
+}): Promise<DeviceFlowInitResult> {
+  const fetchImpl = args.fetchImpl ?? fetch
+  const now = args.nowFn ?? (() => Date.now())
+  const scopes = args.scopes ?? args.provider.scopes
+  const scopeSeparator = args.provider.scopeSeparator ?? ' '
+
+  const initBody = new URLSearchParams()
+  initBody.set('client_id', args.provider.clientId)
+  initBody.set('scope', scopes.join(scopeSeparator))
+  initBody.set('code_challenge', args.codeChallenge)
+  initBody.set('code_challenge_method', args.codeChallengeMethod)
+
+  let initRes
+  try {
+    initRes = await fetchImpl(args.provider.deviceAuthorizationUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: initBody.toString(),
+    })
+  } catch (err) {
+    throw new OAuthError(
+      `device authorization request to ${args.provider.deviceAuthorizationUrl} failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      'TOKEN_EXCHANGE_FAILED',
+    )
+  }
+  if (!initRes.ok) {
+    const text = await initRes.text().catch(() => '')
+    throw new OAuthError(
+      `device authorization request failed: HTTP ${String(initRes.status)} ${text.slice(0, 500)}`,
+      'TOKEN_EXCHANGE_FAILED',
+    )
+  }
+  const initJson = (await initRes.json().catch(() => null)) as DeviceAuthorizationResponse | null
+  if (
+    !initJson ||
+    typeof initJson.device_code !== 'string' ||
+    typeof initJson.user_code !== 'string' ||
+    typeof initJson.verification_uri !== 'string'
+  ) {
+    throw new OAuthError(
+      'device authorization response missing device_code, user_code, or verification_uri',
+      'INVALID_RESPONSE',
+    )
+  }
+  const expiresInSec = Number.isFinite(initJson.expires_in) ? initJson.expires_in : 900
+  return {
+    deviceCode: initJson.device_code,
+    userCode: initJson.user_code,
+    verificationUri: initJson.verification_uri,
+    verificationUriComplete: initJson.verification_uri_complete,
+    expiresAtMs: now() + expiresInSec * 1000,
+    intervalSec: clampInterval(initJson.interval),
+  }
+}
+
+/**
+ * One RFC 8628 token-endpoint poll. Pure request/normalize; the caller
+ * owns pacing (sleep between polls) and interval bookkeeping.
+ */
+export async function pollDeviceTokenOnce(args: {
+  tokenUrl: string
+  clientId: string
+  deviceCode: string
+  codeVerifier: string
+  fetchImpl?: typeof fetch
+}): Promise<DeviceTokenPollOutcome> {
+  const fetchImpl = args.fetchImpl ?? fetch
+  const pollBody = new URLSearchParams()
+  pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
+  pollBody.set('device_code', args.deviceCode)
+  pollBody.set('client_id', args.clientId)
+  pollBody.set('code_verifier', args.codeVerifier)
+
+  let pollRes
+  try {
+    pollRes = await fetchImpl(args.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: pollBody.toString(),
+    })
+  } catch (err) {
+    return { status: 'transient', message: err instanceof Error ? err.message : String(err) }
+  }
+
+  const pollJson = (await pollRes.json().catch(() => null)) as
+    | OAuthTokenResponse
+    | { error: string; error_description?: string }
+    | null
+
+  if (pollRes.ok && pollJson && 'access_token' in pollJson && pollJson.access_token) {
+    return { status: 'completed', tokens: pollJson }
+  }
+
+  const errorCode =
+    pollJson && typeof pollJson === 'object' && 'error' in pollJson && pollJson.error
+      ? pollJson.error
+      : 'unknown'
+  if (errorCode === 'authorization_pending') return { status: 'pending' }
+  if (errorCode === 'slow_down') return { status: 'slow_down' }
+  const desc =
+    pollJson && typeof pollJson === 'object' && 'error_description' in pollJson
+      ? (pollJson.error_description ?? '')
+      : ''
+  return { status: 'failed', error: errorCode, ...(desc ? { description: desc } : {}) }
+}
+
 export interface RunDeviceFlowOptions {
   provider: DeviceFlowProviderConfig
   /** Override scopes; defaults to provider.scopes. */
@@ -110,73 +266,39 @@ export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTo
   const now = opts.nowFn ?? (() => Date.now())
 
   const pkce = generatePkce()
-  const scopes = opts.scopes ?? opts.provider.scopes
-  const scopeSeparator = opts.provider.scopeSeparator ?? ' '
-  const scopeString = scopes.join(scopeSeparator)
 
   // ----------------------------------------------------------------------
   // Step 1: device authorization request.
   // ----------------------------------------------------------------------
-  const initBody = new URLSearchParams()
-  initBody.set('client_id', opts.provider.clientId)
-  initBody.set('scope', scopeString)
-  initBody.set('code_challenge', pkce.challenge)
-  initBody.set('code_challenge_method', pkce.method)
-
-  let initRes
-  try {
-    initRes = await fetchImpl(opts.provider.deviceAuthorizationUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: initBody.toString(),
-    })
-  } catch (err) {
-    throw new OAuthError(
-      `device authorization request to ${opts.provider.deviceAuthorizationUrl} failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      'TOKEN_EXCHANGE_FAILED',
-    )
+  const initArgs: Parameters<typeof initDeviceAuthorization>[0] = {
+    provider: opts.provider,
+    codeChallenge: pkce.challenge,
+    codeChallengeMethod: pkce.method,
+    fetchImpl,
+    nowFn: now,
   }
-  if (!initRes.ok) {
-    const text = await initRes.text().catch(() => '')
-    throw new OAuthError(
-      `device authorization request failed: HTTP ${String(initRes.status)} ${text.slice(0, 500)}`,
-      'TOKEN_EXCHANGE_FAILED',
-    )
-  }
-  const initJson = (await initRes.json().catch(() => null)) as DeviceAuthorizationResponse | null
-  if (!initJson || typeof initJson.device_code !== 'string') {
-    throw new OAuthError('device authorization response missing device_code', 'INVALID_RESPONSE')
-  }
+  if (opts.scopes) initArgs.scopes = opts.scopes
+  const init = await initDeviceAuthorization(initArgs)
 
   // ----------------------------------------------------------------------
   // Step 2: surface the verification URI + user_code so the operator
   // can complete consent in a browser. The caller decides how to show
   // it (CLI prints, web UI renders inline).
   // ----------------------------------------------------------------------
-  const expiresInSec = Number.isFinite(initJson.expires_in) ? initJson.expires_in : 900
-  const expiresAt = new Date(now() + expiresInSec * 1000)
   opts.onPrompt({
-    userCode: initJson.user_code,
-    verificationUri: initJson.verification_uri,
-    verificationUriComplete: initJson.verification_uri_complete,
-    expiresAt,
+    userCode: init.userCode,
+    verificationUri: init.verificationUri,
+    verificationUriComplete: init.verificationUriComplete,
+    expiresAt: new Date(init.expiresAtMs),
   })
 
   // ----------------------------------------------------------------------
   // Step 3: poll the token endpoint until the user approves or expires.
-  // RFC 8628 error semantics:
-  //   - authorization_pending: keep waiting at current interval
-  //   - slow_down:             bump interval by +5s
-  //   - expired_token:         abort (device_code expired)
-  //   - access_denied:         abort (user said no)
-  //   - anything else:         abort
+  // Outcome semantics live in `pollDeviceTokenOnce`; this loop owns
+  // pacing and the overall deadline.
   // ----------------------------------------------------------------------
-  let intervalSec = clampInterval(initJson.interval)
+  let intervalSec = init.intervalSec
+  const expiresInSec = Math.max(0, Math.round((init.expiresAtMs - now()) / 1000))
   const overallTimeoutMs = (opts.timeoutSeconds ?? expiresInSec) * 1000
   const deadline = now() + overallTimeoutMs
 
@@ -184,69 +306,37 @@ export async function runDeviceFlow(opts: RunDeviceFlowOptions): Promise<OAuthTo
   await sleep(intervalSec * 1000)
 
   while (now() < deadline) {
-    const pollBody = new URLSearchParams()
-    pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
-    pollBody.set('device_code', initJson.device_code)
-    pollBody.set('client_id', opts.provider.clientId)
-    pollBody.set('code_verifier', pkce.verifier)
+    const outcome = await pollDeviceTokenOnce({
+      tokenUrl: opts.provider.tokenUrl,
+      clientId: opts.provider.clientId,
+      deviceCode: init.deviceCode,
+      codeVerifier: pkce.verifier,
+      fetchImpl,
+    })
 
-    let pollRes
-    try {
-      pollRes = await fetchImpl(opts.provider.tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: pollBody.toString(),
-      })
-    } catch {
-      // Transient network errors are tolerated: keep polling. We do
-      // not want a brief blip to kill a flow the user has already
-      // approved in their browser.
+    if (outcome.status === 'completed') return outcome.tokens
+    if (outcome.status === 'transient' || outcome.status === 'pending') {
       await sleep(intervalSec * 1000)
       continue
     }
-
-    const pollJson = (await pollRes.json().catch(() => null)) as
-      | OAuthTokenResponse
-      | { error: string; error_description?: string }
-      | null
-
-    if (pollRes.ok && pollJson && 'access_token' in pollJson && pollJson.access_token) {
-      return pollJson
-    }
-
-    const errorCode =
-      pollJson && typeof pollJson === 'object' && 'error' in pollJson && pollJson.error
-        ? pollJson.error
-        : null
-
-    if (errorCode === 'authorization_pending') {
-      await sleep(intervalSec * 1000)
-      continue
-    }
-    if (errorCode === 'slow_down') {
+    if (outcome.status === 'slow_down') {
       intervalSec = clampInterval(intervalSec + 5)
       await sleep(intervalSec * 1000)
       continue
     }
-    if (errorCode === 'expired_token') {
+    // Terminal failure. Map the provider error code to the OAuthError
+    // vocabulary callers already handle.
+    if (outcome.error === 'expired_token') {
       throw new OAuthError(
         'device code expired before user approval; restart the flow',
         'CALLBACK_TIMEOUT',
       )
     }
-    if (errorCode === 'access_denied') {
+    if (outcome.error === 'access_denied') {
       throw new OAuthError('user denied access at the provider consent screen', 'PROVIDER_DENIED')
     }
-    // Anything else: abort. Include the description if present.
-    const desc =
-      pollJson && typeof pollJson === 'object' && 'error_description' in pollJson
-        ? (pollJson.error_description ?? '')
-        : ''
     throw new OAuthError(
-      `device-code token poll failed: ${errorCode ?? 'unknown'}${desc ? ` — ${desc}` : ''}`,
+      `device-code token poll failed: ${outcome.error}${outcome.description ? ` — ${outcome.description}` : ''}`,
       'TOKEN_EXCHANGE_FAILED',
     )
   }

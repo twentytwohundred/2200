@@ -165,10 +165,11 @@ export class TokenRefreshService {
           }
         }
       }
-      // Fleet-scoped OAuth tokens (currently: xAI subscription). These
-      // live at <home>/state/oauth-tokens/ and refresh independently
-      // of any per-Agent vault. One refresh, every Agent sees the new
-      // bearer because resolveProvider re-reads on each Agent start.
+      // Fleet-scoped OAuth tokens (subscription sign-ins: SuperGrok,
+      // ChatGPT). These live at <home>/state/oauth-tokens/ and refresh
+      // independently of any per-Agent vault. One refresh, every Agent
+      // sees the new bearer because the subscription providers hot-read
+      // the sealed store on every request.
       await this.refreshFleetTokensInto(stats)
       this.log.info('oauth refresh tick', {
         scanned: stats.scanned,
@@ -183,74 +184,68 @@ export class TokenRefreshService {
   }
 
   /**
-   * Refresh fleet-scoped OAuth tokens (xAI subscription, etc.) that
-   * are within `refreshWindowMs` of expiry. Unlike per-Agent OAuth,
-   * these use a public-client refresh grant (no client_secret) and
-   * land back in the home-level token store.
+   * Refresh fleet-scoped subscription tokens that are within
+   * `refreshWindowMs` (or the provider's own skew) of expiry. Unlike
+   * per-Agent OAuth, these use a public-client refresh grant (no
+   * client_secret) and land back in the home-level token store. The
+   * provider set comes from the subscription registry, so a new
+   * subscription sign-in is covered here with no code change.
    */
   private async refreshFleetTokensInto(stats: TokenRefreshTickStats): Promise<void> {
     const { readOAuthToken, saveOAuthToken } = await import('./token-store.js')
-    const { refreshDeviceFlowToken } = await import('./device-flow.js')
-    const { fetchXaiDiscovery, xaiDeviceFlowProvider, XAI_OAUTH_REFRESH_SKEW_SECONDS } =
-      await import('./xai-config.js')
+    const { SUBSCRIPTION_OAUTH_PROVIDERS } = await import('./subscription-providers.js')
 
-    // For now only xAI is fleet-scoped; extend the if-chain when a
-    // second fleet OAuth provider lands.
-    const xai = await readOAuthToken(this.home, 'xai-oauth').catch(() => null)
-    if (!xai) return
-    stats.scanned++
+    for (const def of SUBSCRIPTION_OAUTH_PROVIDERS) {
+      const token = await readOAuthToken(this.home, def.slug).catch(() => null)
+      if (!token) continue
+      stats.scanned++
 
-    const cdKey = 'fleet:xai-oauth'
-    const cd = this.cooldowns.get(cdKey)
-    if (cd !== undefined && cd > this.nowFn().getTime()) {
-      stats.skipped++
-      return
-    }
-
-    const expiresMs = xai.metadata.expires_at_ms
-    const skewMs = XAI_OAUTH_REFRESH_SKEW_SECONDS * 1000
-    const remaining = expiresMs - this.nowFn().getTime()
-    if (remaining > Math.max(this.refreshWindowMs, skewMs)) {
-      stats.skipped++
-      return
-    }
-
-    try {
-      const fetchImpl = this.fetchImpl ?? fetch
-      const discovery = await fetchXaiDiscovery({ fetchImpl })
-      const provider = xaiDeviceFlowProvider(discovery)
-      const refreshArgs: Parameters<typeof refreshDeviceFlowToken>[0] = {
-        provider: { tokenUrl: provider.tokenUrl, clientId: provider.clientId },
-        refreshToken: xai.refreshToken,
+      const cdKey = `fleet:${def.slug}`
+      const cd = this.cooldowns.get(cdKey)
+      if (cd !== undefined && cd > this.nowFn().getTime()) {
+        stats.skipped++
+        continue
       }
-      if (this.fetchImpl) refreshArgs.fetchImpl = this.fetchImpl
-      const tokens = await refreshDeviceFlowToken(refreshArgs)
-      const now = this.nowFn().getTime()
-      await saveOAuthToken(this.home, {
-        provider: 'xai-oauth',
-        bearer: tokens.access_token,
-        refreshToken: tokens.refresh_token ?? xai.refreshToken,
-        metadata: {
-          ...xai.metadata,
-          granted_scopes: tokens.scope ? tokens.scope.split(/\s+/) : xai.metadata.granted_scopes,
-          expires_at_ms:
-            tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600_000,
-          refreshed_at: new Date(now).toISOString(),
-        },
-      })
-      stats.refreshed++
-      this.cooldowns.delete(cdKey)
-      this.log.info('refreshed fleet xai-oauth token', {
-        new_expires_at: new Date(
-          tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600_000,
-        ).toISOString(),
-      })
-    } catch (err) {
-      stats.failed++
-      this.cooldowns.set(cdKey, this.nowFn().getTime() + this.failureCooldownMs)
-      this.log.warn('fleet xai-oauth refresh failed', {
-        error: err instanceof Error ? err.message : String(err),
-      })
+
+      const skewMs = def.refreshSkewSeconds * 1000
+      const remaining = token.metadata.expires_at_ms - this.nowFn().getTime()
+      if (remaining > Math.max(this.refreshWindowMs, skewMs)) {
+        stats.skipped++
+        continue
+      }
+
+      try {
+        const tokens = await def.refreshTokens(
+          token.refreshToken,
+          this.fetchImpl ? { fetchImpl: this.fetchImpl } : {},
+        )
+        const now = this.nowFn().getTime()
+        const expiresAtMs = def.tokenExpiresAtMs(tokens, now)
+        await saveOAuthToken(this.home, {
+          provider: def.slug,
+          bearer: tokens.access_token,
+          refreshToken: tokens.refresh_token ?? token.refreshToken,
+          metadata: {
+            ...token.metadata,
+            granted_scopes: tokens.scope
+              ? tokens.scope.split(/\s+/)
+              : token.metadata.granted_scopes,
+            expires_at_ms: expiresAtMs,
+            refreshed_at: new Date(now).toISOString(),
+          },
+        })
+        stats.refreshed++
+        this.cooldowns.delete(cdKey)
+        this.log.info(`refreshed fleet ${def.slug} token`, {
+          new_expires_at: new Date(expiresAtMs).toISOString(),
+        })
+      } catch (err) {
+        stats.failed++
+        this.cooldowns.set(cdKey, this.nowFn().getTime() + this.failureCooldownMs)
+        this.log.warn(`fleet ${def.slug} refresh failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
   }
 

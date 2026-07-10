@@ -1,36 +1,31 @@
 /**
  * Tests for the in-process session manager that backs the browser-driven
- * device-code flow. The HTTP route layer holds one of these per
+ * subscription sign-ins. The HTTP route layer holds one of these per
  * daemon; per-test isolation is trivial because each test creates its
- * own instance.
+ * own instance. Sessions carry opaque per-provider poll state (device
+ * flows) or a background-completed authorization URL (loopback flows).
  */
 import { describe, expect, it } from 'vitest'
 import {
   DeviceFlowSessionManager,
   type SessionPublic,
 } from '../../../src/runtime/oauth/device-flow-session.js'
-import type { DeviceFlowProviderConfig } from '../../../src/runtime/oauth/device-flow.js'
-
-function makeProvider(): DeviceFlowProviderConfig {
-  return {
-    name: 'xai-oauth',
-    deviceAuthorizationUrl: 'https://auth.x.ai/oauth2/device/code',
-    tokenUrl: 'https://auth.x.ai/oauth2/token',
-    clientId: 'public-client-id',
-    scopes: ['openid', 'offline_access', 'api:access'],
-  }
-}
 
 function makeInput(): Parameters<DeviceFlowSessionManager['create']>[0] {
   return {
-    provider: makeProvider(),
-    deviceCode: 'D-1234',
+    slug: 'xai-oauth',
+    flow: 'device',
     userCode: 'TEST-CODE',
     verificationUri: 'https://auth.x.ai/oauth2/device',
     verificationUriComplete: 'https://auth.x.ai/oauth2/device?user_code=TEST-CODE',
     expiresAtMs: Date.now() + 600_000,
-    codeVerifier: 'pkce-verifier-not-a-real-one-just-for-test',
     intervalSec: 5,
+    pollState: {
+      token_url: 'https://auth.x.ai/oauth2/token',
+      client_id: 'public-client-id',
+      device_code: 'D-1234',
+      code_verifier: 'pkce-verifier-not-a-real-one-just-for-test',
+    },
   }
 }
 
@@ -39,13 +34,36 @@ describe('DeviceFlowSessionManager', () => {
     const mgr = new DeviceFlowSessionManager()
     const pub: SessionPublic = mgr.create(makeInput())
     expect(pub.session_id).toMatch(/^[0-9a-f]{32}$/)
+    expect(pub.flow).toBe('device')
     expect(pub.user_code).toBe('TEST-CODE')
     expect(pub.verification_uri).toBe('https://auth.x.ai/oauth2/device')
     expect(pub.poll_interval_sec).toBe(5)
     const rec = mgr.get(pub.session_id)
     expect(rec).toBeDefined()
-    expect(rec?.deviceCode).toBe('D-1234')
-    expect(rec?.codeVerifier).toBe('pkce-verifier-not-a-real-one-just-for-test')
+    expect(rec?.slug).toBe('xai-oauth')
+    expect(rec?.pollState['device_code']).toBe('D-1234')
+    expect(rec?.pollState['code_verifier']).toBe('pkce-verifier-not-a-real-one-just-for-test')
+  })
+
+  it('holds loopback sessions with an authorization URL and a cancel hook', () => {
+    const mgr = new DeviceFlowSessionManager()
+    let cancelled = false
+    const pub = mgr.create({
+      slug: 'openai-oauth',
+      flow: 'loopback',
+      authorizationUrl: 'https://auth.openai.com/api/accounts/authorize?client_id=x',
+      expiresAtMs: Date.now() + 600_000,
+      intervalSec: 2,
+      cancel: () => {
+        cancelled = true
+      },
+    })
+    expect(pub.flow).toBe('loopback')
+    expect(pub.authorization_url).toContain('auth.openai.com')
+    expect(pub.user_code).toBeUndefined()
+    // Removing a loopback session aborts its redirect listener.
+    mgr.remove(pub.session_id)
+    expect(cancelled).toBe(true)
   })
 
   it('returns undefined for unknown session ids', () => {
@@ -64,6 +82,25 @@ describe('DeviceFlowSessionManager', () => {
     now = now + 60_000
     expect(mgr.get(pub.session_id)).toBeUndefined()
     expect(mgr.size()).toBe(0)
+  })
+
+  it('lazy-GC also aborts an expired loopback listener', () => {
+    let now = 1_000_000
+    const mgr = new DeviceFlowSessionManager(() => now)
+    let cancelled = false
+    const pub = mgr.create({
+      slug: 'openai-oauth',
+      flow: 'loopback',
+      authorizationUrl: 'https://auth.openai.com/api/accounts/authorize?client_id=x',
+      expiresAtMs: now + 600_000,
+      intervalSec: 2,
+      cancel: () => {
+        cancelled = true
+      },
+    })
+    now = now + 600_000 + 61_000
+    expect(mgr.get(pub.session_id)).toBeUndefined()
+    expect(cancelled).toBe(true)
   })
 
   it('preserves completed sessions past expiry so re-polls are idempotent', () => {
