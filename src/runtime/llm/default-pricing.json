@@ -2,7 +2,7 @@
   "schema_version": 1,
   "as_of": "2026-05-07",
   "currency": "USD",
-  "comment": "Per-million-token rates seeded from public pricing pages. Curated by the operator; auto-refresh is out of v1 scope. Models not listed here yield cost_usd=null in telemetry; the next-day usage report flags any unknown models seen in practice. Cached input is the discounted rate for tokens served from prompt cache (Anthropic cache_read_input_tokens, DeepSeek prompt_cache_hit_tokens, OpenAI prompt_tokens_details.cached_tokens).",
+  "comment": "Per-million-token rates seeded from public pricing pages. Curated by the operator; auto-refresh is out of v1 scope. Models not listed here yield cost_usd=null in telemetry; the next-day usage report flags any unknown models seen in practice. Cached input is the discounted rate for tokens served from prompt cache (Anthropic cache_read_input_tokens, DeepSeek prompt_cache_hit_tokens, OpenAI prompt_tokens_details.cached_tokens). The openai-subscription/* entries are zero-rated: a ChatGPT Plus/Pro subscription is flat-rate, so the marginal metered cost per call is $0 (the entries also feed the model picker's Subscriptions list).",
   "models": {
     "anthropic/claude-opus-4-7": {
       "input_per_mtok_usd": 15.0,
@@ -52,6 +52,18 @@
     "kimi/moonshot-v1-128k": {
       "input_per_mtok_usd": 0.45,
       "output_per_mtok_usd": 0.55
+    },
+    "openai-subscription/gpt-5.1-codex": {
+      "input_per_mtok_usd": 0.0,
+      "output_per_mtok_usd": 0.0
+    },
+    "openai-subscription/gpt-5.1-codex-max": {
+      "input_per_mtok_usd": 0.0,
+      "output_per_mtok_usd": 0.0
+    },
+    "openai-subscription/gpt-5.1-codex-mini": {
+      "input_per_mtok_usd": 0.0,
+      "output_per_mtok_usd": 0.0
     },
     "xai/grok-4.3": {
       "input_per_mtok_usd": 1.25,

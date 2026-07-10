@@ -28,9 +28,15 @@
  * working setup just by exporting the env var.
  */
 import { EndpointStore } from '../endpoints/store.js'
+import { extractChatgptAccountId } from '../oauth/openai-config.js'
+import {
+  subscriptionProviderByLlmName,
+  type SubscriptionOAuthProviderDef,
+} from '../oauth/subscription-providers.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import type { SecretRef } from '../secrets/types.js'
 import { AnthropicProvider } from './anthropic.js'
+import { CODEX_RESPONSES_WIRE, CodexResponsesProvider } from './codex-responses.js'
 import { LlmError } from './errors.js'
 import { OpenAIProvider } from './openai.js'
 import type { LLMProvider } from './provider.js'
@@ -146,75 +152,51 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
     })
   }
 
-  // xAI subscription credential. Operators pick `xai-subscription`
-  // explicitly from the Subscriptions category in the model picker;
-  // distinct from the API-key `xai` provider so the choice is visible
-  // in the Agent's Identity. Fails loud if not signed in ... the
-  // operator picked subscription and the cure is to sign in via
-  // Settings ▸ "Sign in with X / SuperGrok", not to silently fall
+  // Subscription-credentialed providers (xai-subscription,
+  // openai-subscription). Operators pick these explicitly from the
+  // Subscriptions category in the model picker; distinct from the
+  // API-key siblings so the choice is visible in the Agent's Identity.
+  // Fails loud if not signed in ... the operator picked subscription
+  // and the cure is to sign in via Settings, not to silently fall
   // back to a different credential.
-  if (opts.providerName === 'xai-subscription') {
+  const subscriptionDef = subscriptionProviderByLlmName(opts.providerName)
+  if (subscriptionDef) {
     if (!opts.home) {
       throw new LlmError(
         'CONFIG_ERROR',
-        'xai-subscription requires a 2200 home directory; provide opts.home when resolving',
+        `${opts.providerName} requires a 2200 home directory; provide opts.home when resolving`,
         opts.providerName,
       )
     }
-    const { readOAuthToken } = await import('../oauth/token-store.js')
-    const token = await readOAuthToken(opts.home, 'xai-oauth').catch(() => null)
-    if (!token) {
-      throw new LlmError(
-        'CONFIG_ERROR',
-        'xai-subscription is not signed in. Open Settings and click "Sign in with X / SuperGrok" (or run `2200 oauth xai login`).',
-        opts.providerName,
-      )
-    }
-    if (token.metadata.expires_at_ms <= Date.now()) {
-      throw new LlmError(
-        'CONFIG_ERROR',
-        'xai-subscription token is expired and the background refresh has not landed a fresh one yet. Try again in ~60s, or re-sign-in from Settings.',
-        opts.providerName,
-      )
-    }
-    const vendor = OPENAI_COMPATIBLE_VENDORS['xai-subscription']
-    if (!vendor) {
-      throw new LlmError(
-        'CONFIG_ERROR',
-        'internal: xai-subscription vendor config missing',
-        opts.providerName,
-      )
-    }
-    // Hot-read the bearer per request rather than capturing token.bearer here.
-    // The fleet token is ~6h-lived and the background refresh rotates it; an
-    // Agent that cached the bearer at spawn 403s once that copy expires (it
-    // does not pick up the refreshed one). Reading it fresh per call ... cheap,
-    // one sealed-file decrypt ... means the Agent always uses the current
-    // token, no restart needed. The check above is the fail-fast at spawn.
     const home = opts.home
-    return new OpenAIProvider({
-      apiKeyProvider: async () => {
-        const fresh = await readOAuthToken(home, 'xai-oauth').catch(() => null)
-        if (!fresh) {
-          throw new LlmError(
-            'CONFIG_ERROR',
-            'xai-subscription is not signed in. Open Settings and click "Sign in with X / SuperGrok" (or run `2200 oauth xai login`).',
-            'xai-subscription',
-          )
-        }
-        if (fresh.metadata.expires_at_ms <= Date.now()) {
-          throw new LlmError(
-            'CONFIG_ERROR',
-            'xai-subscription token is expired and the background refresh has not landed a fresh one yet. Try again in ~60s, or re-sign-in from Settings.',
-            'xai-subscription',
-          )
-        }
-        return fresh.bearer
-      },
-      baseUrl: vendor.baseUrl,
-      providerName: 'xai-subscription',
-      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-    })
+    // Hot-read the bearer per request rather than capturing it once.
+    // The fleet token is short-lived and the background refresh rotates
+    // it; an Agent that cached the bearer at spawn 403s once that copy
+    // expires (it does not pick up the refreshed one). Reading it fresh
+    // per call ... cheap, one sealed-file decrypt ... means the Agent
+    // always uses the current token, no restart needed.
+    const readFreshToken = async () => {
+      const { readOAuthToken } = await import('../oauth/token-store.js')
+      const fresh = await readOAuthToken(home, subscriptionDef.slug).catch(() => null)
+      if (!fresh) {
+        throw new LlmError(
+          'CONFIG_ERROR',
+          `${subscriptionDef.llmProvider} is not signed in. Open Settings and click "${subscriptionDef.signInCta}" (or run \`${subscriptionDef.signInCommand}\`).`,
+          subscriptionDef.llmProvider,
+        )
+      }
+      if (fresh.metadata.expires_at_ms <= Date.now()) {
+        throw new LlmError(
+          'CONFIG_ERROR',
+          `${subscriptionDef.llmProvider} token is expired and the background refresh has not landed a fresh one yet. Try again in ~60s, or re-sign-in from Settings.`,
+          subscriptionDef.llmProvider,
+        )
+      }
+      return fresh
+    }
+    // Fail fast at spawn so a signed-out fleet surfaces immediately.
+    await readFreshToken()
+    return buildSubscriptionProvider(subscriptionDef, readFreshToken, opts)
   }
 
   const secretRef = opts.secret ?? defaultSecretFor(opts.providerName)
@@ -240,9 +222,58 @@ export async function resolveProvider(opts: ProviderResolveOptions): Promise<LLM
 
   throw new LlmError(
     'CONFIG_ERROR',
-    `provider '${opts.providerName}' is not supported. Known providers: anthropic, local, ${Object.keys(OPENAI_COMPATIBLE_VENDORS).join(', ')}.`,
+    `provider '${opts.providerName}' is not supported. Known providers: anthropic, local, openai-subscription, ${Object.keys(OPENAI_COMPATIBLE_VENDORS).join(', ')}.`,
     opts.providerName,
   )
+}
+
+/**
+ * Construct the transport for a subscription provider. xAI's
+ * subscription bearer works against the ordinary OpenAI-compatible
+ * chat-completions surface (a pure credential swap); OpenAI's works
+ * ONLY against the ChatGPT Codex Responses backend, which is its own
+ * adapter. Both hot-read the sealed fleet token per request via
+ * `readFreshToken`.
+ */
+function buildSubscriptionProvider(
+  def: SubscriptionOAuthProviderDef,
+  readFreshToken: () => Promise<{ bearer: string; metadata: { subject?: string | undefined } }>,
+  opts: ProviderResolveOptions,
+): LLMProvider {
+  if (def.llmProvider === 'openai-subscription') {
+    return new CodexResponsesProvider({
+      credentialProvider: async () => {
+        const fresh = await readFreshToken()
+        // The Codex backend routes on the ChatGPT account id, carried
+        // as a JWT claim in the bearer (with the sign-in-time metadata
+        // subject as fallback for non-JWT bearers).
+        const accountId = extractChatgptAccountId(fresh.bearer) ?? fresh.metadata.subject
+        if (!accountId) {
+          throw new LlmError(
+            'CONFIG_ERROR',
+            'openai-subscription bearer carries no ChatGPT account id; re-sign-in from Settings.',
+            def.llmProvider,
+          )
+        }
+        return { bearer: fresh.bearer, accountId }
+      },
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    })
+  }
+  const vendor = OPENAI_COMPATIBLE_VENDORS[def.llmProvider]
+  if (!vendor) {
+    throw new LlmError(
+      'CONFIG_ERROR',
+      `internal: ${def.llmProvider} vendor config missing`,
+      def.llmProvider,
+    )
+  }
+  return new OpenAIProvider({
+    apiKeyProvider: async () => (await readFreshToken()).bearer,
+    baseUrl: vendor.baseUrl,
+    providerName: def.llmProvider,
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  })
 }
 
 /**
@@ -259,7 +290,7 @@ export interface ProviderCatalogEntry {
   /** Default env var that holds the API key. */
   defaultEnvKey: string
   /** Adapter family. */
-  kind: 'anthropic' | 'openai-compatible' | 'local'
+  kind: 'anthropic' | 'openai-compatible' | 'codex-responses' | 'local'
   /** Configured base URL (constant for cloud providers; env-driven for local). */
   baseUrl: string
   /** True when the user can change the base URL. Only `local` is mutable today. */
@@ -318,6 +349,21 @@ export function listKnownProviders(): ProviderCatalogEntry[] {
       category: name === 'xai-subscription' ? 'subscription' : 'api-key',
     })
   }
+  // ChatGPT subscription. Not in OPENAI_COMPATIBLE_VENDORS because its
+  // transport is the Codex Responses backend, not chat-completions.
+  // The env key is display-only, same posture as xai-subscription: the
+  // credential lives in the fleet OAuth token store.
+  out.push({
+    name: 'openai-subscription',
+    label: PROVIDER_LABELS['openai-subscription'] ?? 'openai-subscription',
+    defaultEnvKey: 'OPENAI_API_KEY',
+    kind: 'codex-responses',
+    baseUrl: CODEX_RESPONSES_WIRE.url,
+    baseUrlEditable: false,
+    baseUrlEnvKey: '',
+    keyOptional: false,
+    category: 'subscription',
+  })
   out.push({
     name: 'local',
     label: 'Local (Ollama / LM Studio / vLLM)',
@@ -340,6 +386,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   openrouter: 'OpenRouter',
   xai: 'xAI (Grok, API key)',
   'xai-subscription': 'xAI / Grok (SuperGrok subscription)',
+  'openai-subscription': 'OpenAI / ChatGPT (Plus/Pro subscription)',
   gemini: 'Google Gemini',
 }
 
@@ -359,13 +406,15 @@ function defaultSecretFor(providerName: string): SecretRef {
     case 'xai':
       return { source: 'env', id: 'XAI_API_KEY' }
     case 'xai-subscription':
-      // The xai-subscription provider does NOT read this; its
-      // credential comes from the fleet OAuth token store. The entry
-      // exists only so listKnownProviders has something non-empty to
-      // hand to the Settings UI, which displays it (and the UI uses
-      // the category field to decide that this is an OAuth provider,
-      // not a paste-a-key one).
+      // The subscription providers do NOT read this; their credential
+      // comes from the fleet OAuth token store. The entries exist only
+      // so listKnownProviders has something non-empty to hand to the
+      // Settings UI, which displays it (and the UI uses the category
+      // field to decide that this is an OAuth provider, not a
+      // paste-a-key one).
       return { source: 'env', id: 'XAI_API_KEY' }
+    case 'openai-subscription':
+      return { source: 'env', id: 'OPENAI_API_KEY' }
     case 'gemini':
       return { source: 'env', id: 'GEMINI_API_KEY' }
     default:
