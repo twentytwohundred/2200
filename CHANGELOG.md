@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.724.1731] ... 2026-07-24
+
+### Fixed
+
+- **Agents no longer go silent on a question they were asked.** Three separate faults produced the same symptom ... you ask an Agent something, it goes away to work, and it never comes back:
+  - **Tasks in flight when an Agent process stopped were lost permanently.** The loop only ever picks up `pending` tasks, and nothing reclaimed the ones left mid-run, so a task interrupted by a restart was never retried, never failed, and never surfaced anywhere you would see it. It simply stopped existing. Agents now reclaim interrupted tasks on startup: safe and resumable ones are requeued with a note telling the Agent it is resuming rather than starting over, and ones that cannot be safely re-run (or that have been sitting unfinished for more than a day) are reported as failures in your inbox instead of vanishing. If you restart the fleet after every build, this was firing on any task that happened to be running.
+  - **An Agent relaying a question to a peer missed the answer** unless the peer happened to `@`-mention it back. When an Agent asks a peer on your behalf, it parks and waits for the reply ... but the check for "am I waiting on this person?" ran _after_ the guards that keep Agents from chattering at each other, and those guards correctly ignore a peer's message with no `@`-mention. In a two-way conversation, where nobody bothers with mentions, the reply was discarded and the waiting Agent stayed parked with the answer sitting in the room. The wait is now honored first: an Agent that has gone on record waiting for a specific peer in a specific room always hears that peer's reply. Agents still do not wake on each other's ordinary chatter.
+  - **An Agent's follow-up landed in the wrong chat thread.** Messages an Agent sends you on its own initiative always went to your default thread, so an answer to something you asked in any other thread showed up somewhere you were not looking. Follow-ups now land in the thread the conversation started in.
+
+### Added
+
+- **Files ... see what your Agents are actually writing.** Agents have always kept their own directories (`/project`, `/shared`, `/brain`, `/commons`), but until now there was no way to look inside one without shelling into the box. Every Agent now has a **Files** tab: browse the whole tree, read a file inline, edit and save it in place, or download it. Binary files and anything over 1 MB offer a download rather than a useless editor, and brain notes are read-only here so the Brain screen stays the one place that keeps search in step.
+- **File paths in chat are links.** When an Agent tells you it wrote something to `/project/reports/q3.md`, that path is now clickable and opens the file. Nothing changes about how Agents work ... they already say where they put things, so handing you a file is just that sentence. Paths inside code blocks are left alone.
+
 ## [2026.710.904] ... 2026-07-10
 
 ### Added
