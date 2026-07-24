@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.724.1804] ... 2026-07-24
+
+### Fixed
+
+- **Agents can now hand you a file when you ask them to.** The previous release made any file path an Agent mentions clickable in the web app ... but nobody told the Agents. Asked to "send me that file" or "let me download it", an Agent would look for a download tool, find none, and tell you it couldn't help ... about a file it had already written and named for you. Agents now know that naming the path _is_ how they hand a file over, and will say so plainly instead of reporting a failure. They also know not to wrap the path in backticks (which suppresses the link on purpose), and that on Discord or WhatsApp there is nothing to click, so a short file is worth pasting too.
+- **The Upgrade button in Settings works on servers managed by systemd.** It previously froze at "stopping the daemon" every time on those machines and left the fleet down: the upgrade helper ran inside the service's process group and was killed the moment the daemon it was upgrading shut down. It now runs in its own scope, out of the way of the shutdown. `2200 update` from the CLI was never affected.
+- **Settings no longer claims an upgrade is running when it isn't.** If an upgrade was interrupted ... or you upgraded from the CLI instead ... the panel could sit on "UPGRADING" indefinitely, including reporting an upgrade to the version you were already running. It now reconciles on read: an upgrade that reached its target version reads as finished, and one that stalled reads as failed with the step it stopped at.
+
+### Known issue
+
+- After a self-upgrade, the supervisor ends up running **outside** its systemd unit, so `systemctl status` will report the service as inactive even though your fleet is up and healthy. It corrects itself on the next reboot. Handing the daemon back to systemd deliberately is being designed rather than patched ... to bring it back under the unit now, run `2200 daemon stop` followed by `systemctl --user start <your-unit>`.
+
 ## [2026.724.1731] ... 2026-07-24
 
 ### Fixed
