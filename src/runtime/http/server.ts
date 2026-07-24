@@ -688,8 +688,13 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   )
 
   fastify.get('/api/v1/system/upgrade-status', async () => {
-    const { readUpgradeStatus } = await import('../install/upgrade-status.js')
-    const status = await readUpgradeStatus(options.home)
+    const { reconcileUpgradeStatus } = await import('../install/upgrade-status.js')
+    const { VERSION: PKG_VERSION } = await import('../../index.js')
+    // Correct a status the helper abandoned before reporting it. Without
+    // this the panel reports "UPGRADING" indefinitely ... including an
+    // upgrade to the version already running, which is what an operator
+    // sees after upgrading by any route other than the web button.
+    const status = await reconcileUpgradeStatus(options.home, PKG_VERSION)
     return { status }
   })
 

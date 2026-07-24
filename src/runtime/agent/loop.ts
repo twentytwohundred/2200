@@ -90,6 +90,36 @@ import type { TaskIdempotency } from '../control-plane/protocol.js'
  * inbox. Past three, the loop returns done with the audit flag still
  * set ... the operator picks it up.
  */
+/**
+ * System-prompt guidance for handing the operator a file.
+ *
+ * Exported so its intent is testable. This exists because the operator
+ * half of file handoff shipped without the Agent half: the web app
+ * linkifies any virtual path an Agent mentions, but nothing told the
+ * Agents that. Asked to "hand me the file", Agents went looking for a
+ * download tool, found none, and reported failure ... a correct answer
+ * from what they knew, and a broken experience for the operator, whose
+ * file had in fact already been handed over.
+ *
+ * Deliberately not a tool. A tool would have to return an absolute URL,
+ * and the right URL differs per surface (localhost / LAN / Tailscale /
+ * tunnel) and does not exist at all on Discord or WhatsApp. The path is
+ * the stable thing; each surface decides how to render it. What was
+ * missing was never a tool, only the sentence saying so.
+ */
+export const FILE_HANDOFF_GUIDANCE: readonly string[] = [
+  '## Handing the user a file',
+  '',
+  "There is no download tool, and you do not need one. **Saying where the file is IS how you hand it over.** When you write `/project/report.md` (or any `/shared/...`, `/brain/...`, `/commons/...` path) in a chat message, the user's web app turns that path into a link straight to the file ... they click it and get a viewer with the contents, an inline editor, and a Download button. The whole tree is also browsable at `/agent/<your-name>/files`.",
+  '',
+  'So when the user asks you to show them, send them, hand over, or let them download a file: write the file with `fs_write`, then reply naming the path. That is a complete answer, not a workaround. Do NOT tell the user you lack a tool for this, and do NOT tell them to go find it on the filesystem themselves ... that reads as a failure when the thing they asked for has already happened.',
+  '',
+  'Two caveats worth stating plainly rather than getting wrong:',
+  '  - Write the path as a bare path (`/project/report.md`). A path inside a code fence or inline backticks is deliberately NOT linked, so the user can be shown a literal path when that is the point. If you want them to be able to click it, leave it bare.',
+  '  - The link only exists in the web app. On Discord, WhatsApp, Slack and other connectors the path still tells them exactly where it is, but there is nothing to click ... so on those surfaces, if the file is small and textual, consider also pasting the contents.',
+  '',
+]
+
 const MAX_AUDIT_KICKBACKS = 3
 import {
   DEFAULT_INCOMPLETE_TURN_RETRY_BUDGET,
@@ -1713,6 +1743,7 @@ export class AgentLoop {
       '',
       'When the user asks you in chat to relay something privately back to them after doing pub work (e.g. "go ask Simon and report back here"), the right shape is: do the pub work in the room, then call `chat_send` with the result so the user gets it in their private chat with you. Do NOT just rely on the loop ending ... the loop only auto-appends to chat for tasks that originated FROM the chat. A task that the user kicked off in chat then waited for a pub round-trip will only land back in chat if you call `chat_send` explicitly.',
       '',
+      ...FILE_HANDOFF_GUIDANCE,
       '## Multi-hop coordination (task_await_response)',
       '',
       'When a user asks you on one surface (Discord channel, chat, pub) to fetch something from someone on another surface (another Agent in a pub, a peer over a connector), you can\'t just send the question and return ... the response will arrive later, in an entirely different inbound event, and the substrate has no idea those two events are connected. Without help, the chain dies: you say "I\'ll relay the answer" and never do.',
