@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import {
   advanceUpgradeStage,
   readUpgradeStatus,
+  reconcileUpgradeStatus,
   upgradeStatusPath,
   writeUpgradeStatus,
   type UpgradeStatus,
@@ -112,5 +113,102 @@ describe('upgrade-status', () => {
     // a new status here, the helper's progress would not be tied
     // back to the user's trigger.
     await expect(advanceUpgradeStage(home, 'installing')).rejects.toThrow(/no current status/)
+  })
+})
+
+/**
+ * Reconciliation of a status the helper abandoned.
+ *
+ * The intent being protected: the operator's Settings panel must never
+ * claim an upgrade is in progress when it demonstrably is not. The
+ * concrete failure this came from ... a systemd box where the helper
+ * was killed with the daemon's cgroup, the operator then upgraded from
+ * the CLI, and the panel went on reporting "UPGRADING 2026.710.904 →
+ * 2026.724.1731" while already running 2026.724.1731. A state machine
+ * whose transitions are owned by a process that can die needs someone
+ * to check its work on the way back up.
+ */
+describe('reconcileUpgradeStatus', () => {
+  let home: string
+
+  const inFlight = (over: Partial<UpgradeStatus> = {}): UpgradeStatus => ({
+    schema_version: 1,
+    stage: 'stopping_daemon',
+    version_from: '2026.710.904',
+    version_to: '2026.724.1731',
+    triggered_at: '2026-07-24T22:40:18.197Z',
+    updated_at: '2026-07-24T22:40:18.313Z',
+    finished_at: null,
+    error: null,
+    ...over,
+  })
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), '2200-ur-'))
+    await mkdir(join(home, 'state'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('resolves to completed when the running version is already the target', async () => {
+    // Whoever finished it ... this helper, a later `2200 update`, a
+    // manual npm install ... the recorded goal is met.
+    await writeUpgradeStatus(home, inFlight())
+
+    const result = await reconcileUpgradeStatus(home, '2026.724.1731')
+
+    expect(result?.stage).toBe('completed')
+    expect(result?.finished_at).not.toBeNull()
+    // Persisted, so every other reader sees the truth too.
+    expect((await readUpgradeStatus(home))?.stage).toBe('completed')
+  })
+
+  it('resolves a long-abandoned upgrade to failed, naming the stage it died at', async () => {
+    await writeUpgradeStatus(home, inFlight())
+
+    // Version did NOT change, and the stage has not advanced in a week.
+    const result = await reconcileUpgradeStatus(
+      home,
+      '2026.710.904',
+      () => new Date('2026-07-31T00:00:00.000Z'),
+    )
+
+    expect(result?.stage).toBe('failed')
+    expect(result?.error).toContain('stopping_daemon')
+    // The message has to tell the operator what to do next, not just
+    // that something broke.
+    expect(result?.error).toContain('2200 update')
+  })
+
+  it('leaves a genuinely in-flight upgrade alone', async () => {
+    const now = new Date('2026-07-24T22:40:30.000Z')
+    await writeUpgradeStatus(home, inFlight())
+
+    const result = await reconcileUpgradeStatus(home, '2026.710.904', () => now)
+
+    expect(result?.stage).toBe('stopping_daemon')
+    expect(result?.finished_at).toBeNull()
+  })
+
+  it('never rewrites a terminal status', async () => {
+    await writeUpgradeStatus(
+      home,
+      inFlight({
+        stage: 'failed',
+        finished_at: '2026-07-24T22:41:00.000Z',
+        error: 'the original reason',
+      }),
+    )
+
+    const result = await reconcileUpgradeStatus(home, '2026.724.1731')
+
+    expect(result?.stage).toBe('failed')
+    expect(result?.error).toBe('the original reason')
+  })
+
+  it('returns null when no upgrade has ever been triggered', async () => {
+    expect(await reconcileUpgradeStatus(home, '2026.724.1731')).toBeNull()
   })
 })

@@ -121,7 +121,23 @@ export async function triggerUpgrade(opts: {
     }
   }
 
-  const child = spawn(process.execPath, [runnerPath], {
+  // `detached: true` gives the helper its own process group, which is
+  // enough to survive a plain parent exit ... and NOT enough under
+  // systemd. A unit's cgroup contains every descendant regardless of
+  // process group, and the default KillMode=control-group SIGKILLs
+  // whatever is left in it when the unit stops. So on a systemd-managed
+  // instance the helper was killed the instant the daemon it had just
+  // asked to exit finished exiting: the upgrade died at
+  // `stopping_daemon` 100% of the time, never a race. That is the
+  // recommended production deployment (Type=simple + `daemon run`), so
+  // the web upgrade button was broken for exactly the setup we tell
+  // operators to use.
+  //
+  // `systemd-run --scope` puts the helper in its own transient scope,
+  // i.e. its own cgroup, so the unit's teardown cannot reach it.
+  const escape = systemdScopeCommand()
+  const [cmd, ...prefixArgs] = escape ?? []
+  const child = spawn(cmd ?? process.execPath, [...prefixArgs, process.execPath, runnerPath], {
     detached: true,
     stdio: 'ignore',
     env: {
@@ -182,4 +198,41 @@ function defaultRunnerPath(modulePath: string): string {
   // the caller still produces a clear "runner not found" error rather
   // than throwing here.
   return join(dirname(modulePath), 'upgrade-runner.js')
+}
+
+/**
+ * Build the `systemd-run --scope` prefix used to launch the upgrade
+ * helper outside the daemon's unit cgroup, or null when we are not
+ * running under systemd (or `systemd-run` is unavailable).
+ *
+ * Detection is `INVOCATION_ID`, which systemd sets in the environment
+ * of every service it starts and which nothing else sets. Checking for
+ * the binary alone would be wrong ... plenty of systemd boxes run the
+ * daemon by hand, and wrapping that case in a transient scope would
+ * change process ownership for no reason.
+ *
+ * `--user` matches how the daemon unit is deployed (a `--user` unit, so
+ * there is no system-bus access to make a system scope). `--collect`
+ * garbage-collects the transient unit if the helper fails, so a botched
+ * upgrade does not leave a failed scope behind for the operator to
+ * clean up. `--quiet` keeps systemd-run's own chatter out of the
+ * helper's (ignored) stdio.
+ */
+export function systemdScopeCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  lookup: (bin: string) => boolean = binaryExists,
+  platform: NodeJS.Platform = process.platform,
+): string[] | null {
+  if (platform !== 'linux') return null
+  if (typeof env['INVOCATION_ID'] !== 'string' || env['INVOCATION_ID'].length === 0) return null
+  if (!lookup('systemd-run')) return null
+  return ['systemd-run', '--user', '--scope', '--collect', '--quiet']
+}
+
+function binaryExists(bin: string): boolean {
+  const pathVar = process.env['PATH'] ?? ''
+  return pathVar
+    .split(':')
+    .filter((p) => p.length > 0)
+    .some((dir) => existsSync(join(dir, bin)))
 }

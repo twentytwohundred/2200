@@ -11,7 +11,10 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtemp, rm, writeFile, chmod, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { triggerUpgrade } from '../../../src/runtime/install/upgrade-trigger.js'
+import {
+  triggerUpgrade,
+  systemdScopeCommand,
+} from '../../../src/runtime/install/upgrade-trigger.js'
 import {
   readUpgradeStatus,
   writeUpgradeStatus,
@@ -200,5 +203,47 @@ describe('triggerUpgrade', () => {
       runnerPath,
     })
     expect(result.kind).toBe('started')
+  })
+})
+
+/**
+ * systemd cgroup escape for the detached helper.
+ *
+ * The intent being protected: `detached: true` gives the helper its own
+ * process group, which is NOT its own cgroup. A systemd unit's cgroup
+ * holds every descendant, and the default KillMode=control-group
+ * SIGKILLs whatever remains when the unit stops ... so on the
+ * recommended production deployment the helper was killed the moment
+ * the daemon it had asked to exit finished exiting. 100% failure,
+ * never a race. These lock down that we only wrap when systemd is
+ * actually managing us, because wrapping a hand-started daemon would
+ * change process ownership for no reason.
+ */
+describe('systemdScopeCommand', () => {
+  const has = () => true
+  const hasNot = () => false
+
+  it('wraps in a transient scope when systemd started us', () => {
+    expect(systemdScopeCommand({ INVOCATION_ID: 'abc123' }, has, 'linux')).toEqual([
+      'systemd-run',
+      '--user',
+      '--scope',
+      '--collect',
+      '--quiet',
+    ])
+  })
+
+  it('does not wrap a daemon the operator started by hand', () => {
+    // systemd present on the box, but this process is not a unit.
+    expect(systemdScopeCommand({}, has, 'linux')).toBeNull()
+    expect(systemdScopeCommand({ INVOCATION_ID: '' }, has, 'linux')).toBeNull()
+  })
+
+  it('does not wrap when systemd-run is not installed', () => {
+    expect(systemdScopeCommand({ INVOCATION_ID: 'abc123' }, hasNot, 'linux')).toBeNull()
+  })
+
+  it('does not wrap off Linux, where the cgroup problem does not exist', () => {
+    expect(systemdScopeCommand({ INVOCATION_ID: 'abc123' }, has, 'darwin')).toBeNull()
   })
 })
