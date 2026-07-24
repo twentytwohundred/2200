@@ -41,7 +41,11 @@ afterEach(async () => {
   // (`emitCallReceived(...).catch(...)` without await). Brief settle
   // before rm so an in-flight notification write doesn't lose the race.
   await new Promise((r) => setTimeout(r, 20))
-  await rm(home, { recursive: true, force: true })
+  // The settle is a heuristic, not a guarantee: a write that lands
+  // after it drops a file into a directory rm is midway through
+  // removing, which surfaces as ENOTEMPTY (`force` only suppresses
+  // ENOENT). Retries are the documented remedy for exactly this class.
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 })
 
 async function readEmittedNotifications(): Promise<string[]> {
@@ -53,7 +57,15 @@ async function readEmittedNotifications(): Promise<string[]> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw err
   }
-  return Promise.all(entries.map((name) => readFile(join(dir, name), 'utf-8')))
+  // Skip atomicWriteFile's in-flight temp files. They are renamed into
+  // place between this readdir and the reads below, so reading one
+  // races the rename and throws ENOENT ... an intermittent CI failure
+  // with nothing to do with the assertions.
+  return Promise.all(
+    entries
+      .filter((name) => !name.includes('.tmp.'))
+      .map((name) => readFile(join(dir, name), 'utf-8')),
+  )
 }
 
 function stubServerDeps(

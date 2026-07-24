@@ -240,6 +240,19 @@ export class PubWakeSource {
       return // don't wake on our own send
     }
 
+    // Parked-task resume runs first, ahead of every directedness rule
+    // and anti-chatter guard below. See tryResumeParked's docstring for
+    // why the ordering is load-bearing.
+    if (
+      await this.tryResumeParked({
+        message_id: message.message_id,
+        sender_display_name: message.display_name,
+        sender_content: message.content,
+      })
+    ) {
+      return
+    }
+
     const roomState = this.opts.client.roomState()
     const memberIds = roomState?.agents_present.map((a) => a.agent_id) ?? []
 
@@ -456,6 +469,80 @@ export class PubWakeSource {
   }
 
   /**
+   * Continuation primitive (decision:
+   * 2026-05-16-task-continuation-primitive). If this Agent has a task
+   * parked on a `wait_for` matching (this pub, this sender), resume it
+   * with the inbound appended as continuation context and return true.
+   * This is what turns the Discord→Studio→Discord forwarding chain
+   * into a single coherent task instead of two isolated ones.
+   *
+   * **This runs BEFORE the `directed_to` gate and before the ambient
+   * router's anti-chatter guards, and that ordering is load-bearing.**
+   * Those guards exist to stop the Agent-to-Agent ack spiral (Epic
+   * 3.8) and they are right to be aggressive: a peer Agent's message
+   * only wakes us on an explicit @-mention. But a task that called
+   * `task_await_response` has *already declared* it is waiting on this
+   * specific peer in this specific pub. That declaration is a stronger
+   * directedness signal than any mention heuristic, and it is one this
+   * Agent made about itself.
+   *
+   * When the check sat downstream of the gate (it did until this was
+   * fixed), a peer who answered in plain prose ... no `@mention`, no
+   * `reply_to`, which is how Agents actually talk in a two-party
+   * studio thread ... never reached it. The parked task stayed
+   * `blocked_on_agent` until the timeout sweep, so the operator who
+   * asked the original question watched their Agent go quiet and never
+   * come back. The answer was sitting in the room the whole time.
+   *
+   * Note this deliberately does NOT consult `processedMessageIds` as a
+   * precondition: the live path and the sweep both call it, and the
+   * `findWaiting` result is itself the idempotency guard (the resume
+   * clears `wait_for`, so a second call finds nothing).
+   */
+  private async tryResumeParked(args: {
+    message_id: string
+    sender_display_name: string
+    sender_content: string
+  }): Promise<boolean> {
+    // Display-name comparison is normalized: agent names are lowercase
+    // by convention but display names drift, and the model writing
+    // `expected_from` may include the `@` it used to address the peer.
+    const waiting = await this.opts.taskStore.findWaiting({
+      kind: 'pub',
+      pub: this.opts.pubName,
+      sender: args.sender_display_name,
+    })
+    if (!waiting) return false
+
+    const continuation = buildContinuationSection({
+      source_kind: 'pub',
+      sender_label: args.sender_display_name,
+      context_note: waiting.frontmatter.wait_for?.context_note ?? '',
+      body_text: args.sender_content,
+      reply_hint:
+        `Reply via \`pub_send\` with \`pub: "${this.opts.pubName}"\`. ` +
+        `Or use \`discord_send\` / \`whatsapp_send\` / \`chat_send\` to forward back to ` +
+        `whoever you originally promised an answer to.`,
+    })
+    await this.opts.taskStore.updateRecord(waiting.frontmatter.id, (rec) => ({
+      frontmatter: {
+        ...rec.frontmatter,
+        state: 'pending',
+        wait_for: null,
+      },
+      body: `${rec.body}\n\n${continuation}`,
+    }))
+    this.recordProcessed(args.message_id)
+    this.log.info('pub wake → resumed parked task', {
+      pub: this.opts.pubName,
+      agent: this.opts.agentName,
+      task_id: waiting.frontmatter.id,
+      sender: args.sender_display_name,
+    })
+    return true
+  }
+
+  /**
    * Pre-populate `processedMessageIds` from the agent's existing
    * pub.handle tasks so a fresh wake-source doesn't double-create on
    * its first sweep cycle. Reads the task store, scans for the
@@ -494,6 +581,27 @@ export class PubWakeSource {
     for (const msg of messages) {
       if (msg.agent_id === this.opts.agent.agent_id) continue // our own send
       if (this.processedMessageIds.has(msg.message_id)) continue
+
+      // Same ordering as the live path: a parked wait_for outranks the
+      // directedness rules, so check it before `verdict.matched` can
+      // skip the message. Without this the sweep ... the backstop that
+      // exists precisely to catch missed wakes ... would itself miss
+      // the reply a parked task is waiting on.
+      if (
+        await this.tryResumeParked({
+          message_id: msg.message_id,
+          sender_display_name: msg.display_name,
+          sender_content: msg.content,
+        })
+      ) {
+        this.log.warn('sweep backstop: resumed parked task from cached history', {
+          pub: this.opts.pubName,
+          agent: this.opts.agentName,
+          message_id: msg.message_id,
+        })
+        continue
+      }
+
       // Cheap structural check first; only then hit the deterministic
       // resolver. Skip ambient-router path for the sweep (see method docstring).
       const verdict = isDirectedTo({
@@ -571,48 +679,6 @@ export class PubWakeSource {
     envelope: 'message' | 'conversation_event'
     antecedent?: { display_name: string; content: string }
   }): Promise<void> {
-    // Continuation primitive (decision:
-    // 2026-05-16-task-continuation-primitive): before starting a fresh
-    // synthetic task, check whether this agent has a task parked on a
-    // wait_for matching (pub, sender). If so, resume that task with
-    // the inbound appended as continuation context. This is what
-    // turns the Discord→Studio→Discord forwarding chain into a single
-    // coherent task instead of two isolated ones. The display name
-    // comparison is case-insensitive ... agent names are lowercase by
-    // convention but display names can drift.
-    const waiting = await this.opts.taskStore.findWaiting({
-      kind: 'pub',
-      pub: this.opts.pubName,
-      sender: args.sender_display_name,
-    })
-    if (waiting) {
-      const continuation = buildContinuationSection({
-        source_kind: 'pub',
-        sender_label: args.sender_display_name,
-        context_note: waiting.frontmatter.wait_for?.context_note ?? '',
-        body_text: args.sender_content,
-        reply_hint:
-          `Reply via \`pub_send\` with \`pub: "${this.opts.pubName}"\`. ` +
-          `Or use \`discord_send\` / \`whatsapp_send\` / \`chat_send\` to forward back to ` +
-          `whoever you originally promised an answer to.`,
-      })
-      await this.opts.taskStore.updateRecord(waiting.frontmatter.id, (rec) => ({
-        frontmatter: {
-          ...rec.frontmatter,
-          state: 'pending',
-          wait_for: null,
-        },
-        body: `${rec.body}\n\n${continuation}`,
-      }))
-      this.recordProcessed(args.message_id)
-      this.log.info('pub wake → resumed parked task', {
-        pub: this.opts.pubName,
-        agent: this.opts.agentName,
-        task_id: waiting.frontmatter.id,
-        sender: args.sender_display_name,
-      })
-      return
-    }
     const task = newPendingTask({
       id: newTaskId(),
       agent: this.opts.agentName,

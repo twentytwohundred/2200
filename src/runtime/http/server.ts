@@ -126,6 +126,13 @@ import {
   notFound,
   unauthorized,
 } from './errors.js'
+import {
+  BROWSABLE_ROOTS,
+  readFileForDisplay,
+  readFileRaw,
+  walkTree,
+  writeFileFromOperator,
+} from './files.js'
 import { WebTokenStore } from './tokens.js'
 import { LoginRateLimiter, loginRateLimitKey } from './login-rate-limit.js'
 import { CredentialVault } from '../credentials/vault.js'
@@ -1200,6 +1207,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/unarchive' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
       { method: 'PUT', path: '/api/v1/agents/:name/budget' },
+      { method: 'GET', path: '/api/v1/agents/:name/files' },
+      { method: 'GET', path: '/api/v1/agents/:name/files/content' },
+      { method: 'PUT', path: '/api/v1/agents/:name/files/content' },
+      { method: 'GET', path: '/api/v1/agents/:name/files/raw' },
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
@@ -1876,6 +1887,69 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     tag: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(500).optional(),
   })
+
+  // -- files (operator file browser) ---------------------------------------
+  // Read/write access to the Agent's own directory tree. Containment
+  // comes from resolveVirtualPath; see http/files.ts for why this does
+  // not go through the Agent perm evaluator and why /brain is read-only
+  // on this surface.
+
+  const FilePathQuery = z.object({ path: z.string().min(1) })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/files', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = z.object({ path: z.string().min(1).optional() }).parse(req.query)
+    // No `path` means "give me every root" ... one call populates the
+    // whole browser, which keeps the client from fanning out per root.
+    if (q.path === undefined) {
+      const roots = await Promise.all(
+        BROWSABLE_ROOTS.map(async (root) => ({
+          ...root,
+          ...(await walkTree(home, req.params.name, root.path)),
+        })),
+      )
+      return { roots }
+    }
+    return await walkTree(home, req.params.name, q.path)
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/files/content', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = FilePathQuery.parse(req.query)
+    return await readFileForDisplay(home, req.params.name, q.path)
+  })
+
+  fastify.put<{ Params: { name: string }; Body: unknown }>(
+    '/api/v1/agents/:name/files/content',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = z
+        .object({ path: z.string().min(1), content: z.string().max(5 * 1024 * 1024) })
+        .parse(req.body)
+      return await writeFileFromOperator(home, req.params.name, body.path, body.content)
+    },
+  )
+
+  fastify.get<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/files/raw',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const q = FilePathQuery.parse(req.query)
+      const { buffer, filename } = await readFileRaw(home, req.params.name, q.path)
+      // `attachment` is the whole point of this route (the sibling
+      // /content route serves the same bytes for display). Quoting the
+      // filename and stripping quotes/newlines keeps a crafted filename
+      // from breaking out of the header value.
+      const safe = filename.replace(/["\r\n]/g, '_')
+      void reply.header('content-disposition', `attachment; filename="${safe}"`)
+      void reply.header('content-type', 'application/octet-stream')
+      return await reply.send(buffer)
+    },
+  )
 
   fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req) => {
     const snap = supervisor.snapshot()

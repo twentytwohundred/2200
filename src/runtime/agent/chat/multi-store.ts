@@ -137,7 +137,7 @@ export interface SaveAttachmentArgs {
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_CHAT_ID = 'default'
+export const DEFAULT_CHAT_ID = 'default'
 const SCHEMA_VERSION = 1 as const
 
 export class MultiChatStore {
