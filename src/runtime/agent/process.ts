@@ -39,6 +39,7 @@ import { expandToolGrants } from '../mcp/tool-grants.js'
 import { emitNotification } from '../notifications/writer.js'
 import { resolveSecret } from '../secrets/resolver.js'
 import { TaskStore } from './task/store.js'
+import { reconcileOrphanedTasks } from './orphaned-tasks.js'
 import type { TaskRecord } from './task/types.js'
 import { AgentLoop, type LoopResult } from './loop.js'
 import type { AuditFlag } from './audit/narrated-completion.js'
@@ -425,6 +426,14 @@ export class AgentProcess {
     if (typeof this.heartbeatTimer === 'object' && 'unref' in this.heartbeatTimer) {
       this.heartbeatTimer.unref()
     }
+
+    // Reclaim tasks a previous process left in `running`. Must happen
+    // before the poll timer starts: `pickPending` cannot see them, so
+    // without this they are lost for good. See orphaned-tasks.ts.
+    await reconcileOrphanedTasks({
+      taskStore,
+      logger: this.log.child('orphan-sweep'),
+    })
 
     const pollInterval = this.options.taskPollIntervalMs ?? TASK_POLL_INTERVAL_MS
     this.taskPollTimer = setInterval(() => {

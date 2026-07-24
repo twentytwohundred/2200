@@ -146,6 +146,22 @@ describe('TaskStore.findWaiting (pub)', () => {
     expect(match?.frontmatter.id).toBe(t.frontmatter.id)
   })
 
+  it('matches when the model wrote expected_from with the @ it used to address the peer', async () => {
+    // `expected_from` is model-authored, and the model usually writes
+    // the handle exactly as it addressed the peer in the room. The wire
+    // carries a bare display name. A miss is silent: the parked task
+    // never resumes and the Agent goes quiet on whoever it promised an
+    // answer to.
+    const store = new TaskStore(home, AGENT)
+    const t = makeTask({
+      state: 'blocked_on_agent',
+      wait_for: pubWait({ expected_from: '@Hobby ' }),
+    })
+    await store.save(t)
+    const match = await store.findWaiting({ kind: 'pub', pub: 'studio', sender: 'hobby' })
+    expect(match?.frontmatter.id).toBe(t.frontmatter.id)
+  })
+
   it('does not match when expected_from differs', async () => {
     const store = new TaskStore(home, AGENT)
     await store.save(makeTask({ state: 'blocked_on_agent', wait_for: pubWait() }))
