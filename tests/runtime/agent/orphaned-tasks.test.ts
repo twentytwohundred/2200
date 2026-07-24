@@ -165,6 +165,65 @@ describe('reconcileOrphanedTasks', () => {
     expect(result.dispositions.filter((d) => d.action === 'errored')).toHaveLength(1)
   })
 
+  it('does not resurrect an orphan the operator has long since moved on from', async () => {
+    // The box this was diagnosed on had orphans going back three weeks.
+    // Requeuing those on the next restart would have Agents abruptly
+    // acting on questions whose context is gone ... a different and
+    // worse surprise than the silence being fixed.
+    const store = new TaskStore(home, AGENT)
+    const id = await seed(store, { state: 'running', idempotency: 'checkpointed' })
+    await store.update(id, (fm) => ({
+      ...fm,
+      created: new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString(),
+    }))
+
+    const result = await reconcileOrphanedTasks({ taskStore: store, logger })
+
+    expect(result.dispositions[0]).toMatchObject({ action: 'errored', reason: 'stale' })
+    expect(await store.pickPending()).toBeNull()
+    expect((await store.get(id))?.frontmatter.error?.message).toMatch(/more than a day/)
+  })
+
+  it('still requeues a task that was legitimately in flight for hours', async () => {
+    // Eight-hour autonomous runs are a design target. A restart eight
+    // hours into one must not throw the work away.
+    const store = new TaskStore(home, AGENT)
+    const id = await seed(store, { state: 'running', idempotency: 'checkpointed' })
+    await store.update(id, (fm) => ({
+      ...fm,
+      created: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+    }))
+
+    const result = await reconcileOrphanedTasks({ taskStore: store, logger })
+
+    expect(result.dispositions[0]?.action).toBe('requeued')
+    expect((await store.pickPending())?.frontmatter.id).toBe(id)
+  })
+
+  it('treats an unreadable created timestamp as stale rather than resuming blind', async () => {
+    const store = new TaskStore(home, AGENT)
+    const id = await seed(store, { state: 'running', idempotency: 'pure' })
+    await store.update(id, (fm) => ({ ...fm, created: 'not-a-date' }))
+
+    const result = await reconcileOrphanedTasks({ taskStore: store, logger })
+
+    expect(result.dispositions[0]).toMatchObject({ action: 'errored', reason: 'stale' })
+  })
+
+  it('reports destructive and stale as distinct reasons', async () => {
+    const store = new TaskStore(home, AGENT)
+    await seed(store, { state: 'running', idempotency: 'destructive' })
+    const oldId = await seed(store, { state: 'running', idempotency: 'pure' })
+    await store.update(oldId, (fm) => ({
+      ...fm,
+      created: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    }))
+
+    const result = await reconcileOrphanedTasks({ taskStore: store, logger })
+
+    expect(result.dispositions.map((d) => d.reason).sort()).toEqual(['destructive', 'stale'])
+  })
+
   it('is a no-op on a clean boot', async () => {
     const store = new TaskStore(home, AGENT)
     await seed(store, { state: 'done' })

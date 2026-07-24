@@ -38,6 +38,18 @@
  *                    the inbox as a failure with the reason spelled
  *                    out, so the operator sees it and decides.
  *
+ * Age gates the requeue independently of category. A task orphaned
+ * minutes ago is the case this exists for: the operator asked
+ * something, the fleet restarted, and they are still waiting. A task
+ * orphaned three weeks ago is a different animal ... the operator has
+ * long since moved on, the world the task reasoned about is gone, and
+ * bringing it back means an Agent abruptly acting on a stale question.
+ * Old orphans are surfaced as errors instead, which is the honest
+ * outcome: the work did not happen, and nobody should pretend
+ * otherwise by doing it now. The window is generous (24h) because
+ * long-running autonomous work is a design target ... a task legitimately
+ * in flight for eight hours must survive a restart.
+ *
  * The load-bearing property is that nothing is silent. A requeued
  * task announces itself in the body so the model knows it is picking
  * up a turn that was cut off mid-flight; an errored task announces
@@ -53,6 +65,8 @@ export interface OrphanDisposition {
   title: string
   idempotency: TaskRecord['frontmatter']['idempotency']
   action: 'requeued' | 'errored'
+  /** Why it was errored. Null on a requeue. */
+  reason: OrphanErrorReason | null
 }
 
 export interface ReconcileResult {
@@ -60,8 +74,16 @@ export interface ReconcileResult {
   dispositions: OrphanDisposition[]
 }
 
-/** Error class recorded on destructive orphans. Stable string ... the inbox groups on it. */
+/** Error class recorded on orphans that are not requeued. Stable string ... the inbox groups on it. */
 export const ORPHANED_TASK_ERROR_CLASS = 'OrphanedTask'
+
+/**
+ * How old an orphan may be and still be worth resuming. Sized above
+ * the longest plausible single task (autonomous runs are a design
+ * target at eight hours) and well below "the operator has forgotten
+ * this ever happened."
+ */
+export const MAX_REQUEUE_AGE_MS = 24 * 60 * 60 * 1000
 
 /**
  * Note appended to a requeued task's body. The model needs to know it
@@ -83,13 +105,25 @@ export function orphanRequeueNote(at: string): string {
   ].join('\n')
 }
 
-/** Message recorded on a destructive orphan's error block. */
-export function orphanErrorMessage(at: string): string {
+/** Why an orphan was errored rather than requeued. */
+export type OrphanErrorReason = 'destructive' | 'stale'
+
+/** Message recorded on an orphan's error block. */
+export function orphanErrorMessage(at: string, reason: OrphanErrorReason): string {
+  const head = `Agent process stopped while this task was running (detected at ${at}). `
+  if (reason === 'destructive') {
+    return (
+      head +
+      'The task is marked destructive, so it was not automatically requeued ... ' +
+      're-running it could repeat an irreversible action. Review what completed ' +
+      'and resubmit if the work still needs doing.'
+    )
+  }
   return (
-    `Agent process stopped while this task was running (detected at ${at}). ` +
-    'The task is marked destructive, so it was not automatically requeued ... ' +
-    're-running it could repeat an irreversible action. Review what completed ' +
-    'and resubmit if the work still needs doing.'
+    head +
+    'It had been sitting unfinished for more than a day, so it was not requeued ... ' +
+    'resuming a stale task means acting on a question whose context has moved on. ' +
+    'Resubmit it if the work still matters.'
   )
 }
 
@@ -125,8 +159,14 @@ export async function reconcileOrphanedTasks(args: {
   if (orphans.length === 0) return { dispositions }
 
   for (const orphan of orphans) {
-    const { id, title, idempotency } = orphan.frontmatter
-    const requeue = idempotency !== 'destructive'
+    const { id, title, idempotency, created } = orphan.frontmatter
+    const ageMs = now().getTime() - Date.parse(created)
+    // An unparseable `created` reads as stale rather than fresh: better
+    // to surface a task for the operator than to resume one blind.
+    const stale = !Number.isFinite(ageMs) || ageMs > MAX_REQUEUE_AGE_MS
+    const reason: OrphanErrorReason | null =
+      idempotency === 'destructive' ? 'destructive' : stale ? 'stale' : null
+    const requeue = reason === null
     try {
       if (requeue) {
         await args.taskStore.updateRecord(id, (rec) => ({
@@ -139,7 +179,7 @@ export async function reconcileOrphanedTasks(args: {
           state: 'errored',
           error: {
             class: ORPHANED_TASK_ERROR_CLASS,
-            message: orphanErrorMessage(at),
+            message: orphanErrorMessage(at, reason),
             at,
           },
         }))
@@ -156,13 +196,15 @@ export async function reconcileOrphanedTasks(args: {
       title,
       idempotency,
       action: requeue ? 'requeued' : 'errored',
+      reason,
     })
   }
 
   if (dispositions.length > 0) {
     args.logger.info('orphan sweep: reclaimed tasks left running by a dead process', {
       requeued: dispositions.filter((d) => d.action === 'requeued').length,
-      errored: dispositions.filter((d) => d.action === 'errored').length,
+      errored_destructive: dispositions.filter((d) => d.reason === 'destructive').length,
+      errored_stale: dispositions.filter((d) => d.reason === 'stale').length,
       task_ids: dispositions.map((d) => d.task_id),
     })
   }

@@ -41,7 +41,11 @@ afterEach(async () => {
   // (`emitCallReceived(...).catch(...)` without await). Brief settle
   // before rm so an in-flight notification write doesn't lose the race.
   await new Promise((r) => setTimeout(r, 20))
-  await rm(home, { recursive: true, force: true })
+  // The settle is a heuristic, not a guarantee: a write that lands
+  // after it drops a file into a directory rm is midway through
+  // removing, which surfaces as ENOTEMPTY (`force` only suppresses
+  // ENOENT). Retries are the documented remedy for exactly this class.
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 })
 
 async function readEmittedNotifications(): Promise<string[]> {
