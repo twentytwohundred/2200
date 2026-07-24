@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { AgentMark } from '../primitives/AgentMark'
 import { cx } from '../primitives/cx'
 import { Attachment, type AttachmentDisplayKind } from './Attachment'
+import { remarkFilePathLinks } from './filePathLinks'
 import styles from './ChatMessage.module.css'
 
 export interface ChatMessageAttachment {
@@ -55,7 +56,11 @@ export function ChatMessage({
   streamingCursor = false,
 }: ChatMessageProps): ReactNode {
   const isYou = from === 'you'
-  const bodyContent = typeof body === 'string' ? <Markdown text={body} /> : body
+  // Paths the Agent mentions link into its file browser; see
+  // filePathLinks.ts. Only an Agent's own message gets them ... a path
+  // the operator typed is addressed to the Agent, not to the browser.
+  const bodyContent =
+    typeof body === 'string' ? <Markdown text={body} linkPathsFor={isYou ? null : who} /> : body
   return (
     <article className={cx(styles.row, isYou && styles.rowYou)}>
       {isYou ? (
@@ -104,10 +109,18 @@ export function ChatMessage({
   )
 }
 
-function Markdown({ text }: { text: string }): ReactNode {
+function Markdown({
+  text,
+  linkPathsFor,
+}: {
+  text: string
+  /** Agent whose file tree `/project/...` style paths resolve against; null to leave paths as prose. */
+  linkPathsFor: string | null
+}): ReactNode {
+  const plugins = linkPathsFor ? [remarkGfm, remarkFilePathLinks(linkPathsFor)] : [remarkGfm]
   return (
     <div className={styles.markdown}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={plugins}>{text}</ReactMarkdown>
     </div>
   )
 }

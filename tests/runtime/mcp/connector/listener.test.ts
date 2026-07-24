@@ -53,7 +53,15 @@ async function readEmittedNotifications(): Promise<string[]> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw err
   }
-  return Promise.all(entries.map((name) => readFile(join(dir, name), 'utf-8')))
+  // Skip atomicWriteFile's in-flight temp files. They are renamed into
+  // place between this readdir and the reads below, so reading one
+  // races the rename and throws ENOENT ... an intermittent CI failure
+  // with nothing to do with the assertions.
+  return Promise.all(
+    entries
+      .filter((name) => !name.includes('.tmp.'))
+      .map((name) => readFile(join(dir, name), 'utf-8')),
+  )
 }
 
 function stubServerDeps(

@@ -600,6 +600,42 @@ export interface BrainSearchResponse {
 }
 
 /**
+ * File-browser wire shapes. The runtime serves an Agent's own
+ * directory tree under /api/v1/agents/:name/files, addressed by the
+ * same virtual paths the Agent's fs tools use (`/project/...`,
+ * `/shared/...`, `/brain/...`, `/commons/...`).
+ */
+export interface FileEntry {
+  path: string
+  name: string
+  kind: 'file' | 'dir'
+  size: number
+  modified: string
+  /** Present on directories. Absent when the server hit a walk cap. */
+  children?: FileEntry[]
+  truncated?: boolean
+}
+
+export interface FileRoot {
+  path: string
+  label: string
+  blurb: string
+  writable: boolean
+  entries: FileEntry[]
+  truncated: boolean
+}
+
+export interface FileContent {
+  path: string
+  /** Null for binary or oversized files ... `reason` says which. */
+  content: string | null
+  size: number
+  modified: string
+  reason: 'binary' | 'too_large' | null
+  writable: boolean
+}
+
+/**
  * Onboarding (Epic 14 Phase A + Epic 15 Phase B) wire shapes.
  *
  * Driven by the server-side state machine at /api/v1/onboarding (the
@@ -1004,6 +1040,25 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
       { method: 'DELETE' },
     ),
+  /** Every browsable root with its tree walked, in one call. */
+  files: (name: string) =>
+    request<{ roots: FileRoot[] }>(`/api/v1/agents/${encodeURIComponent(name)}/files`),
+  fileContent: (name: string, path: string) =>
+    request<FileContent>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
+    ),
+  fileSave: (name: string, path: string, content: string) =>
+    request<{ path: string; size: number; modified: string }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content`,
+      { method: 'PUT', body: { path, content } },
+    ),
+  /**
+   * Download URL rather than a fetch. The browser has to navigate to it
+   * for the Content-Disposition attachment header to do its job; auth
+   * rides the same-origin session cookie.
+   */
+  fileDownloadUrl: (name: string, path: string) =>
+    `/api/v1/agents/${encodeURIComponent(name)}/files/raw?path=${encodeURIComponent(path)}`,
   chatList: (name: string) =>
     request<ListEnvelope<ChatMessage>>(`/api/v1/agents/${encodeURIComponent(name)}/chat`),
   chatSend: (name: string, content: string) =>
