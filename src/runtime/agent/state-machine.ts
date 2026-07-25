@@ -19,6 +19,23 @@ export interface StateTransition {
   reason: string
 }
 
+/**
+ * Every state must be able to reach `stopped`.
+ *
+ * This was not always true: `blocked_on_detector->stopped` was legal
+ * while `blocked_on_agent->stopped`, `blocked_on_user->stopped` and
+ * `waiting->stopped` were not ... the detector case had presumably been
+ * hit in the field and patched in isolation. The asymmetry is not
+ * defensible in either direction. An Agent parked waiting on a peer is
+ * exactly the Agent an operator most wants to be able to stop, and
+ * shutdown must never depend on what the Agent happened to be doing
+ * when the signal arrived.
+ *
+ * The shutdown path swallows the throw, so the visible symptom was not
+ * a crash but a lie: the machine stayed in its blocked state through a
+ * clean shutdown, so the last thing the Agent reported about itself was
+ * wrong.
+ */
 const TRANSITIONS: ReadonlySet<string> = new Set([
   'stopped->running',
   'running->stopped',
@@ -28,8 +45,11 @@ const TRANSITIONS: ReadonlySet<string> = new Set([
   'running->blocked_on_agent',
   'running->blocked_on_detector',
   'waiting->running',
+  'waiting->stopped',
   'blocked_on_user->running',
+  'blocked_on_user->stopped',
   'blocked_on_agent->running',
+  'blocked_on_agent->stopped',
   'blocked_on_detector->running',
   'blocked_on_detector->stopped',
   'errored->running',
