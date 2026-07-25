@@ -55,13 +55,47 @@ function makeToolEnd(tool: string, ok: boolean, at = 1): LoopEvent {
 const ctx = (events: LoopEvent[]) => ({ home, agentName: 'hobby', events })
 
 describe('verifyClaim · file_create', () => {
-  it('unverified when no write-class tool call appears', async () => {
+  it('contradicted when a named file is absent and no write was attempted', async () => {
+    // Changed 2026-07-25 from `unverified`. The filesystem settles this
+    // and it always could ... the check just sat below an early return.
+    // Field case: an Agent ran two web searches, wrote nothing, and
+    // reported "Created text file: /project/trending_playlist.txt".
+    // `unverified` renders as a passive chip the operator dismisses;
+    // `contradicted` escalates to important, which is what a fabricated
+    // file deserves.
+    const claim: ExtractedClaim = {
+      category: 'file_create',
+      verb: 'Created',
+      object: 'text file',
+      path: '/project/trending_playlist.txt',
+    }
+    const out = await verifyClaim(claim, ctx([makeToolEnd('web_search', true)]))
+    expect(out.status).toBe('contradicted')
+    if (out.status !== 'contradicted') throw new Error('narrowing')
+    expect(out.reason).toMatch(/no write-class tool call/)
+    expect(out.reason).toMatch(/does not exist/)
+  })
+
+  it('unverified ... not verified ... when the file exists but this task never wrote it', async () => {
+    // The file may simply predate the task. Present-on-disk is not
+    // evidence that THIS turn created it, so the claim is
+    // unattributable rather than confirmed.
+    await writeFile(join(home, 'agents', 'hobby', 'project', 'old.md'), 'from before', 'utf8')
     const claim: ExtractedClaim = {
       category: 'file_create',
       verb: 'wrote',
-      object: '/project/x',
-      path: '/project/x',
+      object: '/project/old.md',
+      path: '/project/old.md',
     }
+    const out = await verifyClaim(claim, ctx([makeToolEnd('web_search', true)]))
+    expect(out.status).toBe('unverified')
+    if (out.status !== 'unverified') throw new Error('narrowing')
+    expect(out.reason).toMatch(/cannot attribute it to this turn/)
+  })
+
+  it('unverified when no write-class call appears and no path was named', async () => {
+    // Nothing to check on disk; transcript is all there is.
+    const claim: ExtractedClaim = { category: 'file_create', verb: 'wrote', object: 'a file' }
     const out = await verifyClaim(claim, ctx([makeToolEnd('fs_read', true)]))
     expect(out.status).toBe('unverified')
   })

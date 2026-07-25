@@ -111,64 +111,127 @@ async function verifyFileCreate(
   const writeCalls = findToolCallEnds(ctx.events, (t) =>
     isInClass(t, WRITE_CLASS_TOOLS, ctx, 'file_create'),
   )
-  if (writeCalls.length === 0) {
-    return {
-      status: 'unverified',
-      reason: `claim "${claim.verb} ${claim.object}" has no write-class tool call in the transcript`,
-    }
-  }
   const successful = writeCalls.filter((e) => e.ok)
-  if (successful.length === 0) {
-    return {
-      status: 'contradicted',
-      reason: `write attempted (${String(writeCalls.length)} call${writeCalls.length === 1 ? '' : 's'}) but none returned ok`,
-    }
-  }
 
-  // When the claim names a path, verify the file exists + is non-empty.
+  // The filesystem outranks the transcript.
+  //
+  // When the claim names a path, `stat` is direct evidence about the
+  // exact thing claimed, and it is available regardless of what the
+  // transcript shows. This check used to sit BELOW an early return for
+  // "no write-class tool call", which meant the strongest evidence was
+  // skipped in precisely the case it settles: an Agent that names a
+  // file and never wrote one.
+  //
+  // That ordering had a real cost. Severity keys off status ...
+  // `unverified` is passive, `contradicted` is important ... so a
+  // fabricated file surfaced as a chip the operator was inclined to
+  // dismiss rather than a notification. Field case: an Agent ran two
+  // web searches, wrote nothing, reported "Created text file:
+  // /project/trending_playlist.txt" with half the contents filled in as
+  // bracketed placeholders, and the audit could only say "unverified".
+  // The file was plainly absent; the audit had every means to say so.
   if (claim.path) {
+    let resolvedAbsolute: string
     try {
-      const resolved = resolveVirtualPath(claim.path, {
+      resolvedAbsolute = resolveVirtualPath(claim.path, {
         home: ctx.home,
         callingAgent: ctx.agentName,
-      })
-      const s = await stat(resolved.absolute)
-      if (!s.isFile()) {
-        return {
-          status: 'contradicted',
-          reason: `path "${claim.path}" exists but is not a file (size=${String(s.size)})`,
-        }
-      }
-      if (s.size === 0) {
-        return {
-          status: 'contradicted',
-          reason: `path "${claim.path}" exists but is empty`,
-        }
-      }
-      return {
-        status: 'verified',
-        evidence: `${String(successful.length)} write call${successful.length === 1 ? '' : 's'} ok; ${claim.path} exists (${String(s.size)} bytes)`,
-      }
+      }).absolute
     } catch (err) {
       if (err instanceof PathResolutionError) {
-        // Path was outside the virtual-fs scope; can't verify but
-        // can't contradict either. Pass through as unverified.
+        // Outside the virtual-fs scope, so existence is not checkable.
+        // A successful write does NOT rescue this claim: the write that
+        // succeeded may well have gone somewhere else entirely, and
+        // "some file was written" is not evidence for "THIS file was
+        // written". The only thing still worth asserting is the case
+        // where every write failed.
+        if (writeCalls.length > 0 && successful.length === 0) {
+          return {
+            status: 'contradicted',
+            reason: `write attempted (${String(writeCalls.length)} call${writeCalls.length === 1 ? '' : 's'}) but none returned ok`,
+          }
+        }
         return {
           status: 'unverified',
           reason: `claimed path "${claim.path}" not under a 2200 fs prefix; cannot verify existence`,
         }
       }
+      throw err
+    }
+
+    // `null` means absent. Any stat failure ... ENOENT, a broken
+    // symlink, a permission error ... is treated the same way: we
+    // cannot see the file the Agent named.
+    const s = await stat(resolvedAbsolute).catch(() => null)
+
+    if (s === null) {
       return {
         status: 'contradicted',
-        reason: `claimed path "${claim.path}" does not exist on disk after the writes`,
+        reason:
+          writeCalls.length === 0
+            ? `claimed "${claim.verb} ${claim.object}" at "${claim.path}", but no write-class tool call was made and the file does not exist`
+            : `claimed path "${claim.path}" does not exist on disk after the writes`,
       }
+    }
+    if (!s.isFile()) {
+      return {
+        status: 'contradicted',
+        reason: `path "${claim.path}" exists but is not a file (size=${String(s.size)})`,
+      }
+    }
+    if (s.size === 0) {
+      return { status: 'contradicted', reason: `path "${claim.path}" exists but is empty` }
+    }
+
+    // The file is there and non-empty. Whether THIS task put it there
+    // is a separate question: with no successful write in the
+    // transcript the file may simply predate the task, so the claim is
+    // unattributable rather than confirmed.
+    if (successful.length === 0) {
+      return {
+        status: 'unverified',
+        reason:
+          writeCalls.length === 0
+            ? `"${claim.path}" exists (${String(s.size)} bytes) but no write-class tool call was made in this task; cannot attribute it to this turn`
+            : `"${claim.path}" exists (${String(s.size)} bytes) but no write call returned ok in this task`,
+      }
+    }
+    return {
+      status: 'verified',
+      evidence: `${String(successful.length)} write call${successful.length === 1 ? '' : 's'} ok; ${claim.path} exists (${String(s.size)} bytes)`,
     }
   }
 
-  // No path claimed; bare write count is the best we can do.
+  return transcriptOnlyFileCreate(claim, writeCalls.length, successful.length, {})
+}
+
+/**
+ * Fallback reasoning for a `file_create` claim the filesystem cannot
+ * settle ... either no path was named or the named path is outside the
+ * virtual-fs scope. Transcript evidence is all there is.
+ */
+function transcriptOnlyFileCreate(
+  claim: ExtractedClaim,
+  writeCount: number,
+  successCount: number,
+  opts: { pathNote?: string },
+): ClaimOutcome {
+  const suffix = opts.pathNote ? ` (${opts.pathNote})` : ''
+  if (writeCount === 0) {
+    return {
+      status: 'unverified',
+      reason: `claim "${claim.verb} ${claim.object}" has no write-class tool call in the transcript${suffix}`,
+    }
+  }
+  if (successCount === 0) {
+    return {
+      status: 'contradicted',
+      reason: `write attempted (${String(writeCount)} call${writeCount === 1 ? '' : 's'}) but none returned ok${suffix}`,
+    }
+  }
   return {
     status: 'verified',
-    evidence: `${String(successful.length)} write-class tool call${successful.length === 1 ? '' : 's'} ok`,
+    evidence: `${String(successCount)} write-class tool call${successCount === 1 ? '' : 's'} ok${suffix}`,
   }
 }
 
