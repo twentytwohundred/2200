@@ -48,6 +48,30 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 })
 
+/**
+ * Poll until `predicate` matches some emitted notification, or give up.
+ *
+ * Audit emits are fire-and-forget on the request path
+ * (`emitCallReceived(...).catch(...)` without await), so there is no
+ * moment at which the caller can know the write has landed. A fixed
+ * sleep encodes a guess about how long that takes and fails whenever
+ * the box is slower than the guess ... which is how this suite produced
+ * three separate intermittent failures. Polling waits exactly as long
+ * as needed and no longer.
+ */
+async function waitForNotification(
+  predicate: (note: string) => boolean,
+  timeoutMs = 3000,
+): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const found = (await readEmittedNotifications()).find(predicate)
+    if (found !== undefined) return found
+    if (Date.now() >= deadline) return undefined
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
 async function readEmittedNotifications(): Promise<string[]> {
   const dir = homePaths(home).stateNotifications
   let entries: string[]
@@ -197,10 +221,13 @@ describe('MCP connector listener', () => {
     })
     expect(resp.status).toBe(401)
 
-    // Allow the audit emit to flush.
-    await new Promise((r) => setTimeout(r, 50))
-    const notes = await readEmittedNotifications()
-    const rejectionNotes = notes.filter((n) => n.includes('kind: connector.auth_rejected'))
+    // Fire-and-forget emit ... poll for it rather than guess a duration.
+    expect(
+      await waitForNotification((n) => n.includes('kind: connector.auth_rejected')),
+    ).toBeDefined()
+    const rejectionNotes = (await readEmittedNotifications()).filter((n) =>
+      n.includes('kind: connector.auth_rejected'),
+    )
     expect(rejectionNotes).toHaveLength(1)
   })
 
@@ -247,12 +274,11 @@ describe('MCP connector listener', () => {
     await client.callTool({ name: 'liveness', arguments: {} })
     await client.close()
 
-    // Pre-emit means the notification lands during the call. A small
-    // grace flush for file-write completion.
-    await new Promise((r) => setTimeout(r, 50))
-    const notes = await readEmittedNotifications()
-    const callNotes = notes.filter((n) => n.includes('kind: connector.call_received'))
-    const toolsCall = callNotes.find((n) => n.includes('method: tools/call'))
+    // Pre-emit means the notification lands during the call, but the
+    // write is fire-and-forget ... poll rather than guess a duration.
+    const toolsCall = await waitForNotification(
+      (n) => n.includes('kind: connector.call_received') && n.includes('method: tools/call'),
+    )
     expect(toolsCall).toBeDefined()
     expect(toolsCall).toContain('tool_name: liveness')
   })
@@ -476,10 +502,10 @@ describe('MCP connector listener', () => {
     expect(out.created_target).toBe(true)
     await client.close()
 
-    // Allow the audit emit to flush.
-    await new Promise((r) => setTimeout(r, 50))
-    const notes = await readEmittedNotifications()
-    const contribNote = notes.find((n) => n.includes('kind: connector.contribution_received'))
+    // Fire-and-forget emit ... poll for it rather than guess a duration.
+    const contribNote = await waitForNotification((n) =>
+      n.includes('kind: connector.contribution_received'),
+    )
     expect(contribNote).toBeDefined()
     expect(contribNote).toContain('target_kind: thread')
     expect(contribNote).toContain('target_name: tesla-grok-mcp-spike')

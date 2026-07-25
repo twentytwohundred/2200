@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.725.909] ... 2026-07-25
+
+### Fixed
+
+- **An Agent claiming to have written a file that isn't there is now flagged loudly, not quietly.** The audit already knew how to check the disk, but skipped that check in the one case it settles ... where the Agent named a file and never wrote anything. The result was a soft "unverified" note, easy to read as noise, on what was actually a fabricated file. Now: if the Agent names a path and the file isn't there, that's a contradiction and it's raised as important. If the file exists but nothing in that task wrote it, it stays "unverified" rather than being credited ... a file that was already on disk isn't proof the Agent just made it.
+- **Agents are no longer flagged for things their teammates said.** When one Agent relays another's answer to you ("Jodin replied: ..."), the quoted words were being audited as if the relaying Agent had claimed them ... so an Agent got flagged for reading a file that its teammate mentioned reading. Quoted speech, blockquotes, and relayed replies are now excluded before the audit runs. An Agent's own words are still audited in full, including anything it phrases as a quote of itself.
+
 ## [2026.724.1947] ... 2026-07-24
 
 ### Fixed
