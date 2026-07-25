@@ -26,6 +26,7 @@
 import { z } from 'zod'
 import type { LLMProvider } from '../../llm/provider.js'
 import type { ExtractedClaim } from './types.js'
+import { stripQuotedSpeech } from './quoted-speech.js'
 
 const EXTRACTION_SYSTEM_PROMPT = `You are an audit assistant for a multi-agent platform. Your one job: read another agent's message and list every factual claim the agent made about an action it took ... including explicit policy refusals.
 
@@ -156,9 +157,19 @@ export interface ExtractClaimsArgs {
  * silent-error code paths.
  */
 export async function extractClaims(args: ExtractClaimsArgs): Promise<ExtractedClaim[]> {
+  // Remove third-party speech first. The audit asks whether THIS Agent
+  // did what it said; a peer's sentences relayed inside the message are
+  // not this Agent's to answer for. See quoted-speech.ts ... an Agent
+  // reporting `Jodin replied: "Reading continuity-from-migration now"`
+  // was being flagged for a read it never claimed to make.
+  const { text: ownSpeech, stripped } = stripQuotedSpeech(args.body)
+  if (stripped > 0) {
+    args.onWarn?.('stripped third-party speech before claim extraction', { spans: stripped })
+  }
+
   // Skip empty / trivial bodies. Saves a cheap-model call per pure
   // "ok" / "done" reply.
-  const trimmed = args.body.trim()
+  const trimmed = ownSpeech.trim()
   if (trimmed.length < 12) return []
 
   let response
