@@ -665,17 +665,29 @@ export class AgentProcess {
     this.taskInFlight = true
     const taskId = pending.frontmatter.id
     try {
-      // If the agent's local state machine is in a terminal-stuck
-      // state (blocked_on_detector from a prior trip; supervisor's
-      // resume RPC marked the task pending again but the agent's
-      // own machine never got the memo), the next heartbeat would
-      // overwrite the supervisor's `running` back to
-      // `blocked_on_detector`. Fix: when picking up a pending task,
-      // transition the machine back to running first. This is the
-      // missing edge in the resume flow.
-      if (this.machine.state === 'blocked_on_detector') {
+      // Clear ANY blocked_* state before running the task.
+      //
+      // Picking up a pending task is proof the block is over: whatever
+      // the Agent was waiting on ... a detector trip the operator
+      // resumed, a human gate that closed, a peer's reply that landed
+      // ... has resolved, or this task would not be dispatchable. The
+      // machine has to be told, because the heartbeat reports the
+      // machine's state and would otherwise keep overwriting the
+      // supervisor's view with a block that no longer exists.
+      //
+      // This used to special-case `blocked_on_detector` only, which
+      // left `blocked_on_agent` stranded and produced a nasty failure:
+      // an Agent parks on `task_await_response`, the peer replies, the
+      // task resumes AND COMPLETES normally ... and the Agent still
+      // reports `blocked_on_agent` forever after. It looks dark in the
+      // fleet view and in the web UI while being perfectly healthy and
+      // idle, and only an explicit stop+start clears it. The condition
+      // was known ... `restartFleet`'s docstring cites "an Agent stuck
+      // blocked_on_agent" as a thing it fixes ... but the workaround
+      // was documented instead of the cause.
+      if (this.machine.state.startsWith('blocked_')) {
         try {
-          this.machine.transition('running', 'task picked up after resume')
+          this.machine.transition('running', 'task picked up; block resolved')
         } catch {
           // illegal transition; carry on, the loop's own state will
           // dominate
