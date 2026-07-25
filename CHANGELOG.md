@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.724.1947] ... 2026-07-24
+
+### Fixed
+
+- **An Agent that relayed a question no longer goes dark afterwards.** When an Agent asked a peer something on your behalf, it parked to wait for the answer ... and then kept reporting itself as blocked even after the answer arrived and the work finished. It looked stuck in the fleet view and in the web app while being perfectly healthy and idle, and the only way out was stopping and starting it by hand. An Agent now clears that state the moment it picks its work back up.
+- **A parked Agent can be stopped.** Stopping or restarting an Agent that was waiting on a peer or on you was rejected internally, so the last state it reported about itself was wrong. Every state an Agent can be in can now be stopped from ... which matters most for the Agents that look stuck, since those are the ones you want to restart.
+
 ## [2026.724.1804] ... 2026-07-24
 
 ### Fixed
