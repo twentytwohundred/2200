@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **2200 is now open source under the Apache License 2.0.** Relicensed from the Elastic License v2 ... the managed-service restriction is gone, and the license's standard terms are the only terms. Every part of the repo is covered: runtime, web app, extensions catalog, examples. The reasoning lives in the [relicense decision record](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-08-16-apache-relicense.md). The contribution model opens with it; see `CONTRIBUTING.md` for what best-effort maintenance means here.
+
 ## [2026.725.909] ... 2026-07-25
 
 ### Fixed
