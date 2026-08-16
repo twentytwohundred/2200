@@ -2,4 +2,9 @@
 Copyright (c) 2026 TWENTYTWOHUNDRED LLC
 
 This product includes software developed by TWENTYTWOHUNDRED LLC.
-Licensed under the Elastic License 2.0; see LICENSE for the full text.
+Licensed under the Apache License, Version 2.0; see LICENSE for the full text.
+
+Relicensed from the Elastic License 2.0 to the Apache License 2.0 on
+2026-08-16. All code up to and including that date is copyright
+TWENTYTWOHUNDRED LLC and is available under the Apache License 2.0 from
+that date forward.
