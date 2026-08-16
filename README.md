@@ -138,20 +138,20 @@ The daily handoffs at [`wiki/handoffs/hobby/`](https://github.com/twentytwohundr
 
 ## Repository contents
 
-| Path                     | Purpose                                                 |
-| ------------------------ | ------------------------------------------------------- |
-| `LICENSE`                | Apache License 2.0                                      |
-| `README.md`              | this file                                               |
-| `AGENTS.md`              | conventions for Agents working in this repository       |
-| `SECURITY.md`            | responsible disclosure                                  |
-| `CONTRIBUTING.md`        | contribution model (open; maintenance is best-effort)   |
-| `CHANGELOG.md`           | release notes, one entry per release                    |
-| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                          |
-| `.github/`               | issue templates, PR template, CI workflows              |
-| `src/`                   | runtime code (224 TypeScript modules)                   |
-| `tests/`                 | test code (142 test files, 1754 runtime tests)          |
-| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware         |
-| `scripts/`               | build, deploy, sync, and ops scripts                    |
+| Path                     | Purpose                                               |
+| ------------------------ | ----------------------------------------------------- |
+| `LICENSE`                | Apache License 2.0                                    |
+| `README.md`              | this file                                             |
+| `AGENTS.md`              | conventions for Agents working in this repository     |
+| `SECURITY.md`            | responsible disclosure                                |
+| `CONTRIBUTING.md`        | contribution model (open; maintenance is best-effort) |
+| `CHANGELOG.md`           | release notes, one entry per release                  |
+| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                        |
+| `.github/`               | issue templates, PR template, CI workflows            |
+| `src/`                   | runtime code (224 TypeScript modules)                 |
+| `tests/`                 | test code (142 test files, 1754 runtime tests)        |
+| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware       |
+| `scripts/`               | build, deploy, sync, and ops scripts                  |
 
 ## Development
 
