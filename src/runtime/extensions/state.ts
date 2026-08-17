@@ -37,12 +37,7 @@ import { extensionStatePaths } from '../storage/layout.js'
 export const EXTENSION_STATE_MAX_BYTES = 1 << 20 // 1 MiB
 
 export type ExtensionStateValue =
-  | string
-  | number
-  | boolean
-  | null
-  | ExtensionStateValue[]
-  | { [key: string]: ExtensionStateValue }
+  string | number | boolean | null | ExtensionStateValue[] | { [key: string]: ExtensionStateValue }
 
 export type ExtensionState = Record<string, ExtensionStateValue>
 

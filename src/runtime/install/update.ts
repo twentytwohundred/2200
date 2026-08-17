@@ -99,8 +99,7 @@ export async function checkLatestVersion(
 
 /** Outcome of the "where did this CLI come from" detection. */
 export type InstallSource =
-  | { kind: 'npm-global'; path: string }
-  | { kind: 'source-checkout'; path: string }
+  { kind: 'npm-global'; path: string } | { kind: 'source-checkout'; path: string }
 
 /**
  * Look at where this module was loaded from to decide whether the

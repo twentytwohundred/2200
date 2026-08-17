@@ -230,11 +230,7 @@ export interface AgentToolsResponse {
  * shape and the wizard flow this drives.
  */
 export type SkillToolClass =
-  | 'file_create'
-  | 'file_read'
-  | 'external_send'
-  | 'tool_invoke'
-  | 'process_count'
+  'file_create' | 'file_read' | 'external_send' | 'tool_invoke' | 'process_count'
 
 export type SkillRequiredSecretKind = 'stdio_env' | 'http_bearer' | 'http_header'
 
@@ -597,6 +593,42 @@ export interface BrainSearchResponse {
   cursor: { next: string | null; limit: number }
   /** 'fts' = SQLite FTS5; 'fallback' = in-memory list scan when no index exists. */
   mode: 'fts' | 'fallback'
+}
+
+/**
+ * File-browser wire shapes. The runtime serves an Agent's own
+ * directory tree under /api/v1/agents/:name/files, addressed by the
+ * same virtual paths the Agent's fs tools use (`/project/...`,
+ * `/shared/...`, `/brain/...`, `/commons/...`).
+ */
+export interface FileEntry {
+  path: string
+  name: string
+  kind: 'file' | 'dir'
+  size: number
+  modified: string
+  /** Present on directories. Absent when the server hit a walk cap. */
+  children?: FileEntry[]
+  truncated?: boolean
+}
+
+export interface FileRoot {
+  path: string
+  label: string
+  blurb: string
+  writable: boolean
+  entries: FileEntry[]
+  truncated: boolean
+}
+
+export interface FileContent {
+  path: string
+  /** Null for binary or oversized files ... `reason` says which. */
+  content: string | null
+  size: number
+  modified: string
+  reason: 'binary' | 'too_large' | null
+  writable: boolean
 }
 
 /**
@@ -1004,6 +1036,25 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
       { method: 'DELETE' },
     ),
+  /** Every browsable root with its tree walked, in one call. */
+  files: (name: string) =>
+    request<{ roots: FileRoot[] }>(`/api/v1/agents/${encodeURIComponent(name)}/files`),
+  fileContent: (name: string, path: string) =>
+    request<FileContent>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
+    ),
+  fileSave: (name: string, path: string, content: string) =>
+    request<{ path: string; size: number; modified: string }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content`,
+      { method: 'PUT', body: { path, content } },
+    ),
+  /**
+   * Download URL rather than a fetch. The browser has to navigate to it
+   * for the Content-Disposition attachment header to do its job; auth
+   * rides the same-origin session cookie.
+   */
+  fileDownloadUrl: (name: string, path: string) =>
+    `/api/v1/agents/${encodeURIComponent(name)}/files/raw?path=${encodeURIComponent(path)}`,
   chatList: (name: string) =>
     request<ListEnvelope<ChatMessage>>(`/api/v1/agents/${encodeURIComponent(name)}/chat`),
   chatSend: (name: string, content: string) =>
@@ -1468,8 +1519,7 @@ export type ConnectorAuthModel = 'qr_pair' | 'oauth' | 'bot_token' | 'api_key'
 export type CatalogCategory = 'connector' | 'voice' | 'skill' | 'model_provider'
 
 export type CatalogSource =
-  | { type: 'workspace'; path: string }
-  | { type: 'npm'; package: string; sha256: string }
+  { type: 'workspace'; path: string } | { type: 'npm'; package: string; sha256: string }
 
 export type ConnectorAccountScope = 'extension' | 'agent'
 
@@ -1502,12 +1552,7 @@ export interface Catalog {
 }
 
 export type ExtensionInstallStage =
-  | 'resolving'
-  | 'copying'
-  | 'validating_manifest'
-  | 'running_install_hook'
-  | 'completed'
-  | 'failed'
+  'resolving' | 'copying' | 'validating_manifest' | 'running_install_hook' | 'completed' | 'failed'
 
 export interface ExtensionInstallProgressPayload {
   install_id: string
@@ -1519,12 +1564,7 @@ export interface ExtensionInstallProgressPayload {
 }
 
 export type ExtensionPairState =
-  | 'idle'
-  | 'awaiting_qr_scan'
-  | 'connecting'
-  | 'paired'
-  | 'disconnected'
-  | 'errored'
+  'idle' | 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored'
 
 export interface ExtensionPairStateResponse {
   extension_id: string
@@ -1626,12 +1666,7 @@ export interface SystemVersion {
 }
 
 export type UpgradeStage =
-  | 'pending'
-  | 'stopping_daemon'
-  | 'installing'
-  | 'restarting'
-  | 'completed'
-  | 'failed'
+  'pending' | 'stopping_daemon' | 'installing' | 'restarting' | 'completed' | 'failed'
 
 export interface UpgradeStatus {
   schema_version: 1

@@ -390,17 +390,16 @@ describe('web.search', () => {
     const envFile = join(tmp, 'runtime.env')
     await writeFile(envFile, 'export BRAVE_API_KEY=live-key\n')
     process.env['TWENTYTWOHUNDRED_RUNTIME_ENV'] = envFile
-    const fetchMock = vi.fn(
-      (_url: unknown, _init: unknown): Promise<Response> =>
-        Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () =>
-            Promise.resolve({
-              web: { results: [{ url: 'https://x', title: 'X', description: 'd' }] },
-            }),
-          text: () => Promise.resolve(''),
-        } as unknown as Response),
+    const fetchMock = vi.fn((_url: unknown, _init: unknown): Promise<Response> =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            web: { results: [{ url: 'https://x', title: 'X', description: 'd' }] },
+          }),
+        text: () => Promise.resolve(''),
+      } as unknown as Response),
     )
     vi.stubGlobal('fetch', fetchMock)
     try {

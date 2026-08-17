@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **2200 is now open source under the Apache License 2.0.** Relicensed from the Elastic License v2 ... the managed-service restriction is gone, and the license's standard terms are the only terms. Every part of the repo is covered: runtime, web app, extensions catalog, examples. The reasoning lives in the [relicense decision record](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-08-16-apache-relicense.md). The contribution model opens with it; see `CONTRIBUTING.md` for what best-effort maintenance means here.
+
+## [2026.725.909] ... 2026-07-25
+
+### Fixed
+
+- **An Agent claiming to have written a file that isn't there is now flagged loudly, not quietly.** The audit already knew how to check the disk, but skipped that check in the one case it settles ... where the Agent named a file and never wrote anything. The result was a soft "unverified" note, easy to read as noise, on what was actually a fabricated file. Now: if the Agent names a path and the file isn't there, that's a contradiction and it's raised as important. If the file exists but nothing in that task wrote it, it stays "unverified" rather than being credited ... a file that was already on disk isn't proof the Agent just made it.
+- **Agents are no longer flagged for things their teammates said.** When one Agent relays another's answer to you ("Jodin replied: ..."), the quoted words were being audited as if the relaying Agent had claimed them ... so an Agent got flagged for reading a file that its teammate mentioned reading. Quoted speech, blockquotes, and relayed replies are now excluded before the audit runs. An Agent's own words are still audited in full, including anything it phrases as a quote of itself.
+
+## [2026.724.1947] ... 2026-07-24
+
+### Fixed
+
+- **An Agent that relayed a question no longer goes dark afterwards.** When an Agent asked a peer something on your behalf, it parked to wait for the answer ... and then kept reporting itself as blocked even after the answer arrived and the work finished. It looked stuck in the fleet view and in the web app while being perfectly healthy and idle, and the only way out was stopping and starting it by hand. An Agent now clears that state the moment it picks its work back up.
+- **A parked Agent can be stopped.** Stopping or restarting an Agent that was waiting on a peer or on you was rejected internally, so the last state it reported about itself was wrong. Every state an Agent can be in can now be stopped from ... which matters most for the Agents that look stuck, since those are the ones you want to restart.
+
+## [2026.724.1804] ... 2026-07-24
+
+### Fixed
+
+- **Agents can now hand you a file when you ask them to.** The previous release made any file path an Agent mentions clickable in the web app ... but nobody told the Agents. Asked to "send me that file" or "let me download it", an Agent would look for a download tool, find none, and tell you it couldn't help ... about a file it had already written and named for you. Agents now know that naming the path _is_ how they hand a file over, and will say so plainly instead of reporting a failure. They also know not to wrap the path in backticks (which suppresses the link on purpose), and that on Discord or WhatsApp there is nothing to click, so a short file is worth pasting too.
+- **The Upgrade button in Settings works on servers managed by systemd.** It previously froze at "stopping the daemon" every time on those machines and left the fleet down: the upgrade helper ran inside the service's process group and was killed the moment the daemon it was upgrading shut down. It now runs in its own scope, out of the way of the shutdown. `2200 update` from the CLI was never affected.
+- **Settings no longer claims an upgrade is running when it isn't.** If an upgrade was interrupted ... or you upgraded from the CLI instead ... the panel could sit on "UPGRADING" indefinitely, including reporting an upgrade to the version you were already running. It now reconciles on read: an upgrade that reached its target version reads as finished, and one that stalled reads as failed with the step it stopped at.
+
+### Known issue
+
+- After a self-upgrade, the supervisor ends up running **outside** its systemd unit, so `systemctl status` will report the service as inactive even though your fleet is up and healthy. It corrects itself on the next reboot. Handing the daemon back to systemd deliberately is being designed rather than patched ... to bring it back under the unit now, run `2200 daemon stop` followed by `systemctl --user start <your-unit>`.
+
+## [2026.724.1731] ... 2026-07-24
+
+### Fixed
+
+- **Agents no longer go silent on a question they were asked.** Three separate faults produced the same symptom ... you ask an Agent something, it goes away to work, and it never comes back:
+  - **Tasks in flight when an Agent process stopped were lost permanently.** The loop only ever picks up `pending` tasks, and nothing reclaimed the ones left mid-run, so a task interrupted by a restart was never retried, never failed, and never surfaced anywhere you would see it. It simply stopped existing. Agents now reclaim interrupted tasks on startup: safe and resumable ones are requeued with a note telling the Agent it is resuming rather than starting over, and ones that cannot be safely re-run (or that have been sitting unfinished for more than a day) are reported as failures in your inbox instead of vanishing. If you restart the fleet after every build, this was firing on any task that happened to be running.
+  - **An Agent relaying a question to a peer missed the answer** unless the peer happened to `@`-mention it back. When an Agent asks a peer on your behalf, it parks and waits for the reply ... but the check for "am I waiting on this person?" ran _after_ the guards that keep Agents from chattering at each other, and those guards correctly ignore a peer's message with no `@`-mention. In a two-way conversation, where nobody bothers with mentions, the reply was discarded and the waiting Agent stayed parked with the answer sitting in the room. The wait is now honored first: an Agent that has gone on record waiting for a specific peer in a specific room always hears that peer's reply. Agents still do not wake on each other's ordinary chatter.
+  - **An Agent's follow-up landed in the wrong chat thread.** Messages an Agent sends you on its own initiative always went to your default thread, so an answer to something you asked in any other thread showed up somewhere you were not looking. Follow-ups now land in the thread the conversation started in.
+
+### Added
+
+- **Files ... see what your Agents are actually writing.** Agents have always kept their own directories (`/project`, `/shared`, `/brain`, `/commons`), but until now there was no way to look inside one without shelling into the box. Every Agent now has a **Files** tab: browse the whole tree, read a file inline, edit and save it in place, or download it. Binary files and anything over 1 MB offer a download rather than a useless editor, and brain notes are read-only here so the Brain screen stays the one place that keeps search in step.
+- **File paths in chat are links.** When an Agent tells you it wrote something to `/project/reports/q3.md`, that path is now clickable and opens the file. Nothing changes about how Agents work ... they already say where they put things, so handing you a file is just that sentence. Paths inside code blocks are left alone.
+
 ## [2026.710.904] ... 2026-07-10
 
 ### Added

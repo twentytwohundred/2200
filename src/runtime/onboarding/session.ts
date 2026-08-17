@@ -141,8 +141,7 @@ export interface SessionPreview {
 }
 
 export type AdvanceResult =
-  | { kind: 'next'; question: NextQuestion }
-  | { kind: 'done'; preview: SessionPreview }
+  { kind: 'next'; question: NextQuestion } | { kind: 'done'; preview: SessionPreview }
 
 export class OnboardingSessionError extends Error {
   constructor(

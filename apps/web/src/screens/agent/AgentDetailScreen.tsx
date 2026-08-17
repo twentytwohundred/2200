@@ -62,6 +62,7 @@ import { AgentStatusPanel } from './AgentStatusPanel'
 import { AgentIdentityPanel } from './AgentIdentityPanel'
 import { AgentBudgetPanel } from './AgentBudgetPanel'
 import { BrainBody } from '../brain/BrainScreen'
+import { FilesBody } from '../files/FilesScreen'
 import { SchedulesBody } from '../schedules/SchedulesScreen'
 import { ToolsBody } from '../tools/ToolsScreen'
 import { cx } from '../../primitives/cx'
@@ -74,13 +75,15 @@ interface SubmitArgs {
   attachments: ComposerAttachment[]
 }
 
-type AgentTab = 'chat' | 'status' | 'identity' | 'budget' | 'brain' | 'schedules' | 'tools'
+type AgentTab =
+  'chat' | 'status' | 'identity' | 'budget' | 'brain' | 'files' | 'schedules' | 'tools'
 const VALID_TABS: AgentTab[] = [
   'chat',
   'status',
   'identity',
   'budget',
   'brain',
+  'files',
   'schedules',
   'tools',
 ]
@@ -583,6 +586,14 @@ export function AgentDetailScreen(): ReactElement {
               }}
             />
             <RailSwitch
+              label="Files"
+              hint="project · shared"
+              active={tab === 'files'}
+              onClick={() => {
+                setTab('files')
+              }}
+            />
+            <RailSwitch
               label="Schedules"
               hint="cron · timers"
               active={tab === 'schedules'}
@@ -736,6 +747,11 @@ export function AgentDetailScreen(): ReactElement {
           {tab === 'brain' && (
             <div className={styles.tabBody}>
               <BrainBody agentName={agentName} />
+            </div>
+          )}
+          {tab === 'files' && (
+            <div className={styles.tabBody}>
+              <FilesBody agentName={agentName} />
             </div>
           )}
           {tab === 'schedules' && (

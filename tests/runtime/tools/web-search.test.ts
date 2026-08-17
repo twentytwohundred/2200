@@ -118,14 +118,13 @@ describe('searchWeb', () => {
   it('surfaces an HTTP error as status, never throws', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        (): Promise<Response> =>
-          Promise.resolve({
-            ok: false,
-            status: 429,
-            text: () => Promise.resolve('rate limited'),
-            json: () => Promise.resolve({}),
-          } as unknown as Response),
+      vi.fn((): Promise<Response> =>
+        Promise.resolve({
+          ok: false,
+          status: 429,
+          text: () => Promise.resolve('rate limited'),
+          json: () => Promise.resolve({}),
+        } as unknown as Response),
       ),
     )
     const out = await searchWeb('q', 5, { BRAVE_API_KEY: 'k' })
@@ -200,19 +199,18 @@ describe('searchWeb', () => {
   it('surfaces a Gemini API error message (e.g. API disabled) as status', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        (): Promise<Response> =>
-          Promise.resolve({
-            ok: false,
-            status: 403,
-            text: () =>
-              Promise.resolve(
-                JSON.stringify({
-                  error: { code: 403, message: 'Generative Language API has not been used' },
-                }),
-              ),
-            json: () => Promise.resolve({}),
-          } as unknown as Response),
+      vi.fn((): Promise<Response> =>
+        Promise.resolve({
+          ok: false,
+          status: 403,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                error: { code: 403, message: 'Generative Language API has not been used' },
+              }),
+            ),
+          json: () => Promise.resolve({}),
+        } as unknown as Response),
       ),
     )
     const out = await searchWeb('q', 5, { GEMINI_SEARCH_API_KEY: 'gk' })
