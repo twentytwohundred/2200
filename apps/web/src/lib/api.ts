@@ -6,7 +6,6 @@
  * defined here are the frontend's view of the contract; the runtime's
  * types are independent (see wiki/conventions/runtime-api.md).
  */
-import { getToken } from './auth'
 
 export interface ListEnvelope<T> {
   items: T[]
@@ -231,11 +230,7 @@ export interface AgentToolsResponse {
  * shape and the wizard flow this drives.
  */
 export type SkillToolClass =
-  | 'file_create'
-  | 'file_read'
-  | 'external_send'
-  | 'tool_invoke'
-  | 'process_count'
+  'file_create' | 'file_read' | 'external_send' | 'tool_invoke' | 'process_count'
 
 export type SkillRequiredSecretKind = 'stdio_env' | 'http_bearer' | 'http_header'
 
@@ -601,6 +596,42 @@ export interface BrainSearchResponse {
 }
 
 /**
+ * File-browser wire shapes. The runtime serves an Agent's own
+ * directory tree under /api/v1/agents/:name/files, addressed by the
+ * same virtual paths the Agent's fs tools use (`/project/...`,
+ * `/shared/...`, `/brain/...`, `/commons/...`).
+ */
+export interface FileEntry {
+  path: string
+  name: string
+  kind: 'file' | 'dir'
+  size: number
+  modified: string
+  /** Present on directories. Absent when the server hit a walk cap. */
+  children?: FileEntry[]
+  truncated?: boolean
+}
+
+export interface FileRoot {
+  path: string
+  label: string
+  blurb: string
+  writable: boolean
+  entries: FileEntry[]
+  truncated: boolean
+}
+
+export interface FileContent {
+  path: string
+  /** Null for binary or oversized files ... `reason` says which. */
+  content: string | null
+  size: number
+  modified: string
+  reason: 'binary' | 'too_large' | null
+  writable: boolean
+}
+
+/**
  * Onboarding (Epic 14 Phase A + Epic 15 Phase B) wire shapes.
  *
  * Driven by the server-side state machine at /api/v1/onboarding (the
@@ -780,7 +811,7 @@ export interface ProviderSettingsItem {
   name: string
   label: string
   defaultEnvKey: string
-  kind: 'anthropic' | 'openai-compatible' | 'local'
+  kind: 'anthropic' | 'openai-compatible' | 'codex-responses' | 'local'
   baseUrl: string
   baseUrlEditable: boolean
   baseUrlEnvKey: string
@@ -792,7 +823,7 @@ export interface ProviderSettingsItem {
   /**
    * Settings-UI category. Drives optgroup placement in the model picker
    * and section grouping in Settings ▸ Models & API Keys.
-   *   - 'subscription': OAuth subscription credential (xAI / SuperGrok)
+   *   - 'subscription': OAuth subscription credential (SuperGrok, ChatGPT)
    *   - 'api-key':      Paste-an-API-key (Anthropic, OpenAI, xAI, ...)
    *   - 'local':        Self-hosted (Ollama / LM Studio / vLLM)
    */
@@ -825,16 +856,17 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const token = getToken()
   const headers: Record<string, string> = {
     accept: 'application/json',
   }
-  if (token) headers.authorization = `Bearer ${token}`
   if (opts.body !== undefined) headers['content-type'] = 'application/json; charset=utf-8'
 
   const init: RequestInit = {
     method: opts.method ?? 'GET',
     headers,
+    // Auth rides in the HttpOnly session cookie, sent automatically on every
+    // same-origin request. No token in JS, no token in the URL.
+    credentials: 'include',
   }
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body)
   if (opts.signal) init.signal = opts.signal
@@ -1004,6 +1036,25 @@ export const api = {
       `/api/v1/agents/${encodeURIComponent(name)}/brain/note/${encodeURIComponent(slug)}`,
       { method: 'DELETE' },
     ),
+  /** Every browsable root with its tree walked, in one call. */
+  files: (name: string) =>
+    request<{ roots: FileRoot[] }>(`/api/v1/agents/${encodeURIComponent(name)}/files`),
+  fileContent: (name: string, path: string) =>
+    request<FileContent>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
+    ),
+  fileSave: (name: string, path: string, content: string) =>
+    request<{ path: string; size: number; modified: string }>(
+      `/api/v1/agents/${encodeURIComponent(name)}/files/content`,
+      { method: 'PUT', body: { path, content } },
+    ),
+  /**
+   * Download URL rather than a fetch. The browser has to navigate to it
+   * for the Content-Disposition attachment header to do its job; auth
+   * rides the same-origin session cookie.
+   */
+  fileDownloadUrl: (name: string, path: string) =>
+    `/api/v1/agents/${encodeURIComponent(name)}/files/raw?path=${encodeURIComponent(path)}`,
   chatList: (name: string) =>
     request<ListEnvelope<ChatMessage>>(`/api/v1/agents/${encodeURIComponent(name)}/chat`),
   chatSend: (name: string, content: string) =>
@@ -1120,20 +1171,15 @@ export const api = {
         }
     >(`/api/v1/settings/endpoints/${encodeURIComponent(id)}/models`),
   /**
-   * Build an image-loadable URL for an endpoint that requires the
-   * bearer token. The browser's `<img>` tag cannot set an
-   * Authorization header, so the runtime accepts `?token=...` as an
-   * equivalent (same trick the WebSocket uses). Returns null when
-   * the input is null/empty so callers can do
-   * `imageUrl={api.authedUrl(agent.avatar_image_url)}` without
-   * extra guards.
+   * Image URL for an endpoint that requires auth. The browser attaches the
+   * same-origin HttpOnly session cookie to `<img>` requests automatically, so
+   * this is now a pass-through (kept so call sites don't churn). Returns null
+   * for null/empty input so callers can do
+   * `imageUrl={api.authedUrl(agent.avatar_image_url)}` without extra guards.
    */
   authedUrl: (url: string | null | undefined): string | null => {
     if (!url) return null
-    const token = getToken()
-    if (!token) return url
-    const sep = url.includes('?') ? '&' : '?'
-    return `${url}${sep}token=${encodeURIComponent(token)}`
+    return url
   },
   identityRead: (name: string) =>
     request<{ path: string; content: string }>(
@@ -1277,7 +1323,10 @@ export const api = {
       method: 'POST',
       body: { answer },
     }),
-  onboardingConfirm: (id: string, body?: { selected_capabilities?: string[] }) =>
+  onboardingConfirm: (
+    id: string,
+    body?: { selected_capabilities?: string[]; agent_name?: string },
+  ) =>
     request<OnboardingConfirmResponse>(`/api/v1/onboarding/${encodeURIComponent(id)}/confirm`, {
       method: 'POST',
       body: body ?? {},
@@ -1470,8 +1519,7 @@ export type ConnectorAuthModel = 'qr_pair' | 'oauth' | 'bot_token' | 'api_key'
 export type CatalogCategory = 'connector' | 'voice' | 'skill' | 'model_provider'
 
 export type CatalogSource =
-  | { type: 'workspace'; path: string }
-  | { type: 'npm'; package: string; sha256: string }
+  { type: 'workspace'; path: string } | { type: 'npm'; package: string; sha256: string }
 
 export type ConnectorAccountScope = 'extension' | 'agent'
 
@@ -1504,12 +1552,7 @@ export interface Catalog {
 }
 
 export type ExtensionInstallStage =
-  | 'resolving'
-  | 'copying'
-  | 'validating_manifest'
-  | 'running_install_hook'
-  | 'completed'
-  | 'failed'
+  'resolving' | 'copying' | 'validating_manifest' | 'running_install_hook' | 'completed' | 'failed'
 
 export interface ExtensionInstallProgressPayload {
   install_id: string
@@ -1521,12 +1564,7 @@ export interface ExtensionInstallProgressPayload {
 }
 
 export type ExtensionPairState =
-  | 'idle'
-  | 'awaiting_qr_scan'
-  | 'connecting'
-  | 'paired'
-  | 'disconnected'
-  | 'errored'
+  'idle' | 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored'
 
 export interface ExtensionPairStateResponse {
   extension_id: string
@@ -1628,12 +1666,7 @@ export interface SystemVersion {
 }
 
 export type UpgradeStage =
-  | 'pending'
-  | 'stopping_daemon'
-  | 'installing'
-  | 'restarting'
-  | 'completed'
-  | 'failed'
+  'pending' | 'stopping_daemon' | 'installing' | 'restarting' | 'completed' | 'failed'
 
 export interface UpgradeStatus {
   schema_version: 1
@@ -1662,16 +1695,38 @@ export const apiSystem = {
       body: body ?? {},
     }),
   upgradeStatus: () => request<{ status: UpgradeStatus | null }>('/api/v1/system/upgrade-status'),
+  /**
+   * Restart every pub-server, Agent, and connector gateway (NOT the daemon ...
+   * it serves this request and stays up). Cures a wedged Agent. Returns a
+   * per-target summary.
+   */
+  restart: () =>
+    request<FleetRestartResult>('/api/v1/system/restart', { method: 'POST', body: {} }),
+}
+
+/** Result of POST /api/v1/system/restart ... one entry per pub + Agent. */
+export interface FleetRestartResult {
+  pubs: { name: string; ok: boolean; error?: string }[]
+  agents: { name: string; ok: boolean; error?: string }[]
 }
 
 /**
- * `/api/v1/oauth/xai/*` ... browser-driven device-code sign-in for the
- * SuperGrok / X Premium+ subscription credential. Mirrors the CLI
- * (`2200 oauth xai login`) over HTTP so the Settings page can drive
- * the flow inline. The Grok-First Settings tile is the primary
- * consumer.
+ * `/api/v1/oauth/:provider/*` ... browser-driven subscription sign-ins
+ * (SuperGrok / X Premium+, ChatGPT Plus/Pro). Mirrors the CLI
+ * (`2200 oauth <provider> login`) over HTTP so the Settings page can
+ * drive the flow inline. The subscription cards on Settings are the
+ * primary consumers.
+ *
+ * `flow` on the start response: 'device' is the normal shape (show
+ * the user code + verification URL, poll). 'loopback' is the OpenAI
+ * fallback for accounts without device sign-in enabled: the daemon
+ * holds a localhost redirect listener and the browser just opens
+ * `authorization_url` (only works when the browser runs on the same
+ * machine as the runtime).
  */
-export type XaiOAuthLoginStatusResponse =
+export type SubscriptionOAuthRoute = 'xai' | 'openai'
+
+export type SubscriptionOAuthLoginStatusResponse =
   | { status: 'pending'; poll_interval_sec: number; transient_error?: string }
   | {
       status: 'completed'
@@ -1682,16 +1737,18 @@ export type XaiOAuthLoginStatusResponse =
     }
   | { status: 'failed'; error: string; description?: string }
 
-export interface XaiOAuthStartResponse {
+export interface SubscriptionOAuthStartResponse {
   session_id: string
-  user_code: string
-  verification_uri: string
+  flow: 'device' | 'loopback'
+  user_code?: string
+  verification_uri?: string
   verification_uri_complete?: string
+  authorization_url?: string
   expires_at: string
   poll_interval_sec: number
 }
 
-export type XaiOAuthStatusResponse =
+export type SubscriptionOAuthStatusResponse =
   | { configured: false }
   | {
       configured: true
@@ -1703,19 +1760,20 @@ export type XaiOAuthStatusResponse =
       refreshed_at: string | null
     }
 
-export const apiOAuthXai = {
-  status: () => request<XaiOAuthStatusResponse>('/api/v1/oauth/xai/status'),
-  loginStart: () =>
-    request<XaiOAuthStartResponse>('/api/v1/oauth/xai/login/start', {
+export const apiOAuthSubscription = (provider: SubscriptionOAuthRoute) => ({
+  status: () => request<SubscriptionOAuthStatusResponse>(`/api/v1/oauth/${provider}/status`),
+  loginStart: (flow?: 'loopback') =>
+    request<SubscriptionOAuthStartResponse>(`/api/v1/oauth/${provider}/login/start`, {
       method: 'POST',
-      body: {},
+      body: flow ? { flow } : {},
     }),
   loginStatus: (sessionId: string) =>
-    request<XaiOAuthLoginStatusResponse>(
-      `/api/v1/oauth/xai/login/status?session=${encodeURIComponent(sessionId)}`,
+    request<SubscriptionOAuthLoginStatusResponse>(
+      `/api/v1/oauth/${provider}/login/status?session=${encodeURIComponent(sessionId)}`,
     ),
-  logout: () => request<{ removed: boolean }>('/api/v1/oauth/xai/logout', { method: 'POST' }),
-}
+  logout: () =>
+    request<{ removed: boolean }>(`/api/v1/oauth/${provider}/logout`, { method: 'POST' }),
+})
 
 /**
  * `/api/v1/connector/*` ... operator controls for the MCP connector

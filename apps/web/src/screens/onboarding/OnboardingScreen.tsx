@@ -12,10 +12,12 @@
  *   3. Preview card  summary, agent name, suggested tools + schedules
  *   4. Confirmed     materialized agent name + paths, link to Fleet
  *
- * The server holds the session; this component is a thin driver. A
- * page reload mid-interview will lose the session_id (no persistence
- * is intentional v1 per the API design); it can be added later via
- * URL fragment or storage if the UX warrants it.
+ * The server holds the session; this component is a thin driver. The
+ * session id + accumulated transcript are persisted to `sessionStorage`
+ * (see `sessionPersistence.ts`) so a reload or an in-tab navigate-away
+ * resumes the interview via `GET /api/v1/onboarding/:id` rather than
+ * silently discarding it. An expired session self-heals (the GET 404s and
+ * the stored entry is cleared).
  */
 import {
   useCallback,
@@ -44,6 +46,11 @@ import {
 } from '../../lib/api'
 import { Button, Card, Pill, Screen, ScreenNavLink, SectionHeader, cx } from '../../primitives'
 import { pickDefaultProvider } from './pickDefaultProvider'
+import {
+  saveOnboardingSession,
+  loadOnboardingSession,
+  clearOnboardingSession,
+} from './sessionPersistence'
 import styles from './OnboardingScreen.module.css'
 
 type Phase =
@@ -75,6 +82,56 @@ export function OnboardingScreen(): ReactElement {
   const [draft, setDraft] = useState<string>('')
   const [providerName, setProviderName] = useState<string>('')
   const [modelId, setModelId] = useState<string>('')
+  // True while we're re-fetching a persisted session on mount, so the intro
+  // card doesn't flash before the resume lands.
+  const [resuming, setResuming] = useState<boolean>(() => loadOnboardingSession() !== null)
+
+  // Persist an in-progress session so a reload / in-tab navigation resumes it
+  // rather than throwing away the interview. Save only ... clearing is explicit
+  // (confirm, cancel, or a resume 404) so this effect can't wipe the stored
+  // session during the intro render before the mount-resume runs.
+  useEffect(() => {
+    if (phase.kind === 'interview') {
+      saveOnboardingSession({ sessionId: phase.sessionId, transcript: phase.transcript })
+    } else if (phase.kind === 'preview') {
+      saveOnboardingSession({ sessionId: phase.sessionId, transcript: [] })
+    }
+  }, [phase])
+
+  // On mount, resume a persisted session via the server's GET endpoint. The
+  // stored transcript restores the prior Q&A cards; the server response gives
+  // the live current question/preview. A 404 (expired) self-heals by clearing.
+  useEffect(() => {
+    const stored = loadOnboardingSession()
+    if (!stored) return
+    let cancelled = false
+    void api
+      .onboardingGet(stored.sessionId)
+      .then((res) => {
+        if (cancelled) return
+        if (res.preview) {
+          setPhase({ kind: 'preview', sessionId: stored.sessionId, preview: res.preview })
+        } else if (res.question) {
+          setPhase({
+            kind: 'interview',
+            sessionId: stored.sessionId,
+            question: res.question,
+            transcript: stored.transcript,
+          })
+        } else {
+          clearOnboardingSession()
+        }
+      })
+      .catch(() => {
+        if (!cancelled) clearOnboardingSession()
+      })
+      .finally(() => {
+        if (!cancelled) setResuming(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const providersQuery = useQuery({
     queryKey: ['settings', 'providers'],
@@ -233,9 +290,17 @@ export function OnboardingScreen(): ReactElement {
   })
 
   const confirmMutation = useMutation({
-    mutationFn: ({ id, selected_capabilities }: { id: string; selected_capabilities: string[] }) =>
-      api.onboardingConfirm(id, { selected_capabilities }),
+    mutationFn: ({
+      id,
+      selected_capabilities,
+      agent_name,
+    }: {
+      id: string
+      selected_capabilities: string[]
+      agent_name: string
+    }) => api.onboardingConfirm(id, { selected_capabilities, agent_name }),
     onSuccess: (result: OnboardingConfirmResponse): void => {
+      clearOnboardingSession()
       setPhase({ kind: 'confirmed', result })
     },
   })
@@ -243,6 +308,7 @@ export function OnboardingScreen(): ReactElement {
   const cancelMutation = useMutation({
     mutationFn: (id: string) => api.onboardingCancel(id),
     onSuccess: (): void => {
+      clearOnboardingSession()
       setPhase({ kind: 'intro' })
       setDraft('')
     },
@@ -266,7 +332,13 @@ export function OnboardingScreen(): ReactElement {
       lede="Answer a few questions; 2200 will assemble an Identity, suggest tools and schedules, and stand the Agent up on this instance."
       actions={<ScreenNavLink to="/">← Fleet</ScreenNavLink>}
     >
-      {phase.kind === 'intro' ? (
+      {phase.kind === 'intro' && resuming ? (
+        <Card padding={20}>
+          <div className={styles.intro}>
+            <p className={styles.introBody}>Resuming your session...</p>
+          </div>
+        </Card>
+      ) : phase.kind === 'intro' ? (
         <Card padding={20}>
           <div className={styles.intro}>
             <p className={styles.introBody}>
@@ -461,8 +533,8 @@ export function OnboardingScreen(): ReactElement {
       {phase.kind === 'preview' ? (
         <PreviewView
           preview={phase.preview}
-          onConfirm={(selected_capabilities) => {
-            confirmMutation.mutate({ id: phase.sessionId, selected_capabilities })
+          onConfirm={(selected_capabilities, agent_name) => {
+            confirmMutation.mutate({ id: phase.sessionId, selected_capabilities, agent_name })
           }}
           onCancel={() => {
             cancelMutation.mutate(phase.sessionId)
@@ -650,8 +722,11 @@ function appendAnswer(
 
 interface PreviewViewProps {
   preview: OnboardingPreview
-  /** Called with the operator-curated capability id set on confirm. */
-  onConfirm: (selected_capabilities: string[]) => void
+  /**
+   * Called with the operator-curated capability id set and the (possibly
+   * renamed) Agent name on confirm. The server re-normalizes the name.
+   */
+  onConfirm: (selected_capabilities: string[], agentName: string) => void
   onCancel: () => void
   confirmDisabled: boolean
   confirmPending: boolean
@@ -677,6 +752,12 @@ function PreviewView({
       ),
   )
 
+  // Editable Agent name. Pre-filled with the interview-derived name; the
+  // operator can rename before confirming (the old flow shipped the derived
+  // name as-is, e.g. "lets-call-it-mira"). The server re-normalizes whatever
+  // is typed, so a friendly value is fine.
+  const [name, setName] = useState<string>(preview.agent_name)
+
   const toggleCapability = (id: string): void => {
     setSelectedCapabilityIds((prev) => {
       const next = new Set(prev)
@@ -691,7 +772,23 @@ function PreviewView({
       <section>
         <SectionHeader title="AGENT" />
         <Card padding={20}>
-          <div className={styles.previewName}>{preview.agent_name}</div>
+          <label className={styles.renameLabel}>
+            <span className={styles.renameLabelText}>NAME</span>
+            <input
+              type="text"
+              className={styles.renameInput}
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value)
+              }}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label="Agent name"
+            />
+          </label>
+          <div className={styles.renameHint}>
+            Lowercase letters, digits, and dashes. We tidy up whatever you type.
+          </div>
           <div className={styles.previewMeta}>
             CHOSEN BRANCH · {preview.transcript.chosen_branch}
           </div>
@@ -817,9 +914,9 @@ function PreviewView({
         <Button
           variant="primary"
           onClick={() => {
-            onConfirm([...selectedCapabilityIds])
+            onConfirm([...selectedCapabilityIds], name.trim())
           }}
-          disabled={confirmDisabled}
+          disabled={confirmDisabled || name.trim().length === 0}
         >
           {confirmPending ? 'Building...' : 'Confirm + build'}
         </Button>

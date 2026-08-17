@@ -33,6 +33,10 @@ import { connectUds } from '../control-plane/uds-client.js'
 import { JsonRpcClient } from '../control-plane/client.js'
 import { defaultHome, saveUserConfig, tryLoadUserConfig, userConfigPath } from '../config/loader.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import {
+  SUBSCRIPTION_OAUTH_PROVIDERS,
+  type SubscriptionOAuthProviderDef,
+} from '../oauth/subscription-providers.js'
 import { validateProviderKey, validateLocalEndpoint } from '../llm/validate-key.js'
 import {
   defaultRuntimeEnvPath,
@@ -59,8 +63,7 @@ export interface FirstRunIO {
 
 /** Outcome enum returned by `runFirstRun`. */
 export type FirstRunResult =
-  | { status: 'completed'; home: string; displayName: string }
-  | { status: 'aborted'; reason: string }
+  { status: 'completed'; home: string; displayName: string } | { status: 'aborted'; reason: string }
 
 /**
  * Returns true when the orchestrator should fire (no prior install
@@ -108,8 +111,8 @@ export async function runFirstRun(
   io.info('  - choose where 2200 keeps its state (the "home" directory)')
   io.info('  - start the supervisor daemon (the long-running process behind your fleet)')
   io.info('  - mint your user identity (the name other Agents see when you chat with them)')
-  io.info('  - (optional) sign in with X / SuperGrok so every Agent that picks Grok')
-  io.info('    can use your subscription with no API key')
+  io.info('  - (optional) sign in with a subscription you already pay for (SuperGrok /')
+  io.info('    X Premium+, ChatGPT Plus/Pro) so your Agents run with no API key')
   io.info('  - (optional, advanced) mint an MCP connector token so Grok or other')
   io.info('    MCP clients can call into your fleet via your own tunnel')
   io.info('')
@@ -153,11 +156,13 @@ export async function runFirstRun(
   await Supervisor.create({ home })
   io.success(`Initialized 2200_HOME at ${home}`)
 
-  // Bind the web server to the LAN so the access URL printed at the end
-  // is reachable from another device. Set BEFORE the daemon starts (it
-  // reads the host from the environment at boot) and persist it.
-  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '0.0.0.0')
-  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '0.0.0.0'
+  // Secure by default: bind the web server to loopback (127.0.0.1) on a fresh
+  // install, so nothing is exposed ... not even to the LAN ... until the operator
+  // deliberately picks an access mode (LAN, Tailscale, or the Cloudflare tunnel).
+  // Set BEFORE the daemon starts (it reads the host at boot) and persist it. The
+  // access-mode picker flips this to the LAN/loopback value for the chosen mode.
+  await upsertRuntimeEnvKey('TWENTYTWOHUNDRED_WEB_HOST', '127.0.0.1')
+  process.env['TWENTYTWOHUNDRED_WEB_HOST'] = '127.0.0.1'
 
   const pid = await startDaemon({ home })
   io.success(`Supervisor daemon started (pid ${String(pid)})`)
@@ -198,28 +203,30 @@ export async function runFirstRun(
   })
 
   // ------------------------------------------------------------------
-  // 5. Grok-First sign-in (optional, default yes).
+  // 5. Subscription sign-ins (optional, default yes).
   //
-  // Surfaced here so an operator who already has a SuperGrok / X
-  // Premium+ subscription leaves first-run with a working LLM
-  // credential ... no API key paste required. Skip is graceful: a
-  // later `2200 oauth xai login` (or the Settings UI tile) achieves
-  // the same outcome.
+  // Surfaced here so an operator who already pays for a SuperGrok / X
+  // Premium+ or ChatGPT Plus/Pro subscription leaves first-run with a
+  // working LLM credential ... no API key paste required. The
+  // providers are peers: each gets the same offer, in registry order.
+  // Skip is graceful: a later `2200 oauth <provider> login` (or the
+  // Settings UI card) achieves the same outcome.
   // ------------------------------------------------------------------
   io.info('')
-  io.info('Grok subscription sign-in (recommended).')
+  io.info('Subscription sign-in (recommended).')
   io.info('')
-  io.info('If you have an X Premium+ or SuperGrok subscription, sign in now to use')
-  io.info('your Grok subscription across every Agent in your fleet ... no XAI_API_KEY')
-  io.info('required. Other LLM providers (Anthropic, OpenAI, DeepSeek, ...) remain')
-  io.info('available; this just makes Grok the easiest path.')
+  io.info('2200 can run on a subscription you already pay for ... SuperGrok /')
+  io.info('X Premium+, or ChatGPT Plus/Pro ... with no API key. Sign in to any,')
+  io.info('all, or none; API-key providers (Anthropic, DeepSeek, ...) follow next.')
   io.info('')
-  const grokReply = await io.ask('Sign in with X / SuperGrok now? [Y/n] ')
-  if (isYes(grokReply, true)) {
-    await runFirstRunGrokSignIn(io, home)
-  } else {
-    io.info('Skipped. You can run `2200 oauth xai login` later, or use the Settings page.')
-    io.info('')
+  for (const def of SUBSCRIPTION_OAUTH_PROVIDERS) {
+    const reply = await io.ask(`${def.signInCta} now? [Y/n] `)
+    if (isYes(reply, true)) {
+      await runFirstRunSubscriptionSignIn(io, home, def)
+    } else {
+      io.info(`Skipped. You can run \`${def.signInCommand}\` later, or use the Settings page.`)
+      io.info('')
+    }
   }
 
   // ------------------------------------------------------------------
@@ -231,7 +238,16 @@ export async function runFirstRun(
   // without SuperGrok rely on this path to leave first-run with a
   // working credential.
   // ------------------------------------------------------------------
-  await runFirstRunApiKeyProviders(io)
+  const keysAdded = await runFirstRunApiKeyProviders(io)
+  // The keys just written to runtime.env are invisible to the daemon started
+  // back in step 3 ... a supervisor loads runtime.env only at boot, so a
+  // freshly-pasted key would surface as "env var 'ANTHROPIC_API_KEY' is not
+  // set" the moment the operator tries to onboard their first Agent. Restart
+  // the daemon now so the keys are live before setup finishes. (The OpenClaw
+  // migration path above already does the same for its migrated keys.)
+  if (keysAdded > 0) {
+    await restartDaemonForProviderKeys(io, home)
+  }
 
   // ------------------------------------------------------------------
   // 5b. MCP connector setup (optional, default NO).
@@ -520,7 +536,7 @@ async function finishInteractiveCutover(
   // run a turn (answer a Discord message, anything) until the daemon reloads
   // it. Restart now ... BEFORE wiring Discord ... so the Agent comes back
   // cred-equipped and the gateway we start next survives (no later restart).
-  await restartDaemonForMigratedKeys(io, home)
+  await restartDaemonForProviderKeys(io, home)
 
   let discord: Awaited<ReturnType<typeof collectOpenClawDiscord>>
   try {
@@ -551,14 +567,15 @@ async function finishInteractiveCutover(
 }
 
 /**
- * Restart the supervisor so a just-migrated Agent's LLM provider keys
- * (written to runtime.env during migration) are actually loaded into the
- * env every Agent inherits. Waits for the HTTP server to accept requests
- * again, since the Discord cutover POSTs to it next. Best-effort: a failed
- * health probe still returns (the daemon is up; the cutover will retry).
+ * Restart the supervisor so LLM provider keys just written to runtime.env
+ * (during OpenClaw migration OR first-run API-key entry) are actually loaded
+ * into the env every Agent inherits ... a supervisor reads runtime.env only at
+ * boot. Waits for the HTTP server to accept requests again, since later setup
+ * steps (Discord cutover, onboarding) POST to it. Best-effort: a failed health
+ * probe still returns (the daemon is up; the next call will retry).
  */
-async function restartDaemonForMigratedKeys(io: FirstRunIO, home: string): Promise<void> {
-  io.info('Restarting 2200 so your migrated provider keys take effect...')
+async function restartDaemonForProviderKeys(io: FirstRunIO, home: string): Promise<void> {
+  io.info('Restarting 2200 so your provider keys take effect...')
   await killDaemon(home)
   await startDaemon({ home })
   const { webPortFromEnv } = await import('./quick-setup.js')
@@ -694,39 +711,38 @@ async function installBuiltinConnectorManifest(home: string, id: string): Promis
 }
 
 /**
- * Drive the xAI device-code OAuth flow inline during first-run.
+ * Drive a subscription device-code sign-in inline during first-run.
  *
- * Mirrors `2200 oauth xai login` but emits through `FirstRunIO` so the
- * surrounding wizard's logging style is consistent. On failure we log
- * and continue ... a failed Grok sign-in must NOT abort the wizard;
- * the operator already has a working install, just no Grok credential
- * yet (which they can fix later from Settings or CLI).
+ * Mirrors `2200 oauth <provider> login` but emits through `FirstRunIO`
+ * so the surrounding wizard's logging style is consistent. On failure
+ * we log and continue ... a failed sign-in must NOT abort the wizard;
+ * the operator already has a working install, just no credential yet
+ * (which they can fix later from Settings or CLI).
+ *
+ * The loopback fallback (a browser sign-in on this machine) engages
+ * ONLY when the device flow cannot START. A terminal outcome ... the
+ * operator denied consent, or let the code expire ... is a decision to
+ * respect, not to paper over with a second sign-in attempt; those
+ * paths surface the error plus the explicit `--browser` escape hatch.
  */
-async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void> {
-  const { fetchXaiDiscovery, xaiDeviceFlowProvider } = await import('../oauth/xai-config.js')
-  const { runDeviceFlow } = await import('../oauth/device-flow.js')
-  const { saveOAuthToken } = await import('../oauth/token-store.js')
+async function runFirstRunSubscriptionSignIn(
+  io: FirstRunIO,
+  home: string,
+  def: SubscriptionOAuthProviderDef,
+): Promise<void> {
+  const {
+    runSubscriptionDeviceFlow,
+    runSubscriptionLoopbackFlow,
+    saveSubscriptionTokens,
+    SubscriptionDeviceStartError,
+  } = await import('../oauth/subscription-providers.js')
 
-  io.info('Fetching xAI sign-in details...')
-  let discovery
+  let tokens
   try {
-    discovery = await fetchXaiDiscovery()
-  } catch (err) {
-    io.warn(
-      `Could not contact xAI for sign-in: ${err instanceof Error ? err.message : String(err)}`,
-    )
-    io.warn('Skipping Grok sign-in for now. You can retry with `2200 oauth xai login` later.')
-    io.info('')
-    return
-  }
-  const provider = xaiDeviceFlowProvider(discovery)
-
-  try {
-    const tokens = await runDeviceFlow({
-      provider,
+    tokens = await runSubscriptionDeviceFlow(def, {
       onPrompt: (prompt) => {
         io.info('')
-        io.info('To sign in with your SuperGrok / X Premium+ account:')
+        io.info(`To sign in with your ${def.shortLabel} account:`)
         io.info(`  1. Open this URL in any browser (phone works fine):`)
         io.info(`     ${prompt.verificationUri}`)
         if (
@@ -738,37 +754,52 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
         }
         io.info(`  2. When prompted, enter this code:  ${prompt.userCode}`)
         io.info('')
-        io.info('xAI labels the consent screen "Grok Build" ... that is xAI\'s shared CLI OAuth')
-        io.info('client name, not a separate app you are installing.')
+        io.info(def.consentNote)
         io.info('')
         io.info(`Waiting for you to confirm (expires at ${prompt.expiresAt.toISOString()})...`)
       },
     })
-
-    if (!tokens.refresh_token) {
-      io.warn('xAI did not return a refresh token; sign-in incomplete. Skipping.')
+  } catch (deviceErr) {
+    const startFailed = deviceErr instanceof SubscriptionDeviceStartError
+    if (!def.loopback || !startFailed) {
+      io.warn(
+        `${def.shortLabel} sign-in failed: ${deviceErr instanceof Error ? deviceErr.message : String(deviceErr)}`,
+      )
+      if (def.loopback) {
+        io.warn(
+          `If your ${def.shortLabel} account has device sign-in disabled, run \`${def.signInCommand} --browser\` on this machine's desktop instead.`,
+        )
+      }
+      io.warn(`Continuing without it. You can retry with \`${def.signInCommand}\` later.`)
       io.info('')
       return
     }
+    io.info('')
+    io.info(`Device sign-in unavailable (${deviceErr.message}).`)
+    io.info('Falling back to the browser sign-in on this machine...')
+    try {
+      tokens = await runSubscriptionLoopbackFlow(def, {
+        onLog: (line) => {
+          io.info(line)
+        },
+      })
+    } catch (err) {
+      io.warn(
+        `${def.shortLabel} sign-in failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      io.warn(`Continuing without it. You can retry with \`${def.signInCommand}\` later.`)
+      io.info('')
+      return
+    }
+  }
 
-    const now = Date.now()
-    const expiresAtMs =
-      tokens.expires_in !== undefined ? now + tokens.expires_in * 1000 : now + 3600 * 1000
-    await saveOAuthToken(home, {
-      provider: 'xai-oauth',
-      bearer: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      metadata: {
-        granted_scopes: tokens.scope ? tokens.scope.split(/\s+/) : [],
-        expires_at_ms: expiresAtMs,
-        created_at: new Date(now).toISOString(),
-      },
-    })
-    io.success('Signed in to xAI / Grok. Subscription credential sealed to disk.')
+  try {
+    await saveSubscriptionTokens(home, def, tokens)
+    io.success(`Signed in to ${def.shortLabel}. Subscription credential sealed to disk.`)
     io.info('')
   } catch (err) {
-    io.warn(`Grok sign-in failed: ${err instanceof Error ? err.message : String(err)}`)
-    io.warn('Continuing without Grok. You can retry with `2200 oauth xai login` later.')
+    io.warn(err instanceof Error ? err.message : String(err))
+    io.warn(`Sign-in incomplete. You can retry with \`${def.signInCommand}\` later.`)
     io.info('')
   }
 }
@@ -782,8 +813,8 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
  *
  * Loops until the operator skips, so an operator can set up multiple
  * providers in a single pass (e.g., Anthropic + DeepSeek as a fallback
- * pair). The xai-subscription provider is filtered out — that path
- * goes through the Grok sign-in step above.
+ * pair). Subscription providers are filtered out ... those paths go
+ * through the subscription sign-in step above.
  *
  * Errors:
  *  - Invalid key (auth_failed): show the provider's error, offer
@@ -797,16 +828,16 @@ async function runFirstRunGrokSignIn(io: FirstRunIO, home: string): Promise<void
  * restart` (which is part of the natural "next session" workflow,
  * not something they need to do right now).
  */
-export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> {
+export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<number> {
   const all = listKnownProviders()
   // Surface paste-a-key providers (`api-key`) AND self-hosted (`local`).
-  // The `subscription` provider (xai-subscription) is reachable via the
-  // SuperGrok step above (the preferred path). Local has a different shape
-  // (base URL + OPTIONAL key) so it's prompted differently below.
+  // The `subscription` providers (SuperGrok, ChatGPT) are reachable via
+  // the sign-in step above (the preferred path). Local has a different
+  // shape (base URL + OPTIONAL key) so it's prompted differently below.
   const candidates = all.filter((p) => p.category === 'api-key' || p.category === 'local')
-  if (candidates.length === 0) return // defensive; registry always has these
+  if (candidates.length === 0) return 0 // defensive; registry always has these
 
-  io.info('Other LLM providers (optional ... Grok above is the easy path).')
+  io.info('Other LLM providers (optional ... the subscription sign-ins above are the easy path).')
   io.info('')
   io.info('Add an API key for Anthropic, OpenAI, DeepSeek, etc., OR point 2200 at a')
   io.info('local / self-hosted model (Ollama, LM Studio, vLLM ... a base URL, key')
@@ -854,13 +885,15 @@ export async function runFirstRunApiKeyProviders(io: FirstRunIO): Promise<void> 
     io.success(
       `Saved ${String(added)} API key${added === 1 ? '' : 's'} to ${userRuntimeEnvPath()}.`,
     )
-    io.info('The key takes effect on the next supervisor restart (next 2200 launch, or')
-    io.info('run `2200 daemon restart` now). Agents pick their provider when you build them.')
+    io.info('Agents pick their provider when you build them.')
     io.info('')
   } else {
     io.info('No API keys configured. You can add them later from the CLI or Settings.')
     io.info('')
   }
+  // Caller restarts the daemon when this is > 0 so the just-written keys are
+  // actually loaded into the running supervisor's env (frozen at boot).
+  return added
 }
 
 /**

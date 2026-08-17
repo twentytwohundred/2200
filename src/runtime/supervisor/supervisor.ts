@@ -33,6 +33,7 @@ import {
 } from './lifecycle.js'
 import { isLockHeld } from './process-lock.js'
 import { launchPubProcess, composePubMd, type StartedPub } from './pub-lifecycle.js'
+import { planPubPort, type PubPortProbe } from './pub-port.js'
 import { loadIdentity, writeIdentity } from '../identity/loader.js'
 import type { AgentPubBlock, IdentityFrontmatter } from '../identity/types.js'
 import { homePaths, agentPaths, pubPaths, assertPubName } from '../storage/layout.js'
@@ -2482,16 +2483,21 @@ export class Supervisor {
   /**
    * Ensure a default "studio" pub exists with EVERY Agent enrolled ... the
    * shared room "everyone is in." Run at boot BEFORE Agents are revived (so
-   * they attach the studio wake source on their first start, no extra restart).
+   * they attach the studio wake source on their first start, no extra restart),
+   * AND on Agent creation before the new Agent is started (same reason ... a
+   * fresh install boots the daemon with zero Agents, so boot's call no-ops; the
+   * first Agent arrives later via onboarding confirm and must get the studio
+   * wired up before it starts, or it has no room to appear in and its seeded
+   * orientation post to `studio` fails).
    *
    * Idempotent + self-healing: creates the studio pub only if missing, and
-   * enrolls every Agent every boot (enrollAgentInPub + addPubToAgentFile both
+   * enrolls every Agent every call (enrollAgentInPub + addPubToAgentFile both
    * no-op when already done). It iterates EVERY Agent in state regardless of
    * origin, so an Agent created fresh OR imported from OpenClaw ... including one
    * added after the studio already existed ... gets enrolled. FULLY best-effort:
-   * any failure is logged and swallowed so it can never break boot.
+   * any failure is logged and swallowed so it can never break boot or a spawn.
    */
-  private async ensureStudioPub(): Promise<void> {
+  async ensureStudioPub(): Promise<void> {
     const STUDIO = 'studio'
     try {
       const agentNames = Object.keys(this.state.agents)
@@ -2837,6 +2843,54 @@ export class Supervisor {
     await new Promise<void>((resolve) => setTimeout(resolve, 200))
     await this.startAgent(name)
     this.log.info('Agent restarted', { name, reason })
+  }
+
+  /**
+   * Operator-triggered "restart everything": bounce every pub-server and every
+   * Agent process, WITHOUT touching the daemon itself (the daemon serves the
+   * web request that calls this, so it must stay up). Pubs are restarted FIRST
+   * so Agents reconnect to fresh pub-servers; then each Agent is restarted ...
+   * which is what clears a wedged Agent (e.g. one stuck `blocked_on_agent`).
+   * Connector gateways are refreshed by the caller (they live in the HTTP
+   * layer's GatewayManager).
+   *
+   * Best-effort and independent: one pub or Agent failing to come back does
+   * not abort the rest. Returns a per-target summary so the UI can report
+   * exactly what restarted and what didn't.
+   */
+  async restartFleet(reason = 'operator_restart'): Promise<{
+    pubs: { name: string; ok: boolean; error?: string }[]
+    agents: { name: string; ok: boolean; error?: string }[]
+  }> {
+    const snap = this.snapshot()
+    const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+    const pubs: { name: string; ok: boolean; error?: string }[] = []
+    for (const name of Object.keys(snap.pubs)) {
+      try {
+        await this.stopPub(name, reason)
+        await this.startPub(name)
+        pubs.push({ name, ok: true })
+      } catch (err) {
+        pubs.push({ name, ok: false, error: errText(err) })
+      }
+    }
+    const agents: { name: string; ok: boolean; error?: string }[] = []
+    for (const name of Object.keys(snap.agents)) {
+      try {
+        await this.restartAgent(name, reason)
+        agents.push({ name, ok: true })
+      } catch (err) {
+        agents.push({ name, ok: false, error: errText(err) })
+      }
+    }
+    this.log.info('fleet restart complete', {
+      pubs_ok: pubs.filter((p) => p.ok).length,
+      pubs_total: pubs.length,
+      agents_ok: agents.filter((a) => a.ok).length,
+      agents_total: agents.length,
+      reason,
+    })
+    return { pubs, agents }
   }
 
   /**
@@ -3201,6 +3255,29 @@ export class Supervisor {
    * Idempotent: starting an already-running pub returns the current
    * pid without re-launching.
    */
+  /**
+   * Real port probe for `planPubPort`: HTTP liveness via a short-timeout fetch
+   * (any response ... even a 404 ... means a pub-server is alive), and the
+   * LISTENing pids via `lsof`. Injected so `planPubPort`'s branching is tested
+   * without sockets.
+   */
+  private pubPortProbe(): PubPortProbe {
+    return {
+      isHealthy: async (port: number): Promise<boolean> => {
+        try {
+          await fetch(`http://127.0.0.1:${String(port)}`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(1500),
+          })
+          return true
+        } catch {
+          return false
+        }
+      },
+      listeners: (port: number) => listenersOnPort(port),
+    }
+  }
+
   async startPub(
     name: string,
     opts: {
@@ -3216,6 +3293,28 @@ export class Supervisor {
     const existing = this.trackedPubs.get(name)
     if (existing) {
       return { pid: existing.pid, port: record.port }
+    }
+    // Before launching, look at the port. A pub-server can outlive the
+    // supervisor that spawned it (a `2200 update` restart, a SIGHUP
+    // self-upgrade, a detached crash), so the recorded port may already be
+    // served by a healthy pub-server. Launching a second one collides on
+    // EADDRINUSE and flips the record to `errored` ... which is exactly how
+    // the Studio started returning 409 (`pub_not_running`) after an update.
+    // Adopt a healthy server instead; only reclaim + launch when nothing
+    // healthy is there. See pub-port.ts.
+    const portPlan = await planPubPort(record.port, this.pubPortProbe())
+    if (portPlan.action === 'adopt') {
+      const pid = portPlan.pid ?? record.pid
+      await this.updatePub(name, { state: 'running', ...(pid !== null ? { pid } : {}) })
+      this.log.info('startPub: adopted healthy pub-server already on port', {
+        name,
+        port: record.port,
+        pid,
+      })
+      return { pid: pid ?? 0, port: record.port }
+    }
+    if (portPlan.action === 'reclaim-then-launch') {
+      await killOrphanOnPort(record.port, this.log)
     }
     const paths = pubPaths(this.state.home, name)
     const secrets = await readPubSecrets({
@@ -4435,18 +4534,30 @@ function today(): string {
  * Best-effort: if `lsof` is missing or returns nothing, we no-op.
  * Failures are logged at warn but never thrown.
  */
-async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
+/**
+ * PIDs LISTENing on a TCP port, via `lsof`. Empty when none, when lsof is
+ * missing, or on any error (best-effort, never throws).
+ */
+async function listenersOnPort(port: number): Promise<number[]> {
   try {
     const { execFile } = await import('node:child_process')
     const { promisify } = await import('node:util')
     const exec = promisify(execFile)
     const { stdout } = await exec('lsof', ['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-t'])
-    const pids = stdout
+    return stdout
       .trim()
       .split('\n')
       .filter(Boolean)
       .map((s) => Number(s))
       .filter((n) => Number.isFinite(n) && n > 0)
+  } catch {
+    return []
+  }
+}
+
+async function killOrphanOnPort(port: number, log: Logger): Promise<void> {
+  try {
+    const pids = await listenersOnPort(port)
     if (pids.length === 0) return
     for (const pid of pids) {
       log.info('boot: killing orphan process holding pub port', { pid, port })

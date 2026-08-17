@@ -1,23 +1,21 @@
 /**
- * Tests for the RFC 8628 device-code flow runner.
- *
- * The runner is pure I/O: takes a config, returns a token. Tests
- * drive it with a stub `fetch` so we can simulate every branch of
- * the protocol (authorization_pending, slow_down, expired_token,
- * access_denied, success) without standing up a real OAuth server.
+ * Tests for the RFC 8628 device-flow building blocks: the
+ * device-authorization (init) request, the single token poll, and the
+ * public-client refresh grant. The blocks are pure I/O driven with a
+ * stub `fetch`, so every branch of the protocol
+ * (authorization_pending, slow_down, expired_token, access_denied,
+ * success) is simulated without a real OAuth server. Loop pacing is
+ * the subscription driver's job and is tested with it
+ * (subscription-providers.test.ts).
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
+  initDeviceAuthorization,
+  pollDeviceTokenOnce,
   refreshDeviceFlowToken,
-  runDeviceFlow,
   type DeviceFlowProviderConfig,
 } from '../../../src/runtime/oauth/device-flow.js'
 import { OAuthError } from '../../../src/runtime/oauth/types.js'
-
-/** Placeholder onPrompt; lint forbids `() => {}` empty arrows. */
-const noop = (): void => {
-  /* test fixture: no prompt-side I/O */
-}
 
 function makeProvider(): DeviceFlowProviderConfig {
   return {
@@ -29,22 +27,6 @@ function makeProvider(): DeviceFlowProviderConfig {
   }
 }
 
-/** Fake fetch that returns a queue of responses for each URL. */
-function makeStubFetch(scripts: Record<string, (() => Response)[]>): typeof fetch {
-  const counters = new Map<string, number>()
-  return (input, _init) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-    const next = counters.get(url) ?? 0
-    const script = scripts[url]
-    if (!script || next >= script.length) {
-      throw new Error(`unexpected fetch to ${url} (call #${String(next + 1)})`)
-    }
-    counters.set(url, next + 1)
-    return Promise.resolve(script[next]!())
-  }
-}
-
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -52,197 +34,169 @@ function jsonRes(status: number, body: unknown): Response {
   })
 }
 
-describe('runDeviceFlow', () => {
-  it('completes the happy path: device-auth → polled approval → token', async () => {
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [
-        () =>
-          jsonRes(200, {
-            device_code: 'D-1234',
-            user_code: 'WBQX-MKHV',
-            verification_uri: 'https://issuer.test/device',
-            verification_uri_complete: 'https://issuer.test/device?code=WBQX-MKHV',
-            expires_in: 600,
-            interval: 5,
-          }),
-      ],
-      'https://issuer.test/token': [
-        () => jsonRes(400, { error: 'authorization_pending' }),
-        () => jsonRes(400, { error: 'authorization_pending' }),
-        () =>
-          jsonRes(200, {
-            access_token: 'bearer-abc',
-            refresh_token: 'refresh-xyz',
-            expires_in: 3600,
-            scope: 'openid offline_access api:access',
-            token_type: 'Bearer',
-          }),
-      ],
-    })
+function stubFetch(res: Response): typeof fetch {
+  const impl: typeof fetch = () => Promise.resolve(res)
+  return impl
+}
 
-    const prompts: { userCode: string; verificationUri: string }[] = []
-    const tokens = await runDeviceFlow({
-      provider,
+const PKCE = { challenge: 'challenge-challenge-challenge-challenge-123', method: 'S256' }
+
+describe('initDeviceAuthorization', () => {
+  it('parses + normalizes the device-authorization response', async () => {
+    let requestBody = ''
+    const fetchImpl: typeof fetch = (_input, init) => {
+      requestBody = typeof init?.body === 'string' ? init.body : ''
+      return Promise.resolve(
+        jsonRes(200, {
+          device_code: 'D-1234',
+          user_code: 'WBQX-MKHV',
+          verification_uri: 'https://issuer.test/device',
+          verification_uri_complete: 'https://issuer.test/device?code=WBQX-MKHV',
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+    }
+    const now = 1_000_000
+    const init = await initDeviceAuthorization({
+      provider: makeProvider(),
+      codeChallenge: PKCE.challenge,
+      codeChallengeMethod: PKCE.method,
       fetchImpl,
-      onPrompt: (p) => {
-        prompts.push({ userCode: p.userCode, verificationUri: p.verificationUri })
-      },
-      // No real sleeping in unit tests: jump time forward instantly.
-      sleepFn: () => Promise.resolve(),
+      nowFn: () => now,
     })
-
-    expect(prompts).toHaveLength(1)
-    expect(prompts[0]?.userCode).toBe('WBQX-MKHV')
-    expect(prompts[0]?.verificationUri).toBe('https://issuer.test/device')
-    expect(tokens.access_token).toBe('bearer-abc')
-    expect(tokens.refresh_token).toBe('refresh-xyz')
+    expect(init.deviceCode).toBe('D-1234')
+    expect(init.userCode).toBe('WBQX-MKHV')
+    expect(init.verificationUriComplete).toBe('https://issuer.test/device?code=WBQX-MKHV')
+    expect(init.expiresAtMs).toBe(now + 600_000)
+    expect(init.intervalSec).toBe(5)
+    // PKCE is bound at init: the S256 challenge rides the request.
+    const params = new URLSearchParams(requestBody)
+    expect(params.get('code_challenge')).toBe(PKCE.challenge)
+    expect(params.get('code_challenge_method')).toBe('S256')
+    expect(params.get('client_id')).toBe('public-client-id')
   })
 
-  it('honors slow_down by bumping the polling interval', async () => {
-    // Side-effect counter: count how many distinct sleeps happen so
-    // we can confirm slow_down's +5s bump is applied.
-    const sleepDurations: number[] = []
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [
-        () =>
-          jsonRes(200, {
-            device_code: 'D-1',
-            user_code: 'C-1',
-            verification_uri: 'https://issuer.test/d',
-            expires_in: 600,
-            interval: 5,
-          }),
-      ],
-      'https://issuer.test/token': [
-        () => jsonRes(400, { error: 'slow_down' }),
-        () => jsonRes(200, { access_token: 'ok', refresh_token: 'r', expires_in: 3600 }),
-      ],
-    })
-
-    const tokens = await runDeviceFlow({
-      provider,
-      fetchImpl,
-      onPrompt: noop,
-      sleepFn: (ms) => {
-        sleepDurations.push(ms)
-        return Promise.resolve()
-      },
-    })
-    expect(tokens.access_token).toBe('ok')
-    // initial 5s wait (5000ms) then slow_down → bumps to 10s (10000ms).
-    expect(sleepDurations).toEqual([5000, 10_000])
+  it('throws TOKEN_EXCHANGE_FAILED when the device-auth endpoint returns non-2xx', async () => {
+    const err = await initDeviceAuthorization({
+      provider: makeProvider(),
+      codeChallenge: PKCE.challenge,
+      codeChallengeMethod: PKCE.method,
+      fetchImpl: stubFetch(jsonRes(500, { error: 'server_error' })),
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect((err as OAuthError).code).toBe('TOKEN_EXCHANGE_FAILED')
   })
 
-  it('throws PROVIDER_DENIED on access_denied', async () => {
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [
-        () =>
-          jsonRes(200, {
-            device_code: 'D',
-            user_code: 'C',
-            verification_uri: 'https://issuer.test/d',
-            expires_in: 600,
-            interval: 5,
-          }),
-      ],
-      'https://issuer.test/token': [() => jsonRes(400, { error: 'access_denied' })],
-    })
+  it('throws INVALID_RESPONSE when required fields are missing', async () => {
+    const err = await initDeviceAuthorization({
+      provider: makeProvider(),
+      codeChallenge: PKCE.challenge,
+      codeChallengeMethod: PKCE.method,
+      fetchImpl: stubFetch(jsonRes(200, { device_code: 'D-1' })),
+    }).catch((e: unknown) => e)
+    expect((err as OAuthError).code).toBe('INVALID_RESPONSE')
+  })
+})
 
-    await expect(
-      runDeviceFlow({ provider, fetchImpl, onPrompt: noop, sleepFn: () => Promise.resolve() }),
-    ).rejects.toMatchObject({ code: 'PROVIDER_DENIED' })
+describe('pollDeviceTokenOnce', () => {
+  const ARGS = {
+    tokenUrl: 'https://issuer.test/token',
+    clientId: 'public-client-id',
+    deviceCode: 'D-1234',
+    codeVerifier: 'verifier-verifier-verifier-verifier-verify',
+  }
+
+  it('maps RFC 8628 authorization_pending (HTTP 400) to pending', async () => {
+    const outcome = await pollDeviceTokenOnce({
+      ...ARGS,
+      fetchImpl: stubFetch(jsonRes(400, { error: 'authorization_pending' })),
+    })
+    expect(outcome.status).toBe('pending')
   })
 
-  it('throws CALLBACK_TIMEOUT on expired_token', async () => {
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [
-        () =>
-          jsonRes(200, {
-            device_code: 'D',
-            user_code: 'C',
-            verification_uri: 'https://issuer.test/d',
-            expires_in: 600,
-            interval: 5,
-          }),
-      ],
-      'https://issuer.test/token': [() => jsonRes(400, { error: 'expired_token' })],
+  it('maps slow_down to slow_down (caller bumps the interval)', async () => {
+    const outcome = await pollDeviceTokenOnce({
+      ...ARGS,
+      fetchImpl: stubFetch(jsonRes(400, { error: 'slow_down' })),
     })
-    await expect(
-      runDeviceFlow({ provider, fetchImpl, onPrompt: noop, sleepFn: () => Promise.resolve() }),
-    ).rejects.toMatchObject({ code: 'CALLBACK_TIMEOUT' })
+    expect(outcome.status).toBe('slow_down')
   })
 
-  it('throws TOKEN_EXCHANGE_FAILED on a hard provider error', async () => {
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [
-        () =>
-          jsonRes(200, {
-            device_code: 'D',
-            user_code: 'C',
-            verification_uri: 'https://issuer.test/d',
-            expires_in: 600,
-            interval: 5,
-          }),
-      ],
-      'https://issuer.test/token': [
-        () => jsonRes(400, { error: 'invalid_grant', error_description: 'mismatched code' }),
-      ],
-    })
-    await expect(
-      runDeviceFlow({ provider, fetchImpl, onPrompt: noop, sleepFn: () => Promise.resolve() }),
-    ).rejects.toMatchObject({ code: 'TOKEN_EXCHANGE_FAILED' })
+  it('returns the tokens on approval', async () => {
+    let requestBody = ''
+    const fetchImpl: typeof fetch = (_input, init) => {
+      requestBody = typeof init?.body === 'string' ? init.body : ''
+      return Promise.resolve(
+        jsonRes(200, { access_token: 'bearer-abc', refresh_token: 'refresh-xyz' }),
+      )
+    }
+    const outcome = await pollDeviceTokenOnce({ ...ARGS, fetchImpl })
+    expect(outcome.status).toBe('completed')
+    if (outcome.status === 'completed') {
+      expect(outcome.tokens.access_token).toBe('bearer-abc')
+    }
+    // The PKCE verifier is replayed on every poll, public-client style.
+    const params = new URLSearchParams(requestBody)
+    expect(params.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:device_code')
+    expect(params.get('code_verifier')).toBe(ARGS.codeVerifier)
+    expect(params.get('client_secret')).toBeNull()
   })
 
-  it('throws TOKEN_EXCHANGE_FAILED if device-auth endpoint returns non-2xx', async () => {
-    // Regression guard for the failure mode where we silently dropped
-    // a 4xx and started polling /token against garbage state.
-    const provider = makeProvider()
-    const fetchImpl = makeStubFetch({
-      'https://issuer.test/device/code': [() => jsonRes(400, { error: 'invalid_request' })],
-      'https://issuer.test/token': [],
-    })
-    await expect(
-      runDeviceFlow({ provider, fetchImpl, onPrompt: noop, sleepFn: () => Promise.resolve() }),
-    ).rejects.toBeInstanceOf(OAuthError)
+  it('surfaces terminal provider errors with their code + description', async () => {
+    for (const code of ['access_denied', 'expired_token', 'invalid_grant']) {
+      const outcome = await pollDeviceTokenOnce({
+        ...ARGS,
+        fetchImpl: stubFetch(jsonRes(400, { error: code, error_description: 'detail' })),
+      })
+      expect(outcome.status).toBe('failed')
+      if (outcome.status === 'failed') {
+        expect(outcome.error).toBe(code)
+        expect(outcome.description).toBe('detail')
+      }
+    }
+  })
+
+  it('reports network blips as transient (caller keeps polling)', async () => {
+    const fetchImpl: typeof fetch = () => Promise.reject(new Error('ECONNRESET'))
+    const outcome = await pollDeviceTokenOnce({ ...ARGS, fetchImpl })
+    expect(outcome.status).toBe('transient')
   })
 })
 
 describe('refreshDeviceFlowToken', () => {
   it('returns the new access + (rotated) refresh token on success', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      jsonRes(200, {
-        access_token: 'new-bearer',
-        refresh_token: 'new-refresh',
-        expires_in: 3600,
-        scope: 'openid offline_access api:access',
-      }),
-    ) as unknown as typeof fetch
+    let requestBody = ''
+    const fetchImpl: typeof fetch = (_input, init) => {
+      requestBody = typeof init?.body === 'string' ? init.body : ''
+      return Promise.resolve(
+        jsonRes(200, {
+          access_token: 'bearer-new',
+          refresh_token: 'refresh-rotated',
+          expires_in: 3600,
+        }),
+      )
+    }
     const tokens = await refreshDeviceFlowToken({
-      provider: { tokenUrl: 'https://issuer.test/token', clientId: 'cid' },
-      refreshToken: 'old-refresh',
+      provider: { tokenUrl: 'https://issuer.test/token', clientId: 'public-client-id' },
+      refreshToken: 'refresh-old',
       fetchImpl,
     })
-    expect(tokens.access_token).toBe('new-bearer')
-    expect(tokens.refresh_token).toBe('new-refresh')
+    expect(tokens.access_token).toBe('bearer-new')
+    expect(tokens.refresh_token).toBe('refresh-rotated')
+    // Public-client refresh: no client_secret on the wire.
+    const params = new URLSearchParams(requestBody)
+    expect(params.get('grant_type')).toBe('refresh_token')
+    expect(params.get('client_secret')).toBeNull()
   })
 
   it('throws TOKEN_EXCHANGE_FAILED on invalid_grant (revoked refresh)', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonRes(400, { error: 'invalid_grant', error_description: 'refresh revoked' }),
-      ) as unknown as typeof fetch
-    await expect(
-      refreshDeviceFlowToken({
-        provider: { tokenUrl: 'https://issuer.test/token', clientId: 'cid' },
-        refreshToken: 'old',
-        fetchImpl,
-      }),
-    ).rejects.toMatchObject({ code: 'TOKEN_EXCHANGE_FAILED' })
+    const err = await refreshDeviceFlowToken({
+      provider: { tokenUrl: 'https://issuer.test/token', clientId: 'public-client-id' },
+      refreshToken: 'refresh-revoked',
+      fetchImpl: stubFetch(jsonRes(400, { error: 'invalid_grant' })),
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect((err as OAuthError).code).toBe('TOKEN_EXCHANGE_FAILED')
   })
 })

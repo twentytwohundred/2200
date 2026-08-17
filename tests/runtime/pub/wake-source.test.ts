@@ -19,6 +19,8 @@ import { PubWakeSource } from '../../../src/runtime/pub/wake-source.js'
 import { Router } from '../../../src/runtime/pub/router.js'
 import { upsertRosterEntry } from '../../../src/runtime/pub/roster.js'
 import { TaskStore } from '../../../src/runtime/agent/task/store.js'
+import { newPendingTask } from '../../../src/runtime/agent/task/types.js'
+import { newTaskId } from '../../../src/runtime/util/id.js'
 import { initHome, initAgentDirs } from '../../../src/runtime/storage/init.js'
 import type { LLMProvider } from '../../../src/runtime/llm/provider.js'
 import type { CompletionResponse } from '../../../src/runtime/llm/types.js'
@@ -601,5 +603,253 @@ describe('PubWakeSource', () => {
     wake.stop()
     await alice.client.close()
     await bob.client.close()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Parked-task resume vs. the directedness gate
+  //
+  // The bug these lock down: an Agent asked a peer a question on the
+  // operator's behalf, called `task_await_response`, and parked. The
+  // peer answered in the room in plain prose ... no @-mention, no
+  // reply_to, which is how Agents actually talk in a two-party thread.
+  // The resume check sat downstream of the directedness gate and the
+  // anti-ack-spiral guard, so the reply never reached it. The parked
+  // task stayed blocked until the timeout sweep and the operator saw
+  // their Agent go silent on a question it had already gotten the
+  // answer to.
+  //
+  // The declaration in `wait_for` is a stronger, self-made directedness
+  // signal than any mention heuristic. It has to be consulted first.
+  // ---------------------------------------------------------------------------
+
+  /** Park a task on a wait_for for `sender` in pub `ops`. Returns the task id. */
+  async function parkTaskWaitingOn(
+    taskStore: TaskStore,
+    sender: string,
+    agentName: string,
+  ): Promise<string> {
+    const t = newPendingTask({
+      id: newTaskId(),
+      agent: agentName,
+      title: 'relay the vault key count back to doug',
+      body: 'Doug asked how many keys are in the vault. Asked the peer in studio.',
+      idempotency: 'checkpointed',
+    })
+    t.frontmatter.state = 'blocked_on_agent'
+    t.frontmatter.wait_for = {
+      source_kind: 'pub',
+      source_ref: { pub: 'ops' },
+      expected_from: sender,
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      context_note: 'relaying the key count back to doug',
+      waiting_since: new Date().toISOString(),
+    }
+    await taskStore.save(t)
+    return t.frontmatter.id
+  }
+
+  it('resumes a parked task on a plain reply with no mention and no reply_to', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie') // defeats sole_recipient
+    const bob = await setupAgent('bob')
+
+    const taskId = await parkTaskWaitingOn(bob.taskStore, 'alice', 'bob')
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+    })
+    wake.start()
+
+    // Exactly the message that used to be dropped: no mention, no
+    // reply_to, multi-member room. Every directedness rule says no.
+    await alice.client.send({ content: 'there are 14 keys in the vault' })
+
+    await waitFor(async () => (await bob.taskStore.get(taskId))?.frontmatter.state === 'pending')
+
+    const after = await bob.taskStore.get(taskId)
+    expect(after?.frontmatter.state).toBe('pending')
+    expect(after?.frontmatter.wait_for).toBeNull()
+    // The answer has to be IN the task, not just a nudge to go look.
+    expect(after?.body).toContain('there are 14 keys in the vault')
+    expect(after?.body).toContain('relaying the key count back to doug')
+    // Resume, not a second isolated task.
+    expect((await bob.taskStore.list()).length).toBe(1)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('resumes a parked task even though the sender is an Agent (anti-ack-spiral guard must not win here)', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob')
+
+    // Roster alice so she classifies as an Agent sender ... the exact
+    // condition that made the router path bail before reaching resume.
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: alice.agentId,
+      agent_name: 'alice',
+      display_name: 'alice',
+      role_blurb: 'peer agent',
+    })
+    await upsertRosterEntry(home, 'ops', {
+      agent_id: bob.agentId,
+      agent_name: 'bob',
+      display_name: 'bob',
+      role_blurb: 'devops',
+    })
+
+    const taskId = await parkTaskWaitingOn(bob.taskStore, 'alice', 'bob')
+
+    let routerCalls = 0
+    const router = new Router({
+      provider: {
+        name: 'fake',
+        baseUrl: 'fake://',
+        complete(): Promise<CompletionResponse> {
+          routerCalls += 1
+          return Promise.resolve({
+            text: '{"woken_agent_ids": [], "rationale": "no"}',
+            finishReason: 'stop',
+            costMetrics: { inputTokens: 1, outputTokens: 1 },
+            providerResponseId: 'fake',
+          })
+        },
+      },
+      modelId: 'fast',
+    })
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+      router,
+      home,
+    })
+    wake.start()
+
+    await alice.client.send({ content: 'checked ... 14 keys' })
+
+    await waitFor(async () => (await bob.taskStore.get(taskId))?.frontmatter.state === 'pending')
+
+    expect((await bob.taskStore.get(taskId))?.body).toContain('checked ... 14 keys')
+    // The resume is deterministic. It must not have cost a router call.
+    expect(routerCalls).toBe(0)
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('matches the parked sender when the model wrote expected_from as an @handle', async () => {
+    // `expected_from` is model-authored. It usually comes out as the
+    // handle the Agent used to address the peer (`@alice`) while the
+    // wire carries the display name (`alice`). A miss here is silent.
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob')
+
+    const taskId = await parkTaskWaitingOn(bob.taskStore, '@Alice', 'bob')
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+    })
+    wake.start()
+
+    await alice.client.send({ content: '14 keys' })
+
+    await waitFor(async () => (await bob.taskStore.get(taskId))?.frontmatter.state === 'pending')
+    expect((await bob.taskStore.get(taskId))?.frontmatter.wait_for).toBeNull()
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
+  })
+
+  it('still creates a fresh task when nothing is parked (resume must not swallow normal wakes)', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const bob = await setupAgent('bob')
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+    })
+    wake.start()
+
+    await alice.client.send({ content: 'hey @bob ping', mentions: [bob.agentId] })
+    await waitFor(async () => (await bob.taskStore.list()).length >= 1)
+
+    const tasks = await bob.taskStore.list()
+    expect(tasks.length).toBe(1)
+    expect(tasks[0]?.frontmatter.title).toContain('direct_mention')
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+  })
+
+  it('does not resume a task parked on a different pub', async () => {
+    pub = await startFakePub()
+    const alice = await setupAgent('alice')
+    const _third = await setupAgent('charlie')
+    const bob = await setupAgent('bob')
+
+    const t = newPendingTask({
+      id: newTaskId(),
+      agent: 'bob',
+      title: 'waiting on a different room',
+      body: 'body',
+      idempotency: 'checkpointed',
+    })
+    t.frontmatter.state = 'blocked_on_agent'
+    t.frontmatter.wait_for = {
+      source_kind: 'pub',
+      source_ref: { pub: 'studio' }, // wake source below is on 'ops'
+      expected_from: 'alice',
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      context_note: 'note',
+      waiting_since: new Date().toISOString(),
+    }
+    await bob.taskStore.save(t)
+
+    const wake = new PubWakeSource({
+      client: bob.client,
+      agentName: 'bob',
+      pubName: 'ops',
+      agent: { agent_id: bob.agentId, handle: '@bob' },
+      taskStore: bob.taskStore,
+    })
+    wake.start()
+
+    await alice.client.send({ content: 'unrelated chatter' })
+    await new Promise((r) => setTimeout(r, 150))
+
+    expect((await bob.taskStore.get(t.frontmatter.id))?.frontmatter.state).toBe('blocked_on_agent')
+
+    wake.stop()
+    await alice.client.close()
+    await bob.client.close()
+    await _third.client.close()
   })
 })

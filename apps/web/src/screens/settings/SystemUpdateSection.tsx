@@ -22,9 +22,15 @@
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, NetworkError, apiSystem, type UpgradeStatus } from '../../lib/api'
+import {
+  ApiError,
+  NetworkError,
+  apiSystem,
+  type FleetRestartResult,
+  type UpgradeStatus,
+} from '../../lib/api'
 import { Card, ErrorState, KV, LoadingState, Pill, cx } from '../../primitives'
-import { shouldShowUpgradeProgress } from './upgradeProgress'
+import { shouldShowUpgradeProgress, nextUpgradePollInterval } from './upgradeProgress'
 import styles from './SettingsScreen.module.css'
 
 function formatError(err: unknown): string {
@@ -69,6 +75,13 @@ export function SystemUpdateSection(): ReactElement {
   // because invalidating the queryKey forces a refetch). When a
   // non-terminal stage is active or we have not loaded yet, poll
   // every 2s.
+  // Latch: "an upgrade is in flight." Set when we see a live stage or the
+  // operator clicks Upgrade; cleared when a terminal stage lands. It's what
+  // lets a transient daemon-down blip (status === null mid-upgrade) keep
+  // polling instead of the poller giving up forever ... see
+  // `nextUpgradePollInterval`.
+  const [upgrading, setUpgrading] = useState(false)
+
   const upgradeStatusQuery = useQuery({
     queryKey: ['system', 'upgrade-status'],
     queryFn: async () => {
@@ -76,22 +89,36 @@ export function SystemUpdateSection(): ReactElement {
         return await apiSystem.upgradeStatus()
       } catch (err) {
         // The daemon is briefly down mid-upgrade. Treat as a
-        // transient blip; the polling loop will recover.
+        // transient blip; the polling loop will recover (the latch keeps it
+        // polling through the null so it can reconnect).
         if (err instanceof NetworkError) return null
         throw err
       }
     },
     refetchInterval: (query): number | false => {
-      const data = query.state.data
-      const status = data?.status ?? null
-      if (!status) return false
-      return isTerminalStage(status.stage) ? false : 2_000
+      const status = query.state.data?.status ?? null
+      return nextUpgradePollInterval({
+        hasStatus: status !== null,
+        terminal: status !== null && isTerminalStage(status.stage),
+        latchedUpgrading: upgrading,
+      })
     },
     staleTime: 0,
   })
 
   const upgradeStatus = upgradeStatusQuery.data?.status ?? null
-  const upgradeActive = upgradeStatus !== null && !isTerminalStage(upgradeStatus.stage)
+  // Keep the latch in sync with the observed stage. A null status (blip)
+  // leaves the latch untouched so the UI stays in its upgrading state.
+  useEffect(() => {
+    if (upgradeStatus === null) return
+    setUpgrading(!isTerminalStage(upgradeStatus.stage))
+  }, [upgradeStatus])
+
+  // Active while a live stage is reported OR while we're latched mid-upgrade
+  // (a daemon-down blip). Without the latch clause the tile would flash the
+  // stale "Upgrade to X" button during the restart window.
+  const upgradeActive =
+    upgrading || (upgradeStatus !== null && !isTerminalStage(upgradeStatus.stage))
 
   // Two-step inline confirm for the destructive Upgrade button.
   // First click arms; second click within 5s commits. Mouseout or
@@ -107,6 +134,11 @@ export function SystemUpdateSection(): ReactElement {
 
   const update = useMutation({
     mutationFn: () => apiSystem.update(),
+    onMutate: () => {
+      // Latch immediately so a daemon-down blip BEFORE the first status poll
+      // still keeps the poller alive (and the tile in its upgrading state).
+      setUpgrading(true)
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['system', 'upgrade-status'] })
     },
@@ -211,7 +243,87 @@ export function SystemUpdateSection(): ReactElement {
           error={update.error}
         />
       )}
+
+      <RestartFleetAction disabled={upgradeActive} />
     </Card>
+  )
+}
+
+/**
+ * "Restart all Agents & services" ... bounces every pub-server, Agent, and
+ * connector gateway (the daemon stays up). The cure for a wedged Agent.
+ * Two-step inline confirm per [[feedback_no_browser_popups]].
+ */
+function RestartFleetAction({ disabled }: { disabled: boolean }): ReactElement {
+  const [armed, setArmed] = useState(false)
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (armTimer.current) clearTimeout(armTimer.current)
+    },
+    [],
+  )
+  const restart = useMutation<FleetRestartResult>({ mutationFn: () => apiSystem.restart() })
+
+  const arm = (): void => {
+    setArmed(true)
+    if (armTimer.current) clearTimeout(armTimer.current)
+    armTimer.current = setTimeout(() => {
+      setArmed(false)
+    }, 5000)
+  }
+  const cancel = (): void => {
+    setArmed(false)
+    if (armTimer.current) {
+      clearTimeout(armTimer.current)
+      armTimer.current = null
+    }
+  }
+  const confirm = (): void => {
+    cancel()
+    restart.mutate()
+  }
+
+  const result = restart.data
+  const failures = result ? [...result.agents, ...result.pubs].filter((t) => !t.ok) : []
+
+  return (
+    <div
+      className={styles.systemNote}
+      style={{ marginTop: 16, borderTop: '1px solid var(--ds-border-strong)', paddingTop: 16 }}
+    >
+      <div>
+        Restart all Agents and services (pub-servers, connector gateways). The daemon stays up; your
+        fleet state is untouched. Use this if an Agent gets stuck or stops responding.
+      </div>
+      <button
+        type="button"
+        className={cx(
+          styles.providerBtn,
+          armed ? styles.providerBtnDanger : styles.providerBtnPrimary,
+        )}
+        onClick={armed ? confirm : arm}
+        onMouseLeave={armed ? cancel : undefined}
+        disabled={disabled || restart.isPending}
+      >
+        {restart.isPending
+          ? 'RESTARTING…'
+          : armed
+            ? 'CLICK TO CONFIRM'
+            : 'RESTART ALL AGENTS & SERVICES'}
+      </button>
+      {restart.isError ? (
+        <ErrorState title="Restart failed" body={formatError(restart.error)} />
+      ) : result ? (
+        <div>
+          Restarted {result.agents.filter((a) => a.ok).length}/{result.agents.length} Agents and{' '}
+          {result.pubs.filter((p) => p.ok).length}/{result.pubs.length} services.
+          {failures.length > 0 ? (
+            <span> Failed: {failures.map((f) => f.name).join(', ')}.</span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

@@ -35,6 +35,17 @@ export interface StartRedirectServerOptions {
   host?: string
   /** Specific port; 0 = random free. Default 0. */
   port?: number
+  /**
+   * Callback path. Default '/callback'. Providers with a fixed
+   * registered redirect URI (OpenAI: '/auth/callback') override this.
+   */
+  path?: string
+  /**
+   * Hostname label used in the advertised `url` (the redirect_uri).
+   * Default: the bind host. OpenAI's registered redirect URI uses the
+   * literal `localhost` while we still bind 127.0.0.1.
+   */
+  urlHostname?: string
   /** Timeout in ms for the user to complete the flow. Default 5 min. */
   timeoutMs?: number
   /** Optional AbortSignal that resolves the result with an error. */
@@ -71,6 +82,8 @@ export function startRedirectServer(
 ): Promise<RedirectServerHandle> {
   const host = opts.host ?? '127.0.0.1'
   const requestedPort = opts.port ?? 0
+  const callbackPath = opts.path ?? '/callback'
+  const urlHostname = opts.urlHostname ?? host
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   return new Promise((resolveOuter, rejectOuter) => {
@@ -87,7 +100,7 @@ export function startRedirectServer(
 
     const server: Server = createServer((req, res) => {
       const reqUrl = req.url ?? '/'
-      if (!reqUrl.startsWith('/callback')) {
+      if (!reqUrl.startsWith(callbackPath)) {
         res.statusCode = 404
         res.setHeader('content-type', 'text/plain; charset=utf-8')
         res.end('not found')
@@ -134,7 +147,7 @@ export function startRedirectServer(
     server.listen(requestedPort, host, () => {
       const addr = server.address() as AddressInfo
       boundPort = addr.port
-      const url = `http://${host}:${String(boundPort)}/callback`
+      const url = `http://${urlHostname}:${String(boundPort)}${callbackPath}`
       timer = setTimeout(() => {
         finishWithError(
           new OAuthError('callback did not arrive within the timeout', 'CALLBACK_TIMEOUT'),

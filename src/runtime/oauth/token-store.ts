@@ -177,9 +177,27 @@ async function getOrCreateSalt(home: string): Promise<Buffer> {
   return fresh
 }
 
-async function getOrCreateWrappingKey(home: string): Promise<Buffer> {
-  const masterKey = await loadOrCreateMasterKey(home)
-  const salt = await getOrCreateSalt(home)
-  const info = Buffer.from(HKDF_INFO, 'utf-8')
-  return Buffer.from(hkdfSync('sha256', masterKey, salt, info, AES_KEY_BYTES))
+/**
+ * Wrapping keys memoized per home. The subscription providers hot-read
+ * the sealed token on EVERY LLM request (deliberate: the bearer
+ * rotates under running Agents); without this cache each request would
+ * re-read master.key + the salt and re-run HKDF. Master key and salt
+ * are create-once artifacts with no rotation path, so caching the
+ * derived key is safe; a token-file write does not touch them.
+ */
+const wrappingKeyCache = new Map<string, Promise<Buffer>>()
+
+function getOrCreateWrappingKey(home: string): Promise<Buffer> {
+  const cached = wrappingKeyCache.get(home)
+  if (cached) return cached
+  const derived = (async () => {
+    const masterKey = await loadOrCreateMasterKey(home)
+    const salt = await getOrCreateSalt(home)
+    const info = Buffer.from(HKDF_INFO, 'utf-8')
+    return Buffer.from(hkdfSync('sha256', masterKey, salt, info, AES_KEY_BYTES))
+  })()
+  // Do not cache a failed derivation (e.g. a transient fs error).
+  derived.catch(() => wrappingKeyCache.delete(home))
+  wrappingKeyCache.set(home, derived)
+  return derived
 }

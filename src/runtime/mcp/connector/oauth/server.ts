@@ -49,7 +49,7 @@ export interface OAuthServerDeps {
   home: string
   audit: ConnectorAuditEmitter
   /** The public-facing base URL the operator will paste into grok.com/connectors (e.g., https://abc.ngrok-free.app). Discovered from the listener at boot. */
-  issuerBaseUrl: () => string
+  issuerBaseUrl: (req: FastifyRequest) => string
   /** Injected for tests; defaults to a process-local instance. */
   codes?: AuthorizationCodeStore
 }
@@ -66,17 +66,20 @@ export function mountOAuthServer(
   const codes = deps.codes ?? new AuthorizationCodeStore()
   codes.startGc()
 
-  fastify.get('/.well-known/oauth-authorization-server', () => ({
-    issuer: deps.issuerBaseUrl(),
-    authorization_endpoint: `${deps.issuerBaseUrl()}/oauth/authorize`,
-    token_endpoint: `${deps.issuerBaseUrl()}/oauth/token`,
-    revocation_endpoint: `${deps.issuerBaseUrl()}/oauth/revoke`,
-    response_types_supported: SUPPORTED_RESPONSE_TYPES,
-    grant_types_supported: SUPPORTED_GRANT_TYPES,
-    code_challenge_methods_supported: SUPPORTED_CODE_CHALLENGE_METHODS,
-    token_endpoint_auth_methods_supported: SUPPORTED_TOKEN_ENDPOINT_AUTH,
-    scopes_supported: [SUPPORTED_SCOPE],
-  }))
+  fastify.get('/.well-known/oauth-authorization-server', (req) => {
+    const issuer = deps.issuerBaseUrl(req)
+    return {
+      issuer,
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      token_endpoint: `${issuer}/oauth/token`,
+      revocation_endpoint: `${issuer}/oauth/revoke`,
+      response_types_supported: SUPPORTED_RESPONSE_TYPES,
+      grant_types_supported: SUPPORTED_GRANT_TYPES,
+      code_challenge_methods_supported: SUPPORTED_CODE_CHALLENGE_METHODS,
+      token_endpoint_auth_methods_supported: SUPPORTED_TOKEN_ENDPOINT_AUTH,
+      scopes_supported: [SUPPORTED_SCOPE],
+    }
+  })
 
   // RFC 9728 protected-resource metadata. grok-connectors-manager
   // probes this on every connect; we 401'd it in PR-A1 (defaulted by
@@ -84,12 +87,15 @@ export function mountOAuthServer(
   // compliance and unblocks clients that hard-require it. Also
   // public — same posture as the AS metadata; the document itself
   // contains no secrets.
-  fastify.get('/.well-known/oauth-protected-resource', () => ({
-    resource: `${deps.issuerBaseUrl()}/mcp`,
-    authorization_servers: [deps.issuerBaseUrl()],
-    bearer_methods_supported: ['header'],
-    scopes_supported: [SUPPORTED_SCOPE],
-  }))
+  fastify.get('/.well-known/oauth-protected-resource', (req) => {
+    const issuer = deps.issuerBaseUrl(req)
+    return {
+      resource: `${issuer}/mcp`,
+      authorization_servers: [issuer],
+      bearer_methods_supported: ['header'],
+      scopes_supported: [SUPPORTED_SCOPE],
+    }
+  })
 
   fastify.get<{
     Querystring: {

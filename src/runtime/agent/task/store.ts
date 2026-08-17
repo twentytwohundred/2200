@@ -222,6 +222,22 @@ export class TaskStore {
    * timeout sweep handles them separately so the router never
    * resumes an expired wait with stale context.
    */
+  /**
+   * Normalize a pub sender name for `wait_for` matching.
+   *
+   * `expected_from` is written by the model when it calls
+   * `task_await_response`; `sender` comes off the wire as the peer's
+   * pub display name. The two drift in ways that are cosmetic to a
+   * human and fatal to an equality check: the model usually writes the
+   * handle exactly as it addressed the peer, `@jodin`, while the wire
+   * carries `Jodin`. A miss here does not degrade gracefully ... the
+   * parked task never resumes and the Agent goes silent on whoever it
+   * promised an answer to. Strip the address sigil and case.
+   */
+  private static normalizeSenderName(name: string): string {
+    return name.trim().replace(/^@/, '').toLowerCase()
+  }
+
   async findWaiting(
     criteria:
       | { kind: 'pub'; pub: string; sender: string }
@@ -244,7 +260,10 @@ export class TaskStore {
       if (w.source_kind !== criteria.kind) return false
       if (criteria.kind === 'pub') {
         if (w.source_ref.pub !== criteria.pub) return false
-        return w.expected_from.toLowerCase() === criteria.sender.toLowerCase()
+        return (
+          TaskStore.normalizeSenderName(w.expected_from) ===
+          TaskStore.normalizeSenderName(criteria.sender)
+        )
       }
       if (criteria.kind === 'connector') {
         if (w.source_ref.connector_id !== criteria.connector_id) return false

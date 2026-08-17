@@ -147,6 +147,43 @@ export const CATALOG: readonly CatalogEntry[] = [
     notes: 'Aggregator default. Pricing varies; useful for fallback policies.',
   },
 
+  // OpenAI ChatGPT subscription (Codex family). A ChatGPT Plus/Pro
+  // subscription bearer serves ONLY the Codex model line via the
+  // ChatGPT backend ... not OpenAI's full API catalog ... so these are
+  // registered under the `openai-subscription` provider, distinct from
+  // the API-key `openai` provider above. Coding-tuned but
+  // general-capable. Model ids are from the public Codex line as of
+  // the 2026-07-10 decision record; the list is confirmed on the first
+  // live completion (the adapter is interim-flagged until then).
+  {
+    id: 'openai-subscription/gpt-5.1-codex',
+    provider: 'openai-subscription',
+    model_id: 'gpt-5.1-codex',
+    tier: 'frontier',
+    status: 'active',
+    display_name: 'GPT-5.1 Codex (ChatGPT subscription)',
+    notes:
+      'Coding-tuned, general-capable. Served by the ChatGPT backend on a Plus/Pro subscription.',
+  },
+  {
+    id: 'openai-subscription/gpt-5.1-codex-max',
+    provider: 'openai-subscription',
+    model_id: 'gpt-5.1-codex-max',
+    tier: 'specialist',
+    status: 'active',
+    display_name: 'GPT-5.1 Codex Max (ChatGPT subscription)',
+    notes: 'Long-horizon coding specialist. Heavier rate-limit draw on a subscription.',
+  },
+  {
+    id: 'openai-subscription/gpt-5.1-codex-mini',
+    provider: 'openai-subscription',
+    model_id: 'gpt-5.1-codex-mini',
+    tier: 'economy',
+    status: 'active',
+    display_name: 'GPT-5.1 Codex Mini (ChatGPT subscription)',
+    notes: 'Smaller Codex variant; stretches subscription rate limits further.',
+  },
+
   // xAI (Grok). Reachable two ways with the SAME model id: `xai-subscription`
   // (SuperGrok OAuth bearer ... the fleet-default credential) or `xai`
   // (XAI_API_KEY, metered). The catalog is the single registry of known model

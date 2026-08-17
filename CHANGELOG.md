@@ -6,6 +6,203 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **2200 is now open source under the Apache License 2.0.** Relicensed from the Elastic License v2 ... the managed-service restriction is gone, and the license's standard terms are the only terms. Every part of the repo is covered: runtime, web app, extensions catalog, examples. The reasoning lives in the [relicense decision record](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-08-16-apache-relicense.md). The contribution model opens with it; see `CONTRIBUTING.md` for what best-effort maintenance means here.
+
+## [2026.725.909] ... 2026-07-25
+
+### Fixed
+
+- **An Agent claiming to have written a file that isn't there is now flagged loudly, not quietly.** The audit already knew how to check the disk, but skipped that check in the one case it settles ... where the Agent named a file and never wrote anything. The result was a soft "unverified" note, easy to read as noise, on what was actually a fabricated file. Now: if the Agent names a path and the file isn't there, that's a contradiction and it's raised as important. If the file exists but nothing in that task wrote it, it stays "unverified" rather than being credited ... a file that was already on disk isn't proof the Agent just made it.
+- **Agents are no longer flagged for things their teammates said.** When one Agent relays another's answer to you ("Jodin replied: ..."), the quoted words were being audited as if the relaying Agent had claimed them ... so an Agent got flagged for reading a file that its teammate mentioned reading. Quoted speech, blockquotes, and relayed replies are now excluded before the audit runs. An Agent's own words are still audited in full, including anything it phrases as a quote of itself.
+
+## [2026.724.1947] ... 2026-07-24
+
+### Fixed
+
+- **An Agent that relayed a question no longer goes dark afterwards.** When an Agent asked a peer something on your behalf, it parked to wait for the answer ... and then kept reporting itself as blocked even after the answer arrived and the work finished. It looked stuck in the fleet view and in the web app while being perfectly healthy and idle, and the only way out was stopping and starting it by hand. An Agent now clears that state the moment it picks its work back up.
+- **A parked Agent can be stopped.** Stopping or restarting an Agent that was waiting on a peer or on you was rejected internally, so the last state it reported about itself was wrong. Every state an Agent can be in can now be stopped from ... which matters most for the Agents that look stuck, since those are the ones you want to restart.
+
+## [2026.724.1804] ... 2026-07-24
+
+### Fixed
+
+- **Agents can now hand you a file when you ask them to.** The previous release made any file path an Agent mentions clickable in the web app ... but nobody told the Agents. Asked to "send me that file" or "let me download it", an Agent would look for a download tool, find none, and tell you it couldn't help ... about a file it had already written and named for you. Agents now know that naming the path _is_ how they hand a file over, and will say so plainly instead of reporting a failure. They also know not to wrap the path in backticks (which suppresses the link on purpose), and that on Discord or WhatsApp there is nothing to click, so a short file is worth pasting too.
+- **The Upgrade button in Settings works on servers managed by systemd.** It previously froze at "stopping the daemon" every time on those machines and left the fleet down: the upgrade helper ran inside the service's process group and was killed the moment the daemon it was upgrading shut down. It now runs in its own scope, out of the way of the shutdown. `2200 update` from the CLI was never affected.
+- **Settings no longer claims an upgrade is running when it isn't.** If an upgrade was interrupted ... or you upgraded from the CLI instead ... the panel could sit on "UPGRADING" indefinitely, including reporting an upgrade to the version you were already running. It now reconciles on read: an upgrade that reached its target version reads as finished, and one that stalled reads as failed with the step it stopped at.
+
+### Known issue
+
+- After a self-upgrade, the supervisor ends up running **outside** its systemd unit, so `systemctl status` will report the service as inactive even though your fleet is up and healthy. It corrects itself on the next reboot. Handing the daemon back to systemd deliberately is being designed rather than patched ... to bring it back under the unit now, run `2200 daemon stop` followed by `systemctl --user start <your-unit>`.
+
+## [2026.724.1731] ... 2026-07-24
+
+### Fixed
+
+- **Agents no longer go silent on a question they were asked.** Three separate faults produced the same symptom ... you ask an Agent something, it goes away to work, and it never comes back:
+  - **Tasks in flight when an Agent process stopped were lost permanently.** The loop only ever picks up `pending` tasks, and nothing reclaimed the ones left mid-run, so a task interrupted by a restart was never retried, never failed, and never surfaced anywhere you would see it. It simply stopped existing. Agents now reclaim interrupted tasks on startup: safe and resumable ones are requeued with a note telling the Agent it is resuming rather than starting over, and ones that cannot be safely re-run (or that have been sitting unfinished for more than a day) are reported as failures in your inbox instead of vanishing. If you restart the fleet after every build, this was firing on any task that happened to be running.
+  - **An Agent relaying a question to a peer missed the answer** unless the peer happened to `@`-mention it back. When an Agent asks a peer on your behalf, it parks and waits for the reply ... but the check for "am I waiting on this person?" ran _after_ the guards that keep Agents from chattering at each other, and those guards correctly ignore a peer's message with no `@`-mention. In a two-way conversation, where nobody bothers with mentions, the reply was discarded and the waiting Agent stayed parked with the answer sitting in the room. The wait is now honored first: an Agent that has gone on record waiting for a specific peer in a specific room always hears that peer's reply. Agents still do not wake on each other's ordinary chatter.
+  - **An Agent's follow-up landed in the wrong chat thread.** Messages an Agent sends you on its own initiative always went to your default thread, so an answer to something you asked in any other thread showed up somewhere you were not looking. Follow-ups now land in the thread the conversation started in.
+
+### Added
+
+- **Files ... see what your Agents are actually writing.** Agents have always kept their own directories (`/project`, `/shared`, `/brain`, `/commons`), but until now there was no way to look inside one without shelling into the box. Every Agent now has a **Files** tab: browse the whole tree, read a file inline, edit and save it in place, or download it. Binary files and anything over 1 MB offer a download rather than a useless editor, and brain notes are read-only here so the Brain screen stays the one place that keeps search in step.
+- **File paths in chat are links.** When an Agent tells you it wrote something to `/project/reports/q3.md`, that path is now clickable and opens the file. Nothing changes about how Agents work ... they already say where they put things, so handing you a file is just that sentence. Paths inside code blocks are left alone.
+
+## [2026.710.904] ... 2026-07-10
+
+### Added
+
+- **Sign in with ChatGPT.** A ChatGPT Plus/Pro subscription now powers a fleet the same way SuperGrok does: a peer sign-in card in Settings, a first-run option, and a new `openai-subscription` provider in the model picker (the Codex model family ... coding-tuned, general-capable). Device-code sign-in is the primary path (works headless / over SSH; requires the "Device code authentication" toggle in ChatGPT security settings); for accounts without that toggle there is a browser sign-in on the machine running 2200 (`localhost:1455` callback) ... the card's "Use browser sign-in instead" button or `2200 oauth openai login --browser`, plus an automatic fallback when the device flow cannot start. Fleet-scoped like Grok: one sign-in, every Agent that picks the provider, background token refresh included. The inference transport (ChatGPT Codex backend, Responses shape) is marked interim until it returns a real completion from a live subscription; the auth half is verified against OpenAI's live surface.
+- **Subscription positioning: peer cards, not one pinned leader.** Settings presents SuperGrok and ChatGPT as equal "bring a subscription you already pay for" options, and first-run offers each in turn. Grok stays fully supported; it just no longer gets sole top billing.
+
+### Changed
+
+- **Subscription-OAuth substrate is now provider-neutral.** The six call sites that hardwired xAI (LLM registry, refresh service, HTTP sign-in routes, CLI subcommand, first-run, providers DTO) now drive off a registry keyed by provider slug, so adding ... or removing ... a subscription provider is a data change. `2200 oauth openai <login|status|logout>` joins `2200 oauth xai ...`; the browser sign-in routes generalize to `/api/v1/oauth/:provider/...` (the `xai` paths are unchanged).
+
+### Fixed
+
+- **Stale `2200 oauth xai login` success text** claimed Agents on provider `xai` would use the subscription bearer with an `XAI_API_KEY` fallback ... neither is true (the subscription provider is `xai-subscription`, fail-loud by design, and running Agents hot-read the rotated bearer with no restart). The message now says what actually happens; same correction on logout.
+- **Subscription provider cards no longer expose API-key controls.** The generic CHANGE/CLEAR buttons on a subscription card wrote through a display-only placeholder to the API-key sibling's env var (clearing `xai-subscription` deleted `XAI_API_KEY`; the new `openai-subscription` would have deleted `OPENAI_API_KEY`). The runtime now rejects key writes for subscription providers and the cards point at the sign-in flow instead.
+
+## [2026.703.54] ... 2026-07-03
+
+### Fixed
+
+- **`2200 daemon` now works cleanly under a service manager (systemd, launchd, containers).** Two problems surfaced wiring boot-persistence:
+  - **New `2200 daemon run`** runs the supervisor in the **foreground** ... no detaching, logs to the service manager's journal, forwards `SIGTERM`/`SIGINT` for a clean stop, and exits with the supervisor's code. This is the right target for a `Type=simple` systemd unit (or launchd / a container entrypoint). The existing detached `2200 daemon start` fights `Type=forking` (the detached process escapes the unit's control group); use `daemon run` with `Type=simple` instead.
+  - **`2200 daemon stop` now confirms the process is actually gone** before reporting success ... it previously judged "stopped" by a released lock, which could report success while the process kept running. It now waits for real process exit and escalates to `SIGKILL` if the daemon lingers.
+
+## [2026.703.5] ... 2026-07-03
+
+### Added
+
+- **`2200 secret` ... manage sealed instance-level secrets.** `2200 secret set <key>` seals a value into the encrypted instance-secret store (reads the value from stdin when it's omitted, so it never lands in the process list or shell history); `secret list` shows the stored key names only (never values); `secret rm <key>` deletes one. First use: injecting the tunnel-broker install secret for the self-serve Cloudflare tunnel. Internal groundwork ... no user-facing change until the access-mode picker wires it up.
+
+## [2026.702.2310] ... 2026-07-02
+
+### Security
+
+- **The live-updates WebSocket now checks the request `Origin` server-side.** With the session moved to a cookie (previous release), a page at another website could try to open a socket to your instance and rely on the browser attaching your cookie (cross-site WebSocket hijacking). `SameSite=Lax` should already prevent that, but 2200 doesn't lean on "should": the WebSocket upgrade is rejected outright (`4403`, before authentication) when the `Origin` doesn't match the instance's own host. A non-browser client (which has no ambient cookie to hijack) is unaffected and still needs a valid credential.
+
+## [2026.702.2247] ... 2026-07-02
+
+### Security
+
+- **Web sign-in now uses an HttpOnly session cookie ... your access token is no longer readable by page scripts or exposed in any URL.** Previously the token lived in the browser's `localStorage` (any script on the page could read it) and rode in `?token=` query strings for the live-updates socket and avatar images (so it could land in history and logs). Now you paste the token once into the sign-in form; the server exchanges it for a secure, browser-only cookie (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS) that the browser attaches automatically to every request, including the WebSocket and images. The token is never held in JavaScript and never appears in a URL. Non-browser API clients still use `Authorization: Bearer`. New `POST /api/v1/auth/login` (rate-limited on the same lockout) and `/auth/logout`.
+- **Secure by default: a fresh install binds to loopback (`127.0.0.1`), not all interfaces.** Nothing is reachable ... not even from your own LAN ... until you deliberately choose how to expose it (LAN, Tailscale, or the Cloudflare tunnel). Previously a new install was LAN-reachable out of the box.
+
+## [2026.702.2218] ... 2026-07-02
+
+### Security
+
+- **Box-level login lockout, independent of Cloudflare.** After 10 failed authentication attempts from one client within 5 minutes, that client is locked out for 15 minutes (HTTP `429` + `Retry-After`), checked before the token is even compared. Keyed per client ... behind the tunnel the real client is read from Cloudflare's `CF-Connecting-IP` (which Cloudflare sets and a client can't forge through the tunnel), otherwise the socket address ... so no one can lock anyone else out. A successful login clears the count. This is defense-in-depth on top of the 256-bit bearer: brute force was already infeasible, but repeated guessing now gets shut off and stops filling the logs.
+
+## [2026.702.2115] ... 2026-07-02
+
+### Internal
+
+- **Groundwork for the self-serve Cloudflare Tunnel (Epic 19).** No user-facing behavior yet ... internal modules the access-mode picker and `cloudflared` sidecar will assemble from: the tunnel-broker provision/revoke client (byte-compatible request signing), a sealed instance-secret store for the broker secret + tunnel token (same AES-256-GCM sealing as the OAuth tokens), and the access-mode config (cloud / local / tailscale) with the loopback-vs-LAN bind decision. Domain-agnostic ... the tunnel hostname comes from the broker, so the chosen domain drops in with no code change.
+
+## [2026.702.32] ... 2026-07-02
+
+### Added
+
+- **Rename your Agent in the onboarding preview before it's built.** The preview showed the interview-derived name read-only, so "Let's call it Mira" shipped as `lets-call-it-mira` with no way to fix it. The preview now has an editable name field, and whatever you type is tidied into a valid identifier ("Mira The Great!" becomes `mira-the-great`, "2200" becomes `agent-2200`); a name with no usable letters is rejected with a clear message, and a collision with an existing Agent is caught before anything is written.
+
+### Fixed
+
+- **Onboarding survives a reload or navigating away instead of losing the whole interview.** A page reload or an in-tab navigation mid-interview used to silently discard the session ... "answered five questions, misclicked, start over." The session now persists to the browser so a reload or a trip to another screen and back **resumes** where you left off, prior answers intact. An expired session quietly starts fresh.
+
+## [2026.701.2304] ... 2026-07-01
+
+### Security
+
+- **Transport-edge hardening.** Three pre-public fixes; none change a normal user flow:
+  - The two gateway-internal HTTP routes (connector inbound, Extension pair-state) skipped bearer auth on the rationale that only a same-host child calls them. With the web server bound to all interfaces they were reachable across the LAN, so any host on the network could forge connector events (which turn into Agent tasks) or pairing state. They now require a loopback source ... the gateway child posts to `127.0.0.1`, so the real flow is unchanged; an off-box request gets a `403`.
+  - A bearer token in a URL leaks (browser history, referrers, proxy/access logs). The `?token=` query form ... a header fallback for surfaces that can't set one ... is now accepted ONLY on the WebSocket upgrade and the avatar-image GET (loaded via `<img>`). Every other route requires the `Authorization` header.
+  - The connector's OAuth Authorization-Server metadata derived its issuer URL from each request's `Host` header into shared state ... host-header-injectable (advertise a rogue token endpoint a discovering client would post its code + secret to) and racy across concurrent requests. It now pins to an operator-configured public URL when set, and otherwise derives per-request with a loopback default.
+
+### Fixed
+
+- **The System Update tile no longer stalls (and shows a stale "Upgrade" button) mid-upgrade.** When the daemon briefly restarts as part of an upgrade, the status poller used to give up permanently ... the progress stepper vanished and the old "Upgrade to X" button reappeared even though the upgrade was still running. A "mid-upgrade" latch now keeps the tile polling through that restart window and only stops once the upgrade actually finishes.
+
+## [2026.701.2123] ... 2026-07-01
+
+### Changed
+
+- **Pre-public polish on the surfaces a demo audience actually sees.** Four camera-visible cleanups, no behavior-critical paths touched:
+  - The internal component-library reference page is no longer reachable on a real instance ... it was listed in the ⌘K command palette and its route was live in production. The palette entry is gone and the `/dev/components` route is now dev-build-only.
+  - Settings no longer renders off-palette reds and greens. Six style modules referenced color tokens that didn't exist (`--ds-danger`, `--ds-error`, `--ds-warning`, `--ds-success`) and fell back to hardcoded hex, so those chips never tracked the dark theme. They now use the real `--danger` / `--warn` tokens, and a `--success` / `--success-soft` pair was added to fill the one genuine gap (the design system had danger / warn / info but no positive-state color).
+  - Deleting a schedule now takes two clicks (arm, then confirm ... auto-disarming), matching every other destructive action instead of firing on a single click.
+
+### Fixed
+
+- **A clear message instead of a raw crash when 2200 is installed on an old Node.** Installing via `npm i -g` on Node older than 22 used to dump an opaque `ERR_DLOPEN_FAILED` from the native `better-sqlite3` addon the instant the CLI started. The CLI now checks the Node version before that addon loads and exits with a plain-language "upgrade Node to 22+" message. (The `install.sh` path already preflighted this; the bare npm path didn't.)
+
+## [2026.701.2102] ... 2026-07-01
+
+### Fixed
+
+- **The five stranger-path onboarding dead-ends are closed.** A pre-public QA sweep found five deterministic ways a first-time user (or a demo audience) could get stuck on the path from `npm install` to chatting with a freshly-spawned Agent in the Studio. All five are fixed:
+  - **A fresh install never got a Studio.** The shared `studio` pub was created only at daemon boot, which no-ops on a fresh install (zero Agents on disk). The first Agent ... spawned later through onboarding ... had no room to appear in, and its seeded orientation post to `studio` failed too. The Studio is now ensured when that first Agent is built (inside `migrateFromHandoff`, the single chokepoint shared by the web-confirm, CLI-spawn, and CLI-migrate paths), before the Agent starts, so it attaches the studio wake source on first launch. It only looked fine before on boxes that already had Agents from a prior boot.
+  - **A dead provider during the interview silently produced a garbage Agent.** The interview deliberately swallows provider errors (so a transient hiccup never 500s), but that turned a persistently-unreachable provider into a half-built Agent bound to a model that can never chat ... with no error shown. Picking the `local` provider with the endpoint down (Ollama not running, the exact cold-start fallback first-run offers) now fails fast at onboarding start with an actionable message naming the endpoint, via a cheap `/v1/models` reachability probe.
+  - **API keys pasted in the setup wizard were dead until a restart the wizard never did.** The daemon starts early in setup; keys entered afterward went to `runtime.env`, but a supervisor reads that file only at boot, so the operator's very first onboarding attempt died with `env var 'ANTHROPIC_API_KEY' is not set`. The wizard now restarts the daemon when it wrote any keys, so they're live before setup finishes.
+  - **The main chat screen ate failed sends and could spin "Thinking…" forever.** A send that failed (Agent stopped, network blip) vanished silently because the composer clears on submit; it now surfaces an inline error with a Retry that re-sends the exact message. And the "thinking" placeholder no longer spins indefinitely when an Agent dies mid-reply ... it gives up on the Agent's error state or a tool-activity-aware backstop (a late reply still lands as a normal message).
+  - **Odd or duplicate Agent names 500'd and wedged the interview.** A name that didn't reduce to a valid identifier ("2200", non-Latin scripts, emoji) threw during the build, surfaced as a generic 500, and left the session permanently stuck (every retry re-threw). Names now derive gracefully ("2200" → `agent-2200`) and never throw; a name collision returns an actionable 409 before any files are written instead of a 500.
+
+## [2026.625.1807] ... 2026-06-25
+
+### Added
+
+- **A "Restart all Agents & services" button in Settings → System.** When an Agent gets wedged (e.g. stuck `blocked_on_agent` and no longer responding), there was no in-app way to recover it ... you had to drop to the CLI. The new button bounces every pub-server, Agent, and connector gateway in one click, WITHOUT restarting the daemon itself (it stays up to serve the request and orchestrate the restart, so the web app never goes dark). Pubs restart first so Agents reconnect to fresh pub-servers; then each Agent is restarted (the actual unstick); then connector gateways are refreshed. Two-step inline confirm (no browser popup), and the result reports exactly how many Agents and services came back (and names any that didn't). Backed by `POST /api/v1/system/restart` → `Supervisor.restartFleet()`, best-effort and independent per target. Your fleet state on disk is untouched.
+
+## [2026.624.1204] ... 2026-06-24
+
+### Fixed
+
+- **Agents no longer go silent ~6h after they start.** An Agent bound to the `xai-subscription` (SuperGrok) provider captured the OAuth bearer once, at spawn. The fleet bearer is ~6h-lived and the background refresh rotates it ... but a running Agent never picked up the new one, so once its cached copy expired, **every** LLM call returned `403 auth failed`: the ambient router (so nobody chimes in on an untagged message, and the member dots stay grey/idle) AND the main loop (so even an @-mention couldn't actually reply). Only a restart fixed it, until the next rotation. The pub-server already re-read the rotated token; Agents now do too ... the `xai-subscription` provider reads the bearer **fresh from the sealed token store on every request** (one small decrypt, no network), so a rotated fleet token is used immediately with no restart and no 6-hourly Agent flapping. (The same fix covers the per-Agent ambient router, which shares the provider.) Other providers are unchanged ... static API keys are still captured once.
+
+## [2026.623.1738] ... 2026-06-23
+
+### Changed
+
+- **From-tarball install smoke + isolated chaos tests (QA hardening, no runtime change).** Two gaps an independent QA pass flagged:
+  - **`scripts/smoke-install.sh` (`pnpm smoke`)** packs the tarball, installs it in a clean `node:22` container, and asserts the regression classes that have actually bitten on real installs: `setup` serves the web app keyless, the **pub-server patch overlay applies**, the Studio auto-provisions and **dedupes** (one row per Agent, no `(agent)` shadow), the pub-server runs with **no LLM credential** (Bartender off), the pub survives a daemon restart **without a port collision**, and **Studio chat persists across a restart**. Wired into CI as a gate on PRs to `main` (`.github/workflows/smoke.yml`). This is the end-to-end guard the unit tests couldn't give.
+  - **Chaos tests now run isolated** (`vitest.chaos.config.ts`, single fork, file-parallelism off) instead of competing with ~190 other files for CPU ... the prior timeout loosening was a band-aid; running `supervisor-bounce-survival` with dedicated CPU is the real fix for its flake. `pnpm test` runs the main suite then the isolated chaos pass.
+  - Documented the pub adoption/orphan/overlay story in one place (`pub-port.ts`) so the interlocking pieces aren't re-broken, and prettier now ignores the in-repo `.pnpm-store/`.
+
+## [2026.623.1702] ... 2026-06-23
+
+### Fixed
+
+- **`2200 update` over SSH no longer leaves the daemon down.** The update stops the daemon, runs `npm install -g`, then restarts it via the freshly-installed binary's `daemon start`. That restart was spawned with inherited stdio and `await`ed, which tied the new daemon's startup to the `2200 update` process ... and over SSH that parent exits the instant the command returns, taking the half-started restart chain down with it (observed live on valkyrie: a remote `2200 update` installed the new version but the daemon never came back). The restart is now spawned **fully detached** ... its own session (`detached: true` => `setsid` on POSIX), no inherited stdio, `unref`'d ... so it survives a parent that dies the moment the command returns. Liveness is confirmed by **polling the supervisor lock** rather than awaiting the (now-detached) child, so the up/down signal also doesn't depend on the parent surviving; if the parent is killed mid-poll, the daemon is still coming up underneath. (Local interactive `2200 update` was already fine; this fixes remote/headless updates.)
+
+## [2026.623.1638] ... 2026-06-23
+
+### Fixed
+
+- **The Studio no longer breaks (HTTP 409 on send) after a `2200 update`.** A pub-server can outlive the supervisor that spawned it ... an update restart, a SIGHUP self-upgrade, or a detached crash leaves it running and still holding its TCP port. On the next boot the fresh supervisor launched a _new_ pub-server on that same recorded port, which died instantly on `EADDRINUSE`; the pub record flipped to `errored`, and the supervisor's pub-bridge then reported `pub_not_running` ... so posting to the Studio returned HTTP 409, even though a perfectly healthy pub-server was sitting right there on the port. (Hit live on valkyrie right after updating to 2026.623.1612: a pub-server from days earlier held the port and every relaunch collided.) `startPub` now inspects the port before launching: if a healthy pub-server is already serving it, **adopt** it (no relaunch, no collision, no flap of the Agents' WebSockets); if a wedged listener is stuck there, reclaim it and launch fresh; otherwise just launch. The decision is a pure, unit-tested `planPubPort`. So an update (or any restart) brings the room back instead of stranding it.
+
+## [2026.623.1612] ... 2026-06-23
+
+### Fixed
+
+- **The `supervisor-bounce-survival` chaos test no longer flakes under parallel CI load (test-only).** The test SIGKILLs the supervisor, restarts it, and waits for the agent to reconnect and advance its heartbeat. That reconnect wait was capped at 25s, which held in isolation but timed out when the full suite saturated the CPU with ~16 workers ... a false red that cost a re-run. Bumped the reconnect wait to 60s and the overall test budget to 150s so a slow-under-load run still passes (and a genuine hang fails with the test's own clear message, not a vitest timeout). No product code changed.
+
+## [2026.623.1350] ... 2026-06-23
+
+### Changed
+
+- **The pub-server patch-overlay decision is now unit-tested (no behavior change).** The logic that overlays 2200's patched `server.js` onto an npm-installed pub-server (keepalive + Bartender-off) probes several candidate paths for both the installed file and the shipped patch ... and getting the shipped-patch depth wrong is the bug that shipped twice (`2026.617.327` then `.342`) before the overlay actually applied. The path-probing + marker decision is extracted into a pure, injectable `planPubServerPatch` with a dedicated test (finds the patch at a deeper bundle depth, idempotent when already patched, never overwrites with an unpatched copy, warns when no shipped patch is found). `ensurePubServerPatched` is now the thin I/O executor over that decision. This is the regression guard for the "Agents silently dropped from the Studio after ~60s" class of failure.
+
+## [2026.622.2027] ... 2026-06-22
+
+### Fixed
+
+- **A SuperGrok-only install can start onboarding ... the default provider pick now counts the subscription.** When `POST /api/v1/onboarding` is called without an explicit provider (the CLI/legacy path), it auto-picks a provider from the catalog. That pick only looked at runtime.env API keys, so it never saw the `xai-subscription` credential (which lives in the sealed fleet OAuth store, not runtime.env) ... a "Sign in with X / SuperGrok" install with no API key fell through to the keyless `local` fallback (Ollama at `localhost:11434`, usually not running), and the interview failed to connect. The pick now treats an active subscription as a real credential and prefers it over the keyless fallback, matching the web picker. (The web onboarding flow always passed the provider explicitly, so it was already fine; this fixes the no-explicit-provider path.) Pulled into a pure, unit-tested `pickOnboardingProvider` helper. So: one SuperGrok sign-in is all an operator needs ... no second model, no API key.
+
 ## [2026.618.1542] ... 2026-06-18
 
 ### Fixed

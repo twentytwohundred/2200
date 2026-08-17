@@ -1,10 +1,9 @@
 /**
  * WebSocket subscription to /api/v1/ws.
  *
- * The connection sends bearer auth via a query param (browsers do not
- * let JS set Authorization headers on WebSocket upgrades). The runtime
- * accepts both `Authorization: Bearer ...` and `?token=...` for the WS
- * route specifically; the URL form is the practical one for browsers.
+ * Auth: the browser attaches the same-origin HttpOnly session cookie to the
+ * WebSocket handshake automatically, so no token rides in the URL. The runtime
+ * authenticates the upgrade off that cookie (same as every other route).
  *
  * Phase A: emits the events we care about into the TanStack Query
  * cache by invalidating affected queries. The pulse on the Fleet view
@@ -25,7 +24,6 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { getToken } from '../lib/auth'
 import type { Agent, ListEnvelope, Pulse } from '../lib/api'
 import { toolStreamStore } from './toolStreamStore'
 
@@ -215,13 +213,13 @@ export function LiveSignalProvider({ children, url, disabled = false }: LiveSign
     cancelledRef.current = false
 
     const connect = () => {
-      const token = getToken()
-      const base = buildWsUrl(url)
-      const fullUrl = token ? `${base}?token=${encodeURIComponent(token)}` : base
+      // The browser attaches the same-origin session cookie to the WS
+      // handshake automatically ... no token in the URL.
+      const wsUrl = buildWsUrl(url)
       setStatus('connecting')
       let socket: WebSocket
       try {
-        socket = new WebSocket(fullUrl)
+        socket = new WebSocket(wsUrl)
       } catch (err) {
         setStatus('closed')
         setLastError(err instanceof Error ? err.message : String(err))

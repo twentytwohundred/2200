@@ -300,6 +300,18 @@ export async function migrateFromHandoff(args: MigrateArgs): Promise<MigrateResu
   // first time the operator runs `2200 agent start <name>` (or the
   // supervisor auto-starts), the wake immediately picks it up.
   if (args.seedFirstTask === true) {
+    // Ensure the shared Studio exists and this new Agent is enrolled BEFORE the
+    // caller starts it. `seedFirstTask` is the onboarding/spawn signal ... the
+    // same flag that seeds an orientation task which posts to `studio`, so the
+    // room MUST exist. On a fresh install the daemon booted with zero Agents,
+    // so boot's studio bootstrap no-op'd; this is the first Agent and nothing
+    // else creates the room. ensureStudioPub creates it (if missing), enrolls
+    // every Agent, and writes `studio` into each pubs.md ... all idempotent and
+    // fully best-effort (it swallows its own errors, incl. an early return when
+    // there's no user identity yet). Running it here, before the caller's
+    // startAgent, means the new Agent attaches the studio wake source on its
+    // first start (no extra restart) and its orientation post lands.
+    await args.supervisor.ensureStudioPub()
     try {
       const role = built.frontmatter.agent_role
       const taskStore = new TaskStore(args.home, agentName)

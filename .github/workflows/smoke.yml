@@ -1,0 +1,51 @@
+name: Install smoke
+
+# Proves what a REAL user gets from a published install: packs the tarball,
+# installs it in a clean node:22 container, and asserts the install + overlay +
+# pub/Studio lifecycle regression classes (see scripts/smoke-install.sh). This
+# is the end-to-end guard the unit tests can't give ... it would have caught
+# the pub-overlay bundle-depth bugs and the "agents drop on a real install"
+# class before they shipped.
+#
+# Runs on PRs to main (gate merges) and on demand. Not on every feature push
+# (it's a ~2-3 min Docker run); the fast unit CI covers those.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: From-tarball install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Docker is preinstalled on ubuntu-latest. The script packs the repo
+      # (which runs prepack: build + bundle web/connectors/pub-server-patch),
+      # then installs that tarball in a clean container and asserts.
+      - name: Run install smoke
+        run: bash scripts/smoke-install.sh

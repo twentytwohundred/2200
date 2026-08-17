@@ -62,12 +62,7 @@ export class CredentialVaultError extends Error {
   constructor(
     message: string,
     public readonly code:
-      | 'NOT_FOUND'
-      | 'CORRUPT'
-      | 'INVALID_NAME'
-      | 'TAMPERED'
-      | 'IO_ERROR'
-      | 'INVALID_SECRETREF',
+      'NOT_FOUND' | 'CORRUPT' | 'INVALID_NAME' | 'TAMPERED' | 'IO_ERROR' | 'INVALID_SECRETREF',
   ) {
     super(message)
     this.name = 'CredentialVaultError'

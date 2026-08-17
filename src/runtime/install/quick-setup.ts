@@ -44,7 +44,9 @@ import { readLivePid } from '../supervisor/pidfile.js'
 import { primaryLanIp, tailscaleIp } from '../util/lan-ip.js'
 import { runFirstRunOpenClawMigration, type FirstRunIO } from './first-run.js'
 
-const WEB_HOST = '0.0.0.0'
+// Secure by default: loopback bind on a fresh install. Nothing is exposed to
+// the LAN until the operator picks an access mode (LAN / Tailscale / tunnel).
+const WEB_HOST = '127.0.0.1'
 
 /**
  * The host the running daemon actually bound its web server to, read

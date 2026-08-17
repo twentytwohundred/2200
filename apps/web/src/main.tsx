@@ -6,13 +6,10 @@ import { ThemeProvider } from './theme/ThemeProvider'
 import { LiveSignalProvider } from './ws/useLiveSignal'
 import { LiveFavicon } from './favicon/LiveFavicon'
 import { AuthGate } from './auth/AuthGate'
-import { bootstrapAuth } from './lib/auth'
 import './tokens/generated/tokens.css'
 import './tokens/generated/theme-default-dark.css'
 import './tokens/generated/agent-palette.css'
 import './main.css'
-
-bootstrapAuth()
 
 const queryClient = new QueryClient({
   defaultOptions: {

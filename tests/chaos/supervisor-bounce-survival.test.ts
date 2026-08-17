@@ -235,7 +235,12 @@ describe('supervisor bounce survival (chaos)', () => {
             heartbeatTs >= secondSupervisorBootTs
           )
         },
-        { timeoutMs: 25_000 },
+        // Generous: this is the SIGKILL -> second-supervisor-boot ->
+        // agent-reconnect -> heartbeat-advance path, and under full-suite
+        // parallel load (CPU saturated by ~16 workers) the reconnect is
+        // markedly slower than in isolation. 25s flaked under load; 60s
+        // gives real headroom without masking a genuine hang.
+        { timeoutMs: 60_000 },
       )
     } catch (err) {
       throw new Error(
@@ -247,5 +252,9 @@ describe('supervisor bounce survival (chaos)', () => {
     // 8. Final sanity: agent is still the same process we started.
     expect(agent.exitCode).toBeNull()
     expect(supervisor.snapshot().agents['chaos']!.pid).toBe(agent.pid)
-  }, 60_000)
+    // Test budget must exceed the sum of the internal waits (first-heartbeat
+    // + post-kill settle + the up-to-60s reconnect) with margin, so a slow
+    // run under load fails its own assertion with a clear message rather than
+    // tripping the vitest test timeout.
+  }, 150_000)
 })

@@ -2,6 +2,9 @@ dist/
 node_modules/
 coverage/
 .tscache/
+# In-repo pnpm content store (pnpm uses a local store when the global one is on
+# a different filesystem, e.g. this repo on Dropbox). Gitignored; never format.
+.pnpm-store/
 pnpm-lock.yaml
 *.log
 # Workspace members own their own prettier config + verify pipeline.

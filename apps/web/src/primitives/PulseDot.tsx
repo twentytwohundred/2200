@@ -9,12 +9,7 @@ import styles from './PulseDot.module.css'
  * needing the full design context.
  */
 export type PulseStateName =
-  | 'resting'
-  | 'working_light'
-  | 'working_medium'
-  | 'working_hard'
-  | 'redlined'
-  | 'stopped'
+  'resting' | 'working_light' | 'working_medium' | 'working_hard' | 'redlined' | 'stopped'
 
 export interface PulseDotProps {
   /** Activity state band (set by the emitter with hysteresis). */

@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in 2200, please report it privately rather than opening a public issue.
 
-**Email:** doug@mrdoug.com
+**Email:** dh@2200.ai
 
 We aim to acknowledge reports within 72 hours and coordinate disclosure once a fix is available.
 

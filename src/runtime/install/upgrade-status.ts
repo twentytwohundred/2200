@@ -110,6 +110,93 @@ export async function advanceUpgradeStage(
   return next
 }
 
+/**
+ * How long a non-terminal stage may sit without advancing before we
+ * conclude the helper is gone. The whole upgrade is bounded well under
+ * this: the daemon-exit wait times out at 60s and an `npm install -g`
+ * of this package runs in seconds.
+ */
+export const STALE_UPGRADE_MS = 5 * 60 * 1000
+
+/**
+ * Resolve a status the helper abandoned.
+ *
+ * The upgrade helper writes progress to disk and can die between
+ * stages, and when it does nothing ever corrects the record. The web
+ * UI then reports "UPGRADING" forever ... including, absurdly, an
+ * upgrade *to the version already running*, which is what the operator
+ * sees after upgrading by any route other than the web button.
+ *
+ * This is the same defect shape as tasks stranded in `running` (see
+ * agent/orphaned-tasks.ts): a process writes an in-progress state, dies,
+ * and nothing re-examines that state on the way back up. Worth
+ * remembering as a pattern ... any state machine whose transitions are
+ * owned by a process that can die needs someone to check its work.
+ *
+ * Two resolutions, both from evidence rather than guesswork:
+ *
+ *   - `version_to` equals the version now running → the upgrade
+ *     happened. It does not matter whether this helper finished it, a
+ *     later `2200 update` did, or the operator installed by hand; the
+ *     recorded goal is met, so the record says completed.
+ *   - The stage has not advanced in STALE_UPGRADE_MS and the version
+ *     did NOT change → nobody is coming. Record it as failed, naming
+ *     the stage it died at so the operator can see how far it got.
+ *
+ * A genuinely in-flight upgrade (recent, version not yet changed) is
+ * left alone.
+ *
+ * Returns the (possibly corrected) status, and persists any correction
+ * so every other reader sees the truth too.
+ */
+export async function reconcileUpgradeStatus(
+  home: string,
+  currentVersion: string,
+  now: () => Date = (): Date => new Date(),
+): Promise<UpgradeStatus | null> {
+  let status: UpgradeStatus | null
+  try {
+    status = await readUpgradeStatus(home)
+  } catch {
+    // A malformed status file is surfaced by the normal read path;
+    // reconciliation is not the place to decide what to do about it.
+    return null
+  }
+  if (status === null) return null
+  if (status.stage === 'completed' || status.stage === 'failed') return status
+
+  const nowIso = now().toISOString()
+
+  if (status.version_to === currentVersion) {
+    const resolved: UpgradeStatus = {
+      ...status,
+      stage: 'completed',
+      updated_at: nowIso,
+      finished_at: nowIso,
+    }
+    await writeUpgradeStatus(home, resolved)
+    return resolved
+  }
+
+  const age = now().getTime() - Date.parse(status.updated_at)
+  if (Number.isFinite(age) && age > STALE_UPGRADE_MS) {
+    const resolved: UpgradeStatus = {
+      ...status,
+      stage: 'failed',
+      updated_at: nowIso,
+      finished_at: nowIso,
+      error:
+        status.error ??
+        `The upgrade helper stopped at "${status.stage}" and did not resume. ` +
+          `Still running ${currentVersion}. Upgrade from the CLI with \`2200 update\`.`,
+    }
+    await writeUpgradeStatus(home, resolved)
+    return resolved
+  }
+
+  return status
+}
+
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && err.code === 'ENOENT'
 }

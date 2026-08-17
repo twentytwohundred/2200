@@ -8,6 +8,7 @@ import { startHttpServer, type HttpServerHandle } from '../../../src/runtime/htt
 import { WebTokenStore } from '../../../src/runtime/http/tokens.js'
 import { homePaths } from '../../../src/runtime/storage/layout.js'
 import type { Listener } from '../../../src/runtime/control-plane/transport.js'
+import type { ValidateKeyResult } from '../../../src/runtime/llm/validate-key.js'
 
 /**
  * In-process HTTP smoke tests. The supervisor's UDS listener is bypassed
@@ -90,6 +91,25 @@ describe('HTTP server', () => {
     const r = await get('/api/v1/runtime/health')
     expect(r.status).toBe(200)
     expect(r.body).toMatchObject({ healthy: true })
+  })
+
+  it('POST /api/v1/system/restart restarts the fleet and returns a per-target summary', async () => {
+    // Clean home ... nothing to restart, but the endpoint must exist, be
+    // authed, and return the {pubs, agents} summary shape the UI renders.
+    const res = await fetch(`${handle.url}/api/v1/system/restart`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { pubs: unknown[]; agents: unknown[] }
+    expect(Array.isArray(body.pubs)).toBe(true)
+    expect(Array.isArray(body.agents)).toBe(true)
+    expect(body.agents).toEqual([])
+  })
+
+  it('POST /api/v1/system/restart without a bearer is 401', async () => {
+    const res = await fetch(`${handle.url}/api/v1/system/restart`, { method: 'POST' })
+    expect(res.status).toBe(401)
   })
 
   it('GET /api/v1/me without a bearer is 401 with the standard envelope', async () => {
@@ -286,27 +306,81 @@ describe('HTTP server', () => {
     expect(text).toMatch(/2200 web/)
   })
 
-  it('GET /api/v1/me accepts ?token=<value> in the URL as an alternative to the Authorization header', async () => {
-    // Browsers cannot set the Authorization header on EventSource or
-    // WebSocket connections, so the URL fallback is load-bearing for
-    // those surfaces. Tested explicitly for HTTP first since the same
-    // authenticate() function gates both paths.
-    const res = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { kind: string; name: string }
+  it('rejects a token in the URL query ... it must ride in the cookie or header, never a URL', async () => {
+    // Security: the token never rides in a URL (leaks via history/referrers/
+    // proxy logs). A ?token= is ignored; the session cookie or the Bearer
+    // header authenticate.
+    const viaQuery = await fetch(`${handle.url}/api/v1/me?token=${encodeURIComponent(token)}`)
+    expect(viaQuery.status).toBe(401)
+    const viaHeader = await fetch(`${handle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(viaHeader.status).toBe(200)
+    const viaCookie = await fetch(`${handle.url}/api/v1/me`, {
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(viaCookie.status).toBe(200)
+    const body = (await viaCookie.json()) as { kind: string; name: string }
     expect(body).toMatchObject({ kind: 'user', name: 'default' })
   })
 
-  it('GET /api/v1/me with a bogus ?token= is 401', async () => {
-    const res = await fetch(`${handle.url}/api/v1/me?token=bogus-not-a-real-token`)
+  it('the avatar image authenticates off the session cookie, not a URL token', async () => {
+    // <img src> can't set a header, but the browser attaches the same-origin
+    // cookie automatically ... so no ?token= is needed (and a ?token= is
+    // rejected). 404 for a missing image is fine; the point is auth passed.
+    const viaQuery = await fetch(
+      `${handle.url}/api/v1/agents/default/avatar/image?token=${encodeURIComponent(token)}`,
+    )
+    expect(viaQuery.status).toBe(401)
+    const viaCookie = await fetch(`${handle.url}/api/v1/agents/default/avatar/image`, {
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(viaCookie.status).not.toBe(401)
+  })
+
+  it('POST /api/v1/auth/login exchanges a valid token for an HttpOnly session cookie', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    expect(res.status).toBe(200)
+    const setCookie = res.headers.get('set-cookie') ?? ''
+    expect(setCookie).toContain('2200_session=')
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    expect(setCookie).toContain('Path=/')
+    // Not Secure over plain HTTP (no X-Forwarded-Proto: https), so it's actually
+    // sent back on this loopback connection.
+    expect(setCookie).not.toContain('Secure')
+  })
+
+  it('POST /api/v1/auth/login with a bad token is 401 and sets no cookie', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'not-the-real-token' }),
+    })
     expect(res.status).toBe(401)
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('POST /api/v1/auth/logout clears the cookie (Max-Age=0)', async () => {
+    const res = await fetch(`${handle.url}/api/v1/auth/logout`, {
+      method: 'POST',
+      headers: { cookie: `2200_session=${token}` },
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie') ?? '').toContain('Max-Age=0')
   })
 })
 
 describe('HTTP server WebSocket auth', () => {
-  it('upgrades and receives hello when ?token=<value> matches a known token', async () => {
-    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=${encodeURIComponent(token)}`
-    const ws = new WebSocket(wsUrl)
+  it('upgrades and receives hello when the session cookie matches a known token', async () => {
+    // The browser attaches the same-origin cookie to the WS handshake; the
+    // node ws client does it via a Cookie header.
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, { headers: { cookie: `2200_session=${token}` } })
     const message = await new Promise<string>((resolve, reject) => {
       const t = setTimeout(() => {
         reject(new Error('WS did not produce a message within 2000ms'))
@@ -357,9 +431,9 @@ describe('HTTP server WebSocket auth', () => {
     expect(code).toBe(4401)
   })
 
-  it('closes the WS with code 4401 when ?token= is bogus', async () => {
-    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws?token=bogus-not-a-real-token`
-    const ws = new WebSocket(wsUrl)
+  it('closes the WS with code 4401 when the session cookie is bogus', async () => {
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, { headers: { cookie: '2200_session=bogus-not-a-real-token' } })
     const code = await new Promise<number>((resolve, reject) => {
       const t = setTimeout(() => {
         reject(new Error('WS did not close within 2000ms'))
@@ -373,6 +447,57 @@ describe('HTTP server WebSocket auth', () => {
       })
     })
     expect(code).toBe(4401)
+  })
+
+  it('rejects a cross-origin upgrade with 4403 even WITH a valid cookie (WS hijacking)', async () => {
+    // A page at another origin opening a socket here: the definitive fix is a
+    // server-side Origin check, not a reliance on SameSite. Even a valid cookie
+    // doesn't help ... the origin is refused before auth.
+    const wsUrl = `${handle.url.replace(/^http/, 'ws')}/api/v1/ws`
+    const ws = new WebSocket(wsUrl, {
+      headers: { origin: 'https://evil.example', cookie: `2200_session=${token}` },
+    })
+    const code = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not close within 2000ms'))
+      }, 2000)
+      ws.once('close', (closeCode) => {
+        clearTimeout(t)
+        resolve(closeCode)
+      })
+      ws.once('error', () => {
+        /* non-101 upgrade may raise before close; the close still fires */
+      })
+    })
+    expect(code).toBe(4403)
+  })
+
+  it('accepts a same-origin upgrade (Origin host matches Host)', async () => {
+    const wsBase = handle.url.replace(/^http/, 'ws')
+    const ws = new WebSocket(`${wsBase}/api/v1/ws`, {
+      // Origin host === request Host (both the loopback authority).
+      headers: { origin: handle.url, cookie: `2200_session=${token}` },
+    })
+    const message = await new Promise<string>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error('WS did not produce a message within 2000ms'))
+      }, 2000)
+      ws.once('message', (data) => {
+        clearTimeout(t)
+        const buf = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data)
+        resolve(buf.toString('utf8'))
+      })
+      ws.once('error', (err) => {
+        clearTimeout(t)
+        reject(err)
+      })
+    })
+    ws.close()
+    expect((JSON.parse(message) as { event: string }).event).toBe('hello')
   })
 })
 
@@ -438,6 +563,85 @@ describe('HTTP server onboarding endpoints', () => {
       const body = r.body as { error: { code: string } }
       expect(body.error.code).toBe('model_required')
     }
+  })
+})
+
+/**
+ * Onboarding must fail fast with an actionable error when the operator picks
+ * the `local` provider but the endpoint is unreachable ... otherwise the
+ * error-swallowing interview silently produces a garbage half-Agent bound to a
+ * dead provider (the exact first-user dead-end when Ollama isn't running). The
+ * reachability probe is injected so the test asserts the wiring without a live
+ * local server.
+ */
+describe('HTTP server onboarding ... local endpoint reachability gate', () => {
+  let lHome: string
+  let lSup: Supervisor
+  let lHandle: HttpServerHandle
+  let lToken: string
+  let probeResult: ValidateKeyResult
+
+  async function post(body: unknown): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`${lHandle.url}/api/v1/onboarding`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${lToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    let parsed: unknown = text
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      // keep as text
+    }
+    return { status: res.status, body: parsed }
+  }
+
+  beforeEach(async () => {
+    lHome = await mkdtemp(join(tmpdir(), '2200-http-local-'))
+    lSup = await Supervisor.create({ home: lHome })
+    await lSup.start({ home: lHome, listener: new NullListener() })
+    lHandle = await startHttpServer({
+      supervisor: lSup,
+      home: lHome,
+      port: 0,
+      host: '127.0.0.1',
+      staticDir: join(lHome, '__no_static_dir__'),
+      // eslint-disable-next-line @typescript-eslint/require-await
+      probeLocalEndpoint: async () => probeResult,
+    })
+    const tokens = new WebTokenStore(homePaths(lHome).stateWebTokens)
+    const list = await tokens.list()
+    lToken = list[0]!.value
+  })
+
+  afterEach(async () => {
+    await lHandle.stop()
+    await lSup.shutdown()
+    await rm(lHome, { recursive: true, force: true })
+  })
+
+  it('rejects onboarding with 503 + actionable detail when the local endpoint is down', async () => {
+    probeResult = {
+      ok: false,
+      reason: 'network_error',
+      message: 'connect ECONNREFUSED 127.0.0.1:11434',
+    }
+    const r = await post({ provider: 'local', model: 'llama3' })
+    expect(r.status).toBe(503)
+    const body = r.body as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('llm_provider_unreachable')
+    // The operator must see WHERE and WHAT to fix, not a silent fallback.
+    expect(body.error.message).toContain('11434')
+    expect(body.error.message.toLowerCase()).toContain('running')
+  })
+
+  it('starts onboarding when the local endpoint probe succeeds', async () => {
+    probeResult = { ok: true }
+    const r = await post({ provider: 'local', model: 'llama3' })
+    expect(r.status).toBe(200)
+    const body = r.body as { session_id: string; state: string }
+    expect(body.session_id).toMatch(/^onb_/)
   })
 })
 
@@ -659,5 +863,69 @@ describe('isLoopbackHost', () => {
     expect(isLoopbackHost('0.0.0.0')).toBe(false)
     expect(isLoopbackHost('192.168.1.42')).toBe(false)
     expect(isLoopbackHost('::')).toBe(false)
+  })
+})
+
+/**
+ * Box-level login lockout (defense-in-depth, independent of Cloudflare). Its
+ * own server with a low threshold so the lockout trips fast and deterministically
+ * without touching the shared instance.
+ */
+describe('HTTP server login lockout', () => {
+  let lHome: string
+  let lSup: Supervisor
+  let lHandle: HttpServerHandle
+  let lToken: string
+
+  beforeEach(async () => {
+    lHome = await mkdtemp(join(tmpdir(), '2200-http-lockout-'))
+    lSup = await Supervisor.create({ home: lHome })
+    await lSup.start({ home: lHome, listener: new NullListener() })
+    lHandle = await startHttpServer({
+      supervisor: lSup,
+      home: lHome,
+      port: 0,
+      host: '127.0.0.1',
+      staticDir: join(lHome, '__no_static_dir__'),
+      loginLockout: { maxFailures: 2, windowMs: 60_000, lockoutMs: 60_000 },
+    })
+    const list = await new WebTokenStore(homePaths(lHome).stateWebTokens).list()
+    lToken = list[0]!.value
+  })
+
+  afterEach(async () => {
+    await lHandle.stop()
+    await lSup.shutdown()
+    await rm(lHome, { recursive: true, force: true })
+  })
+
+  it('locks out a client after repeated failed auth, with Retry-After', async () => {
+    const bad = () =>
+      fetch(`${lHandle.url}/api/v1/me`, { headers: { authorization: 'Bearer wrong-token' } })
+    expect((await bad()).status).toBe(401) // failure 1
+    expect((await bad()).status).toBe(401) // failure 2 → trips the lockout
+    const locked = await bad() // now locked out
+    expect(locked.status).toBe(429)
+    expect(locked.headers.get('retry-after')).toBeTruthy()
+    // The lockout gates BEFORE the token compare: even the valid token is
+    // refused for the cooldown (per-client lockout).
+    const withGoodToken = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${lToken}` },
+    })
+    expect(withGoodToken.status).toBe(429)
+  })
+
+  it('a valid token before lockout succeeds and clears the failure count', async () => {
+    // One failure, then a success resets ... so we don't trip on the next failure.
+    await fetch(`${lHandle.url}/api/v1/me`, { headers: { authorization: 'Bearer wrong' } })
+    const ok = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: `Bearer ${lToken}` },
+    })
+    expect(ok.status).toBe(200)
+    // A single subsequent failure should NOT be locked out (count was reset).
+    const after = await fetch(`${lHandle.url}/api/v1/me`, {
+      headers: { authorization: 'Bearer wrong' },
+    })
+    expect(after.status).toBe(401)
   })
 })

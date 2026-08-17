@@ -212,7 +212,104 @@ export function launchPubProcess(opts: StartPubOptions, log?: Logger): StartedPu
  * conventional local `node_modules/.bin` first (covering both the
  * dist-bundled CLI case and the unbundled src layout used by tests).
  */
-const PUB_SERVER_PATCH_MARKER = '2200 patch'
+export const PUB_SERVER_PATCH_MARKER = '2200 patch'
+
+/**
+ * Candidate paths for the INSTALLED pub-server `server.js`, relative to this
+ * module's directory. tsup bundles this code into a varying entry file, so the
+ * `node_modules` depth differs by bundle ... probe each.
+ */
+export function installedPubServerCandidates(moduleDir: string): string[] {
+  return [
+    resolve(
+      moduleDir,
+      '..',
+      '..',
+      '..',
+      'node_modules',
+      '@openpub-ai',
+      'pub-server',
+      'dist',
+      'server.js',
+    ),
+    resolve(
+      moduleDir,
+      '..',
+      '..',
+      'node_modules',
+      '@openpub-ai',
+      'pub-server',
+      'dist',
+      'server.js',
+    ),
+    resolve(process.cwd(), 'node_modules', '@openpub-ai', 'pub-server', 'dist', 'server.js'),
+  ]
+}
+
+/**
+ * Candidate paths for the SHIPPED (patched) copy at
+ * `<dist>/vendor/openpub-pub-server/server.js`. The bundled entry that contains
+ * this code varies (`dist/cli/main.js` -> up 1; `dist/runtime/supervisor/
+ * bootstrap.js` -> up 2), so probe each depth. Getting this depth wrong is the
+ * bug that shipped twice (2026.617.327 + .342) before it found the file ...
+ * hence the dedicated test on `planPubServerPatch`.
+ */
+export function shippedPatchCandidates(moduleDir: string): string[] {
+  return [0, 1, 2, 3].map((up) =>
+    resolve(
+      moduleDir,
+      ...Array<string>(up).fill('..'),
+      'vendor',
+      'openpub-pub-server',
+      'server.js',
+    ),
+  )
+}
+
+/** Filesystem surface the patch planner needs, injectable for tests. */
+export interface PatchFs {
+  exists(p: string): boolean
+  /** File contents, or null if missing/unreadable. */
+  read(p: string): string | null
+}
+
+export type PubServerPatchPlan =
+  | { action: 'no-installed' }
+  | { action: 'installed-unreadable'; installed: string }
+  | { action: 'already-patched'; installed: string }
+  | { action: 'no-shipped'; installed: string }
+  | { action: 'shipped-unpatched'; installed: string; shipped: string }
+  | { action: 'apply'; installed: string; shipped: string; content: string }
+
+/**
+ * Pure decision: given the installed + shipped candidate paths and a
+ * filesystem, decide whether to overlay the patch. No side effects ... the
+ * executor (`ensurePubServerPatched`) performs the write + logging. This is the
+ * path-probing + marker logic that needs to be right; testing it directly is
+ * cheaper and more reliable than an end-to-end install.
+ */
+export function planPubServerPatch(
+  installedCandidates: string[],
+  shippedCandidates: string[],
+  fs: PatchFs,
+  marker: string = PUB_SERVER_PATCH_MARKER,
+): PubServerPatchPlan {
+  const installed = installedCandidates.find((p) => fs.exists(p))
+  if (!installed) return { action: 'no-installed' }
+  const current = fs.read(installed)
+  if (current === null) return { action: 'installed-unreadable', installed }
+  if (current.includes(marker)) return { action: 'already-patched', installed } // dev pnpm, or a prior overlay
+  const shipped = shippedCandidates.find((p) => fs.exists(p))
+  if (!shipped) return { action: 'no-shipped', installed }
+  const patched = fs.read(shipped)
+  // Never overwrite the installed file with a shipped copy that isn't itself
+  // patched (or is unreadable) ... that would be a no-op at best, a corruption
+  // at worst.
+  if (!patched?.includes(marker)) {
+    return { action: 'shipped-unpatched', installed, shipped }
+  }
+  return { action: 'apply', installed, shipped, content: patched }
+}
 
 /**
  * Ensure the installed OpenPub pub-server carries 2200's patches before we
@@ -226,57 +323,39 @@ const PUB_SERVER_PATCH_MARKER = '2200 patch'
  * UNPATCHED pub-server. We ship the patched `server.js` in
  * `dist/vendor/openpub-pub-server/` (scripts/bundle-pub-server-patch.mjs) and
  * overlay it here, idempotently. Best-effort: any failure logs and continues
- * (worst case is the prior unpatched behavior, never a crash).
+ * (worst case is the prior unpatched behavior, never a crash). The decision is
+ * `planPubServerPatch` (pure, tested); this function is the thin I/O executor.
  */
 function ensurePubServerPatched(log: Logger): void {
   const here = dirname(fileURLToPath(import.meta.url))
-  const installed = [
-    resolve(
-      here,
-      '..',
-      '..',
-      '..',
-      'node_modules',
-      '@openpub-ai',
-      'pub-server',
-      'dist',
-      'server.js',
-    ),
-    resolve(here, '..', '..', 'node_modules', '@openpub-ai', 'pub-server', 'dist', 'server.js'),
-    resolve(process.cwd(), 'node_modules', '@openpub-ai', 'pub-server', 'dist', 'server.js'),
-  ].find((p) => existsSync(p))
-  if (!installed) return
-  let current: string
-  try {
-    current = readFileSync(installed, 'utf8')
-  } catch {
-    return
+  const fs: PatchFs = {
+    exists: existsSync,
+    read: (p) => {
+      try {
+        return readFileSync(p, 'utf8')
+      } catch {
+        return null
+      }
+    },
   }
-  if (current.includes(PUB_SERVER_PATCH_MARKER)) return // already patched (dev pnpm, or a prior overlay)
-
-  // The shipped patch lives at <dist>/vendor/openpub-pub-server/server.js. The
-  // bundled entry that contains this code varies (dist/cli/main.js -> up 1;
-  // dist/runtime/supervisor/bootstrap.js -> up 2), so probe each depth and take
-  // the first that exists rather than hardcoding one entry's layout.
-  const shipped = [0, 1, 2, 3]
-    .map((up) =>
-      resolve(here, ...Array<string>(up).fill('..'), 'vendor', 'openpub-pub-server', 'server.js'),
-    )
-    .find((p) => existsSync(p))
-  if (!shipped) {
+  const plan = planPubServerPatch(
+    installedPubServerCandidates(here),
+    shippedPatchCandidates(here),
+    fs,
+  )
+  if (plan.action === 'no-shipped') {
     log.warn(
       'pub-server is unpatched and no shipped patch found; Agents may be dropped from rooms',
-      {
-        installed,
-      },
+      { installed: plan.installed },
     )
     return
   }
+  if (plan.action !== 'apply') return // no-installed / installed-unreadable / already-patched / shipped-unpatched
   try {
-    const patched = readFileSync(shipped, 'utf8')
-    if (!patched.includes(PUB_SERVER_PATCH_MARKER)) return // shipped copy isn't patched; never overwrite
-    writeFileSync(installed, patched)
-    log.info('applied 2200 pub-server patch (keepalive + bartender guards)', { installed })
+    writeFileSync(plan.installed, plan.content)
+    log.info('applied 2200 pub-server patch (keepalive + bartender guards)', {
+      installed: plan.installed,
+    })
   } catch (err) {
     log.warn('failed to apply 2200 pub-server patch (continuing unpatched)', {
       error: err instanceof Error ? err.message : String(err),

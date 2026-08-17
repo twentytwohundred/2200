@@ -301,3 +301,49 @@ continuity
     expect(interval?.timing.kind === 'interval' && interval.timing.interval_seconds).toBe(300)
   })
 })
+
+describe('migrateFromHandoff studio bootstrap (regression: first Agent on a fresh install)', () => {
+  // WHY: on a fresh install the daemon boots with zero Agents, so the
+  // boot-time studio bootstrap no-ops. The first Agent arrives via
+  // onboarding/spawn (seedFirstTask=true) and its seeded orientation task
+  // posts to `studio`. If nothing ensures the studio on this path, that first
+  // Agent has no room to appear in and its debut post fails ... the exact
+  // headline-demo dead-end. These tests pin that the orchestrator ensures the
+  // studio precisely when (and only when) it seeds the first task. We stub the
+  // heavy method so the assertion is about the wiring, not pub-server I/O.
+  function stubStudio() {
+    let calls = 0
+    // eslint-disable-next-line @typescript-eslint/require-await
+    supervisor.ensureStudioPub = async () => {
+      calls += 1
+    }
+    return () => calls
+  }
+
+  it('ensures the studio when seeding the first task (onboarding/spawn path)', async () => {
+    const getCalls = stubStudio()
+    const handoff = makeHandoff({ agentName: 'newbie' })
+    await migrateFromHandoff({
+      handoff,
+      home,
+      supervisor,
+      today: FIXED_DATE,
+      provisionIdentity: false,
+      seedFirstTask: true,
+    })
+    expect(getCalls()).toBe(1)
+  })
+
+  it('does not force a studio spawn on a plain migrate (no seeded task)', async () => {
+    const getCalls = stubStudio()
+    const handoff = makeHandoff({ agentName: 'background' })
+    await migrateFromHandoff({
+      handoff,
+      home,
+      supervisor,
+      today: FIXED_DATE,
+      provisionIdentity: false,
+    })
+    expect(getCalls()).toBe(0)
+  })
+})

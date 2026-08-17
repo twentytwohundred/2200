@@ -113,7 +113,9 @@ describe('runFirstRunApiKeyProviders', () => {
     // We don't need to compute that exactly ... we know there are 7
     // paste-a-key providers right now, so "8" is the skip target.
     const io = makeIO(['8'])
-    await runFirstRunApiKeyProviders(io)
+    // Returns 0 so the caller knows NOT to restart the daemon (nothing to load).
+    const added = await runFirstRunApiKeyProviders(io)
+    expect(added).toBe(0)
     expect(io.successLines).toHaveLength(0)
     expect(io.infoLines.some((l) => /No API keys configured/i.test(l))).toBe(true)
   })
@@ -137,7 +139,10 @@ describe('runFirstRunApiKeyProviders', () => {
     fetchSpy = spyFetch()
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }))
     const io = makeIO(['1', 'sk-ant-good', '8'])
-    await runFirstRunApiKeyProviders(io)
+    // Returns the count so the caller restarts the daemon to load the new key
+    // (the fix for "pasted key is dead until a restart the wizard never did").
+    const added = await runFirstRunApiKeyProviders(io)
+    expect(added).toBe(1)
 
     expect(fetchSpy.mock.calls).toHaveLength(1)
     const contents = await readFile(defaultRuntimeEnvPath(), 'utf-8')

@@ -7,7 +7,7 @@
     "name": "TWENTYTWOHUNDRED LLC",
     "url": "https://2200.ai"
   },
-  "license": "SEE LICENSE IN ../../LICENSE",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "generate:tokens": "tsx scripts/generate-tokens.ts",

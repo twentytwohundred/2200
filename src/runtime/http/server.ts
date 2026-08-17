@@ -83,6 +83,8 @@ import {
 import { GatewayManager } from '../connectors/gateway-manager.js'
 import { upsertConnectorBinding } from '../identity/binding-writer.js'
 import { listKnownProviders, type ProviderCatalogEntry } from '../llm/registry.js'
+import { validateLocalEndpoint, type ValidateKeyResult } from '../llm/validate-key.js'
+import { pickOnboardingProvider } from '../onboarding/pick-provider.js'
 import { loadPricingTable } from '../llm/pricing.js'
 import {
   defaultRuntimeEnvPath,
@@ -124,7 +126,15 @@ import {
   notFound,
   unauthorized,
 } from './errors.js'
+import {
+  BROWSABLE_ROOTS,
+  readFileForDisplay,
+  readFileRaw,
+  walkTree,
+  writeFileFromOperator,
+} from './files.js'
 import { WebTokenStore } from './tokens.js'
+import { LoginRateLimiter, loginRateLimitKey } from './login-rate-limit.js'
 import { CredentialVault } from '../credentials/vault.js'
 import { CredentialRequestStore } from '../credentials/requests.js'
 import {
@@ -159,6 +169,18 @@ export interface HttpServerOptions {
    * 2200.ai; dev falls back to the in-repo `extensions-catalog/v1.json`.
    */
   catalogPath?: string
+  /**
+   * Injectable reachability probe for the `local` provider at onboarding
+   * start (testing). Defaults to the real `validateLocalEndpoint`, which
+   * hits `<baseUrl>/v1/models`. Lets tests assert the "dead local endpoint
+   * fails onboarding with an actionable error" path without a live server.
+   */
+  probeLocalEndpoint?: (args: { baseUrl: string; apiKey?: string }) => Promise<ValidateKeyResult>
+  /**
+   * Login-lockout thresholds. Defaults to 10 failed attempts / 5 min → a
+   * 15-min lockout. Overridable for tests + tuning.
+   */
+  loginLockout?: { maxFailures: number; windowMs: number; lockoutMs: number }
 }
 
 export interface HttpServerHandle {
@@ -245,6 +267,98 @@ function resolveStaticDir(override?: string): string | null {
   return null
 }
 
+/**
+ * True when the request originated from the local host. The gateway→supervisor
+ * internal pushes (connector inbound, pair-state) are posted by child processes
+ * on the same box via `SUPERVISOR_URL=http://127.0.0.1:<port>`, so they are
+ * loopback by construction. We gate those otherwise-unauthenticated endpoints
+ * on this so a request arriving from off-box (e.g. across the LAN when the web
+ * server binds `0.0.0.0`) is rejected. `trustProxy` is left at its default
+ * (off), so `req.ip` is the real socket peer, not a spoofable forwarded header.
+ */
+function isLoopbackRequest(req: FastifyRequest): boolean {
+  const ip = req.ip.length > 0 ? req.ip : (req.socket.remoteAddress ?? '')
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('127.')
+}
+
+/**
+ * The browser session cookie. `HttpOnly` so page JavaScript can't read the
+ * token (an XSS bug can't exfiltrate the fleet key); the browser attaches it
+ * automatically on same-origin requests INCLUDING the WebSocket handshake and
+ * `<img>` loads, so the token never rides in a URL/query/history/log. Non-browser
+ * clients (CLI, scripts) still use `Authorization: Bearer`.
+ */
+const SESSION_COOKIE = '2200_session'
+
+/** Read the session token from the `2200_session` cookie, if present. */
+function readSessionCookie(req: FastifyRequest): string | undefined {
+  const raw = req.headers.cookie
+  if (typeof raw !== 'string') return undefined
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) return part.slice(eq + 1).trim()
+  }
+  return undefined
+}
+
+/**
+ * True when the request reached us over HTTPS ... i.e. through the Cloudflare
+ * tunnel, which sets `X-Forwarded-Proto: https`. Used to add `Secure` to the
+ * cookie ONLY when there's TLS: on a plain-HTTP local/LAN bind a `Secure` cookie
+ * would never be sent back and auth would break. Spoofing the header only makes
+ * the spoofer's own cookie not send, so reading it here is safe.
+ */
+function isHttpsRequest(req: FastifyRequest): boolean {
+  const xfp = req.headers['x-forwarded-proto']
+  const proto = typeof xfp === 'string' ? (xfp.split(',')[0] ?? '').trim() : ''
+  return proto === 'https'
+}
+
+function setSessionCookieHeader(value: string, secure: boolean): string {
+  // 1-year persistence (the token itself doesn't expire in v1); cleared on
+  // logout. HttpOnly + SameSite=Lax (blocks cross-site POST → CSRF) always;
+  // Secure only under TLS.
+  const attrs = [
+    `${SESSION_COOKIE}=${value}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    'Max-Age=31536000',
+  ]
+  if (secure) attrs.push('Secure')
+  return attrs.join('; ')
+}
+
+function clearSessionCookieHeader(secure: boolean): string {
+  const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=0']
+  if (secure) attrs.push('Secure')
+  return attrs.join('; ')
+}
+
+/**
+ * Same-origin gate for the WebSocket upgrade. Since the WS authenticates off
+ * the session cookie, a page at another origin could open a socket here and the
+ * browser might attach the cookie (cross-site WebSocket hijacking). SameSite=Lax
+ * *should* withhold it, but we don't lean on "should": a browser WS always sends
+ * an `Origin` header, so we require its host to equal the request Host. A missing
+ * Origin means a non-browser client (no ambient cookie to hijack) ... allowed,
+ * since it still must present a valid cookie/bearer. A present-but-mismatched
+ * Origin is rejected outright.
+ */
+function wsOriginAllowed(req: FastifyRequest): boolean {
+  const origin = req.headers.origin
+  if (typeof origin !== 'string' || origin.length === 0) return true
+  let originHost: string
+  try {
+    originHost = new URL(origin).host
+  } catch {
+    return false
+  }
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  return originHost.length > 0 && originHost === host
+}
+
 export async function startHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
   const { supervisor, home } = options
   const port = options.port ?? 2200
@@ -254,6 +368,14 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const paths = homePaths(home)
   const tokens = new WebTokenStore(paths.stateWebTokens)
   await tokens.ensure('default')
+
+  // Box-level login lockout (defense-in-depth, independent of Cloudflare).
+  // 10 failed attempts from one client in 5 min → a 15-min lockout. A legit
+  // operator who has the token doesn't fail; an attacker gets throttled and the
+  // logs don't fill with guess spam. Per-client so no one can lock others out.
+  const loginLimiter = new LoginRateLimiter(
+    options.loginLockout ?? { maxFailures: 10, windowMs: 5 * 60_000, lockoutMs: 15 * 60_000 },
+  )
 
   // Supervisor-side PubClient bridge. Lazy-init: nothing happens until
   // the first /api/v1/pubs/:name/messages call wakes a connection.
@@ -316,17 +438,17 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // require a bearer token that resolves to a token record on disk.
   // ------------------------------------------------------------------------
   async function authenticate(req: FastifyRequest): Promise<Principal> {
-    // Browsers cannot set the Authorization header on a WebSocket upgrade.
-    // Accept ?token=<value> in the URL as an equivalent for the WS route.
+    // Browser: the HttpOnly session cookie (sent automatically on every
+    // same-origin request, incl. the WS handshake and <img> loads). Non-browser
+    // clients: `Authorization: Bearer`. No `?token=` query path ... the token
+    // never rides in a URL.
     let value: string | undefined
     const header = req.headers.authorization ?? ''
     const match = /^Bearer\s+([\S]+)$/.exec(header)
     if (match?.[1]) {
       value = match[1]
     } else {
-      const url = new URL(req.url, 'http://placeholder')
-      const fromQuery = url.searchParams.get('token')
-      if (fromQuery) value = fromQuery
+      value = readSessionCookie(req)
     }
     if (!value) throw unauthorized()
     const token = await tokens.findByValue(value)
@@ -334,38 +456,68 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     return { kind: 'user', name: token.label, token_id: token.id }
   }
 
-  fastify.addHook('preHandler', async (req) => {
+  fastify.addHook('preHandler', async (req, reply) => {
     if (!req.url.startsWith('/api/v1/')) return
     if (req.url.startsWith('/api/v1/ws')) {
       // The WS upgrade is authenticated separately below. Pre-handler
       // does not see the upgraded socket.
       return
     }
+    // The login endpoint IS the auth mechanism (it validates the token and
+    // sets the session cookie), so it can't require the cookie it hands out.
+    // It rate-limits itself. Everything else, including logout, needs a session.
+    if (req.url === '/api/v1/auth/login') return
     // Extension icon endpoint is public ... `<img src>` tags can't
     // send Authorization headers, and icons are branding assets, not
     // sensitive data. Match the supervisor's static-frontend posture.
     if (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/icon$/.test(req.url)) {
       return
     }
-    // Gateway → supervisor pair-state push is loopback-only (the
-    // gateway child process runs on the same host as the supervisor).
-    // The GET counterpart stays authenticated.
+    // Gateway → supervisor internal pushes (pair-state, connector inbound).
+    // The gateway child runs on the same host and posts to 127.0.0.1
+    // (SUPERVISOR_URL), so these are loopback-only by construction. Enforce
+    // it: a same-box push is allowed without a bearer (the child has no user
+    // token), but a request from off-box (e.g. across the LAN under a 0.0.0.0
+    // bind) is rejected ... closing the unauthenticated-inbound vector that
+    // would otherwise let any LAN host forge connector events or pairing
+    // state. The GET counterparts stay bearer-authenticated below.
     if (
       req.method === 'POST' &&
-      /^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url)
+      (/^\/api\/v1\/extensions\/[a-z][a-z0-9-]*\/pair\/state$/.test(req.url) ||
+        /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url))
     ) {
-      return
+      if (isLoopbackRequest(req)) return
+      throw new ApiError(
+        403,
+        'loopback_only',
+        'This endpoint accepts requests from the local host only.',
+      )
     }
-    // Connector gateways post their inbound events here. Same
-    // loopback-only rationale as pair/state; the substrate-side
-    // endpoint validates the Extension manifest carefully.
-    if (
-      req.method === 'POST' &&
-      /^\/api\/v1\/connectors\/[a-z][a-z0-9_]*\/inbound$/.test(req.url)
-    ) {
-      return
+    // Box-level lockout on repeated failed auth (independent of any edge
+    // rate-limit). Keyed on the real client (Cloudflare header behind the
+    // tunnel, else socket address). A locked-out client is refused before we
+    // even do the token compare.
+    const clientKey = loginRateLimitKey(req)
+    const gate = loginLimiter.check(clientKey)
+    if (!gate.allowed) {
+      void reply.header('Retry-After', String(gate.retryAfterSeconds))
+      throw new ApiError(
+        429,
+        'too_many_attempts',
+        `Too many failed attempts. Try again in ${String(gate.retryAfterSeconds)}s.`,
+      )
     }
-    const principal = await authenticate(req)
+    let principal: Principal
+    try {
+      principal = await authenticate(req)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        loginLimiter.recordFailure(clientKey)
+        loginLimiter.sweep()
+      }
+      throw err
+    }
+    loginLimiter.recordSuccess(clientKey)
     ;(req as AuthedRequest).principal = principal
   })
 
@@ -423,6 +575,41 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
     },
   )
+
+  // Auth: exchange the pasted token for an HttpOnly session cookie. Public
+  // (it's how you authenticate) but rate-limited on the same per-client lockout
+  // as the rest of the auth surface. On success the cookie is set; the token is
+  // never returned in a URL or readable by page JS.
+  const LoginBodySchema = z.object({ token: z.string().min(1) })
+  fastify.post('/api/v1/auth/login', async (req, reply) => {
+    const clientKey = loginRateLimitKey(req)
+    const gate = loginLimiter.check(clientKey)
+    if (!gate.allowed) {
+      void reply.header('Retry-After', String(gate.retryAfterSeconds))
+      throw new ApiError(
+        429,
+        'too_many_attempts',
+        `Too many failed attempts. Try again in ${String(gate.retryAfterSeconds)}s.`,
+      )
+    }
+    const body = LoginBodySchema.parse(req.body)
+    const token = await tokens.findByValue(body.token)
+    if (!token) {
+      loginLimiter.recordFailure(clientKey)
+      loginLimiter.sweep()
+      throw unauthorized()
+    }
+    loginLimiter.recordSuccess(clientKey)
+    void reply.header('Set-Cookie', setSessionCookieHeader(body.token, isHttpsRequest(req)))
+    return { ok: true, name: token.label }
+  })
+
+  // Clear the session cookie. Requires a valid session (goes through the
+  // pre-handler auth), so only a logged-in browser can log itself out.
+  fastify.post('/api/v1/auth/logout', async (req, reply) => {
+    void reply.header('Set-Cookie', clearSessionCookieHeader(isHttpsRequest(req)))
+    return { ok: true }
+  })
 
   fastify.get('/api/v1/runtime/health', () => ({
     healthy: true,
@@ -501,29 +688,38 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   )
 
   fastify.get('/api/v1/system/upgrade-status', async () => {
-    const { readUpgradeStatus } = await import('../install/upgrade-status.js')
-    const status = await readUpgradeStatus(options.home)
+    const { reconcileUpgradeStatus } = await import('../install/upgrade-status.js')
+    const { VERSION: PKG_VERSION } = await import('../../index.js')
+    // Correct a status the helper abandoned before reporting it. Without
+    // this the panel reports "UPGRADING" indefinitely ... including an
+    // upgrade to the version already running, which is what an operator
+    // sees after upgrading by any route other than the web button.
+    const status = await reconcileUpgradeStatus(options.home, PKG_VERSION)
     return { status }
   })
 
   // --------------------------------------------------------------
-  // OAuth: xAI / Grok device-code sign-in (browser-driven).
+  // OAuth: subscription sign-ins (browser-driven), one route family
+  // for every provider in the subscription registry (SuperGrok,
+  // ChatGPT). Mirrors the CLI flows (`2200 oauth <provider> login`)
+  // over HTTP so the Settings page can drive a sign-in inline. The
+  // flow is stateful across two requests:
   //
-  // Mirrors the CLI flow (`2200 oauth xai login`) over HTTP so the
-  // Settings page can drive the sign-in inline. The flow is stateful
-  // across two requests:
-  //
-  //   1. POST  /api/v1/oauth/xai/login/start
-  //        → daemon calls device-authorization endpoint, returns
-  //          { session_id, user_code, verification_uri, ... }
-  //   2. GET   /api/v1/oauth/xai/login/status?session=<id>
-  //        → daemon does ONE token-endpoint poll, returns
-  //          { status: 'pending' | 'completed' | 'failed', ... }.
-  //          Browser polls at its own cadence.
-  //   3. GET   /api/v1/oauth/xai/status
-  //        → reads the sealed token (if any) and returns
-  //          configured/expires/scopes (no secrets).
-  //   4. POST  /api/v1/oauth/xai/logout
+  //   1. POST  /api/v1/oauth/:provider/login/start
+  //        → daemon starts a device-code flow, returns
+  //          { session_id, flow: 'device', user_code, ... }.
+  //          When the provider rejects device-code (OpenAI accounts
+  //          without the device-auth toggle) and a loopback fallback
+  //          exists, returns { flow: 'loopback', authorization_url }
+  //          instead; the daemon holds the localhost redirect
+  //          listener and finishes the exchange itself.
+  //   2. GET   /api/v1/oauth/:provider/login/status?session=<id>
+  //        → device: daemon does ONE token poll; loopback: reads the
+  //          background exchange result. Browser polls at its own
+  //          cadence.
+  //   3. GET   /api/v1/oauth/:provider/status
+  //        → reads the sealed token (if any); no secrets.
+  //   4. POST  /api/v1/oauth/:provider/logout
   //        → deletes the sealed token from disk.
   //
   // The session manager is in-process and dies with the daemon.
@@ -531,105 +727,167 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   // "Sign in" again ... no persistence of in-flight secrets.
   // --------------------------------------------------------------
   const { DeviceFlowSessionManager } = await import('../oauth/device-flow-session.js')
+  const {
+    subscriptionProviderByRoute,
+    subscriptionProviderByLlmName,
+    activeSubscriptionLlmProviders,
+    saveSubscriptionTokens,
+  } = await import('../oauth/subscription-providers.js')
   const oauthSessions = new DeviceFlowSessionManager()
 
-  fastify.post('/api/v1/oauth/xai/login/start', async (_req, reply) => {
-    const { fetchXaiDiscovery, xaiDeviceFlowProvider, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPES } =
-      await import('../oauth/xai-config.js')
-    const { generatePkce } = await import('../oauth/pkce.js')
-    let discovery
-    try {
-      discovery = await fetchXaiDiscovery()
-    } catch (err) {
-      await reply.code(502).send({
-        error: 'discovery_failed',
-        message: err instanceof Error ? err.message : String(err),
-      })
-      return
-    }
-    const provider = xaiDeviceFlowProvider(discovery)
-    const pkce = generatePkce()
-
-    const initBody = new URLSearchParams()
-    initBody.set('client_id', XAI_OAUTH_CLIENT_ID)
-    initBody.set('scope', XAI_OAUTH_SCOPES.join(' '))
-    initBody.set('code_challenge', pkce.challenge)
-    initBody.set('code_challenge_method', pkce.method)
-
-    let initRes
-    try {
-      initRes = await fetch(provider.deviceAuthorizationUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: initBody.toString(),
-      })
-    } catch (err) {
-      await reply.code(502).send({
-        error: 'device_authorization_request_failed',
-        message: err instanceof Error ? err.message : String(err),
-      })
-      return
-    }
-    if (!initRes.ok) {
-      const text = await initRes.text().catch(() => '')
-      await reply.code(502).send({
-        error: 'device_authorization_request_failed',
-        message: `HTTP ${String(initRes.status)} ${text.slice(0, 300)}`,
-      })
-      return
-    }
-    const initJson = (await initRes.json().catch(() => null)) as {
-      device_code?: string
-      user_code?: string
-      verification_uri?: string
-      verification_uri_complete?: string
-      expires_in?: number
-      interval?: number
-    } | null
-    if (!initJson?.device_code || !initJson.user_code || !initJson.verification_uri) {
-      await reply.code(502).send({
-        error: 'device_authorization_invalid_response',
-        message: 'xAI device-auth response missing device_code, user_code, or verification_uri',
-      })
-      return
-    }
-
-    const expiresInRaw = initJson.expires_in
-    const expiresInSec =
-      typeof expiresInRaw === 'number' && Number.isFinite(expiresInRaw) ? expiresInRaw : 900
-    // RFC 8628: minimum 5s polling interval.
-    const intervalRaw = initJson.interval
-    const rawInterval =
-      typeof intervalRaw === 'number' && Number.isFinite(intervalRaw) ? intervalRaw : 5
-    const intervalSec = Math.min(Math.max(rawInterval, 5), 60)
-    const session = oauthSessions.create({
-      provider,
-      deviceCode: initJson.device_code,
-      userCode: initJson.user_code,
-      verificationUri: initJson.verification_uri,
-      ...(initJson.verification_uri_complete
-        ? { verificationUriComplete: initJson.verification_uri_complete }
-        : {}),
-      expiresAtMs: Date.now() + expiresInSec * 1000,
-      codeVerifier: pkce.verifier,
-      intervalSec,
-    })
-    return session
-  })
-
-  fastify.get<{ Querystring: { session?: string } }>(
-    '/api/v1/oauth/xai/login/status',
+  fastify.post<{ Params: { provider: string }; Body: { flow?: string } | null }>(
+    '/api/v1/oauth/:provider/login/start',
     async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+
+      // The browser can request the loopback flow explicitly
+      // (`{"flow":"loopback"}`). This matters because OpenAI's
+      // device-code MINT is account-independent (verified keylessly),
+      // so an account with the device-auth toggle OFF still mints a
+      // code fine and only fails at approval time ... a mint-failure
+      // fallback alone would never reach the loopback flow for exactly
+      // the accounts that need it. The ChatGPT card offers a "use
+      // browser sign-in" action wired to this.
+      const wantsLoopback = req.body?.flow === 'loopback'
+      if (wantsLoopback && !def.loopback) {
+        await reply.code(400).send({
+          error: 'no_loopback_flow',
+          message: `${def.shortLabel} has no browser (loopback) sign-in flow`,
+        })
+        return
+      }
+
+      // One in-flight sign-in per provider: tear down any prior
+      // session (and its loopback listener) BEFORE starting a new
+      // flow, so a retry can rebind the fixed redirect port instead of
+      // 409ing on EADDRINUSE until the old listener times out.
+      oauthSessions.removeBySlug(def.slug)
+
+      let deviceStartError: unknown
+      if (!wantsLoopback) {
+        try {
+          const start = await def.startDeviceFlow()
+          return oauthSessions.create({
+            slug: def.slug,
+            flow: 'device',
+            userCode: start.userCode,
+            verificationUri: start.verificationUri,
+            ...(start.verificationUriComplete
+              ? { verificationUriComplete: start.verificationUriComplete }
+              : {}),
+            expiresAtMs: start.expiresAtMs,
+            intervalSec: start.intervalSec,
+            pollState: start.pollState,
+          })
+        } catch (err) {
+          deviceStartError = err
+        }
+
+        // Device-code could not START (mint rejected or unreachable).
+        // Fall back to the loopback authorization-code flow when the
+        // provider supports one: the daemon binds the registered
+        // localhost port, the browser opens the authorization URL, and
+        // the callback lands back here. Only works when the user's
+        // browser runs on the same machine as the daemon ... the UI
+        // says so.
+        if (!def.loopback) {
+          await reply.code(502).send({
+            error: 'sign_in_start_failed',
+            message:
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError),
+          })
+          return
+        }
+      }
+      const loopback = def.loopback
+      if (!loopback) {
+        // Unreachable: wantsLoopback guards above; here for narrowing.
+        await reply.code(500).send({ error: 'internal' })
+        return
+      }
+      try {
+        const { startOAuthFlowSession } = await import('../oauth/flow.js')
+        const providerConfig = await loopback.providerConfig()
+        const timeoutMs = 15 * 60_000
+        const flowSession = await startOAuthFlowSession({
+          provider: providerConfig,
+          clientId: loopback.clientId,
+          port: loopback.redirect.port,
+          redirectPath: loopback.redirect.path,
+          redirectUrlHostname: loopback.redirect.urlHostname,
+          timeoutMs,
+        })
+        const session = oauthSessions.create({
+          slug: def.slug,
+          flow: 'loopback',
+          authorizationUrl: flowSession.authorizationUrl,
+          expiresAtMs: Date.now() + timeoutMs,
+          intervalSec: 2,
+          cancel: () => void flowSession.close(),
+        })
+        // Background completion: the redirect callback + token
+        // exchange resolve the promise; the status route reads the
+        // recorded result.
+        void flowSession.tokens
+          .then(async (tokens) => {
+            const record = await saveSubscriptionTokens(home, def, tokens)
+            oauthSessions.recordCompletion(session.session_id, {
+              status: 'completed',
+              access_token: '<sealed-on-disk>',
+              refresh_token: '<sealed-on-disk>',
+              expires_at_ms: record.metadata.expires_at_ms,
+              granted_scopes: record.metadata.granted_scopes,
+            })
+          })
+          .catch((err: unknown) => {
+            oauthSessions.recordCompletion(session.session_id, {
+              status: 'failed',
+              error: 'loopback_flow_failed',
+              description: err instanceof Error ? err.message : String(err),
+            })
+          })
+        return session
+      } catch (err) {
+        const busy = (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+        const deviceNote = wantsLoopback
+          ? ''
+          : `device-code unavailable (${
+              deviceStartError instanceof Error
+                ? deviceStartError.message
+                : String(deviceStartError)
+            }); `
+        await reply.code(busy ? 409 : 502).send({
+          error: busy ? 'loopback_port_busy' : 'sign_in_start_failed',
+          message: busy
+            ? `port ${String(loopback.redirect.port)} is in use (another sign-in in progress?)`
+            : `${deviceNote}loopback flow failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+        return
+      }
+    },
+  )
+
+  fastify.get<{ Params: { provider: string }; Querystring: { session?: string } }>(
+    '/api/v1/oauth/:provider/login/status',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
       const sessionId = req.query.session
       if (!sessionId) {
         await reply.code(400).send({ error: 'missing_session_id' })
         return
       }
       const rec = oauthSessions.get(sessionId)
-      if (!rec) {
+      if (rec?.slug !== def.slug) {
         await reply.code(404).send({ error: 'unknown_session' })
         return
       }
@@ -637,120 +895,103 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       // so the browser can rely on idempotent status responses.
       if (rec.completed) return rec.completed
 
-      const pollBody = new URLSearchParams()
-      pollBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
-      pollBody.set('device_code', rec.deviceCode)
-      pollBody.set('client_id', rec.provider.clientId)
-      pollBody.set('code_verifier', rec.codeVerifier)
+      // Loopback sessions complete in the background (redirect
+      // callback + exchange); there is nothing to poll upstream.
+      if (rec.flow === 'loopback') {
+        return { status: 'pending' as const, poll_interval_sec: rec.intervalSec }
+      }
 
-      let pollRes
-      try {
-        pollRes = await fetch(rec.tokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Accept: 'application/json',
-          },
-          body: pollBody.toString(),
-        })
-      } catch (err) {
+      const outcome = await def.pollDeviceFlowOnce({ ...rec.pollState })
+
+      if (outcome.status === 'transient') {
         // Transient network errors: report pending so the browser
         // tries again at its own cadence. We do NOT mark failed here;
         // a brief blip should not kill a sign-in.
         return {
           status: 'pending' as const,
           poll_interval_sec: rec.intervalSec,
-          transient_error: err instanceof Error ? err.message : String(err),
+          transient_error: outcome.message,
         }
       }
-      const pollJson = (await pollRes.json().catch(() => null)) as {
-        access_token?: string
-        refresh_token?: string
-        expires_in?: number
-        scope?: string
-        error?: string
-        error_description?: string
-      } | null
-
-      if (pollRes.ok && pollJson?.access_token) {
-        const now = Date.now()
-        const expiresAtMs =
-          pollJson.expires_in !== undefined ? now + pollJson.expires_in * 1000 : now + 3_600_000
-        const grantedScopes = pollJson.scope ? pollJson.scope.split(/\s+/) : []
-        const refreshToken = pollJson.refresh_token ?? ''
-        if (!refreshToken) {
-          const fail = {
-            status: 'failed' as const,
-            error: 'no_refresh_token',
-            description:
-              'xAI did not return a refresh token; ensure the offline_access scope was granted at consent.',
-          }
-          oauthSessions.recordCompletion(sessionId, fail)
-          return fail
-        }
-        const { saveOAuthToken } = await import('../oauth/token-store.js')
-        await saveOAuthToken(home, {
-          provider: 'xai-oauth',
-          bearer: pollJson.access_token,
-          refreshToken,
-          metadata: {
-            granted_scopes: grantedScopes,
-            expires_at_ms: expiresAtMs,
-            created_at: new Date(now).toISOString(),
-          },
-        })
-        const result = {
-          status: 'completed' as const,
-          access_token: '<sealed-on-disk>',
-          refresh_token: '<sealed-on-disk>',
-          expires_at_ms: expiresAtMs,
-          granted_scopes: grantedScopes,
-        }
-        oauthSessions.recordCompletion(sessionId, result)
-        return result
-      }
-
-      const errorCode = pollJson?.error ?? 'unknown'
-      if (errorCode === 'authorization_pending') {
+      if (outcome.status === 'pending') {
         return { status: 'pending' as const, poll_interval_sec: rec.intervalSec }
       }
-      if (errorCode === 'slow_down') {
+      if (outcome.status === 'slow_down') {
         oauthSessions.bumpInterval(sessionId, 5)
         const updated = oauthSessions.get(sessionId)
         return { status: 'pending' as const, poll_interval_sec: updated?.intervalSec ?? 10 }
       }
+      if (outcome.status === 'completed') {
+        try {
+          const record = await saveSubscriptionTokens(home, def, outcome.tokens)
+          const result = {
+            status: 'completed' as const,
+            access_token: '<sealed-on-disk>',
+            refresh_token: '<sealed-on-disk>',
+            expires_at_ms: record.metadata.expires_at_ms,
+            granted_scopes: record.metadata.granted_scopes,
+          }
+          oauthSessions.recordCompletion(sessionId, result)
+          return result
+        } catch (err) {
+          // saveSubscriptionTokens throws on a missing refresh token.
+          const fail = {
+            status: 'failed' as const,
+            error: 'no_refresh_token',
+            description: err instanceof Error ? err.message : String(err),
+          }
+          oauthSessions.recordCompletion(sessionId, fail)
+          return fail
+        }
+      }
       const failResult = {
         status: 'failed' as const,
-        error: errorCode,
-        ...(pollJson?.error_description ? { description: pollJson.error_description } : {}),
+        error: outcome.error,
+        ...(outcome.description ? { description: outcome.description } : {}),
       }
       oauthSessions.recordCompletion(sessionId, failResult)
       return failResult
     },
   )
 
-  fastify.get('/api/v1/oauth/xai/status', async () => {
-    const { readOAuthToken } = await import('../oauth/token-store.js')
-    const token = await readOAuthToken(home, 'xai-oauth').catch(() => null)
-    if (!token) {
-      return { configured: false }
-    }
-    return {
-      configured: true,
-      provider: token.provider,
-      granted_scopes: token.metadata.granted_scopes,
-      expires_at: new Date(token.metadata.expires_at_ms).toISOString(),
-      expires_at_ms: token.metadata.expires_at_ms,
-      created_at: token.metadata.created_at,
-      refreshed_at: token.metadata.refreshed_at ?? null,
-    }
-  })
+  fastify.get<{ Params: { provider: string } }>(
+    '/api/v1/oauth/:provider/status',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+      const { readOAuthToken } = await import('../oauth/token-store.js')
+      const token = await readOAuthToken(home, def.slug).catch(() => null)
+      if (!token) {
+        return { configured: false }
+      }
+      return {
+        configured: true,
+        provider: token.provider,
+        granted_scopes: token.metadata.granted_scopes,
+        expires_at: new Date(token.metadata.expires_at_ms).toISOString(),
+        expires_at_ms: token.metadata.expires_at_ms,
+        created_at: token.metadata.created_at,
+        refreshed_at: token.metadata.refreshed_at ?? null,
+      }
+    },
+  )
 
-  fastify.post('/api/v1/oauth/xai/logout', async () => {
-    const { deleteOAuthToken } = await import('../oauth/token-store.js')
-    const removed = await deleteOAuthToken(home, 'xai-oauth')
-    return { removed }
-  })
+  fastify.post<{ Params: { provider: string } }>(
+    '/api/v1/oauth/:provider/logout',
+    async (req, reply) => {
+      const def = subscriptionProviderByRoute(req.params.provider)
+      if (!def) {
+        await reply.code(404).send({ error: 'unknown_provider' })
+        return
+      }
+      const { deleteOAuthToken } = await import('../oauth/token-store.js')
+      const removed = await deleteOAuthToken(home, def.slug)
+      return { removed }
+    },
+  )
 
   // ---------------------------------------------------------------------------
   // MCP connector management (Phase 1 / PR 1b).
@@ -962,6 +1203,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'GET', path: '/api/v1/system/version' },
       { method: 'POST', path: '/api/v1/system/update' },
       { method: 'GET', path: '/api/v1/system/upgrade-status' },
+      { method: 'POST', path: '/api/v1/system/restart' },
       { method: 'GET', path: '/api/v1/agents' },
       { method: 'GET', path: '/api/v1/agents/:name' },
       { method: 'POST', path: '/api/v1/agents/:name/start' },
@@ -970,6 +1212,10 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       { method: 'POST', path: '/api/v1/agents/:name/unarchive' },
       { method: 'GET', path: '/api/v1/agents/:name/budget' },
       { method: 'PUT', path: '/api/v1/agents/:name/budget' },
+      { method: 'GET', path: '/api/v1/agents/:name/files' },
+      { method: 'GET', path: '/api/v1/agents/:name/files/content' },
+      { method: 'PUT', path: '/api/v1/agents/:name/files/content' },
+      { method: 'GET', path: '/api/v1/agents/:name/files/raw' },
       { method: 'GET', path: '/api/v1/agents/:name/brain' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/search' },
       { method: 'GET', path: '/api/v1/agents/:name/brain/note/:slug' },
@@ -1116,29 +1362,22 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
       }
     }
 
-    // Subscription providers (xai-subscription) get their "configured"
-    // signal from the fleet OAuth token store, not from runtime.env.
-    // Read once here so each provider in the loop below can check.
-    const xaiSubscriptionConfigured = await (async () => {
-      try {
-        const { readOAuthToken } = await import('../oauth/token-store.js')
-        const tok = await readOAuthToken(home, 'xai-oauth')
-        return tok !== null && tok.metadata.expires_at_ms > Date.now()
-      } catch {
-        return false
-      }
-    })()
+    // Subscription providers get their "configured" signal from the
+    // fleet OAuth token store, not from runtime.env. Read once here so
+    // each provider in the loop below can check membership.
+    const activeSubscriptions = await activeSubscriptionLlmProviders(home)
 
     const items = listKnownProviders().map((cat) => {
       const value = env[cat.defaultEnvKey] ?? ''
       // Subscription providers don't read runtime.env; their `key_set`
       // is whether the OAuth token is present and unexpired.
-      const keySet = cat.category === 'subscription' ? xaiSubscriptionConfigured : value.length > 0
-      // xai-subscription shares grok-* models with the API-key xai
-      // provider, but pricing.json keys those under "xai/...". Copy
-      // the suggestions over so the picker shows the same model list
-      // under the Subscriptions optgroup.
-      const suggestedKey = cat.name === 'xai-subscription' ? 'xai' : cat.name
+      const keySet =
+        cat.category === 'subscription' ? activeSubscriptions.has(cat.name) : value.length > 0
+      // A subscription provider's model list may live under a pricing
+      // alias: xai-subscription shares grok-* ids with the API-key xai
+      // provider ("xai/..."), while openai-subscription has its own
+      // namespace. The registry def names the alias.
+      const suggestedKey = subscriptionProviderByLlmName(cat.name)?.modelsPricingAlias ?? cat.name
       return {
         ...cat,
         // Reflect the live env value for the local provider's URL,
@@ -1162,9 +1401,25 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     key: z.string(),
   })
 
+  // Subscription providers carry a sibling provider's env var as a
+  // display-only placeholder (openai-subscription → OPENAI_API_KEY);
+  // letting the generic key routes write through it would silently
+  // clobber the API-key sibling's credential. Their credential
+  // lifecycle is the sign-in card / `2200 oauth <provider>` CLI.
+  const rejectSubscriptionKeyWrite = (cat: { name: string; category: string }): void => {
+    if (cat.category === 'subscription') {
+      throw new ApiError(
+        400,
+        'subscription_provider_has_no_key',
+        `${cat.name} uses a subscription sign-in, not an API key. Use the sign-in card in Settings (or the \`2200 oauth\` CLI) to connect or disconnect it.`,
+      )
+    }
+  }
+
   fastify.put<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     const body = PutProviderKeyBody.parse(req.body)
     if (body.key === '') {
       await removeRuntimeEnvKey(cat.defaultEnvKey)
@@ -1185,6 +1440,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   fastify.delete<{ Params: { id: string } }>('/api/v1/settings/providers/:id/key', async (req) => {
     const cat = listKnownProviders().find((c) => c.name === req.params.id)
     if (!cat) throw notFound('provider', req.params.id)
+    rejectSubscriptionKeyWrite(cat)
     await removeRuntimeEnvKey(cat.defaultEnvKey)
     return {
       provider: cat.name,
@@ -1636,6 +1892,69 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     tag: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(500).optional(),
   })
+
+  // -- files (operator file browser) ---------------------------------------
+  // Read/write access to the Agent's own directory tree. Containment
+  // comes from resolveVirtualPath; see http/files.ts for why this does
+  // not go through the Agent perm evaluator and why /brain is read-only
+  // on this surface.
+
+  const FilePathQuery = z.object({ path: z.string().min(1) })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/files', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = z.object({ path: z.string().min(1).optional() }).parse(req.query)
+    // No `path` means "give me every root" ... one call populates the
+    // whole browser, which keeps the client from fanning out per root.
+    if (q.path === undefined) {
+      const roots = await Promise.all(
+        BROWSABLE_ROOTS.map(async (root) => ({
+          ...root,
+          ...(await walkTree(home, req.params.name, root.path)),
+        })),
+      )
+      return { roots }
+    }
+    return await walkTree(home, req.params.name, q.path)
+  })
+
+  fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/files/content', async (req) => {
+    const snap = supervisor.snapshot()
+    if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+    const q = FilePathQuery.parse(req.query)
+    return await readFileForDisplay(home, req.params.name, q.path)
+  })
+
+  fastify.put<{ Params: { name: string }; Body: unknown }>(
+    '/api/v1/agents/:name/files/content',
+    async (req) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const body = z
+        .object({ path: z.string().min(1), content: z.string().max(5 * 1024 * 1024) })
+        .parse(req.body)
+      return await writeFileFromOperator(home, req.params.name, body.path, body.content)
+    },
+  )
+
+  fastify.get<{ Params: { name: string } }>(
+    '/api/v1/agents/:name/files/raw',
+    async (req, reply) => {
+      const snap = supervisor.snapshot()
+      if (!snap.agents[req.params.name]) throw notFound('agent', req.params.name)
+      const q = FilePathQuery.parse(req.query)
+      const { buffer, filename } = await readFileRaw(home, req.params.name, q.path)
+      // `attachment` is the whole point of this route (the sibling
+      // /content route serves the same bytes for display). Quoting the
+      // filename and stripping quotes/newlines keeps a crafted filename
+      // from breaking out of the header value.
+      const safe = filename.replace(/["\r\n]/g, '_')
+      void reply.header('content-disposition', `attachment; filename="${safe}"`)
+      void reply.header('content-type', 'application/octet-stream')
+      return await reply.send(buffer)
+    },
+  )
 
   fastify.get<{ Params: { name: string } }>('/api/v1/agents/:name/brain', async (req) => {
     const snap = supervisor.snapshot()
@@ -4013,16 +4332,21 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     let providerName = body.provider
     let modelId = body.model
     if (!providerName) {
-      const configured = listKnownProviders().find((p) => {
-        if (p.keyOptional) return true
-        const v = env[p.defaultEnvKey] ?? ''
-        return v.length > 0
-      })
+      // A subscription provider is "configured" when its fleet OAuth
+      // token is present + unexpired ... it never carries a
+      // runtime.env key, so an env-key-only check would miss it and a
+      // subscription-only install (Sign in with X / ChatGPT, no API
+      // key) would fall through to the keyless `local` fallback
+      // (Ollama at localhost, usually not running). Read the OAuth
+      // store the same way the providers endpoint does so
+      // subscriptions count.
+      const activeSubs = await activeSubscriptionLlmProviders(home)
+      const configured = pickOnboardingProvider(listKnownProviders(), env, activeSubs)
       if (!configured) {
         throw new ApiError(
           503,
           'no_provider_configured',
-          'No LLM provider has an API key configured. Visit Settings → Providers to add one before starting onboarding.',
+          'No LLM provider is configured. Sign in with a subscription (SuperGrok, ChatGPT) or add an API key in Settings → Providers before starting onboarding.',
         )
       }
       providerName = configured.name
@@ -4068,6 +4392,33 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         }`,
       )
     }
+    // Fail fast if the operator picked the `local` provider but the endpoint
+    // isn't reachable. The interview swallows provider errors by design (never
+    // 500 on a transient model hiccup), but that means a persistently-dead
+    // provider silently produces a garbage half-Agent bound to a provider that
+    // can never chat ... and `local` (Ollama at localhost, the cold-start
+    // fallback the first-run card offers) is the exact endpoint most likely to
+    // be down. A cheap upfront `/v1/models` probe turns that into an actionable
+    // error before the interview starts. Only `local` is probed here: cloud
+    // keys are validated at paste-time in Settings, and the subscription's
+    // token freshness was already checked above.
+    if (providerName === 'local') {
+      const baseUrl =
+        env['LOCAL_BASE_URL'] ?? process.env['LOCAL_BASE_URL'] ?? 'http://localhost:11434/v1'
+      const apiKey = env['LOCAL_API_KEY'] ?? process.env['LOCAL_API_KEY']
+      const probe = options.probeLocalEndpoint ?? validateLocalEndpoint
+      const result = await probe(apiKey !== undefined ? { baseUrl, apiKey } : { baseUrl })
+      if (!result.ok) {
+        const detail =
+          result.reason === 'network_error'
+            ? `Couldn't reach your local model at ${baseUrl}. Is the server (Ollama / LM Studio / vLLM) running and reachable? (${result.message})`
+            : result.reason === 'auth_failed'
+              ? `Your local model at ${baseUrl} requires a key and rejected the current one. Set LOCAL_API_KEY in Settings → Providers. (HTTP ${String(result.status)})`
+              : `Your local model at ${baseUrl} returned an unexpected response (HTTP ${String(result.status)}). ${result.message}`
+        throw new ApiError(503, 'llm_provider_unreachable', detail)
+      }
+    }
+
     const id = `onb_${newId().replace(/^req_/, '')}`
     const session = new OnboardingSession({ id, script, provider, modelId })
     sessions.register(session)
@@ -4132,6 +4483,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
        * default_on set from the preview's handoff stays as-is.
        */
       selected_capabilities: z.array(z.string().min(1)).optional(),
+      /**
+       * Operator rename from the preview. Overrides the interview-derived
+       * name. Run through the same `deriveAgentName` normalization so a
+       * free-form value ("Mira The Great!") still yields a valid identifier.
+       */
+      agent_name: z.string().optional(),
     })
     .optional()
 
@@ -4155,11 +4512,58 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         )
       }
       const body = ConfirmBodySchema.parse(req.body ?? {})
+
+      // Resolve the final Agent name. An operator rename from the preview
+      // overrides the interview-derived name; run it through the same
+      // derivation so a free-form value still yields a valid identifier
+      // ("Mira The Great!" → "mira-the-great"). A value with no usable
+      // letters is rejected with a clear message rather than silently kept.
+      let finalName = preview.handoff.frontmatter.agent_name
+      if (body?.agent_name !== undefined && body.agent_name.trim().length > 0) {
+        const { deriveAgentName } = await import('../onboarding/identity-from-interview.js')
+        const derived = deriveAgentName(body.agent_name)
+        if (derived === null) {
+          throw new ApiError(
+            400,
+            'invalid_agent_name',
+            `"${body.agent_name}" has no usable letters for an Agent name. Pick a name that starts with a letter.`,
+          )
+        }
+        finalName = derived
+      }
+
+      // Pre-check the FINAL name against the existing fleet. Without this, a
+      // collision (a second "Mira", or re-confirming after a partial build)
+      // reaches supervisor.createAgent, which throws a plain Error → generic
+      // 500 → the session is stuck confirming forever with no hint why. Catch
+      // it here, before migrateFromHandoff writes any files, and return an
+      // actionable 409 the operator can resolve by renaming in the preview.
+      if (supervisor.snapshot().agents[finalName]) {
+        throw new ApiError(
+          409,
+          'agent_name_taken',
+          `An Agent named "${finalName}" already exists. Rename this one in the preview (or remove the existing Agent) and confirm again.`,
+        )
+      }
+
+      // Apply the rename to the handoff (name + display_name) before anything
+      // is materialized, so the capability override and migration build the
+      // Agent under the operator's chosen name.
       let handoff = preview.handoff
+      if (finalName !== preview.handoff.frontmatter.agent_name) {
+        handoff = {
+          ...handoff,
+          frontmatter: {
+            ...handoff.frontmatter,
+            agent_name: finalName,
+            identity: { ...handoff.frontmatter.identity, display_name: finalName },
+          },
+        }
+      }
       if (body?.selected_capabilities !== undefined) {
         const { applyCapabilityOverride } = await import('../onboarding/capability-override.js')
         const result = applyCapabilityOverride({
-          handoff: preview.handoff,
+          handoff,
           suggestions: preview.capabilities,
           selected_ids: body.selected_capabilities,
         })
@@ -4477,6 +4881,29 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     home,
     supervisorUrl: `http://127.0.0.1:${String(port)}`,
     catalogPath,
+  })
+
+  // Operator "restart everything" ... bounce every pub-server, Agent, and
+  // connector gateway WITHOUT restarting the daemon (it serves this request).
+  // This is the cure for a wedged Agent (e.g. stuck `blocked_on_agent`) and a
+  // general "kick the tyres" for the fleet. The daemon staying up is why this
+  // is safe to call from the web UI; a full daemon restart is a CLI/ops action.
+  fastify.post('/api/v1/system/restart', async () => {
+    const result = await supervisor.restartFleet('operator_restart')
+    // Refresh connector gateways too (best-effort, like boot recovery). The
+    // platform single-bot semantics take over any orphan from the old gateway.
+    void recoverGateways({
+      home,
+      catalogPath,
+      gatewayManager,
+      snapshot: () => supervisor.snapshot(),
+      log: log?.child('gateway-recovery'),
+    }).catch((err: unknown) => {
+      log?.warn('gateway refresh during restart failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+    return result
   })
 
   interface PairState {
@@ -5134,6 +5561,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
         throw new ApiError(426, 'upgrade_required', 'Upgrade to WebSocket required at /api/v1/ws')
       },
       wsHandler: async (socket: WsSocket, req: FastifyRequest) => {
+        // Reject a cross-origin upgrade BEFORE looking at the cookie ... the
+        // definitive fix for cross-site WS hijacking, not a reliance on SameSite.
+        if (!wsOriginAllowed(req)) {
+          socket.close(4403, 'forbidden origin')
+          return
+        }
         let principal: Principal
         try {
           principal = await authenticate(req)

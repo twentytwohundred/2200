@@ -87,6 +87,8 @@ interface SemanticBlock {
   'warn-soft': string
   info: string
   'info-soft': string
+  success: string
+  'success-soft': string
 }
 
 interface ShadowBlock {
@@ -175,6 +177,8 @@ function emitSemantic(s: SemanticBlock, indent = '  '): string[] {
     `${indent}--warn-soft: ${s['warn-soft']};`,
     `${indent}--info: ${s.info};`,
     `${indent}--info-soft: ${s['info-soft']};`,
+    `${indent}--success: ${s.success};`,
+    `${indent}--success-soft: ${s['success-soft']};`,
   ]
 }
 

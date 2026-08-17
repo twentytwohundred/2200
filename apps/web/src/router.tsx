@@ -6,6 +6,7 @@ import { InboxScreen } from './screens/inbox/InboxScreen'
 import { BudgetScreen } from './screens/budget/BudgetScreen'
 import { OnboardingScreen } from './screens/onboarding/OnboardingScreen'
 import { BrainScreen } from './screens/brain/BrainScreen'
+import { FilesScreen } from './screens/files/FilesScreen'
 import { ChatScreen } from './screens/chat/ChatScreen'
 import { SchedulesScreen } from './screens/schedules/SchedulesScreen'
 import { SettingsScreen } from './screens/settings/SettingsScreen'
@@ -23,6 +24,7 @@ import { CommandPalette } from './palette/CommandPalette'
  * Phase A + B surface:
  *   /                    Fleet (mission control)
  *   /agent/:name         Agent detail (identity card variant)
+ *   /agent/:name/files   File browser over the Agent's directory tree
  *   /inbox               Inbox (keyboard triage)
  *   /budget              Budget (Phase B v0.1: data substrate, ledger
  *                        receipt polish later)
@@ -46,6 +48,7 @@ export function Router(): ReactElement {
         <Route path="/onboarding" element={<OnboardingScreen />} />
         <Route path="/agent/:name/chat" element={<ChatScreen />} />
         <Route path="/agent/:name/brain" element={<BrainScreen />} />
+        <Route path="/agent/:name/files" element={<FilesScreen />} />
         <Route path="/agent/:name/schedules" element={<SchedulesScreen />} />
         <Route path="/agent/:name/tools" element={<ToolsScreen />} />
         <Route path="/settings" element={<SettingsScreen />} />
@@ -54,7 +57,9 @@ export function Router(): ReactElement {
         <Route path="/rooms" element={<RoomsScreen />} />
         <Route path="/fleet" element={<FleetDocScreen />} />
         <Route path="/extensions" element={<ExtensionsScreen />} />
-        <Route path="/dev/components" element={<ComponentsPage />} />
+        {/* Internal primitives reference ... dev builds only, never shipped to
+            a production instance an operator or demo audience can reach. */}
+        {import.meta.env.DEV && <Route path="/dev/components" element={<ComponentsPage />} />}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

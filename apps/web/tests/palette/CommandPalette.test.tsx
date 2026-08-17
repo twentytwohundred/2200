@@ -87,8 +87,10 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Fleet')).toBeInTheDocument()
     expect(screen.getByText('Inbox')).toBeInTheDocument()
     expect(screen.getByText('Budget')).toBeInTheDocument()
-    expect(screen.getByText('Component library')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    // The internal component-library page is no longer surfaced in the palette
+    // (and its route is dev-only) so a demo audience can't stumble into it.
+    expect(screen.queryByText('Component library')).not.toBeInTheDocument()
   })
 
   it('exposes a Build an Agent command pointing at /onboarding', async () => {

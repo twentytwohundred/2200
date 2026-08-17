@@ -1,66 +1,34 @@
 /**
- * Auth bootstrap.
+ * Auth ... HttpOnly session cookie.
  *
- * v1 stores a single bearer token in localStorage. The CLI prints the
- * URL with `?token=<value>` appended once on first start; the web app
- * reads the query param, persists the token, and strips the param so
- * page reloads don't keep it in the URL bar. After that, all requests
- * carry `Authorization: Bearer <token>` from local storage.
- *
- * `localStorage` access is wrapped in try/catch because Safari private
- * mode and some jsdom builds raise on every storage call.
+ * The pasted 64-char token is exchanged, once, for a session cookie via
+ * `POST /api/v1/auth/login`. After that the browser attaches the cookie to
+ * every same-origin request automatically ... including the WebSocket handshake
+ * and `<img>` loads ... so page JavaScript never holds the token (it's
+ * `HttpOnly`, so an XSS bug can't exfiltrate it) and the token never rides in a
+ * URL, history, or access log.
  */
-const STORAGE_KEY = '2200.auth.token'
 
-function readStorage(): string | null {
-  if (typeof window === 'undefined') return null
+/** Exchange a pasted token for a session cookie. Returns true on success. */
+export async function login(token: string): Promise<boolean> {
   try {
-    return window.localStorage.getItem(STORAGE_KEY)
+    const res = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    return res.ok
   } catch {
-    return null
+    return false
   }
 }
 
-function writeStorage(value: string | null): void {
-  if (typeof window === 'undefined') return
+/** Clear the session cookie (best-effort). */
+export async function logout(): Promise<void> {
   try {
-    if (value === null) {
-      window.localStorage.removeItem(STORAGE_KEY)
-    } else {
-      window.localStorage.setItem(STORAGE_KEY, value)
-    }
+    await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' })
   } catch {
-    /* storage unavailable; the caller will see a missing token next reload */
+    /* best-effort; the cookie clears on the server or expires regardless */
   }
-}
-
-/**
- * Run once at startup. If the URL has a `?token=` query, persist it
- * and strip the query from the URL bar; otherwise leave existing
- * storage alone.
- */
-export function bootstrapAuth(): void {
-  if (typeof window === 'undefined') return
-  const params = new URLSearchParams(window.location.search)
-  const fromUrl = params.get('token')
-  if (fromUrl && fromUrl.length > 0) {
-    writeStorage(fromUrl)
-    params.delete('token')
-    const remaining = params.toString()
-    const next =
-      window.location.pathname + (remaining ? `?${remaining}` : '') + window.location.hash
-    window.history.replaceState(null, '', next)
-  }
-}
-
-export function getToken(): string | null {
-  return readStorage()
-}
-
-export function setToken(value: string): void {
-  writeStorage(value)
-}
-
-export function clearToken(): void {
-  writeStorage(null)
 }

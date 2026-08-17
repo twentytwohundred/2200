@@ -125,7 +125,8 @@ export async function fetchXaiDiscovery(
 
 /**
  * Build the device-flow provider config from a fetched discovery doc.
- * Caller-side glue between `fetchXaiDiscovery` and `runDeviceFlow`.
+ * Caller-side glue between `fetchXaiDiscovery` and the device-flow
+ * building blocks in `device-flow.ts`.
  */
 export function xaiDeviceFlowProvider(doc: DiscoveryDoc): DeviceFlowProviderConfig {
   return {
