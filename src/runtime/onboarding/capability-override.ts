@@ -20,8 +20,7 @@ import type { HandoffDocument } from '../migration/types.js'
 import type { CapabilitySuggestion } from './capability-suggest.js'
 
 export type ApplyCapabilityOverrideResult =
-  | { ok: true; handoff: HandoffDocument }
-  | { ok: false; invalid_ids: string[] }
+  { ok: true; handoff: HandoffDocument } | { ok: false; invalid_ids: string[] }
 
 export interface ApplyCapabilityOverrideArgs {
   /** The session preview's auto-built handoff. */

@@ -284,8 +284,7 @@ export async function listWorkPackages(
     ) as WorkPackageStatus
     if (args.status !== undefined && status !== args.status) continue
     const targetKind = (typeof e['target_kind'] === 'string' ? e['target_kind'] : 'thread') as
-      | 'thread'
-      | 'agent'
+      'thread' | 'agent'
     out.push({
       packageId: pid,
       slug: note.slug,
@@ -324,8 +323,7 @@ export async function readWorkPackage(
     typeof e['package_status'] === 'string' ? e['package_status'] : 'proposed'
   ) as WorkPackageStatus
   const targetKind = (typeof e['target_kind'] === 'string' ? e['target_kind'] : 'thread') as
-    | 'thread'
-    | 'agent'
+    'thread' | 'agent'
   const targetName = typeof e['target_name'] === 'string' ? e['target_name'] : ''
   const proposal: ProposedWorkPackage = {
     title: note.frontmatter.title.replace(/^Work package:\s*/, ''),

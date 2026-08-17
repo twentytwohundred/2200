@@ -111,11 +111,7 @@ export class CredentialRequestError extends Error {
   constructor(
     message: string,
     public readonly code:
-      | 'NOT_FOUND'
-      | 'CORRUPT'
-      | 'INVALID_TRANSITION'
-      | 'IO_ERROR'
-      | 'WRONG_AGENT',
+      'NOT_FOUND' | 'CORRUPT' | 'INVALID_TRANSITION' | 'IO_ERROR' | 'WRONG_AGENT',
   ) {
     super(message)
     this.name = 'CredentialRequestError'

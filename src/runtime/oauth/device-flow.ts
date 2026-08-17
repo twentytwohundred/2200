@@ -208,9 +208,7 @@ export async function pollDeviceTokenOnce(args: {
   }
 
   const pollJson = (await pollRes.json().catch(() => null)) as
-    | OAuthTokenResponse
-    | { error: string; error_description?: string }
-    | null
+    OAuthTokenResponse | { error: string; error_description?: string } | null
 
   if (pollRes.ok && pollJson && 'access_token' in pollJson && pollJson.access_token) {
     return { status: 'completed', tokens: pollJson }
@@ -268,9 +266,7 @@ export async function refreshDeviceFlowToken(args: {
     )
   }
   const json = (await res.json().catch(() => null)) as
-    | OAuthTokenResponse
-    | { error: string; error_description?: string }
-    | null
+    OAuthTokenResponse | { error: string; error_description?: string } | null
   if (!res.ok || !json || !('access_token' in json) || !json.access_token) {
     const errorCode = json && typeof json === 'object' && 'error' in json ? json.error : 'unknown'
     const desc =

@@ -36,7 +36,7 @@ Required reading before your first commit:
 
 ### License posture
 
-2200 ships under [Elastic License v2](LICENSE). Always pair "lift from external project" with license analysis:
+2200 ships under the [Apache License 2.0](LICENSE) (relicensed from Elastic License v2 on 2026-08-16). Always pair "lift from external project" with license analysis:
 
 - **Pattern lift** (architectural idea, reimplemented from understanding): no obligation, default to this.
 - **Code lift** (verbatim or near-verbatim): preserve the source's copyright notice, document in `THIRD_PARTY_NOTICES.md`.
@@ -48,7 +48,7 @@ OpenClaw is MIT (Copyright 2025 Peter Steinberger). Most other prior-art sources
 
 ```
 .
-├── LICENSE                  Elastic License v2
+├── LICENSE                  Apache License 2.0
 ├── README.md                project entry point
 ├── AGENTS.md                this file
 ├── SECURITY.md              responsible disclosure

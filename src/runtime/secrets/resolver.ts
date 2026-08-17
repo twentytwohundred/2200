@@ -21,11 +21,7 @@ export class SecretResolveError extends Error {
   constructor(
     message: string,
     public readonly code:
-      | 'ENV_MISSING'
-      | 'FILE_UNREADABLE'
-      | 'EMPTY_VALUE'
-      | 'VAULT_MISCONFIGURED'
-      | 'VAULT_MISS',
+      'ENV_MISSING' | 'FILE_UNREADABLE' | 'EMPTY_VALUE' | 'VAULT_MISCONFIGURED' | 'VAULT_MISS',
   ) {
     super(message)
     this.name = 'SecretResolveError'

@@ -31,11 +31,7 @@ const ModelsResponseSchema = z.object({
 })
 
 export type DiscoveryErrorKind =
-  | 'network'
-  | 'http_status'
-  | 'parse_error'
-  | 'unexpected_shape'
-  | 'timeout'
+  'network' | 'http_status' | 'parse_error' | 'unexpected_shape' | 'timeout'
 
 export class EndpointDiscoveryError extends Error {
   readonly kind: DiscoveryErrorKind

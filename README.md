@@ -1,4 +1,4 @@
-[![License: Elastic License v2](https://img.shields.io/badge/license-Elastic%20v2-0077B5.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-0077B5.svg)](LICENSE)
 [![Status: Active build](https://img.shields.io/badge/status-active%20build-2EA44F.svg)](https://github.com/twentytwohundred/wiki/blob/main/03-epic-map.md)
 [![Tests: 1849 passing](https://img.shields.io/badge/tests-1849%20passing-2EA44F.svg)](.github/workflows/ci.yml)
 [![Wiki](https://img.shields.io/badge/wiki-knowledge%20base-0077B5.svg)](https://github.com/twentytwohundred/wiki)
@@ -138,20 +138,20 @@ The daily handoffs at [`wiki/handoffs/hobby/`](https://github.com/twentytwohundr
 
 ## Repository contents
 
-| Path                     | Purpose                                                      |
-| ------------------------ | ------------------------------------------------------------ |
-| `LICENSE`                | Elastic License v2                                           |
-| `README.md`              | this file                                                    |
-| `AGENTS.md`              | conventions for Agents working in this repository            |
-| `SECURITY.md`            | responsible disclosure                                       |
-| `CONTRIBUTING.md`        | contribution model (seed-team-closed during the build phase) |
-| `CHANGELOG.md`           | release notes (populated when versioned releases start)      |
-| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                               |
-| `.github/`               | issue templates, PR template, CI workflows                   |
-| `src/`                   | runtime code (224 TypeScript modules)                        |
-| `tests/`                 | test code (142 test files, 1754 runtime tests)               |
-| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware              |
-| `scripts/`               | build, deploy, sync, and ops scripts                         |
+| Path                     | Purpose                                               |
+| ------------------------ | ----------------------------------------------------- |
+| `LICENSE`                | Apache License 2.0                                    |
+| `README.md`              | this file                                             |
+| `AGENTS.md`              | conventions for Agents working in this repository     |
+| `SECURITY.md`            | responsible disclosure                                |
+| `CONTRIBUTING.md`        | contribution model (open; maintenance is best-effort) |
+| `CHANGELOG.md`           | release notes, one entry per release                  |
+| `THIRD_PARTY_NOTICES.md` | attribution for any code-lifts                        |
+| `.github/`               | issue templates, PR template, CI workflows            |
+| `src/`                   | runtime code (224 TypeScript modules)                 |
+| `tests/`                 | test code (142 test files, 1754 runtime tests)        |
+| `apps/web/`              | web app (Epic 15) ... React + Vite, theme-aware       |
+| `scripts/`               | build, deploy, sync, and ops scripts                  |
 
 ## Development
 
@@ -217,7 +217,7 @@ apps/web/src/
 
 ## License
 
-[Elastic License v2](LICENSE). Source-available. Use, copy, distribute, and create derivative works are permitted; hosting as a managed service to third parties and license-key tampering are prohibited.
+[Apache License 2.0](LICENSE). Open source. Use it, fork it, embed it, host it ... the license's standard terms are the only terms. Relicensed from Elastic License v2 on 2026-08-16; the reasoning is in [the decision record](https://github.com/twentytwohundred/wiki/blob/main/decisions/2026-08-16-apache-relicense.md).
 
 Prior-art surveyed in the wiki has been license-checked. See [License posture](AGENTS.md#license-posture) in `AGENTS.md` and [license-posture](https://github.com/twentytwohundred/wiki/blob/main/conventions/license-posture.md) in the wiki for the discipline applied to any code-lift. Attributions live in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
@@ -237,7 +237,7 @@ The seed team is closed during the build phase. After launch, see [CONTRIBUTING.
 - **GitHub org:** [github.com/twentytwohundred](https://github.com/twentytwohundred)
 - **Wiki (knowledge base):** [twentytwohundred/wiki](https://github.com/twentytwohundred/wiki)
 - **Daily build handoffs:** [`wiki/handoffs/hobby/`](https://github.com/twentytwohundred/wiki/tree/main/handoffs/hobby)
-- **License:** [Elastic License v2](LICENSE)
+- **License:** [Apache License 2.0](LICENSE)
 
 ---
 
