@@ -63,8 +63,7 @@ export interface FirstRunIO {
 
 /** Outcome enum returned by `runFirstRun`. */
 export type FirstRunResult =
-  | { status: 'completed'; home: string; displayName: string }
-  | { status: 'aborted'; reason: string }
+  { status: 'completed'; home: string; displayName: string } | { status: 'aborted'; reason: string }
 
 /**
  * Returns true when the orchestrator should fire (no prior install

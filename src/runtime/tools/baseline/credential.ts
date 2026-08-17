@@ -223,8 +223,7 @@ export function credentialTools(
       // before the on-disk guard sees the prior record.
       const dedupKey = `${ctx.callingAgent}:${args.credential_name}`
       const existing = inFlightCredentialRequests.get(dedupKey) as
-        | Promise<CredentialRequestToolResult>
-        | undefined
+        Promise<CredentialRequestToolResult> | undefined
       if (existing) {
         return await existing
       }

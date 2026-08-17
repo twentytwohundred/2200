@@ -76,14 +76,7 @@ interface SubmitArgs {
 }
 
 type AgentTab =
-  | 'chat'
-  | 'status'
-  | 'identity'
-  | 'budget'
-  | 'brain'
-  | 'files'
-  | 'schedules'
-  | 'tools'
+  'chat' | 'status' | 'identity' | 'budget' | 'brain' | 'files' | 'schedules' | 'tools'
 const VALID_TABS: AgentTab[] = [
   'chat',
   'status',
