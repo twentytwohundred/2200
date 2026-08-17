@@ -59,11 +59,7 @@ export interface ResolverPubMeta {
 }
 
 export type DirectedRule =
-  | 'direct_mention'
-  | 'reply_to_mine'
-  | 'sole_recipient'
-  | 'pub_ownership'
-  | 'domain_match'
+  'direct_mention' | 'reply_to_mine' | 'sole_recipient' | 'pub_ownership' | 'domain_match'
 
 export interface DirectedToResult {
   matched: boolean

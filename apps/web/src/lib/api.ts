@@ -230,11 +230,7 @@ export interface AgentToolsResponse {
  * shape and the wizard flow this drives.
  */
 export type SkillToolClass =
-  | 'file_create'
-  | 'file_read'
-  | 'external_send'
-  | 'tool_invoke'
-  | 'process_count'
+  'file_create' | 'file_read' | 'external_send' | 'tool_invoke' | 'process_count'
 
 export type SkillRequiredSecretKind = 'stdio_env' | 'http_bearer' | 'http_header'
 
@@ -1523,8 +1519,7 @@ export type ConnectorAuthModel = 'qr_pair' | 'oauth' | 'bot_token' | 'api_key'
 export type CatalogCategory = 'connector' | 'voice' | 'skill' | 'model_provider'
 
 export type CatalogSource =
-  | { type: 'workspace'; path: string }
-  | { type: 'npm'; package: string; sha256: string }
+  { type: 'workspace'; path: string } | { type: 'npm'; package: string; sha256: string }
 
 export type ConnectorAccountScope = 'extension' | 'agent'
 
@@ -1557,12 +1552,7 @@ export interface Catalog {
 }
 
 export type ExtensionInstallStage =
-  | 'resolving'
-  | 'copying'
-  | 'validating_manifest'
-  | 'running_install_hook'
-  | 'completed'
-  | 'failed'
+  'resolving' | 'copying' | 'validating_manifest' | 'running_install_hook' | 'completed' | 'failed'
 
 export interface ExtensionInstallProgressPayload {
   install_id: string
@@ -1574,12 +1564,7 @@ export interface ExtensionInstallProgressPayload {
 }
 
 export type ExtensionPairState =
-  | 'idle'
-  | 'awaiting_qr_scan'
-  | 'connecting'
-  | 'paired'
-  | 'disconnected'
-  | 'errored'
+  'idle' | 'awaiting_qr_scan' | 'connecting' | 'paired' | 'disconnected' | 'errored'
 
 export interface ExtensionPairStateResponse {
   extension_id: string
@@ -1681,12 +1666,7 @@ export interface SystemVersion {
 }
 
 export type UpgradeStage =
-  | 'pending'
-  | 'stopping_daemon'
-  | 'installing'
-  | 'restarting'
-  | 'completed'
-  | 'failed'
+  'pending' | 'stopping_daemon' | 'installing' | 'restarting' | 'completed' | 'failed'
 
 export interface UpgradeStatus {
   schema_version: 1

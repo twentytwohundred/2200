@@ -27,10 +27,7 @@ export class IdentityMutationError extends Error {
   constructor(
     message: string,
     public readonly code:
-      | 'AGENT_NOT_FOUND'
-      | 'DUPLICATE_SERVER_NAME'
-      | 'INVALID_CREDENTIAL_NAME'
-      | 'IO_ERROR',
+      'AGENT_NOT_FOUND' | 'DUPLICATE_SERVER_NAME' | 'INVALID_CREDENTIAL_NAME' | 'IO_ERROR',
   ) {
     super(message)
     this.name = 'IdentityMutationError'
